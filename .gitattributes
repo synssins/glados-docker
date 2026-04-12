@@ -1,0 +1,28 @@
+# Force LF line endings for all text files in the repo
+# Prevents CRLF/LF churn when working across Windows and Linux hosts
+
+* text=auto eol=lf
+
+# Explicitly LF
+*.py eol=lf
+*.yaml eol=lf
+*.yml eol=lf
+*.md eol=lf
+*.toml eol=lf
+*.json eol=lf
+*.txt eol=lf
+*.sh eol=lf
+Dockerfile eol=lf
+
+# Binary — no line ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.onnx binary
+*.bin binary
+*.pkl binary
