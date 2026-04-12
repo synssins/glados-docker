@@ -10,6 +10,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        USE_GPU: ${GLADOS_USE_GPU:-false}   # set GLADOS_USE_GPU=true in .env for GPU TTS
     image: glados:latest
     container_name: glados
     ports:
