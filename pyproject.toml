@@ -8,28 +8,80 @@ version = "0.1.0"
 description = "GLaDOS persona middleware layer — OpenAI-compatible AI assistant"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic>=2.0",
-    "pyyaml>=6.0",
-    "httpx>=0.27",
-    "loguru>=0.7",
-    "chromadb>=0.5",
-    "mcp>=1.0",
+    # HTTP / networking
+    "httpx>=0.28.1",
+    "requests>=2.32.3",
+    "pyyaml>=6.0.2",
+    # Data / validation
+    "pydantic>=2.10.6",
+    "loguru>=0.7.3",
+    # NLP / text
+    "levenshtein>=0.26.1",
+    "regex>=2024.5.15",
+    "jinja2>=3.1.5",
+    # Audio processing (no hardware audio — HA handles playback)
+    "soundfile>=0.13.0",
+    # ONNX inference — CPU only by default
+    # Use the 'gpu' extra to swap in onnxruntime-gpu at build time
+    "onnxruntime>=1.16.0",
+    # Vision
+    "opencv-python-headless>=4.12.0",
+    "Pillow>=10.0.0",
+    # Memory
+    "chromadb>=0.5.0",
+    # MCP tool integration
+    "mcp>=1.25.0",
+    # Auth
+    "bcrypt>=4.0.0",
+    # Misc
+    "rich>=14.0.0",
+    "threadpoolctl>=3.0.0",
+    "numba>=0.61.0",
 ]
 
 [project.optional-dependencies]
-api = [
-    "fastapi>=0.111",
-    "uvicorn[standard]>=0.30",
-]
-discord = [
-    "discord.py>=2.3",
-]
+# Swap onnxruntime for GPU-accelerated version at build time
+# onnxruntime and onnxruntime-gpu are mutually exclusive
+gpu = ["onnxruntime-gpu>=1.16.0"]
+
+# API server
+api = ["litestar[standard,structlog]>=2.15.1"]
+
+# Discord integration
+discord = ["discord.py>=2.3"]
+
+# Development
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "httpx>=0.27",
+    "pytest-mock",
+    "ruff",
+    "types-requests",
+    "types-PyYAML",
 ]
+
+[project.scripts]
+glados = "glados.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["glados*"]
+
+[tool.ruff]
+line-length = 120
+indent-width = 4
+target-version = "py312"
+exclude = [".venv", "__pycache__", "build", "dist"]
+
+lint.extend-select = [
+    "E", "F", "I", "N", "UP", "B", "C4", "RUF",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
