@@ -72,3 +72,9 @@ webui:
     enabled: false
     cert_path: "/app/certs/cert.pem"
     key_path: "/app/certs/key.pem"
+    # Let's Encrypt via DNS-01 challenge (no external port exposure required)
+    # Uses Cloudflare DNS API — set CLOUDFLARE_API_TOKEN in .env
+    # Token scope: Zone:DNS:Edit on target zone only
+    # Options: lego-auto, certbot-dns-cloudflare, or Caddy reverse proxy
+    # Domain to issue cert for:
+    domain: "glados.yourdomain.com"
