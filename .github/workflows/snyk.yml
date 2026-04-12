@@ -1,0 +1,40 @@
+name: Snyk Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly scan every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+
+jobs:
+  snyk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -e ".[api]"
+
+      - name: Run Snyk Python scan
+        uses: snyk/actions/python@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high
+
+      - name: Run Snyk Docker scan
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: glados:latest
+          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high
+        continue-on-error: true   # build image first in CI before this works
