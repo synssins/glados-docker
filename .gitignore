@@ -1,0 +1,49 @@
+# Secrets and local config — NEVER commit these
+*.env
+.env.*
+!.env.example
+config.local.yaml
+config.local.yml
+configs/*.local.yaml
+configs/*.local.yml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Docker local overrides
+docker-compose.override.yml
+
+# Logs
+logs/
+*.log
+
+# Data and models — too large for git, host-mounted volumes
+data/
+models/
+audio_files/
+
+# Certs — secrets
+certs/
+*.pem
+*.key
+*.crt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Snyk
+.snyk

@@ -1,0 +1,74 @@
+# GLaDOS Container — Example Configuration
+# Copy this to config.yaml and fill in your values.
+# config.yaml is gitignored and will never be committed.
+# This file (config.example.yaml) IS committed — keep it free of real values.
+
+# ---------------------------------------------------------------------------
+# Home Assistant
+# ---------------------------------------------------------------------------
+home_assistant:
+  url: "http://YOUR_HA_IP:8123"
+  ws_url: "ws://YOUR_HA_IP:8123/api/websocket"
+  token: "YOUR_LONG_LIVED_HA_TOKEN"
+
+# ---------------------------------------------------------------------------
+# Downstream service URLs
+# In Docker Compose these use service names (e.g. http://ollama:11434)
+# For external/host-native services use the host IP or host.docker.internal
+# ---------------------------------------------------------------------------
+services:
+  ollama_interactive:
+    url: "http://ollama:11434"
+  ollama_autonomy:
+    url: "http://ollama:11434"       # separate instance if available
+  ollama_vision:
+    url: "http://ollama:11434"       # separate instance if available
+  speaches:
+    url: "http://speaches:8800"
+    tts_voice: "YOUR_REGISTERED_VOICE_NAME"
+    tts_model: "hexgrad/Kokoro-82M"
+    stt_model: "Systran/faster-whisper-small"
+  chromadb:
+    url: "http://chromadb:8000"
+
+# ---------------------------------------------------------------------------
+# Network — used for serving audio files back to HA media players
+# ---------------------------------------------------------------------------
+network:
+  serve_host: "YOUR_AIBOX_IP"       # IP reachable by HA
+  serve_port: 5051
+
+# ---------------------------------------------------------------------------
+# Auth — WebUI login
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  session_timeout_hours: 24
+  # Password hash set via: docker exec glados python -m glados.tools.set_password
+
+# ---------------------------------------------------------------------------
+# Discord (optional — leave blank to disable)
+# ---------------------------------------------------------------------------
+discord:
+  bot_token: ""
+  active_channels: []
+  alert_channel: ""
+  allowed_user_ids: []
+
+# ---------------------------------------------------------------------------
+# GLaDOS API — which port the persona layer listens on
+# ---------------------------------------------------------------------------
+api:
+  host: "0.0.0.0"
+  port: 8015
+
+# ---------------------------------------------------------------------------
+# WebUI
+# ---------------------------------------------------------------------------
+webui:
+  host: "0.0.0.0"
+  port: 8052
+  ssl:
+    enabled: false
+    cert_path: "/app/certs/cert.pem"
+    key_path: "/app/certs/key.pem"

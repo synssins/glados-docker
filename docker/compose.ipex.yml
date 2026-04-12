@@ -1,0 +1,18 @@
+# docker/compose.ipex.yml — Intel Arc GPU override
+# Usage: docker compose -f docker/compose.yml -f docker/compose.ipex.yml up -d
+# Requires: Intel GPU drivers and container device plugin on host
+
+services:
+  ollama:
+    image: ollama/ollama:latest   # replace with ipex-llm image when available
+    devices:
+      - /dev/dri
+    environment:
+      - ZES_ENABLE_SYSMAN=1
+      - OLLAMA_NUM_GPU=999
+
+  speaches:
+    devices:
+      - /dev/dri
+    environment:
+      - ZES_ENABLE_SYSMAN=1

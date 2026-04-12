@@ -1,0 +1,106 @@
+# docker/compose.yml — Base stack, hardware-agnostic, CPU-only defaults
+# Usage:
+#   CPU only:     docker compose -f docker/compose.yml up -d
+#   NVIDIA:       docker compose -f docker/compose.yml -f docker/compose.cuda.yml up -d
+#   Intel Arc:    docker compose -f docker/compose.yml -f docker/compose.ipex.yml up -d
+
+services:
+
+  glados:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: glados:latest
+    container_name: glados
+    ports:
+      - "8015:8015"   # OpenAI-compatible persona API
+      - "8052:8052"   # Admin WebUI
+    volumes:
+      - ../configs/config.yaml:/app/configs/config.yaml:ro
+      - glados_data:/app/data
+      - glados_audio:/app/audio_files
+      - glados_logs:/app/logs
+      - glados_certs:/app/certs
+    environment:
+      - GLADOS_CONFIG=/app/configs/config.yaml
+    env_file:
+      - ../.env
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - glados_net
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: glados_chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - chromadb_data:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - glados_net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: glados_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - glados_net
+
+  speaches:
+    image: ghcr.io/speaches-ai/speaches:latest
+    container_name: glados_speaches
+    ports:
+      - "8800:8800"
+    volumes:
+      - speaches_models:/app/models
+    restart: unless-stopped
+    networks:
+      - glados_net
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: glados_webui
+    ports:
+      - "3000:8080"
+    environment:
+      - OPENAI_API_BASE_URL=http://glados:8015/v1
+      - OPENAI_API_KEY=glados
+      - AUDIO_STT_ENGINE=openai
+      - AUDIO_STT_OPENAI_API_BASE_URL=http://speaches:8800/v1
+      - AUDIO_TTS_ENGINE=openai
+      - AUDIO_TTS_OPENAI_API_BASE_URL=http://speaches:8800/v1
+    volumes:
+      - open_webui_data:/app/backend/data
+    depends_on:
+      - glados
+      - speaches
+    restart: unless-stopped
+    networks:
+      - glados_net
+
+networks:
+  glados_net:
+    driver: bridge
+
+volumes:
+  glados_data:
+  glados_audio:
+  glados_logs:
+  glados_certs:
+  chromadb_data:
+  ollama_models:
+  speaches_models:
+  open_webui_data:
