@@ -386,26 +386,39 @@ is false, the WebUI runs plain HTTP — acceptable for local network use.
 
 The container should handle its own certificate lifecycle without requiring
 external port exposure (no port 80/443 open to the internet). This means
-DNS-01 challenge, not HTTP-01. The stack already uses Cloudflare for DNS
-(Pi-hole + Cloudflare DNS-01 is established in the existing environment).
+DNS-01 challenge rather than HTTP-01. DNS-01 validates domain ownership by
+writing a TXT record to the domain's DNS zone — the ACME server never
+makes an inbound connection to the host, so no firewall rules or port
+forwarding are required.
 
-Recommended approach: add a `certbot` or `lego` sidecar container to the
-Compose stack that uses the Cloudflare DNS API to obtain and renew certs
-automatically. The cert files are written to a shared volume (`glados_certs`)
-that the GLaDOS container mounts at `/app/certs/`. No inbound ports required.
-No host-native certbot process required.
+DNS-01 requires a DNS provider with an API that the ACME client can call to
+create and remove TXT records automatically. The specific provider and API
+token are operator-supplied — this is environment-specific and not part of
+the container's core configuration.
 
-Options to evaluate:
-- `adferrand/lego-auto` — lightweight, Cloudflare DNS-01 built-in, Docker-native
-- `certbot/certbot` with `certbot-dns-cloudflare` plugin — more familiar tooling
-- `Caddy` as a reverse proxy sidecar — handles cert renewal automatically via
-  ACME DNS-01, also adds proper reverse proxy in front of the WebUI
+Recommended approach: add a cert management sidecar container to the Compose
+stack (options: `adferrand/lego-auto`, `certbot/certbot` with a DNS plugin,
+or `Caddy` as a reverse proxy with built-in ACME). The sidecar obtains and
+renews certs automatically and writes them to a shared Docker volume
+(`glados_certs`) that the GLaDOS container mounts at `/app/certs/`. The GLaDOS
+container itself never speaks ACME — it just reads the cert files.
 
-The Cloudflare API token (scoped to DNS edit on the target zone only) is a
-secret — stored in `.env`, never committed. This is a Stage 1 design decision
-but implementation detail can be deferred to when SSL is actively needed.
-Document the chosen approach and the required Cloudflare token scope in
-`config.example.yaml` and `.env.example`.
+Implementation notes for operators:
+- Choose a DNS provider that has an ACME DNS-01 plugin (most major providers
+  do — Route53, Cloudflare, Azure DNS, GoDaddy, Namecheap, etc.)
+- Scope the DNS API token to the minimum required: DNS TXT record
+  create/delete on the specific zone only — nothing else
+- The API token is a secret: `.env` only, never committed
+- If the domain is internal-only (does not resolve on the public internet),
+  DNS-01 still works — Let's Encrypt only checks the DNS TXT record, not
+  whether the domain routes to your server
+- Self-signed certs are always an option for fully local/air-gapped installs
+  where Let's Encrypt is not suitable
+
+This is a Stage 1 design decision. The chosen DNS provider and sidecar
+configuration should be documented in the operator's local `config.yaml`
+and `.env`. The repo ships with `config.example.yaml` and `.env.example`
+containing placeholder fields and comments explaining what is required.
 
 **4. The `force_emotion.py` script**
 This script currently calls `http://localhost:8015/api/force-emotion` — it

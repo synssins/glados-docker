@@ -72,9 +72,10 @@ webui:
     enabled: false
     cert_path: "/app/certs/cert.pem"
     key_path: "/app/certs/key.pem"
-    # Let's Encrypt via DNS-01 challenge (no external port exposure required)
-    # Uses Cloudflare DNS API — set CLOUDFLARE_API_TOKEN in .env
-    # Token scope: Zone:DNS:Edit on target zone only
-    # Options: lego-auto, certbot-dns-cloudflare, or Caddy reverse proxy
-    # Domain to issue cert for:
-    domain: "glados.yourdomain.com"
+    # Let's Encrypt via DNS-01 challenge — no inbound port exposure required.
+    # DNS-01 verifies domain ownership via a TXT record in your DNS zone.
+    # Your DNS provider must support API-based record creation/deletion.
+    # Set provider credentials in .env (never commit real values).
+    # Options for ACME sidecar: adferrand/lego-auto, certbot + DNS plugin, Caddy.
+    # Self-signed certs are an alternative for air-gapped/fully-local installs.
+    domain: ""   # e.g. glados.home.yourdomain.com
