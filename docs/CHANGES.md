@@ -92,3 +92,61 @@ GLaDOS.
    GLaDOS does not bundle Open WebUI.
 
 ---
+
+## Change 2 — Fix CI: Snyk + Docker build
+
+**Date:** 2026-04-14
+**Status:** Complete
+**Rationale:** Both GitHub Actions workflows have been red since 2026-04-12.
+Neither had ever produced a successful run. Root causes identified and fixed.
+
+### Changes
+
+**`pyproject.toml` — build backend**
+- Was: `build-backend = "setuptools.backends.legacy:build"` (does not exist as
+  a real Python module — inherited from the initial scaffold, untested).
+- Now: `build-backend = "setuptools.build_meta"` — the standard setuptools
+  PEP 517 backend.
+- Effect: `pip install -e ".[api]"` works, which unblocks the Snyk Python
+  scan.
+
+**`scripts/.gitkeep` — placeholder**
+- The Dockerfile does `COPY scripts/ ./scripts/`, but `scripts/` was empty
+  and git does not track empty directories. `docker buildx` failed with
+  `"/scripts": not found`.
+- Added `scripts/.gitkeep` documenting the directory's purpose and ensuring
+  git tracks it. Operator tooling lands here in later stages.
+
+**`.github/workflows/snyk.yml` — restructured for correctness**
+- Split into two jobs: `snyk-python` (SCA of Python deps) and `snyk-docker`
+  (container image scan). Previously a single job.
+- `snyk-docker` now builds the image inline via `docker/build-push-action@v5`
+  with `load: true`, so the Snyk docker action has a real image to scan.
+  Previously it referenced `glados:latest` which was never built in that
+  workflow — the scan always soft-failed on "image not found" and
+  `continue-on-error: true` hid the fact.
+- Removed `continue-on-error` — both scans now fail the job on HIGH/CRITICAL
+  findings.
+- Added `--file=Dockerfile` to the docker scan for Dockerfile-level checks.
+- Explicit comment that `SNYK_TOKEN` is a GitHub Actions repository secret,
+  rotatable from Snyk UI.
+
+**GitHub Actions secret — rotated**
+- `SNYK_TOKEN` secret updated to the new Snyk PAT provided by the operator.
+- Snyk org ID confirmed: `b905c516-c213-433b-973a-9d26adf03871`.
+- Snyk GitHub integration ID (for linking projects in Snyk UI, not used by
+  CI): `e8f971c9-87a9-42c6-956c-8b56a8697418`. Informational only.
+
+### Side effects
+
+1. **Snyk Docker scan now runs on every push/PR.** Build time goes up by
+   ~1–2 minutes on the Snyk workflow because it now builds the image.
+   Acceptable tradeoff — the scan was previously not running at all.
+2. **Snyk HIGH/CRITICAL findings will now block CI.** Previously they were
+   silently soft-failed. Expect the first post-fix run to surface any
+   existing findings; address via fixes or `.snyk` suppression file.
+3. **No branch protection rule** is set on `main`, so failing Snyk runs do
+   not yet block merges — they are informational. Enabling required status
+   checks on `main` is a separate operator decision.
+
+---
