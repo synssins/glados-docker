@@ -9,8 +9,13 @@ on:
     # Weekly scan every Monday at 06:00 UTC
     - cron: '0 6 * * 1'
 
+# Both scans report to Snyk org b905c516-c213-433b-973a-9d26adf03871.
+# SNYK_TOKEN is a Snyk personal/service API token stored as a GitHub Actions
+# secret at the repository level. Rotate in the Snyk UI when needed.
+
 jobs:
-  snyk:
+  snyk-python:
+    name: Snyk Python (SCA)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +26,9 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install -e ".[api]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api]"
 
       - name: Run Snyk Python scan
         uses: snyk/actions/python@master
@@ -30,11 +37,30 @@ jobs:
         with:
           args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high
 
+  snyk-docker:
+    name: Snyk Docker (container scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for scanning
+        # Load into local docker daemon so snyk/actions/docker can see it.
+        # No push — this build is for the security scan only.
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: glados:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Run Snyk Docker scan
         uses: snyk/actions/docker@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          image: glados:latest
-          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high
-        continue-on-error: true   # build image first in CI before this works
+          image: glados:scan
+          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high --file=Dockerfile
