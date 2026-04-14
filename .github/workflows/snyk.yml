@@ -80,8 +80,12 @@ jobs:
         run: snyk config set api="$SNYK_API_TOKEN"
 
       - name: Snyk container test
+        # --policy-path: `snyk container test` does NOT pick up `.snyk` by
+        # default (unlike `snyk test` for SCA). Passing it explicitly so
+        # committed suppressions apply to the container scan too.
         run: |
           snyk container test glados:scan \
             --file=Dockerfile \
+            --policy-path=.snyk \
             --severity-threshold=high \
             --org="$SNYK_ORG"
