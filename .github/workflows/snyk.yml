@@ -10,8 +10,11 @@ on:
     - cron: '0 6 * * 1'
 
 # Both scans report to Snyk org b905c516-c213-433b-973a-9d26adf03871.
-# SNYK_TOKEN is a Snyk personal/service API token stored as a GitHub Actions
-# secret at the repository level. Rotate in the Snyk UI when needed.
+# SNYK_TOKEN is a Snyk API token (legacy UUID format) stored as a GitHub
+# Actions secret at the repository level. Rotate in the Snyk UI when needed.
+# The snyk/actions/* containers use an older CLI that does not accept the
+# newer snyk_uat.* PAT format — use the legacy UUID token from
+# Snyk UI -> Account settings -> Auth Token.
 
 jobs:
   snyk-python:
@@ -30,12 +33,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[api]"
 
+      - name: Freeze installed packages to requirements.txt
+        # snyk/actions/python uses Poetry's resolver on PEP 621 pyproject.toml
+        # by default, which can't handle unbounded Python version ranges.
+        # Exporting the actually-installed versions to requirements.txt lets
+        # Snyk use pip's resolver instead, which is the correct tool here.
+        run: pip freeze > requirements.txt
+
       - name: Run Snyk Python scan
         uses: snyk/actions/python@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high
+          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high --file=requirements.txt --package-manager=pip
 
   snyk-docker:
     name: Snyk Docker (container scan)
@@ -47,8 +57,6 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build image for scanning
-        # Load into local docker daemon so snyk/actions/docker can see it.
-        # No push — this build is for the security scan only.
         uses: docker/build-push-action@v5
         with:
           context: .

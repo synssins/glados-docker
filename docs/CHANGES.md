@@ -150,3 +150,61 @@ Neither had ever produced a successful run. Root causes identified and fixed.
    checks on `main` is a separate operator decision.
 
 ---
+
+## Change 3 — Snyk follow-up: token format, Python manifest, .snyk gitignore
+
+**Date:** 2026-04-14
+**Status:** Complete
+**Rationale:** First post-fix CI run (run 24428110005) surfaced two more issues:
+the Python scan failed with `SNYK-CLI-0008: No supported files found`, and the
+Docker scan failed with `SNYK-0005: Authentication error / 401 Unauthorized`.
+
+### Root causes
+
+**Docker scan 401.** The `snyk/actions/docker@master` container runs an older
+Snyk CLI that does not accept the newer `snyk_uat.*` personal-access-token
+format. It wants the legacy UUID-style auth token from Snyk UI -> Account
+settings. The Python scan (run on a different image) didn't fail on auth
+because it failed earlier, on manifest parsing — we couldn't distinguish.
+
+**Python scan no-files.** Snyk's Python action falls through to Poetry's
+dependency resolver when it sees a `pyproject.toml` without `[tool.poetry]`.
+Our file is PEP 621 with `requires-python = ">=3.12"` (no upper bound) and
+Poetry's resolver rejects loguru because loguru's own constraint is
+`<4.0,>=3.5` and Poetry thinks 4.x might be reachable. Resolution fails,
+no manifest to scan, CLI errors with "no supported files."
+
+### Changes
+
+**GitHub Actions secret — swapped back to legacy UUID format**
+- `SNYK_TOKEN` is now the UUID-style auth token (`2dc40a1f-…`). The earlier
+  PAT (`snyk_uat.…`) works fine against Snyk's REST APIs but not against the
+  CLI bundled in the official snyk/actions Docker images.
+
+**`.github/workflows/snyk.yml`**
+- `snyk-python` job now generates `requirements.txt` via `pip freeze` after
+  install, and passes `--file=requirements.txt --package-manager=pip` to
+  Snyk. This bypasses Poetry detection entirely and scans actually-installed
+  versions — more accurate than a lockfile anyway.
+- Added explicit comment documenting the legacy-token requirement.
+
+**`.gitignore`**
+- Added `requirements.txt` — it is a CI-generated artifact, not a source
+  file. Committing it would fight with pip resolution locally.
+- Removed `.snyk` from the ignore list. `.snyk` is a suppression manifest
+  that SHOULD be committed when it exists — it's reviewable security
+  policy, not a secret. The initial scaffold incorrectly treated it like
+  `.env`.
+
+### Side effects
+
+1. **Local `pip freeze` artifacts will not be committed.** If an operator
+   wants a pinned lockfile, use a separate filename (e.g. `constraints.txt`).
+2. **No existing `.snyk` file is created by this change** — only the ignore
+   rule is removed. First suppression will bring the file into being.
+3. **The legacy UUID token has broader scope** than the newer PAT (no
+   expiry, no scope restrictions). If Snyk's CI action eventually supports
+   PAT format, rotate back for least-privilege. Track under Snyk release
+   notes.
+
+---
