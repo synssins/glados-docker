@@ -42,14 +42,12 @@ jobs:
       - name: Install Snyk CLI
         run: npm install -g snyk
 
-      - name: Snyk auth
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk auth "$SNYK_TOKEN"
-
       - name: Snyk test (Python, pip manifest)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        # SNYK_TOKEN is picked up directly from the environment — no
+        # `snyk auth` call needed (modern CLI's auth command is an
+        # interactive OAuth flow that hangs forever in CI).
         run: |
           snyk test \
             --file=requirements.txt \
@@ -77,11 +75,6 @@ jobs:
 
       - name: Install Snyk CLI
         run: npm install -g snyk
-
-      - name: Snyk auth
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk auth "$SNYK_TOKEN"
 
       - name: Snyk container test
         env:
