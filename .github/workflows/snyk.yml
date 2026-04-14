@@ -10,11 +10,14 @@ on:
     - cron: '0 6 * * 1'
 
 # Both scans report to Snyk org b905c516-c213-433b-973a-9d26adf03871.
-# SNYK_TOKEN is a Snyk API token (legacy UUID format) stored as a GitHub
-# Actions secret at the repository level. Rotate in the Snyk UI when needed.
-# The snyk/actions/* containers use an older CLI that does not accept the
-# newer snyk_uat.* PAT format — use the legacy UUID token from
-# Snyk UI -> Account settings -> Auth Token.
+# SNYK_TOKEN is a Snyk auth token stored as a GitHub Actions secret at
+# the repository level. We install the Snyk CLI via npm rather than using
+# snyk/actions/* containers — the container actions shipped broken quoting
+# of --flag arguments and inconsistent auth handling, while the CLI is
+# well-behaved and stays current.
+
+env:
+  SNYK_ORG: b905c516-c213-433b-973a-9d26adf03871
 
 jobs:
   snyk-python:
@@ -28,24 +31,31 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[api]"
 
-      - name: Freeze installed packages to requirements.txt
-        # snyk/actions/python uses Poetry's resolver on PEP 621 pyproject.toml
-        # by default, which can't handle unbounded Python version ranges.
-        # Exporting the actually-installed versions to requirements.txt lets
-        # Snyk use pip's resolver instead, which is the correct tool here.
+      - name: Freeze installed packages
         run: pip freeze > requirements.txt
 
-      - name: Run Snyk Python scan
-        uses: snyk/actions/python@master
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Snyk auth
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high --file=requirements.txt --package-manager=pip
+        run: snyk auth "$SNYK_TOKEN"
+
+      - name: Snyk test (Python, pip manifest)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk test \
+            --file=requirements.txt \
+            --package-manager=pip \
+            --severity-threshold=high \
+            --org="$SNYK_ORG"
 
   snyk-docker:
     name: Snyk Docker (container scan)
@@ -65,10 +75,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Snyk Docker scan
-        uses: snyk/actions/docker@master
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Snyk auth
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          image: glados:scan
-          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high --file=Dockerfile
+        run: snyk auth "$SNYK_TOKEN"
+
+      - name: Snyk container test
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk container test glados:scan \
+            --file=Dockerfile \
+            --severity-threshold=high \
+            --org="$SNYK_ORG"

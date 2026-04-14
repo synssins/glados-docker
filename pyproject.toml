@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "glados"
 version = "0.1.0"
 description = "GLaDOS persona middleware layer — OpenAI-compatible AI assistant"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<4.0"
 dependencies = [
     # HTTP / networking
     "httpx>=0.28.1",
