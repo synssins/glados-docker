@@ -255,3 +255,50 @@ behavior. Easier to drop them entirely.
    whichever format Snyk recommends going forward.
 
 ---
+
+## Change 5 — Snyk working; one suppressed finding
+
+**Date:** 2026-04-14
+**Status:** Complete
+**Rationale:** After four iterations, Snyk is scanning cleanly. The
+summary of the final CI run:
+
+- **Snyk Python (SCA):** 0 HIGH / 0 CRITICAL (all green)
+- **Snyk Docker (container):** 1 HIGH — `jpeg-xl/libjxl0.11`
+  (`SNYK-DEBIAN13-JPEGXL-15272630` / `CVE-2026-1837`), transitive dep of
+  ffmpeg. Suppressed in `.snyk` — justification below.
+
+### Root cause of the iteration loop
+
+The `snyk/actions/*` Docker-in-Docker containers were sending the token
+via a path that returns 401 even with a fully valid token. Switching to
+`npm install -g snyk` followed by `snyk config set api=$SNYK_API_TOKEN`
+writes the token to the CLI's configstore and works deterministically.
+`SNYK_TOKEN` alone as an env var did not work for unclear reasons —
+possibly a recent CLI regression; the config-set path is the documented
+fallback.
+
+### Changes
+
+**`.snyk` — first suppression committed**
+- Added `SNYK-DEBIAN13-JPEGXL-15272630` ignore with a 6-month expiry.
+- Justification: libjxl is a transitive dep of ffmpeg (which we install
+  for audio processing). The container does not decode JPEG-XL images;
+  the CVE's resource-exhaustion bug is in an unreachable code path. No
+  fixed version is available in Debian 13 (trixie) as of 2026-04-14.
+- Revisit when trixie ships a patched libjxl, or when we move to a
+  slimmer ffmpeg build that excludes the JPEG-XL codec.
+
+### Side effects
+
+1. **Snyk scans now green-gate the PR.** Subsequent HIGH/CRITICAL
+   findings will block merge.
+2. **The `.snyk` file is now a living policy document.** Any future
+   suppression MUST include a reason and an expiry.
+3. **Base image CVEs (2 medium, 43 low)** are visible in Snyk reports
+   but do not fail CI under the current `--severity-threshold=high`.
+   These get remediated by bumping the `python:3.12-slim` base image,
+   which is a separate decision (trade-off: 3.12 is still supported;
+   3.13 is the LTS candidate).
+
+---
