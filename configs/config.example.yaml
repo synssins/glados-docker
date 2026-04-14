@@ -12,23 +12,28 @@ home_assistant:
   token: "YOUR_LONG_LIVED_HA_TOKEN"
 
 # ---------------------------------------------------------------------------
-# Downstream service URLs
-# In Docker Compose these use service names (e.g. http://ollama:11434)
-# For external/host-native services use the host IP or host.docker.internal
+# External service URLs — GLaDOS calls these; it does NOT host them.
+# Run Ollama and speaches wherever you like (host-native, another compose
+# stack, another machine) and point at their URLs here. The env vars in
+# .env override these values at runtime.
 # ---------------------------------------------------------------------------
 services:
   ollama_interactive:
-    url: "http://ollama:11434"
+    url: "http://host.docker.internal:11434"
   ollama_autonomy:
-    url: "http://ollama:11434"       # separate instance if available
+    url: "http://host.docker.internal:11436"       # separate instance if available
   ollama_vision:
-    url: "http://ollama:11434"       # separate instance if available
+    url: "http://host.docker.internal:11435"       # separate instance if available
   speaches:
-    url: "http://speaches:8800"
-    tts_voice: "YOUR_REGISTERED_VOICE_NAME"
+    url: "http://host.docker.internal:8800"
+    # Voice identifier registered in YOUR speaches instance. Until the
+    # GLaDOS Kokoro voice is registered (Stage 4 work), use any stock
+    # speaches voice — character is preserved by the LLM system prompt.
+    tts_voice: "glados"
     tts_model: "hexgrad/Kokoro-82M"
     stt_model: "Systran/faster-whisper-small"
   chromadb:
+    # In-compose service — GLaDOS's dedicated memory store.
     url: "http://chromadb:8000"
 
 # ---------------------------------------------------------------------------
