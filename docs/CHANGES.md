@@ -208,3 +208,50 @@ no manifest to scan, CLI errors with "no supported files."
    notes.
 
 ---
+
+## Change 4 — Snyk workflow rewrite: drop container actions, install CLI directly
+
+**Date:** 2026-04-14
+**Status:** Complete
+**Rationale:** After Change 3, the Snyk Python action STILL invoked Poetry
+despite being given `--file=requirements.txt --package-manager=pip` (it
+detects `pyproject.toml` and overrides our flags), and the Snyk Docker action
+kept returning `401 Unauthorized` for reasons we could not isolate — the same
+token authenticated fine against the Snyk REST API directly. Both
+`snyk/actions/python@master` and `snyk/actions/docker@master` are packaged
+as Docker-in-Docker containers with fragile quoting and inconsistent auth
+behavior. Easier to drop them entirely.
+
+### Changes
+
+**`.github/workflows/snyk.yml` — rewritten**
+- Removed both `snyk/actions/python@master` and `snyk/actions/docker@master`.
+- Both jobs now install the Snyk CLI via `npm install -g snyk`, authenticate
+  with `snyk auth "$SNYK_TOKEN"`, and run `snyk test` / `snyk container test`
+  directly as regular shell commands.
+- Flags are passed the usual way — no args-quoting bugs.
+- Auth uses the standard CLI flow — works with either legacy UUID token or
+  the newer `snyk_uat.*` PAT format (the CLI handles both; it was the
+  container actions that were picky).
+- Org UUID lifted to a workflow-level `env.SNYK_ORG` so it's defined once.
+
+**`pyproject.toml` — Python range capped**
+- `requires-python` changed from `">=3.12"` to `">=3.12,<4.0"`.
+- Cosmetic — satisfies Poetry-style resolvers that otherwise refuse to
+  install packages with upper-bounded Python constraints (like loguru's
+  `<4.0,>=3.5`). We're not using Poetry, but third-party tooling (including
+  some Snyk pathways) does a Poetry-style pre-check.
+
+### Side effects
+
+1. **Snyk CLI version is rolling.** `npm install -g snyk` pulls `@latest`.
+   If Snyk ships a breaking change to the CLI, it lands here immediately.
+   Pin to a specific version (e.g. `snyk@1.1400.0`) if stability matters
+   more than freshness.
+2. **No more Dockerfile linting overlap.** `snyk container test ... --file=Dockerfile`
+   still runs the Dockerfile layer checks, so we retain full coverage.
+3. **Token format is no longer sensitive.** Either the legacy UUID or the
+   newer PAT works with the CLI. The SNYK_TOKEN secret can be rotated to
+   whichever format Snyk recommends going forward.
+
+---
