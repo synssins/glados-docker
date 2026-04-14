@@ -21,8 +21,9 @@ dependencies = [
     "jinja2>=3.1.5",
     # Audio processing (no hardware audio — HA handles playback)
     "soundfile>=0.13.0",
-    # ONNX inference — CPU only by default
-    # Use the 'gpu' extra to swap in onnxruntime-gpu at build time
+    # ONNX inference — CPU only. Used by glados/ASR/ for speech recognition.
+    # TTS no longer runs locally; it is delegated to speaches over HTTP.
+    # STT will follow in a later change, at which point this can be removed.
     "onnxruntime>=1.16.0",
     # Vision
     "opencv-python-headless>=4.12.0",
@@ -40,10 +41,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Swap onnxruntime for GPU-accelerated version at build time
-# onnxruntime and onnxruntime-gpu are mutually exclusive
-gpu = ["onnxruntime-gpu>=1.16.0"]
-
 # API server
 api = ["litestar[standard,structlog]>=2.15.1"]
 

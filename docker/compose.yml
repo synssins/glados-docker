@@ -1,8 +1,25 @@
-# docker/compose.yml — Base stack, hardware-agnostic, CPU-only defaults
+# docker/compose.yml — GLaDOS + ChromaDB only.
+#
+# This compose ships two services:
+#   - glados:   the persona middleware container (this repo's build)
+#   - chromadb: GLaDOS's vector memory store (single-consumer — part of GLaDOS)
+#
+# Everything else is an EXTERNAL dependency the operator runs separately
+# and points GLaDOS at via env vars:
+#
+#   OLLAMA_URL       — LLM inference (interactive)         default 11434
+#   OLLAMA_AUTONOMY_URL — LLM inference (background tasks) default 11436
+#   OLLAMA_VISION_URL — vision LLM (optional)              default 11435
+#   SPEACHES_URL     — STT + TTS                           default 8800
+#   HA_URL + HA_TOKEN — Home Assistant
+#   VISION_URL       — GLaDOS vision service (optional)    default 8016
+#
+# See .env.example for the complete list.
+#
 # Usage:
-#   CPU only:     docker compose -f docker/compose.yml up -d
-#   NVIDIA:       docker compose -f docker/compose.yml -f docker/compose.cuda.yml up -d
-#   Intel Arc:    docker compose -f docker/compose.yml -f docker/compose.ipex.yml up -d
+#   cp ../.env.example ../.env        # edit to match your environment
+#   cp ../configs/config.example.yaml ../configs/config.yaml
+#   docker compose -f docker/compose.yml up -d
 
 services:
 
@@ -10,13 +27,11 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-      args:
-        USE_GPU: ${GLADOS_USE_GPU:-false}   # set GLADOS_USE_GPU=true in .env for GPU TTS
     image: glados:latest
     container_name: glados
     ports:
       - "8015:8015"   # OpenAI-compatible persona API
-      - "8052:8052"   # Admin WebUI
+      - "8052:8052"   # Admin WebUI (config editor, health, TTS generator, chat)
     volumes:
       - ../configs/config.yaml:/app/configs/config.yaml:ro
       - glados_data:/app/data
@@ -27,6 +42,11 @@ services:
       - GLADOS_CONFIG=/app/configs/config.yaml
     env_file:
       - ../.env
+    # host.docker.internal must resolve for outbound calls to host-native
+    # Ollama / speaches / HA. On Linux Docker this requires the extra_hosts
+    # block below; Docker Desktop (Mac/Windows) resolves it natively.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       chromadb:
         condition: service_healthy
@@ -37,58 +57,19 @@ services:
   chromadb:
     image: chromadb/chroma:latest
     container_name: glados_chromadb
+    # Bound to localhost only — ChromaDB has no consumer outside GLaDOS.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - chromadb_data:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=FALSE
+      - IS_PERSISTENT=TRUE
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
       interval: 10s
       timeout: 5s
       retries: 3
-    restart: unless-stopped
-    networks:
-      - glados_net
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: glados_ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_models:/root/.ollama
-    restart: unless-stopped
-    networks:
-      - glados_net
-
-  speaches:
-    image: ghcr.io/speaches-ai/speaches:latest
-    container_name: glados_speaches
-    ports:
-      - "8800:8800"
-    volumes:
-      - speaches_models:/app/models
-    restart: unless-stopped
-    networks:
-      - glados_net
-
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:latest
-    container_name: glados_webui
-    ports:
-      - "3000:8080"
-    environment:
-      - OPENAI_API_BASE_URL=http://glados:8015/v1
-      - OPENAI_API_KEY=glados
-      - AUDIO_STT_ENGINE=openai
-      - AUDIO_STT_OPENAI_API_BASE_URL=http://speaches:8800/v1
-      - AUDIO_TTS_ENGINE=openai
-      - AUDIO_TTS_OPENAI_API_BASE_URL=http://speaches:8800/v1
-    volumes:
-      - open_webui_data:/app/backend/data
-    depends_on:
-      - glados
-      - speaches
     restart: unless-stopped
     networks:
       - glados_net
@@ -103,6 +84,3 @@ volumes:
   glados_logs:
   glados_certs:
   chromadb_data:
-  ollama_models:
-  speaches_models:
-  open_webui_data:
