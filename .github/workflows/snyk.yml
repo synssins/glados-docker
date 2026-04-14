@@ -10,11 +10,9 @@ on:
     - cron: '0 6 * * 1'
 
 # Both scans report to Snyk org b905c516-c213-433b-973a-9d26adf03871.
-# SNYK_TOKEN is a Snyk auth token stored as a GitHub Actions secret at
-# the repository level. We install the Snyk CLI via npm rather than using
-# snyk/actions/* containers — the container actions shipped broken quoting
-# of --flag arguments and inconsistent auth handling, while the CLI is
-# well-behaved and stays current.
+# SNYK_TOKEN is a Snyk auth token stored as a GitHub Actions secret. We
+# install Snyk CLI via npm and write the token to config via
+# `snyk config set api=`, which bypasses the CLI's OAuth auth flow.
 
 env:
   SNYK_ORG: b905c516-c213-433b-973a-9d26adf03871
@@ -42,12 +40,12 @@ jobs:
       - name: Install Snyk CLI
         run: npm install -g snyk
 
-      - name: Snyk test (Python, pip manifest)
+      - name: Configure Snyk auth
         env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        # SNYK_TOKEN is picked up directly from the environment — no
-        # `snyk auth` call needed (modern CLI's auth command is an
-        # interactive OAuth flow that hangs forever in CI).
+          SNYK_API_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk config set api="$SNYK_API_TOKEN"
+
+      - name: Snyk test (Python, pip manifest)
         run: |
           snyk test \
             --file=requirements.txt \
@@ -76,9 +74,12 @@ jobs:
       - name: Install Snyk CLI
         run: npm install -g snyk
 
-      - name: Snyk container test
+      - name: Configure Snyk auth
         env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_API_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk config set api="$SNYK_API_TOKEN"
+
+      - name: Snyk container test
         run: |
           snyk container test glados:scan \
             --file=Dockerfile \
