@@ -1,7 +1,7 @@
 ﻿"""GLaDOS Control Panel â€” TTS Generator, Chat, and System Control.
 
 Expands the original TTS web UI into a three-tab control panel:
-  Tab 1: TTS Generator (text â†’ GLaDOS voice audio files)
+  Tab 1: TTS Generator (text â†' GLaDOS voice audio files)
   Tab 2: Chat with GLaDOS (text/voice chat with audio playback)
   Tab 3: System Control (maintenance/silent mode, health indicators)
 
@@ -589,7 +589,7 @@ STREAM_BUFFER_SECONDS = 0.0  # 0 = start as soon as first chunk ready
 
 
 def _extract_pcm_from_wav(wav_bytes: bytes) -> tuple[bytes, int, int, int]:
-    """Parse WAV bytes â†’ (raw_pcm, sample_rate, channels, bits_per_sample)."""
+    """Parse WAV bytes â†' (raw_pcm, sample_rate, channels, bits_per_sample)."""
     if len(wav_bytes) < 44 or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
         # Not a valid WAV â€” return as-is with default format
         return wav_bytes, 24000, 1, 16
@@ -4696,7 +4696,7 @@ function renderChat() {
         const t = msg.timing;
         html += '<div class="chat-metrics">';
         if (t.prompt_tokens || t.completion_tokens) {
-          html += ‘<span>’ + (t.prompt_tokens||0) + ‘->’ + (t.completion_tokens||0) + ‘ tok</span>’;
+          html += '<span>' + (t.prompt_tokens||0) + '->' + (t.completion_tokens||0) + ' tok</span>';
         }
         if (t.tokens_per_second) {
           html += '<span>' + t.tokens_per_second + ' tok/s</span>';
