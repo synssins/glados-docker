@@ -36,6 +36,7 @@ class ConversationStore:
         self._lock = threading.RLock()  # RLock allows nested acquisition if needed
         self._messages: list[dict[str, Any]] = list(initial_messages or [])
         self._version: int = 0  # For change detection / optimistic concurrency
+        self._preprompt_count: int = len(self._messages)  # Protected initial messages
 
     def append(self, message: dict[str, Any]) -> int:
         """
@@ -142,6 +143,11 @@ class ConversationStore:
         """Return the number of messages in the store."""
         with self._lock:
             return len(self._messages)
+
+    @property
+    def preprompt_count(self) -> int:
+        """Number of initial messages (personality preprompt) that are protected from compaction."""
+        return self._preprompt_count
 
     @property
     def version(self) -> int:

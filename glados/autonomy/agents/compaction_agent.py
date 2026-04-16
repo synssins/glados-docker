@@ -90,17 +90,17 @@ class CompactionAgent(Subagent):
                 notify_user=False,
             )
 
-        # Find compactable messages (exclude system messages and recent turns)
+        # Find compactable messages.
+        # Protected: initial preprompt messages (by index) and recent messages.
+        # Everything else is fair game — including old [summary] system messages,
+        # which previously accumulated forever and caused unbounded context growth.
+        preprompt_count = getattr(self._conversation_store, "preprompt_count", 0)
         compactable_indices = []
         for i, msg in enumerate(messages):
-            role = msg.get("role", "")
-            if role == "system":
-                continue
+            if i < preprompt_count:
+                continue  # Protect personality preprompt
             if i >= len(messages) - self._preserve_recent:
-                continue
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.startswith("[summary]"):
-                continue
+                continue  # Protect recent messages
             compactable_indices.append(i)
 
         if len(compactable_indices) < 3:
