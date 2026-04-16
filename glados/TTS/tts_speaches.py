@@ -63,7 +63,7 @@ class SpeachesSynthesizer:
             base_url
             or os.environ.get("SPEACHES_URL", "http://host.docker.internal:8800")
         ).rstrip("/")
-        self.model = model or _DEFAULT_MODEL
+        self.model = model or os.environ.get("SPEACHES_TTS_MODEL") or ""
         self.sample_rate = sample_rate
         self._client = httpx.Client(timeout=_DEFAULT_TIMEOUT)
 
@@ -86,18 +86,18 @@ class SpeachesSynthesizer:
         payload: dict[str, Any] = {
             "input": text,
             "voice": self.voice,
-            "model": self.model,
             "response_format": "wav",
         }
-        extra: dict[str, float] = {}
+        if self.model:
+            payload["model"] = self.model
+        # Attitude TTS params — top-level so both the GLaDOS Piper TTS
+        # (litestar, validates fields) and speaches accept them.
         if length_scale is not None:
-            extra["length_scale"] = length_scale
+            payload["length_scale"] = length_scale
         if noise_scale is not None:
-            extra["noise_scale"] = noise_scale
+            payload["noise_scale"] = noise_scale
         if noise_w is not None:
-            extra["noise_w"] = noise_w
-        if extra:
-            payload["extra_body"] = extra
+            payload["noise_w"] = noise_w
 
         url = f"{self.base_url}/v1/audio/speech"
         try:
