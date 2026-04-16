@@ -49,7 +49,7 @@ _doorbell_screener: DoorbellScreener | None = None
 # ---------------------------------------------------------------------------
 # Announcement system — path from centralized config
 # ---------------------------------------------------------------------------
-ANNOUNCEMENTS_YAML = Path(cfg.audio.announcements_dir) / "announcements.yaml"
+ANNOUNCEMENTS_YAML = cfg._configs_dir / "announcements.yaml"
 _announce_config: dict | None = None
 _announce_config_mtime: float = 0.0
 _announce_lock = threading.Lock()
@@ -57,7 +57,7 @@ _announce_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # Command response system — path from centralized config
 # ---------------------------------------------------------------------------
-COMMANDS_YAML = Path(cfg.audio.commands_dir) / "commands.yaml"
+COMMANDS_YAML = cfg._configs_dir / "commands.yaml"
 _cmd_config: dict | None = None
 _cmd_config_mtime: float = 0.0
 _cmd_lock = threading.Lock()
