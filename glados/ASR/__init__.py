@@ -33,7 +33,12 @@ def get_audio_transcriber(
     Raises:
         ValueError: If the specified engine type is not supported
     """
-    if engine_type.lower() == "ctc":
+    if engine_type.lower() == "none":
+        # Container mode: ASR handled externally by speaches.
+        from .null_asr import NullTranscriber
+
+        return NullTranscriber()
+    elif engine_type.lower() == "ctc":
         from .ctc_asr import AudioTranscriber as CTCTranscriber
 
         return CTCTranscriber()

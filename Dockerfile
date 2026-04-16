@@ -30,8 +30,8 @@ COPY scripts/ ./scripts/
 # Runtime dirs — operator provides real content via volume mounts
 RUN mkdir -p /app/configs /app/data /app/logs /app/audio_files /app/certs /app/models
 
-# Non-root user
-RUN useradd -r -u 1000 -g root glados && chown -R glados:root /app
+# Non-root user with home dir (subagent memory writes to ~/.glados/)
+RUN useradd -r -u 1000 -g root -m glados && chown -R glados:root /app
 USER glados
 
 EXPOSE 8015 8052
