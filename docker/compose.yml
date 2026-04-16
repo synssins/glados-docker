@@ -66,7 +66,7 @@ services:
       - ANONYMIZED_TELEMETRY=FALSE
       - IS_PERSISTENT=TRUE
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8000'"]
       interval: 10s
       timeout: 5s
       retries: 3

@@ -302,3 +302,135 @@ fallback.
    3.13 is the LTS candidate).
 
 ---
+
+## Change 6 — Step 1.10: local smoke test, porting fixes
+
+**Date:** 2026-04-15
+**Status:** In progress
+**Rationale:** Stage 1 Step 1.10 calls for a local `docker build` + `docker
+compose up` + endpoint smoke test. The port commit (`2c10651`) touched ~60
+modules in a single pass without runtime testing; this change captures every
+failure surfaced by the first real `docker run` and fixes them.
+
+### Build + infrastructure fixes
+
+**`docker/compose.yml:69` — chromadb healthcheck broken**
+- Was: `curl -f http://localhost:8000/api/v2/heartbeat` — but `chromadb/chroma:latest`
+  ships no `curl`, `wget`, or `python` binary.
+- Fix (committed to compose.yml): switch to `bash -c '</dev/tcp/localhost/8000'`
+  which uses bash's built-in TCP check. Verified `bash` is present in the image.
+
+**`Dockerfile:34` — glados user has no home directory**
+- `useradd -r` creates a system user without a home dir. The subagent memory
+  system (`autonomy/subagent_memory.py:81`) defaults to `Path.home() / ".glados"
+  / "memory"`, which requires a writable home.
+- Fix: changed to `useradd -r -m` to create `/home/glados`.
+
+### Missing modules — not ported in `2c10651`
+
+**`glados.observability`** (4 files: `bus.py`, `events.py`, `minds.py`, `__init__.py`)
+- Imported by `autonomy/slots.py`, `autonomy/jobs.py`, `autonomy/loop.py`,
+  `autonomy/subagent.py`, `autonomy/subagent_manager.py`, `core/engine.py`,
+  `mcp/manager.py`.
+- All lightweight Python — no ML deps. Copied verbatim from host-native.
+
+**`glados.vision`** (architectural decision — option B: lightweight pieces only)
+- The host-native `glados/vision/` mixes lightweight state/config classes with
+  heavy ONNX inference (`fastvlm.py`, `vision_processor.py` — cv2, onnxruntime).
+  The container is pure middleware; vision ML runs on the external `glados-vision`
+  service at `VISION_URL`.
+- Ported: `vision_state.py`, `vision_config.py`, `vision_request.py`,
+  `constants.py` — all data/config classes with no ML dependencies.
+- Stubbed: `VisionProcessor` is exposed via `__getattr__` lazy error in
+  `__init__.py` — import succeeds but instantiation raises `ImportError` with
+  explanation. Engine guard (`if self.vision_config:`) prevents the import
+  from ever triggering in container mode.
+- Not ported: `fastvlm.py`, `vision_processor.py` — these stay on the external
+  vision service. Same pattern as TTS (Change 1).
+
+**`glados.mcp`** (11 files, 1,377 lines)
+- MCP protocol client for Home Assistant tool use. All lightweight Python
+  using the `mcp` pip package (already installed). No ONNX or GPU.
+- Copied verbatim from host-native.
+
+### Code fixes
+
+**`glados/webui/tts_ui.py:1542` — syntax error**
+- Stray `"` after `os.environ.get("GLADOS_LOGS", "/app/logs"))` — introduced
+  during the Windows-to-container path rewrite in `2c10651`.
+- Original host-native line was a hardcoded path; the port added `os.environ.get`
+  but broke the string quoting.
+
+**`glados/tools/__init__.py` — removed `slow_clap` import**
+- `slow_clap.py` (not ported) uses `sounddevice` for local audio playback.
+  No speakers in a headless container. Removed from tool_definitions,
+  tool_classes, and imports. The tool can be re-added when audio playback
+  is routed through HA media players (Stage 4+).
+
+**`glados/ASR/__init__.py` + `null_asr.py` — added `"none"` engine type**
+- The engine unconditionally initializes ASR in `from_config()`. With
+  `asr_engine: "tdt"` the TDT transcriber tries to load a local ONNX model
+  (`/models/ASR/parakeet-tdt-0.6b-v3_model_config.yaml`) which doesn't exist.
+- Added `NullTranscriber` stub (no-op `transcribe()` returning `""`) and
+  `"none"` engine type in the factory. Container `glados_config.yaml` uses
+  `asr_engine: "none"`.
+- STT is handled externally by speaches. This is a stepping-stone until ASR
+  is fully removed from the container (when the host-native ASR code path
+  is also migrated to speaches).
+
+### Smoke test results
+
+Container ports remapped to avoid conflict with running host-native services
+(18015 to 8015, 18052 to 8052, 18000 to 8000).
+
+| Endpoint | Container (18015) | Host-native (8015) | Parity |
+|----------|-------------------|--------------------|--------|
+| `GET /health` | `{"status":"ok","engine":"running"}` | Same | Pass |
+| `GET /v1/models` | `{"data":[{"id":"glados",...}]}` | Same | Pass |
+| `GET /api/attitudes` | 18 attitudes with TTS params | Same | Pass |
+| `GET /api/startup-speakers` | Error: missing `speakers.yaml` | Works (has file) | Config gap |
+| `GET /entities` | Empty cache (HA API race on startup) | Populated | Timing |
+| `POST /v1/chat/completions` | Timeout (Ollama unresponsive) | Same timeout | Pass (external) |
+| `POST /announce` | Error: no `announcements.yaml` | Similar error | Config gap |
+| `GET WebUI` (18052) | HTTP 200 | HTTP 200 | Pass |
+| `POST /v1/audio/speech` | 404 (speaches: no "glados" voice) | Same 404 | Pass (Stage 4) |
+
+**HA connectivity:** WebSocket authenticated and subscribed to `state_changed`
+events successfully. REST API calls to `192.168.1.104:8123` work from inside
+the container. Transient "Network is unreachable" on startup is a race condition
+with Docker network initialization — resolved within seconds.
+
+**Autonomy:** Loop dispatched, slots updating, emotion engine running,
+camera watcher active, behavior observer collecting samples.
+
+### Remaining config gaps (non-blocking)
+
+These files exist in the host-native `C:\AI\GLaDOS\configs\` but are not yet
+mounted into the container. They cause warnings but not crashes:
+
+- `speakers.yaml` — needed for `GET /api/startup-speakers`
+- `announcements.yaml` + WAV files — needed for `POST /announce`
+- `emotion_config.yaml` — defaults are used
+- `context_gates.yaml` — defaults are used
+- `memory.yaml` — defaults are used
+- `global.yaml`, `services.yaml` — config_store loads defaults
+
+These can be mounted as additional volumes or baked into a future config
+bundle. Not blocking the smoke test.
+
+### Side effects
+
+1. **`asr_engine: "none"` is a new valid value** in `glados_config.yaml`.
+   Operators must set this when running in container mode (no local ASR model).
+2. **`slow_clap` tool is not available** in the container. LLM tool list
+   is smaller by one entry vs. host-native.
+3. **VisionProcessor cannot be instantiated** in the container. Setting
+   `vision` config in `glados_config.yaml` will raise `ImportError` at
+   engine startup. This is intentional — use the external vision service.
+4. **Home directory `/home/glados`** is now created in the image. Subagent
+   memory files persist in the `glados_data` Docker volume (mounted at
+   `/app/data`), NOT in the home dir — the home dir is ephemeral per
+   container rebuild. Future change should redirect `SubagentMemory`
+   default path to `/app/data/memory/`.
+
+---
