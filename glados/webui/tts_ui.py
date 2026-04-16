@@ -1539,7 +1539,7 @@ class Handler(BaseHTTPRequestHandler):
                                   f"({timing_payload['emotion_intensity']:.2f})", flush=True)
                             break
                 else:
-                    print("[STREAM] Emotion log not found at {}/glados-api.log".format(os.environ.get("GLADOS_LOGS", "/app/logs"))", flush=True)
+                    print("[STREAM] Emotion log not found at {}/glados-api.log".format(os.environ.get("GLADOS_LOGS", "/app/logs")), flush=True)
             except Exception as _emo_err:
                 print(f"[STREAM] Emotion injection failed: {_emo_err}", flush=True)
             _sse_write(

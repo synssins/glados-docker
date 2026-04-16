@@ -1,15 +1,14 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="GLaDOS"
-LABEL org.opencontainers.image.description="GLaDOS persona middleware layer — OpenAI-compatible AI assistant"
+LABEL org.opencontainers.image.description="GLaDOS persona middleware — OpenAI-compatible AI assistant. Pure CPU; delegates LLM inference to Ollama and speech synthesis to speaches."
 LABEL org.opencontainers.image.source="https://github.com/synssins/glados-docker"
 
-# No GPU required for core functionality.
-# TTS (GLaDOS ONNX, 60MB) runs well on CPU — 0.3s-1.6s latency.
-# Set GLADOS_USE_GPU=true in compose to enable onnxruntime-gpu instead.
-# GPU path requires nvidia runtime on the host — see docker/compose.cuda.yml.
-
-ARG USE_GPU=false
+# This container is CPU-only middleware. It does not run any ML inference:
+#   - LLM inference is delegated to Ollama via OLLAMA_URL
+#   - Speech synthesis is delegated to speaches via SPEACHES_URL
+#   - Memory is stored in ChromaDB via CHROMADB_URL
+# GPU access provides no benefit and is not supported.
 
 WORKDIR /app
 
@@ -17,19 +16,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
-    espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps — CPU onnxruntime by default
+# Python deps (CPU only)
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir -e ".[api]"
-
-# If USE_GPU=true, swap onnxruntime for onnxruntime-gpu
-# onnxruntime and onnxruntime-gpu are mutually exclusive packages
-RUN if [ "$USE_GPU" = "true" ]; then \
-        pip uninstall -y onnxruntime && \
-        pip install --no-cache-dir onnxruntime-gpu; \
-    fi
 
 # Application source
 COPY glados/ ./glados/
@@ -39,8 +30,8 @@ COPY scripts/ ./scripts/
 # Runtime dirs — operator provides real content via volume mounts
 RUN mkdir -p /app/configs /app/data /app/logs /app/audio_files /app/certs /app/models
 
-# Non-root user
-RUN useradd -r -u 1000 -g root glados && chown -R glados:root /app
+# Non-root user with home dir (subagent memory writes to ~/.glados/)
+RUN useradd -r -u 1000 -g root -m glados && chown -R glados:root /app
 USER glados
 
 EXPOSE 8015 8052
