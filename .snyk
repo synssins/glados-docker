@@ -1,0 +1,24 @@
+# Snyk (https://snyk.io) policy file — suppressions and ignore rules.
+# Documented exceptions only. Each entry must state a reason and expiry.
+
+version: v1.25.0
+
+ignore:
+  # Transitive dep of ffmpeg, which the container installs for audio
+  # processing. The container does NOT process JPEG-XL images — it handles
+  # WAV/MP3/OGG audio via ffmpeg. libjxl is pulled in because ffmpeg links
+  # against the full Debian codec set, not because we call JPEG-XL code.
+  # CVE-2026-1837 is a resource-exhaustion bug in JPEG-XL image decoding
+  # paths that the container has no way to reach.
+  #
+  # Fix plan: revisit when Debian trixie publishes a patched libjxl; swap
+  # to `ffmpeg-libjxl=no` alternative if Debian ships one; or move to a
+  # slimmer ffmpeg build that excludes the JPEG-XL codec.
+  'SNYK-DEBIAN13-JPEGXL-15272630':
+    - '*':
+        reason: >-
+          Transitive dep of ffmpeg; the container does not decode JPEG-XL
+          images — this CVE is on an unreachable code path. No fixed
+          version is available in Debian 13 (trixie) at the time of
+          writing.
+        expires: '2026-10-14T00:00:00.000Z'

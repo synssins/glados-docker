@@ -9,8 +9,17 @@ on:
     # Weekly scan every Monday at 06:00 UTC
     - cron: '0 6 * * 1'
 
+# Both scans report to Snyk org b905c516-c213-433b-973a-9d26adf03871.
+# SNYK_TOKEN is a Snyk auth token stored as a GitHub Actions secret. We
+# install Snyk CLI via npm and write the token to config via
+# `snyk config set api=`, which bypasses the CLI's OAuth auth flow.
+
+env:
+  SNYK_ORG: b905c516-c213-433b-973a-9d26adf03871
+
 jobs:
-  snyk:
+  snyk-python:
+    name: Snyk Python (SCA)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,21 +29,63 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
-        run: pip install -e ".[api]"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[api]"
 
-      - name: Run Snyk Python scan
-        uses: snyk/actions/python@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high
+      - name: Freeze installed packages
+        run: pip freeze > requirements.txt
 
-      - name: Run Snyk Docker scan
-        uses: snyk/actions/docker@master
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Configure Snyk auth
         env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_API_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk config set api="$SNYK_API_TOKEN"
+
+      - name: Snyk test (Python, pip manifest)
+        run: |
+          snyk test \
+            --file=requirements.txt \
+            --package-manager=pip \
+            --severity-threshold=high \
+            --org="$SNYK_ORG"
+
+  snyk-docker:
+    name: Snyk Docker (container scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@v5
         with:
-          image: glados:latest
-          args: --org=b905c516-c213-433b-973a-9d26adf03871 --severity-threshold=high
-        continue-on-error: true   # build image first in CI before this works
+          context: .
+          load: true
+          tags: glados:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Configure Snyk auth
+        env:
+          SNYK_API_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk config set api="$SNYK_API_TOKEN"
+
+      - name: Snyk container test
+        # --policy-path: `snyk container test` does NOT pick up `.snyk` by
+        # default (unlike `snyk test` for SCA). Passing it explicitly so
+        # committed suppressions apply to the container scan too.
+        run: |
+          snyk container test glados:scan \
+            --file=Dockerfile \
+            --policy-path=.snyk \
+            --severity-threshold=high \
+            --org="$SNYK_ORG"
