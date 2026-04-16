@@ -3491,10 +3491,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
       Configuration <span class="lock-icon" id="lockConfig"></span>
     </a>
-    <a class="nav-item" onclick="switchTab('training')" data-requires-auth="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-      Training <span class="lock-icon" id="lockTraining"></span>
-    </a>
+    <!-- Training removed: piper_train is a host-native tool, not available in container -->
   </div>
   <div class="sidebar-footer">
     <a id="authLinkSidebar" href="/login">Sign In</a>
@@ -3509,7 +3506,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
     <a class="nav-item" onclick="switchTab('chat')">Chat</a>
     <a class="nav-item" onclick="switchTab('control')" data-requires-auth="true">System</a>
     <a class="nav-item" onclick="switchTab('config')" data-requires-auth="true">Config</a>
-    <a class="nav-item" onclick="switchTab('training')" data-requires-auth="true">Training</a>
+    <!-- Training removed: not available in container -->
   </div>
 </div>
 
@@ -4699,7 +4696,7 @@ function renderChat() {
         const t = msg.timing;
         html += '<div class="chat-metrics">';
         if (t.prompt_tokens || t.completion_tokens) {
-          html += '<span>' + (t.prompt_tokens||0) + 'â†’' + (t.completion_tokens||0) + ' tok</span>';
+          html += ‘<span>’ + (t.prompt_tokens||0) + ‘->’ + (t.completion_tokens||0) + ‘ tok</span>’;
         }
         if (t.tokens_per_second) {
           html += '<span>' + t.tokens_per_second + ' tok/s</span>';
