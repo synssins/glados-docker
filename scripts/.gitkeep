@@ -1,0 +1,3 @@
+# Placeholder — ensures scripts/ is tracked in git so docker buildx can
+# resolve `COPY scripts/ ./scripts/` from the Dockerfile. Operator tooling
+# (generator scripts, entrypoint helpers, etc.) lands here in later stages.
