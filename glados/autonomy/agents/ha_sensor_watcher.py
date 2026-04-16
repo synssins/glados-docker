@@ -114,8 +114,8 @@ class HomeAssistantSensorSubagent(Subagent):
         vision_entities: dict[str, str] | None = None,
         announce_url: str = "http://localhost:8015/announce",
         announcements_yaml: str = str(Path(
-            os.environ.get("GLADOS_AUDIO", "/app/audio_files")
-        ) / "glados_announcements" / "announcements.yaml"),
+            os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
+        ) / "announcements.yaml"),
         smart_detection: Any | None = None,
         mode_change_callback: Any | None = None,
         pet_outdoor_monitor: dict | None = None,
@@ -1286,8 +1286,8 @@ class HomeAssistantSensorSubagent(Subagent):
         import random
         try:
             vision_yaml = Path(
-                os.environ.get("GLADOS_AUDIO", "/app/audio_files")
-            ) / "glados_announcements" / "vision_announcements.yaml"
+                os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
+            ) / "vision_announcements.yaml"
             if not vision_yaml.exists():
                 logger.warning("Pet monitor: vision_announcements.yaml not found")
                 return None
