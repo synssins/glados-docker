@@ -1,0 +1,11 @@
+# Extends gitleaks' built-in ruleset — only add allowlist entries here.
+# Full default rules: https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Paths and patterns that are safe to ignore"
+paths = [
+  '''\.env\.example$''',
+  '''\.gitleaks\.toml$''',
+]
