@@ -1246,12 +1246,12 @@ def _stream_chat_sse(
     parsed_url = urlparse(completion_url)
     ollama_mode = parsed_url.path.rstrip("/").endswith("/api/chat")
 
-    # Build tool definitions for HA device control
-    from glados.tools import tool_definitions as _static_tools
-    tools: list[dict[str, Any]] = list(_static_tools)
+    # Build tool definitions — MCP/HA tools only (static tools like do_nothing,
+    # robot_move etc. are for the engine autonomy loop, not WebUI chat)
+    tools: list[dict[str, Any]] = []
     if glados.mcp_manager:
         try:
-            tools.extend(glados.mcp_manager.get_tool_definitions())
+            tools = glados.mcp_manager.get_tool_definitions()
         except Exception:
             pass
 
@@ -1260,10 +1260,11 @@ def _stream_chat_sse(
         "model": glados.llm_model,
         "stream": True,
         "messages": messages,
+        "options": {"num_ctx": 16384},  # Override Modelfile 8192 to fit personality + tools
     }
     if tools:
         payload["tools"] = tools
-    logger.info("[{}] SSE payload: {} msgs, {} tools, model={}", request_id, len(messages), len(tools), glados.llm_model)
+    logger.success("[{}] SSE: {} msgs, {} tools", request_id, len(messages), len(tools))
     body = json.dumps(payload).encode("utf-8")
 
     headers = {
