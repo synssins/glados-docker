@@ -1267,7 +1267,7 @@ def _stream_chat_sse(
         _tool_hint = {
             "role": "system",
             "content": (
-                "You MUST use the provided tools for ALL device control and state queries. Never respond with text claiming you performed an action - call the tool. CRITICAL: When calling tools, use REAL Home Assistant names, NOT Aperture Science terminology. Lights are lights, not testing illumination. Rooms are rooms, not chambers. For all lights in a room: set area to the room name and domain to [light]. Do NOT use the device_class parameter for lights - use domain instead. For a specific device: set name to its friendly name as it appears in Home Assistant."
+                "You MUST use the provided tools for ALL device control and state queries. Never respond with text claiming you performed an action - call the tool. CRITICAL: Use REAL Home Assistant names in tool calls, NOT Aperture Science terminology. For all lights in a room: use HassTurnOff or HassTurnOn with area set to the room name. For scenes: use HassTurnOn with name set to the scene friendly name. For a specific device: use name with a partial match of the device friendly name."
             ),
         }
         messages.insert(len(messages) - 1, _tool_hint)
@@ -1452,7 +1452,21 @@ def _stream_chat_sse(
                 except json.JSONDecodeError:
                     _tool_args = {}
                 _tc_id = _tc.get("id", f"call_{_tool_round}")
-                logger.info("[{}] Streaming tool call: {} (round {})", request_id, _tool_name, _tool_round)
+                # Fix common model errors in tool arguments
+                if "device_class" in _tool_args and "domain" not in _tool_args:
+                    # Model often puts "light" in device_class instead of domain
+                    _dc = _tool_args.pop("device_class")
+                    if isinstance(_dc, list) and any(v in ("light", "fan", "sensor", "climate") for v in _dc):
+                        _tool_args["domain"] = _dc
+                    elif isinstance(_dc, str) and _dc in ("light", "fan", "sensor", "climate"):
+                        _tool_args["domain"] = [_dc]
+                    else:
+                        _tool_args["device_class"] = _dc  # Put it back, was valid
+                # Ensure domain is always an array
+                if "domain" in _tool_args and isinstance(_tool_args["domain"], str):
+                    _tool_args["domain"] = [_tool_args["domain"]]
+
+                logger.info("[{}] Streaming tool call: {} {} (round {})", request_id, _tool_name, _tool_args, _tool_round)
                 try:
                     if _tool_name.startswith("mcp."):
                         _result = glados.mcp_manager.call_tool(_tool_name, _tool_args, timeout=30)
