@@ -31,7 +31,7 @@ from typing import Any
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from glados.robots.config import RobotsConfig
 
@@ -61,6 +61,26 @@ class HomeAssistantGlobal(BaseModel):
     url: str = _env("HA_URL", "http://homeassistant.local:8123")
     ws_url: str = _env("HA_WS_URL", "ws://homeassistant.local:8123/api/websocket")
     token: str = _env("HA_TOKEN", "")
+
+    @model_validator(mode="after")
+    def _env_overrides_yaml(self) -> "HomeAssistantGlobal":
+        """Environment variables always win over committed YAML for HA
+        credentials. Rationale: the real token belongs in deploy-time
+        secrets (.env / compose env_file), not in `configs/global.yaml`
+        which is checked into git alongside other config. Operators who
+        put a placeholder in YAML ("eyJhbG...") will have it overridden
+        by the real env value without needing to edit the YAML.
+        """
+        env_token = os.environ.get("HA_TOKEN", "").strip()
+        if env_token:
+            self.token = env_token
+        env_url = os.environ.get("HA_URL", "").strip()
+        if env_url:
+            self.url = env_url
+        env_ws = os.environ.get("HA_WS_URL", "").strip()
+        if env_ws:
+            self.ws_url = env_ws
+        return self
 
 
 class NetworkGlobal(BaseModel):
