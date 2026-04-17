@@ -960,6 +960,11 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_error(404, "Not found")
 
+    def do_HEAD(self):
+        """Handle HEAD requests - needed for <audio> element probing."""
+        self._head_only = True
+        self.do_GET()
+
     def do_GET(self):
         # Public routes (no auth required)
         if self.path == "/login":
@@ -2232,13 +2237,42 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_binary(self, file_path: Path):
         ext = file_path.suffix.lstrip(".").lower()
         ct = CONTENT_TYPES.get(ext, "application/octet-stream")
-        data = file_path.read_bytes()
+        file_size = file_path.stat().st_size
+        head_only = getattr(self, '_head_only', False)
+        self._head_only = False
+
+        # Range request support (needed for <audio> seeking and duration)
+        range_header = self.headers.get("Range")
+        if range_header and range_header.startswith("bytes="):
+            try:
+                range_spec = range_header[6:]
+                start_str, end_str = range_spec.split("-", 1)
+                start = int(start_str) if start_str else 0
+                end = int(end_str) if end_str else file_size - 1
+                end = min(end, file_size - 1)
+                length = end - start + 1
+                self.send_response(206)
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(length))
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, file_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                if not head_only:
+                    with open(file_path, "rb") as f:
+                        f.seek(start)
+                        self.wfile.write(f.read(length))
+                return
+            except (ValueError, OSError):
+                pass
+
         self.send_response(200)
         self.send_header("Content-Type", ct)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", f'inline; filename="{file_path.name}"')
+        self.send_header("Content-Length", str(file_size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Disposition", 'inline; filename="%s"' % file_path.name)
         self.end_headers()
-        self.wfile.write(data)
+        if not head_only:
+            self.wfile.write(file_path.read_bytes())
 
     def _delete_file(self):
         name = self.path[len("/api/files/"):]
