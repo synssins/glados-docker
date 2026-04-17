@@ -104,6 +104,38 @@ def _init_audit_logger() -> None:
         logger.warning("Audit logger init failed: {}", exc)
 
 
+def _init_ha_client() -> None:
+    """Stage 3 Phase 1: stand up the HA WebSocket client + bridge.
+
+    Runs in the background; the client reconnects if HA is unreachable.
+    Failure here must not block engine startup — fast-path intercept
+    will simply see `get_bridge() is None` and fall through.
+    """
+    try:
+        from glados.core.config_store import cfg
+        from glados.ha import (
+            ConversationBridge, EntityCache, HAClient, init_singletons,
+        )
+
+        token = cfg.ha_token
+        ws_url = cfg.ha_ws_url
+        if not token:
+            logger.warning(
+                "HA_TOKEN not set; skipping HA WS client init "
+                "(Tier 1 fast-path will be disabled)"
+            )
+            return
+
+        cache = EntityCache()
+        client = HAClient(ws_url=ws_url, token=token, entity_cache=cache)
+        client.start()
+        bridge = ConversationBridge(client)
+        init_singletons(client, bridge, cache)
+        logger.info("HA WS client started; url={}", ws_url)
+    except Exception as exc:
+        logger.warning("HA WS client init failed: {}", exc)
+
+
 def main() -> None:
     args = _parse_args()
 
@@ -118,6 +150,9 @@ def main() -> None:
 
     # Initialize audit logger early so startup events can be captured.
     _init_audit_logger()
+
+    # Stage 3 Phase 1: connect to HA WS for Tier 1 fast-path.
+    _init_ha_client()
 
     # Start WebUI in background thread
     if not args.no_webui:
