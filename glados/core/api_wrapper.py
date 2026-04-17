@@ -1261,6 +1261,52 @@ def _stream_chat_sse(
     parsed_url = urlparse(completion_url)
     ollama_mode = parsed_url.path.rstrip("/").endswith("/api/chat")
 
+    # ── Entity name resolver ─────────────────────────────────────────
+    # Pre-resolve fuzzy device names against HA's actual entity list
+    # before sending tool calls. "cabinet lights" -> "Kitchen cabinet light switch"
+    def _resolve_entity_name(args: dict) -> dict:
+        """Fuzzy-match name/area against HA entities, fix before sending to HA."""
+        _name = args.get("name")
+        if not _name:
+            return args
+        try:
+            from rapidfuzz import fuzz, process
+            import urllib.request as _ur
+            _ha_url = cfg.ha_url.rstrip("/")
+            _ha_token = cfg.ha_token
+            _req = _ur.Request(f"{_ha_url}/api/states")
+            _req.add_header("Authorization", f"Bearer {_ha_token}")
+            with _ur.urlopen(_req, timeout=5) as _r:
+                import json as _j
+                _states = _j.loads(_r.read())
+            _area = args.get("area", "").lower()
+            _candidates = []
+            for _s in _states:
+                _eid = _s.get("entity_id", "")
+                if not _eid.startswith(("light.", "switch.", "scene.", "cover.", "fan.", "climate.", "media_player.")):
+                    continue
+                _fn = _s.get("attributes", {}).get("friendly_name", "")
+                if not _fn:
+                    continue
+                # If area specified, prefer entities with area in the name
+                if _area and _area in _fn.lower():
+                    _candidates.append((_fn, 10))  # Bonus for area match
+                else:
+                    _candidates.append((_fn, 0))
+            if not _candidates:
+                return args
+            _names_with_bonus = _candidates
+            _just_names = [c[0] for c in _names_with_bonus]
+            _matches = process.extract(_name, _just_names, scorer=fuzz.token_set_ratio, limit=3)
+            if _matches and _matches[0][1] >= 50:
+                _best = _matches[0][0]
+                if _best.lower() != _name.lower():
+                    logger.info("Entity resolve: '{}' -> '{}'", _name, _best)
+                    args["name"] = _best
+        except Exception as _e:
+            logger.debug("Entity resolve failed: {}", _e)
+        return args
+
     # Reinforce tool use - the personality preprompt few-shot examples show
     # text-only responses which biases the model against calling tools.
     if glados.mcp_manager:
@@ -1466,6 +1512,9 @@ def _stream_chat_sse(
                 if "domain" in _tool_args and isinstance(_tool_args["domain"], str):
                     _tool_args["domain"] = [_tool_args["domain"]]
 
+                # Pre-resolve fuzzy entity names against HA
+                if "HassTurn" in _tool_name or "HassLight" in _tool_name:
+                    _tool_args = _resolve_entity_name(_tool_args)
                 logger.info("[{}] Streaming tool call: {} {} (round {})", request_id, _tool_name, _tool_args, _tool_round)
                 try:
                     if _tool_name.startswith("mcp."):
