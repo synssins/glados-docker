@@ -4690,7 +4690,7 @@ function cfgRenderSsl(ssl) {
   html += '</div>';
 
   html += '</div>';
-  html += '<script>setTimeout(sslRefreshStatus, 100);</script>';
+  setTimeout(function(){ try { sslRefreshStatus(); } catch(e){} }, 100);
   return html;
 }
 
