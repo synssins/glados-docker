@@ -1252,9 +1252,11 @@ def _stream_chat_sse(
         _tool_hint = {
             "role": "system",
             "content": (
-                "IMPORTANT: For ANY device control request (lights, scenes, locks, "
-                "temperature, media, covers), you MUST call the appropriate tool. "
-                "Do NOT respond with text claiming you did it. CALL THE TOOL."
+                "IMPORTANT TOOL RULES: "
+                "1. For ANY device control (lights, scenes, locks, temperature, media, covers): CALL THE TOOL. Never claim you did it without calling. "
+                "2. When unsure about entity names, call GetLiveContext FIRST to discover what exists before trying to control it. "
+                "3. For area-wide commands like turn off kitchen lights, use HassTurnOff with area_name=Kitchen (no specific device name). "
+                "4. Match device names EXACTLY as they appear in Home Assistant. cabinet lights means the cabinet light switch in that area."
             ),
         }
         messages.insert(len(messages) - 1, _tool_hint)
