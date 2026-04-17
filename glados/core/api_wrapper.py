@@ -1267,7 +1267,7 @@ def _stream_chat_sse(
         _tool_hint = {
             "role": "system",
             "content": (
-                "You MUST use the provided tools for ALL device control and state queries. Never respond with text claiming you performed an action. Call the tool. For room-wide commands, set the area parameter to the room name. For specific devices, set the name parameter to the friendly name."
+                "You MUST use the provided tools for ALL device control and state queries. Never respond with text claiming you performed an action - call the tool. CRITICAL: When calling tools, use REAL Home Assistant names, NOT Aperture Science terminology. Lights are lights, not testing illumination. Rooms are rooms, not chambers. For all lights in a room: set area to the room name and domain to [light]. Do NOT use the device_class parameter for lights - use domain instead. For a specific device: set name to its friendly name as it appears in Home Assistant."
             ),
         }
         messages.insert(len(messages) - 1, _tool_hint)
