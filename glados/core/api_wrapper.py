@@ -32,6 +32,7 @@ from glados.core.engine import GladosConfig, Glados
 from glados.core.attitude import roll_attitude, get_tts_params, list_attitudes, load_attitudes, is_loaded as attitudes_loaded
 from glados.core.config_store import cfg
 from glados.doorbell.screener import DoorbellScreener
+from glados.observability import AuditEvent, Origin, audit
 
 # Container-aware path resolution
 _GLADOS_ROOT = Path(os.environ.get("GLADOS_ROOT", "/app"))
@@ -2182,6 +2183,13 @@ class APIHandler(BaseHTTPRequestHandler):
             )
             return
 
+        # Determine origin: honor X-GLaDOS-Origin from internal callers
+        # (the WebUI proxies through with this header); otherwise default
+        # to api_chat. Reject unknown header values by falling back to
+        # api_chat so no caller can assert a fake origin.
+        _hdr = (self.headers.get("X-GLaDOS-Origin") or "").strip()
+        origin = _hdr if _hdr in Origin.ALL else Origin.API_CHAT
+
         # Streaming SSE mode — stream directly from Ollama
         if data.get("stream", False):
             messages = data.get("messages", [])
@@ -2196,6 +2204,14 @@ class APIHandler(BaseHTTPRequestHandler):
                     400,
                 )
                 return
+
+            audit(AuditEvent(
+                ts=time.time(),
+                origin=origin,
+                kind="utterance",
+                utterance=user_message,
+                extra={"streaming": True},
+            ))
 
             # Chat path goes directly to LLM — no command interceptor.
             # GLaDOS uses HA MCP tools to control devices herself. The command
@@ -2217,6 +2233,14 @@ class APIHandler(BaseHTTPRequestHandler):
                 400,
             )
             return
+
+        audit(AuditEvent(
+            ts=time.time(),
+            origin=origin,
+            kind="utterance",
+            utterance=user_message,
+            extra={"streaming": False},
+        ))
 
         # --- Command interceptor removed from chat path ---
         # GLaDOS uses HA MCP tools directly. Interceptor remains active only

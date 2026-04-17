@@ -94,6 +94,13 @@ class AuthGlobal(BaseModel):
     session_timeout_hours: int = 24
 
 
+class AuditGlobal(BaseModel):
+    """Stage 3 Phase 0: JSON-lines audit log for utterances and tool calls."""
+    enabled: bool = True
+    path: str = f"{_GLADOS_LOGS}/audit.jsonl"
+    retention_days: int = 30  # Rotation not yet implemented; field reserved.
+
+
 class ModeEntitiesGlobal(BaseModel):
     maintenance_mode: str = "input_boolean.glados_maintenance_mode"
     maintenance_speaker: str = "input_text.glados_maintenance_speaker"
@@ -131,6 +138,7 @@ class GlobalConfig(BaseModel):
     paths: PathsGlobal = PathsGlobal()
     ssl: SSLGlobal = SSLGlobal()
     auth: AuthGlobal = AuthGlobal()
+    audit: AuditGlobal = AuditGlobal()
     mode_entities: ModeEntitiesGlobal = ModeEntitiesGlobal()
     silent_hours: SilentHoursGlobal = SilentHoursGlobal()
     tuning: TuningGlobal = TuningGlobal()
@@ -442,6 +450,11 @@ class GladosConfigStore:
     def auth(self) -> AuthGlobal:
         self._ensure_loaded()
         return self._global.auth
+
+    @property
+    def audit(self) -> AuditGlobal:
+        self._ensure_loaded()
+        return self._global.audit
 
     @property
     def mode_entities(self) -> ModeEntitiesGlobal:
