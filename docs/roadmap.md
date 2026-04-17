@@ -198,6 +198,23 @@ Requires: voice training or voice model import in speaches.
   `â€"` sequences). Fix: save file as UTF-8 without BOM, normalize
   mojibake to proper unicode (`—`, `"`, `'`). Verify no runtime impact
   (there shouldn't be any) before/after.
+- **`docker-compose.yml` has obsolete `version:` attribute** — docker
+  compose v2 emits `the attribute 'version' is obsolete, it will be
+  ignored` on every `docker compose` command. Remove the top-level
+  `version:` line. Cosmetic but polluting deploy logs.
+- **`.github/workflows/build.yml` pins Node 20 actions** —
+  `actions/checkout@v4`, `docker/login-action@v3`,
+  `docker/setup-buildx-action@v3`, `docker/build-push-action@v5` all
+  use Node 20 which is deprecated; GitHub will force Node 24 on
+  2026-06-02 and remove Node 20 on 2026-09-16. Bump to current
+  major versions before the forced cutover.
+- **WebUI audit double-logging** — `webui/tts_ui.py` logs
+  `origin=webui_chat` in `_chat` / `_chat_stream`, then proxies to
+  `api_wrapper` which logs a second row (correctly tagged webui_chat
+  via `X-GLaDOS-Origin`). Each WebUI utterance produces two audit
+  rows. Intentional for tracing the full path but noisy for
+  operator view — decide whether to dedupe at the viewer layer or
+  suppress one of the two call sites.
 
 ### Standards-compliance scanning
 
