@@ -1252,11 +1252,7 @@ def _stream_chat_sse(
         _tool_hint = {
             "role": "system",
             "content": (
-                "IMPORTANT TOOL RULES: "
-                "1. For ANY device control: CALL THE TOOL. Never claim you did it without calling. "
-                "2. For room-wide commands (turn off kitchen lights): use area parameter with the room name and domain parameter as an array e.g. HassTurnOff(area=Kitchen, domain=[light]). "
-                "3. For specific devices: use name parameter with the device friendly name. "
-                "4. Switches that control lights (e.g. kitchen overhead light switch) should be targeted with HassTurnOff/HassTurnOn by name."
+                "You MUST use the provided tools for ALL device control and state queries. Never respond with text claiming you performed an action. Call the tool. For room-wide commands, set the area parameter to the room name. For specific devices, set the name parameter to the friendly name."
             ),
         }
         messages.insert(len(messages) - 1, _tool_hint)
