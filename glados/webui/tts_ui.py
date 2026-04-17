@@ -4881,14 +4881,24 @@ async function chatSendStreaming(text, history) {
         }
 
         if (chunk.audio_replay_url !== undefined) {
-          var pos = chatStreamingAudio ? chatStreamingAudio.currentTime : 0;
-          if (chatStreamingAudio) { chatStreamingAudio.pause(); chatStreamingAudio = null; }
           chatHistory[streamIdx].audio_url = chunk.audio_replay_url;
           renderChat();
           requestAnimationFrame(function() {
             var els = document.querySelectorAll('.chat-msg audio');
             var el = els[els.length - 1];
-            if (el) { el.currentTime = pos; el.play().catch(function(){}); }
+            if (el && chatStreamingAudio) {
+              var bgAudio = chatStreamingAudio;
+              chatStreamingAudio = null;
+              el.addEventListener('canplay', function onReady() {
+                el.removeEventListener('canplay', onReady);
+                el.currentTime = bgAudio.currentTime;
+                el.play().catch(function(){});
+                bgAudio.pause();
+              }, {once: true});
+              el.load();
+            } else if (el) {
+              el.play().catch(function(){});
+            }
           });
           continue;
         }
