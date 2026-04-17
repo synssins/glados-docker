@@ -906,6 +906,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_streaming_audio()
         elif p.startswith("/chat_audio/"):
             self._serve_chat_audio()
+        elif p == "/api/ssl/status":
+            self._ssl_status()
         elif p == "/api/speakers":
             self._get_speakers()
         elif p == "/api/attitudes":
@@ -1042,6 +1044,10 @@ class Handler(BaseHTTPRequestHandler):
             self._set_startup_speakers()
         elif p == "/api/eye-demo":
             self._handle_eye_demo()
+        elif p == "/api/ssl/upload":
+            self._ssl_upload()
+        elif p == "/api/ssl/request":
+            self._ssl_request_letsencrypt()
         elif p == "/api/robots/node/add":
             self._robots_add_node()
         elif p == "/api/robots/node/remove":
@@ -2233,6 +2239,163 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     return
             next_idx += 1
+
+    # ----- SSL Certificate Management -----
+
+    def _ssl_status(self):
+        """Return certificate metadata and file existence status."""
+        import datetime as _dt
+        info = {
+            "ssl_active": False,
+            "source": "none",
+            "cert_path": str(SSL_CERT),
+            "key_path": str(SSL_KEY),
+            "cert_exists": SSL_CERT.exists() if SSL_CERT else False,
+            "key_exists": SSL_KEY.exists() if SSL_KEY else False,
+            "subject": "",
+            "issuer": "",
+            "sans": [],
+            "not_before": "",
+            "not_after": "",
+            "days_remaining": 0,
+        }
+        info["ssl_active"] = info["cert_exists"] and info["key_exists"]
+        if info["cert_exists"]:
+            try:
+                from cryptography import x509
+                from cryptography.hazmat.backends import default_backend
+                pem_bytes = SSL_CERT.read_bytes()
+                cert = x509.load_pem_x509_certificate(pem_bytes, default_backend())
+                cn_attrs = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+                info["subject"] = cn_attrs[0].value if cn_attrs else ""
+                issuer_cn = cert.issuer.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+                info["issuer"] = issuer_cn[0].value if issuer_cn else ""
+                try:
+                    san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+                    info["sans"] = [n.value for n in san_ext.value]
+                except x509.ExtensionNotFound:
+                    info["sans"] = []
+                info["not_before"] = cert.not_valid_before_utc.isoformat() if hasattr(cert, "not_valid_before_utc") else cert.not_valid_before.isoformat()
+                info["not_after"] = cert.not_valid_after_utc.isoformat() if hasattr(cert, "not_valid_after_utc") else cert.not_valid_after.isoformat()
+                exp = cert.not_valid_after_utc if hasattr(cert, "not_valid_after_utc") else cert.not_valid_after.replace(tzinfo=_dt.timezone.utc)
+                now = _dt.datetime.now(_dt.timezone.utc)
+                info["days_remaining"] = max(0, (exp - now).days)
+                issuer_lower = info["issuer"].lower()
+                if "let" in issuer_lower and "encrypt" in issuer_lower:
+                    info["source"] = "letsencrypt"
+                elif info["subject"] == info["issuer"] and info["subject"]:
+                    info["source"] = "self-signed"
+                else:
+                    info["source"] = "manual"
+            except Exception as e:
+                info["parse_error"] = str(e)
+        self._send_json(200, info)
+
+    def _ssl_upload(self):
+        """Accept PEM cert + key via JSON body, write to configured paths."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length)
+            data = json.loads(raw)
+        except Exception as e:
+            self._send_json(400, {"error": f"Invalid JSON: {e}"})
+            return
+        cert_pem = data.get("cert", "").strip()
+        key_pem = data.get("key", "").strip()
+        if not cert_pem or "BEGIN CERTIFICATE" not in cert_pem:
+            self._send_json(400, {"error": "Invalid certificate PEM"})
+            return
+        if not key_pem or "BEGIN" not in key_pem or "PRIVATE KEY" not in key_pem:
+            self._send_json(400, {"error": "Invalid private key PEM"})
+            return
+        try:
+            SSL_CERT.parent.mkdir(parents=True, exist_ok=True)
+            SSL_CERT.write_text(cert_pem if cert_pem.endswith("\n") else cert_pem + "\n")
+            SSL_KEY.write_text(key_pem if key_pem.endswith("\n") else key_pem + "\n")
+            import os as _os
+            _os.chmod(str(SSL_KEY), 0o600)
+            self._send_json(200, {"ok": True, "message": "Certificate uploaded. Restart container to activate HTTPS."})
+        except Exception as e:
+            self._send_json(500, {"error": f"Failed to write cert: {e}"})
+
+    def _ssl_request_letsencrypt(self):
+        """Run certbot with DNS-01 Cloudflare challenge to request/renew cert."""
+        import tempfile, subprocess, shutil, os as _os
+        ssl_cfg = _cfg.ssl
+        domain = (ssl_cfg.domain or "").strip()
+        email = (ssl_cfg.acme_email or "").strip()
+        token = (ssl_cfg.acme_api_token or "").strip()
+        provider = (ssl_cfg.acme_provider or "cloudflare").strip().lower()
+        if not domain:
+            self._send_json(400, {"error": "SSL domain not configured"})
+            return
+        if not email:
+            self._send_json(400, {"error": "ACME email not configured"})
+            return
+        if not token:
+            self._send_json(400, {"error": "ACME API token not configured"})
+            return
+        if provider != "cloudflare":
+            self._send_json(400, {"error": f"Unsupported DNS provider: {provider}"})
+            return
+        creds_fd, creds_path = tempfile.mkstemp(prefix="cf_", suffix=".ini")
+        try:
+            with _os.fdopen(creds_fd, "w") as f:
+                f.write(f"dns_cloudflare_api_token = {token}\n")
+            _os.chmod(creds_path, 0o600)
+            le_dir = SSL_CERT.parent / "letsencrypt"
+            le_dir.mkdir(parents=True, exist_ok=True)
+            work_dir = Path("/tmp/certbot_work")
+            logs_dir = Path("/tmp/certbot_logs")
+            work_dir.mkdir(parents=True, exist_ok=True)
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            cmd = [
+                "certbot", "certonly",
+                "--dns-cloudflare",
+                "--dns-cloudflare-credentials", creds_path,
+                "--dns-cloudflare-propagation-seconds", "30",
+                "-d", domain,
+                "--email", email,
+                "--agree-tos",
+                "--non-interactive",
+                "--config-dir", str(le_dir),
+                "--work-dir", str(work_dir),
+                "--logs-dir", str(logs_dir),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            combined = (stdout + "\n" + stderr).strip()
+            live_dir = le_dir / "live" / domain
+            fullchain = live_dir / "fullchain.pem"
+            privkey = live_dir / "privkey.pem"
+            if result.returncode == 0 and fullchain.exists() and privkey.exists():
+                try:
+                    SSL_CERT.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(fullchain), str(SSL_CERT))
+                    shutil.copy2(str(privkey), str(SSL_KEY))
+                    _os.chmod(str(SSL_KEY), 0o600)
+                except Exception as e:
+                    self._send_json(500, {"error": f"Cert issued but copy failed: {e}", "log": combined})
+                    return
+                self._send_json(200, {"ok": True, "message": "Certificate issued/renewed successfully. Restart container to activate.", "log": combined})
+            else:
+                not_due = "not yet due for renewal" in combined.lower() or "no renewals were attempted" in combined.lower()
+                if not_due and fullchain.exists():
+                    self._send_json(200, {"ok": True, "message": "Certificate is not yet due for renewal (still valid).", "log": combined})
+                else:
+                    self._send_json(500, {"error": "certbot failed", "returncode": result.returncode, "log": combined})
+        except subprocess.TimeoutExpired:
+            self._send_json(504, {"error": "certbot timed out after 180s"})
+        except FileNotFoundError:
+            self._send_json(500, {"error": "certbot not installed in container"})
+        except Exception as e:
+            self._send_json(500, {"error": f"certbot execution error: {e}"})
+        finally:
+            try:
+                _os.unlink(creds_path)
+            except Exception:
+                pass
 
     def _serve_binary(self, file_path: Path):
         ext = file_path.suffix.lstrip(".").lower()
@@ -3778,6 +3941,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
       <button class="cfg-tab-btn" onclick="cfgSwitchSection('speakers',this)">Speakers</button>
       <button class="cfg-tab-btn" onclick="cfgSwitchSection('audio',this)">Audio</button>
       <button class="cfg-tab-btn" onclick="cfgSwitchSection('personality',this)">Personality</button>
+      <button class="cfg-tab-btn" onclick="cfgSwitchSection('ssl',this)">SSL</button>
       <button class="cfg-tab-btn" onclick="cfgSwitchSection('raw',this)">Raw YAML</button>
     </div>
 
@@ -4065,7 +4229,7 @@ function cfgSwitchSection(name, btn) {
 }
 
 function cfgRenderSection(section) {
-  const data = _cfgData[section];
+  const data = (section === 'ssl') ? (_cfgData.global || {}) : _cfgData[section];
   if (!data) {
     document.getElementById('cfg-form-area').innerHTML =
       '<div style="color:#ff6666;padding:20px;">Section not loaded. Click Reload.</div>';
@@ -4081,14 +4245,18 @@ function cfgRenderSection(section) {
     html += cfgRenderServices(data);
   } else if (section === 'personality') {
     html += cfgRenderPersonality(data);
+  } else if (section === 'ssl') {
+    html += cfgRenderSsl(_cfgData.global && _cfgData.global.ssl ? _cfgData.global.ssl : {});
   } else {
     html += cfgBuildForm(data, section, '');
   }
 
-  html += '<div class="cfg-save-row">'
-    + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'' + section + '\')">Save ' + escHtml(section) + '</button>'
-    + '<span id="cfg-save-result" class="cfg-result"></span>'
-    + '</div>';
+  if (section !== 'ssl') {
+    html += '<div class="cfg-save-row">'
+      + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'' + section + '\')">Save ' + escHtml(section) + '</button>'
+      + '<span id="cfg-save-result" class="cfg-result"></span>'
+      + '</div>';
+  }
   document.getElementById('cfg-form-area').innerHTML = html;
 }
 
@@ -4382,7 +4550,151 @@ function cfgCollectPersonality() {
   return result;
 }
 
-async function cfgSaveSection(section) {
+async function cfgSaveSsl() {
+  const result = document.getElementById('cfg-save-result');
+  const data = _cfgData.global || {};
+  if (!data.ssl) data.ssl = {};
+  const getVal = (id, def) => {
+    const el = document.getElementById(id);
+    if (!el) return def;
+    if (el.type === 'checkbox') return el.checked;
+    return el.value;
+  };
+  data.ssl.enabled = getVal('ssl-enabled', false);
+  data.ssl.domain = getVal('ssl-domain', '');
+  data.ssl.acme_email = getVal('ssl-acme-email', '');
+  data.ssl.acme_provider = getVal('ssl-acme-provider', 'cloudflare');
+  data.ssl.acme_api_token = getVal('ssl-acme-token', '');
+  data.ssl.use_letsencrypt = getVal('ssl-use-le', false);
+  data.ssl.cert_path = getVal('ssl-cert-path', '/app/certs/cert.pem');
+  data.ssl.key_path = getVal('ssl-key-path', '/app/certs/key.pem');
+  result.textContent = 'Saving...';
+  fetch('/api/config/global', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data),
+  }).then(r => r.json()).then(d => {
+    if (d.ok) { result.textContent = 'Saved. Restart container for changes to take effect.'; result.style.color = '#6f6'; }
+    else { result.textContent = 'Error: ' + (d.error || 'unknown'); result.style.color = '#f66'; }
+  }).catch(e => { result.textContent = 'Error: ' + e; result.style.color = '#f66'; });
+}
+
+async function sslRefreshStatus() {
+  try {
+    const r = await fetch('/api/ssl/status');
+    const d = await r.json();
+    const statusEl = document.getElementById('ssl-status-display');
+    if (!statusEl) return;
+    const active = d.ssl_active ? '<span style="color:#6f6">Active (HTTPS)</span>' : '<span style="color:#f66">Inactive (HTTP)</span>';
+    let html = '<div class="cfg-ssl-status">';
+    html += '<div><strong>Status:</strong> ' + active + '</div>';
+    if (d.cert_exists) {
+      html += '<div><strong>Source:</strong> ' + escHtml(d.source) + '</div>';
+      html += '<div><strong>Subject:</strong> ' + escHtml(d.subject || '-') + '</div>';
+      html += '<div><strong>Issuer:</strong> ' + escHtml(d.issuer || '-') + '</div>';
+      if (d.sans && d.sans.length) {
+        html += '<div><strong>SANs:</strong> ' + d.sans.map(escHtml).join(', ') + '</div>';
+      }
+      html += '<div><strong>Issued:</strong> ' + escHtml((d.not_before || '').slice(0,10)) + '</div>';
+      html += '<div><strong>Expires:</strong> ' + escHtml((d.not_after || '').slice(0,10)) + ' (' + d.days_remaining + ' days)</div>';
+    } else {
+      html += '<div>No certificate installed</div>';
+    }
+    html += '</div>';
+    statusEl.innerHTML = html;
+  } catch(e) {
+    console.error('SSL status fetch failed:', e);
+  }
+}
+
+async function sslRequestLetsEncrypt() {
+  const resultEl = document.getElementById('ssl-request-result');
+  resultEl.textContent = 'Requesting certificate from Lets Encrypt (30-60s)...';
+  resultEl.style.color = '#ccc';
+  try {
+    const r = await fetch('/api/ssl/request', {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      resultEl.innerHTML = '<div style="color:#6f6">' + escHtml(d.message) + '</div>' + (d.log ? '<pre style="font-size:11px;max-height:200px;overflow:auto;margin-top:8px;">' + escHtml(d.log) + '</pre>' : '');
+      sslRefreshStatus();
+    } else {
+      resultEl.innerHTML = '<div style="color:#f66">Error: ' + escHtml(d.error || 'unknown') + '</div>' + (d.log ? '<pre style="font-size:11px;max-height:200px;overflow:auto;margin-top:8px;">' + escHtml(d.log) + '</pre>' : '');
+    }
+  } catch(e) {
+    resultEl.innerHTML = '<div style="color:#f66">Request failed: ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+async function sslUploadFiles() {
+  const resultEl = document.getElementById('ssl-upload-result');
+  const certInput = document.getElementById('ssl-upload-cert');
+  const keyInput = document.getElementById('ssl-upload-key');
+  if (!certInput.files[0] || !keyInput.files[0]) {
+    resultEl.innerHTML = '<div style="color:#f66">Select both cert and key files</div>';
+    return;
+  }
+  try {
+    const certText = await certInput.files[0].text();
+    const keyText = await keyInput.files[0].text();
+    resultEl.textContent = 'Uploading...';
+    const r = await fetch('/api/ssl/upload', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cert: certText, key: keyText}),
+    });
+    const d = await r.json();
+    if (d.ok || r.ok) {
+      resultEl.innerHTML = '<div style="color:#6f6">' + escHtml(d.message || 'Uploaded') + '</div>';
+      sslRefreshStatus();
+    } else {
+      resultEl.innerHTML = '<div style="color:#f66">Error: ' + escHtml(d.error || 'upload failed') + '</div>';
+    }
+  } catch(e) {
+    resultEl.innerHTML = '<div style="color:#f66">Upload failed: ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+function cfgRenderSsl(ssl) {
+  ssl = ssl || {};
+  let html = '<div style="max-width:700px;">';
+  html += '<div id="ssl-status-display" class="cfg-ssl-status-box" style="background:#1a1a1a;padding:12px;border-radius:4px;margin-bottom:16px;">Loading status...</div>';
+  html += '<div style="margin-bottom:12px;"><button onclick="sslRefreshStatus()" class="cfg-btn">Refresh Status</button></div>';
+
+  html += '<h3 style="margin-top:20px;">Lets Encrypt (Cloudflare DNS)</h3>';
+  html += '<div class="cfg-row"><label>Enable HTTPS:</label><input type="checkbox" id="ssl-enabled"' + (ssl.enabled ? ' checked' : '') + '></div>';
+  html += '<div class="cfg-row"><label>Use Lets Encrypt:</label><input type="checkbox" id="ssl-use-le"' + (ssl.use_letsencrypt ? ' checked' : '') + '></div>';
+  html += '<div class="cfg-row"><label>Domain:</label><input type="text" id="ssl-domain" value="' + escAttr(ssl.domain || '') + '" placeholder="glados.example.com"></div>';
+  html += '<div class="cfg-row"><label>ACME Email:</label><input type="text" id="ssl-acme-email" value="' + escAttr(ssl.acme_email || '') + '" placeholder="admin@example.com"></div>';
+  html += '<div class="cfg-row"><label>DNS Provider:</label><select id="ssl-acme-provider"><option value="cloudflare"' + ((ssl.acme_provider === 'cloudflare' || !ssl.acme_provider) ? ' selected' : '') + '>Cloudflare</option></select></div>';
+  html += '<div class="cfg-row"><label>API Token:</label><input type="password" id="ssl-acme-token" value="' + escAttr(ssl.acme_api_token || '') + '" placeholder="Cloudflare API token"></div>';
+  html += '<div style="margin:12px 0;"><button onclick="sslRequestLetsEncrypt()" class="cfg-btn">Request / Renew Certificate</button></div>';
+  html += '<div id="ssl-request-result" style="margin-bottom:20px;"></div>';
+
+  html += '<h3 style="margin-top:20px;">Manual Upload</h3>';
+  html += '<div class="cfg-row"><label>Certificate PEM:</label><input type="file" id="ssl-upload-cert" accept=".pem,.crt,.cert"></div>';
+  html += '<div class="cfg-row"><label>Private Key PEM:</label><input type="file" id="ssl-upload-key" accept=".pem,.key"></div>';
+  html += '<div style="margin:12px 0;"><button onclick="sslUploadFiles()" class="cfg-btn">Upload Certificate</button></div>';
+  html += '<div id="ssl-upload-result" style="margin-bottom:20px;"></div>';
+
+  html += '<h3 style="margin-top:20px;">File Paths (advanced)</h3>';
+  html += '<div class="cfg-row"><label>Certificate Path:</label><input type="text" id="ssl-cert-path" value="' + escAttr(ssl.cert_path || '/app/certs/cert.pem') + '"></div>';
+  html += '<div class="cfg-row"><label>Key Path:</label><input type="text" id="ssl-key-path" value="' + escAttr(ssl.key_path || '/app/certs/key.pem') + '"></div>';
+
+  html += '<div style="margin-top:24px;padding:12px;background:#2a2010;border-left:3px solid #fa0;">';
+  html += 'Container restart is required after certificate changes take effect.';
+  html += '</div>';
+
+  html += '<div class="cfg-save-row" style="margin-top:20px;">';
+  html += '<button class="cfg-save-btn" onclick="cfgSaveSsl()">Save SSL Settings</button>';
+  html += '<span id="cfg-save-result" class="cfg-result"></span>';
+  html += '</div>';
+
+  html += '</div>';
+  html += '<script>setTimeout(sslRefreshStatus, 100);</script>';
+  return html;
+}
+
+function cfgSaveSection(section) {
   const data = cfgCollectForm(section);
   const resultEl = document.getElementById('cfg-save-result');
   resultEl.textContent = 'Saving...';
