@@ -5,22 +5,36 @@ architectural dependency.
 
 ---
 
-## Stage 3: MQTT + Intent Classifier (large)
+## Stage 3: HA Conversation Bridge + MQTT Peer Bus (large)
 
-**Target:** Sub-100ms device control for simple commands (turn on/off,
-scenes, brightness) vs the current 10-20s LLM agentic loop.
+**Target:** p95 < 1s visible response for common device commands vs
+the current 10-20s LLM agentic loop. Conversational disambiguation
+when device names are ambiguous. MQTT peer-bus integration with
+NodeRed / Sonorium for bidirectional event exchange.
 
-**Plan:** see `docs/Stage 3 - MQTT Intent Classifier.md` for full
-architecture and phased implementation.
+**Plan:** see `docs/Stage 3.md` for full architecture and phased
+implementation.
 
-**Summary:** Two-tier command processing. Fast path: `hassil` intent parser
-+ local entity cache (populated at startup from HA REST, updated live via
-MQTT) + `rapidfuzz` name resolution → direct HA REST or MQTT publish
-→ action complete in <100ms. GLaDOS LLM generates personality confirmation
-asynchronously. Slow path (LLM + MCP tools): unchanged fallback for complex
-queries the intent parser can't handle.
+**Summary:** Three-tier matching. Tier 1: HA `/api/conversation/process`
+via websocket (fast, device commands). Tier 2: LLM disambiguation with
+entity-cache candidates when Tier 1 misses ("bedroom lights" → clarify
+which of 3). Tier 3: existing full LLM + MCP tools path for complex
+queries. HA state mirrored via WebSocket (`subscribe_entities`), not
+MQTT statestream. MQTT reframed as a peer bus — NodeRed publishes to
+`glados/cmd/*`, subscribes to `glados/events/*`. Source-tagging + per-
+domain intent allowlist gates sensitive operations (locks, alarms,
+garage, cameras) per utterance source.
 
-**Status:** Plan written, not started.
+**Supersedes:** The original "MQTT + Intent Classifier" plan — replaced
+after adversarial review (security/OWASP, architecture, 2026 best-
+practice research, codebase reality) identified that MQTT statestream
+is the wrong state substrate, a local hassil classifier duplicates
+HA's conversation API without enough upside for this use case, and
+the original single-threshold fuzzy matcher was unsafe for sensitive
+domains.
+
+**Status:** Revised plan approved 2026-04-17. Phase 0 (auth, source-
+tagging, audit) starts first.
 
 ---
 
@@ -177,3 +191,17 @@ Requires: voice training or voice model import in speaches.
   browser closes mid-response. Cosmetic, non-critical.
 - **node_modules/** not needed but `docker-compose.override.yml` tracking
   could be tidied in `.gitignore`
+- **`glados/webui/tts_ui.py` encoding issues** — file has a UTF-8 BOM
+  at byte 0 (breaks strict parsers like `ast.parse`; Python's module
+  loader accepts it) AND mojibake in comments (Windows-1252 characters
+  like em-dash saved as UTF-8 of their cp1252 bytes, showing up as
+  `â€"` sequences). Fix: save file as UTF-8 without BOM, normalize
+  mojibake to proper unicode (`—`, `"`, `'`). Verify no runtime impact
+  (there shouldn't be any) before/after.
+
+### Standards-compliance scanning
+
+Any new non-standards-compliant issues found during work should be
+added to this list. Current scan helpers:
+- BOM scan: `python -c "from pathlib import Path; [print(p) for p in Path('glados').rglob('*.py') if Path(p).read_bytes().startswith(b'\xef\xbb\xbf')]"`
+- Mojibake scan: same pattern looking for `b'\xc3\xa2\xe2\x82\xac'` (UTF-8 of `â€`).

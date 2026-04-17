@@ -16,8 +16,9 @@ Before making changes to this repo, read these files in order to get oriented:
    documented with rationale and side effects.
 3. **`docs/roadmap.md`** — prioritized list of remaining work items.
 4. **`docs/Stage 1.md`** — original Stage 1 plan (pure middleware refactor).
-5. **`docs/Stage 3 - MQTT Intent Classifier.md`** — the next major
-   architectural milestone (tentative plan).
+5. **`docs/Stage 3.md`** — the next major architectural milestone:
+   HA Conversation Bridge + MQTT Peer Bus (revised plan approved
+   2026-04-17 after adversarial review).
 
 **Portability rule:** this repo is the single source of truth for the GLaDOS
 container. Any change that affects runtime behavior must land inside this

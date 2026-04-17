@@ -42,6 +42,20 @@ certs/
 *.key
 *.crt
 
+# Other credential files — never commit
+cloudflare.ini
+*.secret
+*.secrets
+*.token
+secrets/
+.secrets/
+id_rsa
+id_ed25519
+id_ecdsa
+*.ppk
+credentials.json
+service-account*.json
+
 # OS
 .DS_Store
 Thumbs.db
