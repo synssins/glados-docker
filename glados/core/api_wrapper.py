@@ -1172,6 +1172,66 @@ def _emit_tier1_sse_response(
     handler.wfile.flush()
 
 
+def _try_tier1_nonstreaming(
+    handler: "APIHandler", user_message: str, origin: str,
+) -> bool:
+    """Non-streaming counterpart to `_try_tier1_fast_path`. Sends a
+    normal OpenAI-compatible JSON response on hit. Used by callers
+    like the WebUI's `/api/chat` proxy which posts `stream: false`."""
+    bridge = _ha.get_bridge()
+    if bridge is None:
+        return False
+    t0 = time.perf_counter()
+    try:
+        result = bridge.process(user_message, timeout_s=5.0)
+    except Exception as exc:
+        logger.debug("Tier 1 bridge call failed (non-stream): {}", exc)
+        return False
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+    if not result.handled:
+        audit(AuditEvent(
+            ts=time.time(), origin=origin, kind="intent", tier=1,
+            utterance=user_message,
+            result=f"miss:{result.error_code or result.response_type or 'unknown'}",
+            latency_ms=elapsed_ms,
+        ))
+        return False
+
+    speech = result.speech or "Action executed."
+    request_id = uuid.uuid4().hex[:12]
+    payload = {
+        "id": f"chatcmpl-{request_id}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "glados",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": speech},
+            "finish_reason": "stop",
+        }],
+    }
+    try:
+        handler._send_json(payload)
+    except Exception as exc:
+        logger.warning("Tier 1 non-stream write failed: {}", exc)
+        audit(AuditEvent(
+            ts=time.time(), origin=origin, kind="intent", tier=1,
+            utterance=user_message, result=f"send_failed:{exc}",
+            latency_ms=elapsed_ms,
+        ))
+        return False
+    audit(AuditEvent(
+        ts=time.time(), origin=origin, kind="intent", tier=1,
+        utterance=user_message, result="ok",
+        latency_ms=elapsed_ms,
+        extra={"response_type": result.response_type, "speech": speech[:500]},
+    ))
+    logger.info("Tier 1 hit (non-stream): {} -> {} ({}ms)",
+                user_message[:60], speech[:80], elapsed_ms)
+    return True
+
+
 def _try_tier1_fast_path(
     handler: "APIHandler", user_message: str, origin: str,
 ) -> bool:
@@ -2356,6 +2416,14 @@ class APIHandler(BaseHTTPRequestHandler):
             utterance=user_message,
             extra={"streaming": False},
         ))
+
+        # Stage 3 Phase 1 Tier 1: try HA conversation API for the
+        # non-streaming path too (WebUI /api/chat uses stream:false).
+        # On hit, synthesize the OpenAI non-streaming response shape
+        # and skip the LLM+tool loop.
+        _nonstream_hit = _try_tier1_nonstreaming(self, user_message, origin)
+        if _nonstream_hit:
+            return
 
         # --- Command interceptor removed from chat path ---
         # GLaDOS uses HA MCP tools directly. Interceptor remains active only
