@@ -1246,7 +1246,20 @@ def _stream_chat_sse(
     parsed_url = urlparse(completion_url)
     ollama_mode = parsed_url.path.rstrip("/").endswith("/api/chat")
 
-    # Build tool definitions — MCP/HA tools only (static tools like do_nothing,
+    # Reinforce tool use - the personality preprompt few-shot examples show
+    # text-only responses which biases the model against calling tools.
+    if glados.mcp_manager:
+        _tool_hint = {
+            "role": "system",
+            "content": (
+                "IMPORTANT: For ANY device control request (lights, scenes, locks, "
+                "temperature, media, covers), you MUST call the appropriate tool. "
+                "Do NOT respond with text claiming you did it. CALL THE TOOL."
+            ),
+        }
+        messages.insert(len(messages) - 1, _tool_hint)
+
+    # Build tool definitions - MCP/HA tools only (static tools like do_nothing,
     # robot_move etc. are for the engine autonomy loop, not WebUI chat)
     tools: list[dict[str, Any]] = []
     if glados.mcp_manager:
