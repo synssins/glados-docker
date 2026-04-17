@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from loguru import logger
 from ..mcp import MCPManager
-from ..observability import ObservabilityBus, trim_message
+from ..observability import AuditEvent, ObservabilityBus, Origin, audit, trim_message
 from ..tools import all_tools, tool_classes
 
 # Callback signature: (event_type: str, tool_name: str) -> None
@@ -52,6 +52,35 @@ class ToolExecutor:
         """Emit a tool event to the callback if registered."""
         if self._on_tool_event:
             self._on_tool_event(event_type, tool_name)
+
+    @staticmethod
+    def _audit_tool(
+        tool_call: dict[str, Any],
+        tool: str,
+        args: dict[str, Any],
+        result: str,
+        started_at: float,
+    ) -> None:
+        """Write a durable audit record for a tool invocation.
+
+        `tool_call["_origin"]` is populated by upstream callers (e.g.
+        LLMProcessor carries it over from the originating queue item).
+        If absent, we tag as UNKNOWN — audit-visible so we can find
+        call sites that haven't been plumbed yet."""
+        origin = tool_call.get("_origin") or Origin.UNKNOWN
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        audit(AuditEvent(
+            ts=time.time(),
+            origin=origin,
+            kind="tool_call",
+            tool=tool,
+            params=args,
+            result=result,
+            latency_ms=latency_ms,
+            principal=tool_call.get("_principal"),
+            extra={"tool_call_id": tool_call.get("id"),
+                   "autonomy": bool(tool_call.get("autonomy", False))},
+        ))
 
     def run(self) -> None:
         """
@@ -113,6 +142,7 @@ class ToolExecutor:
                                 level="error",
                                 meta={"tool": tool, "tool_call_id": tool_call_id},
                             )
+                        self._audit_tool(tool_call, tool, args, result="error: no mcp", started_at=started_at)
                         self._enqueue(
                             llm_queue,
                             {
@@ -137,6 +167,7 @@ class ToolExecutor:
                             )
                         logger.success("ToolExecutor: finished {}", tool)
                         self._emit_tool_event("tool_success", tool)
+                        self._audit_tool(tool_call, tool, args, result="ok", started_at=started_at)
                         self._enqueue(
                             llm_queue,
                             {
@@ -160,6 +191,7 @@ class ToolExecutor:
                                 level="error",
                                 meta={"tool": tool, "tool_call_id": tool_call_id},
                             )
+                        self._audit_tool(tool_call, tool, args, result=f"error: {e}", started_at=started_at)
                         self._enqueue(
                             llm_queue,
                             {
@@ -192,6 +224,7 @@ class ToolExecutor:
                                 )
                             logger.success("ToolExecutor: finished {}", tool)
                             self._emit_tool_event("tool_success", tool)
+                            self._audit_tool(tool_call, tool, args, result="ok", started_at=started_at)
                         except FuturesTimeoutError:
                             timeout_error = f"error: tool '{tool}' timed out after {self.tool_timeout}s"
                             self._emit_tool_event("tool_timeout", tool)
@@ -204,6 +237,7 @@ class ToolExecutor:
                                     level="warning",
                                     meta={"tool": tool, "tool_call_id": tool_call_id},
                                 )
+                            self._audit_tool(tool_call, tool, args, result="timeout", started_at=started_at)
                             self._enqueue(
                                 llm_queue,
                                 {
@@ -226,6 +260,7 @@ class ToolExecutor:
                             level="error",
                             meta={"tool": tool, "tool_call_id": tool_call_id},
                         )
+                    self._audit_tool(tool_call, tool, args, result="error: unknown tool", started_at=started_at)
                     self._enqueue(
                         llm_queue,
                         {
