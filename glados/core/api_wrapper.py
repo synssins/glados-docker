@@ -1263,6 +1263,7 @@ def _stream_chat_sse(
     }
     if tools:
         payload["tools"] = tools
+    logger.info("[{}] SSE payload: {} msgs, {} tools, model={}", request_id, len(messages), len(tools), glados.llm_model)
     body = json.dumps(payload).encode("utf-8")
 
     headers = {
