@@ -1246,12 +1246,23 @@ def _stream_chat_sse(
     parsed_url = urlparse(completion_url)
     ollama_mode = parsed_url.path.rstrip("/").endswith("/api/chat")
 
+    # Build tool definitions for HA device control
+    from glados.tools import tool_definitions as _static_tools
+    tools: list[dict[str, Any]] = list(_static_tools)
+    if glados.mcp_manager:
+        try:
+            tools.extend(glados.mcp_manager.get_tool_definitions())
+        except Exception:
+            pass
+
     # Build request payload
     payload: dict[str, Any] = {
         "model": glados.llm_model,
         "stream": True,
         "messages": messages,
     }
+    if tools:
+        payload["tools"] = tools
     body = json.dumps(payload).encode("utf-8")
 
     headers = {
@@ -1326,6 +1337,7 @@ def _stream_chat_sse(
     t_stream_start = time.time()
     t_first_token = None
     ollama_metrics: dict[str, Any] = {}
+    pending_tool_calls: list[dict[str, Any]] = []
 
     try:
         while True:
@@ -1350,6 +1362,9 @@ def _stream_chat_sse(
                         parsed = json.loads(json_str)
                         delta = parsed.get("choices", [{}])[0].get("delta", {})
                         content = delta.get("content")
+                        _tc = delta.get("tool_calls")
+                        if _tc:
+                            pending_tool_calls.extend(_tc)
                     except (json.JSONDecodeError, IndexError):
                         pass
             else:
@@ -1366,6 +1381,9 @@ def _stream_chat_sse(
                     else:
                         msg = parsed.get("message", {})
                         content = msg.get("content")
+                        _tc = msg.get("tool_calls")
+                        if _tc:
+                            pending_tool_calls.extend(_tc)
                 except json.JSONDecodeError:
                     continue
 
@@ -1390,6 +1408,97 @@ def _stream_chat_sse(
 
             if done:
                 break
+
+        # ── Agentic tool loop ─────────────────────────────────────
+        _tool_round = 0
+        _max_rounds = 5
+        while pending_tool_calls and _tool_round < _max_rounds and glados.mcp_manager:
+            _tool_round += 1
+            messages.append({"role": "assistant", "tool_calls": pending_tool_calls, "content": ""})
+
+            for _tc in pending_tool_calls:
+                _fn = _tc.get("function", {})
+                _tool_name = _fn.get("name", "")
+                try:
+                    _tool_args = json.loads(_fn.get("arguments", "{}")) if isinstance(_fn.get("arguments"), str) else _fn.get("arguments", {})
+                except json.JSONDecodeError:
+                    _tool_args = {}
+                _tc_id = _tc.get("id", f"call_{_tool_round}")
+                logger.info("[{}] Streaming tool call: {} (round {})", request_id, _tool_name, _tool_round)
+                try:
+                    if _tool_name.startswith("mcp."):
+                        _result = glados.mcp_manager.call_tool(_tool_name, _tool_args, timeout=30)
+                    else:
+                        _result = "error: only MCP tools supported in streaming chat"
+                    logger.success("[{}] Tool done: {}", request_id, _tool_name)
+                except Exception as _te:
+                    _result = f"error: {_te}"
+                    logger.error("[{}] Tool error: {} -> {}", request_id, _tool_name, _te)
+                messages.append({"role": "tool", "tool_call_id": _tc_id, "content": str(_result)})
+
+            pending_tool_calls = []
+            _p2 = {"model": glados.llm_model, "stream": True, "messages": messages}
+            if tools:
+                _p2["tools"] = tools
+            _b2 = json.dumps(_p2).encode("utf-8")
+            _h2 = {"Content-Type": "application/json", "Content-Length": str(len(_b2))}
+            if glados.api_key:
+                _h2["Authorization"] = f"Bearer {glados.api_key}"
+            try:
+                _c2 = _http.HTTPConnection(parsed_url.hostname or "localhost", parsed_url.port or 11434, timeout=int(timeout))
+                _c2.request("POST", parsed_url.path, body=_b2, headers=_h2)
+                _r2 = _c2.getresponse()
+                while True:
+                    _raw2 = _r2.readline()
+                    if not _raw2:
+                        break
+                    _ln2 = _raw2.decode("utf-8", errors="replace").rstrip()
+                    if not _ln2:
+                        continue
+                    _content2 = None
+                    _done2 = False
+                    if _ln2.startswith("data: "):
+                        _js2 = _ln2[6:]
+                        if _js2.strip() == "[DONE]":
+                            _done2 = True
+                        else:
+                            try:
+                                _pp2 = json.loads(_js2)
+                                _d2 = _pp2.get("choices", [{}])[0].get("delta", {})
+                                _content2 = _d2.get("content")
+                                _ttc = _d2.get("tool_calls")
+                                if _ttc:
+                                    pending_tool_calls.extend(_ttc)
+                            except (json.JSONDecodeError, IndexError):
+                                pass
+                    else:
+                        try:
+                            _pp2 = json.loads(_ln2)
+                            if _pp2.get("done"):
+                                _done2 = True
+                                for _k in ("eval_count", "prompt_eval_count", "eval_duration", "prompt_eval_duration", "total_duration"):
+                                    if _k in _pp2:
+                                        ollama_metrics[_k] = _pp2[_k]
+                            else:
+                                _m2 = _pp2.get("message", {})
+                                _content2 = _m2.get("content")
+                                _ttc = _m2.get("tool_calls")
+                                if _ttc:
+                                    pending_tool_calls.extend(_ttc)
+                        except json.JSONDecodeError:
+                            continue
+                    if _content2:
+                        if t_first_token is None:
+                            t_first_token = time.time()
+                        full_response.append(_content2)
+                        _cd2 = {"id": f"chatcmpl-{request_id}", "object": "chat.completion.chunk", "created": int(time.time()), "model": "glados", "choices": [{"index": 0, "delta": {"content": _content2}, "finish_reason": None}]}
+                        handler.wfile.write(f"data: {json.dumps(_cd2)}\n\n".encode())
+                        handler.wfile.flush()
+                    if _done2:
+                        break
+                _c2.close()
+            except Exception as _e2:
+                logger.error("[{}] Tool follow-up error: {}", request_id, _e2)
 
         t_stream_end = time.time()
 
