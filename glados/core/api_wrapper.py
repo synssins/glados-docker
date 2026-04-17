@@ -33,6 +33,7 @@ from glados.core.attitude import roll_attitude, get_tts_params, list_attitudes, 
 from glados.core.config_store import cfg
 from glados.doorbell.screener import DoorbellScreener
 from glados.observability import AuditEvent, Origin, audit
+from glados import ha as _ha
 
 # Container-aware path resolution
 _GLADOS_ROOT = Path(os.environ.get("GLADOS_ROOT", "/app"))
@@ -1136,6 +1137,113 @@ def _get_engine_response_with_retry(
 
 
 # ---------------------------------------------------------------------------
+# Stage 3 Phase 1 — Tier 1 fast path via HA conversation API
+# ---------------------------------------------------------------------------
+
+def _emit_tier1_sse_response(
+    handler: "APIHandler", request_id: str, text: str,
+) -> None:
+    """Send `text` to the client as an OpenAI-compatible streaming SSE
+    response (one content chunk + finish + [DONE]). Shape matches the
+    explicit-memory short-circuit elsewhere in this file so the WebUI
+    frontend renders it identically to a real LLM response."""
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler.end_headers()
+    chunk = json.dumps({
+        "id": f"chatcmpl-{request_id}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": "glados",
+        "choices": [{"index": 0, "delta": {"content": text},
+                     "finish_reason": None}],
+    })
+    handler.wfile.write(f"data: {chunk}\n\n".encode())
+    done = json.dumps({
+        "id": f"chatcmpl-{request_id}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": "glados",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    })
+    handler.wfile.write(f"data: {done}\n\n".encode())
+    handler.wfile.write(b"data: [DONE]\n\n")
+    handler.wfile.flush()
+
+
+def _try_tier1_fast_path(
+    handler: "APIHandler", user_message: str, origin: str,
+) -> bool:
+    """Return True if HA's conversation API handled the request and an
+    SSE response was sent. Return False if the caller should fall
+    through to the normal LLM streaming path."""
+    bridge = _ha.get_bridge()
+    if bridge is None:
+        return False
+    t0 = time.perf_counter()
+    try:
+        result = bridge.process(user_message, timeout_s=5.0)
+    except Exception as exc:
+        logger.debug("Tier 1 bridge call failed: {}", exc)
+        return False
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+    if not result.handled:
+        # Tier 2 / Tier 3 will have to handle it. Audit the miss so we
+        # can measure Tier 1 hit-rate from the log later.
+        audit(AuditEvent(
+            ts=time.time(),
+            origin=origin,
+            kind="intent",
+            tier=1,
+            utterance=user_message,
+            result=f"miss:{result.error_code or result.response_type or 'unknown'}",
+            latency_ms=elapsed_ms,
+        ))
+        return False
+
+    # Tier 1 hit — send HA's speech back as the final response. Phase 1
+    # MVP returns HA's plain text verbatim; a persona rewrite layer is
+    # a follow-up commit so we can measure the intercept point works
+    # before adding another LLM round trip.
+    speech = result.speech or "Action executed."
+    request_id = uuid.uuid4().hex[:12]
+    try:
+        _emit_tier1_sse_response(handler, request_id, speech)
+    except Exception as exc:
+        # Wire failure → audit and give up; caller falls through.
+        logger.warning("Tier 1 SSE write failed: {}", exc)
+        audit(AuditEvent(
+            ts=time.time(),
+            origin=origin,
+            kind="intent",
+            tier=1,
+            utterance=user_message,
+            result=f"sse_write_failed:{exc}",
+            latency_ms=elapsed_ms,
+        ))
+        return False
+    audit(AuditEvent(
+        ts=time.time(),
+        origin=origin,
+        kind="intent",
+        tier=1,
+        utterance=user_message,
+        result="ok",
+        latency_ms=elapsed_ms,
+        extra={
+            "response_type": result.response_type,
+            "speech": speech[:500],
+            "conversation_id": result.conversation_id,
+        },
+    ))
+    logger.info("Tier 1 hit: {} -> {} ({}ms)", user_message[:60],
+                speech[:80], elapsed_ms)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Streaming SSE support — direct Ollama passthrough
 # ---------------------------------------------------------------------------
 
@@ -2212,6 +2320,13 @@ class APIHandler(BaseHTTPRequestHandler):
                 utterance=user_message,
                 extra={"streaming": True},
             ))
+
+            # Stage 3 Phase 1 Tier 1: try HA's conversation API first.
+            # If HA resolves the intent cleanly, stream its speech back
+            # as SSE and skip the 10-20s LLM path entirely. On miss,
+            # fall through to the existing streaming chat.
+            if _try_tier1_fast_path(self, user_message, origin):
+                return
 
             # Chat path goes directly to LLM — no command interceptor.
             # GLaDOS uses HA MCP tools to control devices herself. The command
