@@ -20,7 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python deps (CPU only)
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e ".[api]"
+RUN pip install --no-cache-dir -e ".[api]" \
+    && pip install --no-cache-dir certbot certbot-dns-cloudflare
 
 # Application source
 COPY glados/ ./glados/
