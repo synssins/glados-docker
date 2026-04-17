@@ -1205,6 +1205,21 @@ def _stream_chat_sse(
 
     # Build messages from conversation store + add user message
     messages = store.snapshot()
+
+    # When tools are available, strip few-shot user/assistant examples from
+    # the personality preprompt. These examples show text-only responses which
+    # biases the model against generating <tool_call> XML. Keep only the
+    # system message(s) and real conversation history.
+    if glados.mcp_manager:
+        _preprompt_n = getattr(store, 'preprompt_count', 0)
+        if _preprompt_n > 1:
+            _filtered = []
+            for _i, _m in enumerate(messages):
+                if _i > 0 and _i < _preprompt_n and _m.get("role") in ("user", "assistant"):
+                    continue  # Skip few-shot examples
+                _filtered.append(_m)
+            messages = _filtered
+
     messages.append({"role": "user", "content": user_message})
 
     # Roll an attitude directive for this turn (adds variety to responses)
