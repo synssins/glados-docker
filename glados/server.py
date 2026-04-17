@@ -87,6 +87,23 @@ def _ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+def _init_audit_logger() -> None:
+    """Initialize the process-wide audit logger from config.
+
+    Called once during startup so any subsequent audit() call from any
+    thread writes to disk. Safe to call before the engine is up — the
+    logger is independent of engine state.
+    """
+    try:
+        from glados.core.config_store import cfg
+        from glados.observability import init_audit_logger
+
+        init_audit_logger(path=cfg.audit.path, enabled=cfg.audit.enabled)
+    except Exception as exc:
+        # Audit log failure must never prevent the engine from starting.
+        logger.warning("Audit logger init failed: {}", exc)
+
+
 def main() -> None:
     args = _parse_args()
 
@@ -98,6 +115,9 @@ def main() -> None:
 
     # Ensure runtime directories exist
     _ensure_dirs()
+
+    # Initialize audit logger early so startup events can be captured.
+    _init_audit_logger()
 
     # Start WebUI in background thread
     if not args.no_webui:

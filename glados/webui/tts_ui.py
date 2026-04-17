@@ -38,6 +38,7 @@ import yaml
 # Configuration â€” all values from centralized config store
 # ---------------------------------------------------------------------------
 from glados.core.config_store import cfg as _cfg
+from glados.observability import AuditEvent, Origin, audit
 
 TTS_URL = _cfg.service_url("tts") + "/v1/audio/speech"
 GLADOS_API_URL = _cfg.service_url("api_wrapper")
@@ -931,6 +932,8 @@ class Handler(BaseHTTPRequestHandler):
             self._get_audio_stats()
         elif p.startswith("/api/logs"):
             self._get_logs()
+        elif p == "/api/audit/recent" or p.startswith("/api/audit/recent?"):
+            self._get_audit_recent()
         elif p == "/api/config":
             self._get_config()
         elif p.startswith("/api/config/"):
@@ -1150,6 +1153,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Message is required"})
             return
 
+        # Record the utterance entering the system; api_wrapper will
+        # see X-GLaDOS-Origin and attribute tool calls downstream.
+        _sess = _get_session_cookie(self)
+        audit(AuditEvent(
+            ts=time.time(),
+            origin=Origin.WEBUI_CHAT,
+            kind="utterance",
+            utterance=message,
+            principal=(_sess.get("sub") if _sess else None),
+        ))
+
         # Build messages for GLaDOS API
         messages = list(history) + [{"role": "user", "content": message}]
         chat_payload = json.dumps({
@@ -1162,7 +1176,10 @@ class Handler(BaseHTTPRequestHandler):
         chat_req = urllib.request.Request(
             f"{GLADOS_API_URL}/v1/chat/completions",
             data=chat_payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-GLaDOS-Origin": Origin.WEBUI_CHAT,
+            },
         )
         try:
             with urllib.request.urlopen(chat_req, timeout=180) as resp:
@@ -1229,6 +1246,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Message is required"})
             return
 
+        # Record the utterance entering the system; X-GLaDOS-Origin lets
+        # api_wrapper attribute downstream tool calls to the same origin.
+        _sess = _get_session_cookie(self)
+        audit(AuditEvent(
+            ts=time.time(),
+            origin=Origin.WEBUI_CHAT,
+            kind="utterance",
+            utterance=message,
+            principal=(_sess.get("sub") if _sess else None),
+            extra={"streaming": True},
+        ))
+
         # Build OpenAI-compatible request for the API wrapper
         messages = list(history) + [{"role": "user", "content": message}]
         api_body = json.dumps({
@@ -1247,6 +1276,7 @@ class Handler(BaseHTTPRequestHandler):
                 headers={
                     "Content-Type": "application/json",
                     "Content-Length": str(len(api_body)),
+                    "X-GLaDOS-Origin": Origin.WEBUI_CHAT,
                 },
             )
             api_resp = conn.getresponse()
@@ -2034,6 +2064,64 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json(200, {"lines": result_lines, "service": service, "total_size": size})
+
+    def _get_audit_recent(self):
+        """Return the last N rows of the audit log as parsed JSON objects.
+
+        Query params:
+          limit   — max rows to return (default 200, cap 2000)
+          origin  — optional filter, e.g. origin=webui_chat
+          kind    — optional filter, e.g. kind=tool_call
+        """
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        try:
+            limit = min(int(params.get("limit", ["200"])[0]), 2000)
+        except ValueError:
+            limit = 200
+        origin_filter = params.get("origin", [None])[0]
+        kind_filter = params.get("kind", [None])[0]
+
+        audit_path = Path(_cfg.audit.path)
+        if not audit_path.exists():
+            self._send_json(200, {"rows": [], "path": str(audit_path)})
+            return
+
+        # Tail-read: read last ~512 KB (more than enough for 2000 short rows)
+        # and parse JSON lines. Malformed lines are skipped silently.
+        try:
+            size = audit_path.stat().st_size
+            read_size = min(size, 512 * 1024)
+            with open(audit_path, "rb") as f:
+                f.seek(max(0, size - read_size))
+                content = f.read().decode("utf-8", errors="replace")
+        except OSError as e:
+            self._send_json(500, {"error": str(e)})
+            return
+
+        rows: list[dict] = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+        # Filter then take the tail.
+        if origin_filter:
+            rows = [r for r in rows if r.get("origin") == origin_filter]
+        if kind_filter:
+            rows = [r for r in rows if r.get("kind") == kind_filter]
+        rows = rows[-limit:]
+
+        self._send_json(200, {
+            "rows": rows,
+            "count": len(rows),
+            "path": str(audit_path),
+        })
 
     def _clear_log(self):
         """Truncate a service log file."""
