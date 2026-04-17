@@ -4694,7 +4694,7 @@ function cfgRenderSsl(ssl) {
   return html;
 }
 
-function cfgSaveSection(section) {
+async function cfgSaveSection(section) {
   const data = cfgCollectForm(section);
   const resultEl = document.getElementById('cfg-save-result');
   resultEl.textContent = 'Saving...';
