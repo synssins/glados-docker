@@ -81,6 +81,10 @@ class SSLGlobal(BaseModel):
     domain: str = _env("ACME_DOMAIN", "")
     cert_path: str = _env("SSL_CERT", f"{_GLADOS_ROOT}/certs/cert.pem")
     key_path: str = _env("SSL_KEY", f"{_GLADOS_ROOT}/certs/key.pem")
+    use_letsencrypt: bool = False
+    acme_email: str = _env("ACME_EMAIL", "")
+    acme_provider: str = _env("DNS_PROVIDER", "cloudflare")
+    acme_api_token: str = _env("DNS_API_TOKEN", "")
 
 
 class AuthGlobal(BaseModel):
