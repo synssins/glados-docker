@@ -36,6 +36,44 @@ class TestCleanOutput:
         assert _clean_output("clean text") == "clean text"
 
 
+class TestStripTrailingVocative:
+    """The operator dislikes being addressed as 'test subject' etc.
+    The prompt asks the LLM not to do it; this is the safety net for
+    when it ignores."""
+
+    def test_strips_test_subject_with_comma(self) -> None:
+        assert _clean_output("Kitchen darkened, test subject.") == "Kitchen darkened."
+
+    def test_strips_test_subject_with_dash(self) -> None:
+        assert _clean_output("Kitchen darkened \u2014 test subject.") == "Kitchen darkened."
+
+    def test_strips_test_subject_no_punctuation(self) -> None:
+        # Adds terminal period when stripped.
+        assert _clean_output("Kitchen darkened test subject") == "Kitchen darkened."
+
+    def test_strips_subject_alone(self) -> None:
+        assert _clean_output("Done, subject.") == "Done."
+
+    def test_strips_human(self) -> None:
+        assert _clean_output("Affirmative, human.") == "Affirmative."
+
+    def test_strips_human_being(self) -> None:
+        assert _clean_output("Affirmative, human being.") == "Affirmative."
+
+    def test_does_not_touch_internal_uses(self) -> None:
+        # "subject" used as a noun in the middle of a sentence is fine.
+        assert _clean_output("The subject of light is fascinating.") == \
+               "The subject of light is fascinating."
+
+    def test_case_insensitive(self) -> None:
+        # Original terminal punctuation is preserved.
+        assert _clean_output("Sure, TEST SUBJECT.") == "Sure."
+        assert _clean_output("Sure, Test Subject!") == "Sure!"
+
+    def test_no_strip_when_absent(self) -> None:
+        assert _clean_output("Plain reply.") == "Plain reply."
+
+
 class TestPersonaRewriter:
     def _make(self, response_text: str | None = None, raise_on_call: bool = False):
         rw = PersonaRewriter(ollama_url="http://fake", model="dummy")
