@@ -26,7 +26,10 @@ Responsibilities that live in this container:
 - Discord integration
 - HUB75 LED display control
 - SSL/HTTPS with Let's Encrypt (DNS-01 via Cloudflare) or manual upload
-- Admin WebUI with TTS generator, chat client, audit-log viewer
+- Admin WebUI with TTS generator, chat client, audit-log viewer,
+  Memory management page (dedup-with-reinforcement long-term facts,
+  retention sweep trigger), and service auto-discovery (one-click
+  populate of Ollama models / Speaches voices from upstream)
 - JSON-lines audit log of every utterance and tier decision
 
 Responsibilities that live **outside** this container:
