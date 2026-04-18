@@ -72,6 +72,77 @@ SERVICE_MAP = {
 }
 _DOCKER_SOCKET = Path(os.environ.get("DOCKER_SOCKET", "/var/run/docker.sock"))
 
+
+def _docker_logs_tail(container: str, *, tail: int = 500, timestamps: bool = True,
+                      socket_timeout_s: float = 15.0) -> str:
+    """Fetch container logs via the Docker Engine API over the mounted
+    unix socket. Avoids the docker CLI which is not installed in the
+    container image. Returns stdout+stderr concatenated.
+
+    Raises FileNotFoundError if the socket isn't mounted.
+
+    The Docker API returns a multiplexed stream where each frame has an
+    8-byte header: [stream_type(1) | 000 | size(4, big-endian)] followed
+    by `size` bytes of payload. stream_type is 0 for stdin, 1 for stdout,
+    2 for stderr. We flatten both streams into one chronological blob
+    since loguru typically writes everything to stderr.
+    """
+    import socket as _socket
+    import struct as _struct
+    from urllib.parse import quote as _quote
+
+    if not _DOCKER_SOCKET.exists():
+        raise FileNotFoundError(str(_DOCKER_SOCKET))
+    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    sock.settimeout(socket_timeout_s)
+    try:
+        sock.connect(str(_DOCKER_SOCKET))
+        path = (f"/containers/{_quote(container)}/logs"
+                f"?stdout=1&stderr=1&tail={int(tail)}"
+                f"&timestamps={'1' if timestamps else '0'}")
+        req = f"GET {path} HTTP/1.0\r\nHost: localhost\r\n\r\n"
+        sock.sendall(req.encode("ascii"))
+        buf = bytearray()
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf.extend(chunk)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+    # Split HTTP headers from body.
+    head_end = buf.find(b"\r\n\r\n")
+    if head_end < 0:
+        raise RuntimeError("malformed docker logs HTTP response")
+    header_blob = bytes(buf[:head_end]).decode("iso-8859-1", "replace")
+    if not header_blob.startswith("HTTP/1.") or " 200 " not in header_blob.split("\r\n", 1)[0]:
+        status_line = header_blob.split("\r\n", 1)[0]
+        raise RuntimeError(f"docker API returned: {status_line}")
+    body = bytes(buf[head_end + 4:])
+
+    # De-multiplex the stream. Each frame: 8-byte header, then payload.
+    # When TTY mode is enabled on the container the API returns a raw
+    # stream without framing — detect that by peeking at the first
+    # byte: framed streams always start with 0/1/2.
+    if body and body[0] > 2:
+        return body.decode("utf-8", "replace")
+
+    out = bytearray()
+    i = 0
+    while i + 8 <= len(body):
+        size = _struct.unpack(">I", body[i + 4:i + 8])[0]
+        i += 8
+        if i + size > len(body):
+            break
+        out.extend(body[i:i + size])
+        i += size
+    return out.decode("utf-8", "replace")
+
+
 CONTENT_TYPES = {
     "wav": "audio/wav",
     "mp3": "audio/mpeg",
@@ -2652,7 +2723,6 @@ class Handler(BaseHTTPRequestHandler):
         ]})
 
     def _get_logs_tail(self):
-        import subprocess
         from urllib.parse import urlparse, parse_qs
         params = parse_qs(urlparse(self.path).query)
         source = params.get("source", ["container"])[0]
@@ -2664,23 +2734,18 @@ class Handler(BaseHTTPRequestHandler):
         if source in self._LOG_SOURCES_DOCKER:
             container = self._LOG_SOURCES_DOCKER[source]
             try:
-                # --timestamps prepends RFC-3339 time. loguru writes to
-                # stderr; we combine both streams so WARNING / ERROR
-                # lines from the app appear alongside any stdout.
-                result = subprocess.run(
-                    ["docker", "logs", "--tail", str(lines), "--timestamps", container],
-                    capture_output=True, text=True, timeout=15,
-                )
-                if result.returncode != 0:
-                    self._send_json(502, {"error": (result.stderr or "docker logs failed").strip()})
-                    return
-                combined = (result.stdout or "") + (result.stderr or "")
-                log_lines = combined.splitlines()[-lines:]
-                self._send_json(200, {"source": source, "lines": log_lines, "count": len(log_lines)})
-            except subprocess.TimeoutExpired:
-                self._send_json(504, {"error": "docker logs timed out"})
+                raw = _docker_logs_tail(container, tail=lines, timestamps=True)
+            except FileNotFoundError:
+                self._send_json(500, {
+                    "error": "Docker socket not mounted at /var/run/docker.sock; "
+                             "container log sources require the socket bind.",
+                })
+                return
             except Exception as exc:
-                self._send_json(500, {"error": str(exc)})
+                self._send_json(502, {"error": f"docker logs failed: {exc}"})
+                return
+            log_lines = raw.splitlines()[-lines:]
+            self._send_json(200, {"source": source, "lines": log_lines, "count": len(log_lines)})
             return
 
         if source in self._LOG_SOURCES_FILE:

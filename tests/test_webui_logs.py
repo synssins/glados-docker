@@ -60,10 +60,15 @@ def test_logs_tail_enforces_lines_cap(source: str) -> None:
     ), "Expected tail-endpoint line count to clamp to [1, 5000]"
 
 
-def test_logs_tail_uses_timestamped_docker_logs(source: str) -> None:
-    assert '"--timestamps"' in source, (
-        "docker logs should use --timestamps so operators see when events "
-        "happened (default output strips timestamps)"
+def test_logs_tail_requests_timestamped_docker_logs(source: str) -> None:
+    # We hit the Docker Engine API via the mounted unix socket (the
+    # docker CLI is not installed inside the container image). Operators
+    # need timestamps so they can correlate logs with user-visible events.
+    assert "timestamps=" in source, (
+        "docker logs HTTP API query must include timestamps="
+    )
+    assert "_docker_logs_tail" in source, (
+        "Expected a _docker_logs_tail helper that speaks to the socket"
     )
 
 
