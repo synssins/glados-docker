@@ -1483,6 +1483,80 @@ def _try_tier1_fast_path(
 
 
 # ---------------------------------------------------------------------------
+# History sanitation — self-healing conversation pollution
+# ---------------------------------------------------------------------------
+#
+# Conversation history lives in SQLite and rides along with every chat
+# request. Occasional rows slip through in shapes Ollama rejects — most
+# famously tool_calls with `arguments` as an empty string instead of {}.
+# A single bad row blocks EVERY future chat until the operator clears
+# the DB, which is a terrible UX for what's really a data-quality bug.
+#
+# This runs on every snapshot() before the request goes out. It repairs
+# known-bad shapes in-place (on the returned list, not the DB) and logs
+# a one-liner when a repair fires so chronic offenders are visible.
+
+def _sanitize_message_history(
+    messages: list[dict[str, Any]],
+    request_id: str,
+) -> list[dict[str, Any]]:
+    """Return a shape-normalised copy of `messages`.
+
+    Current repairs:
+      - `tool_calls[i].function.arguments` as "" / string → {}
+        (Ollama's Go struct expects an object; string fails with
+        ``json: cannot unmarshal string into Go struct field``).
+      - Assistant turns whose `content` is None → "" (Ollama requires
+        a string field even when tool_calls carry the payload).
+    """
+    repaired = 0
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        fixed = dict(m)
+        # Normalize content to string (never None) for assistant turns.
+        if fixed.get("role") == "assistant" and fixed.get("content") is None:
+            fixed["content"] = ""
+            repaired += 1
+        # Repair tool_calls argument shape.
+        tool_calls = fixed.get("tool_calls")
+        if isinstance(tool_calls, list):
+            new_calls = []
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    new_calls.append(call)
+                    continue
+                new_call = dict(call)
+                fn = new_call.get("function")
+                if isinstance(fn, dict):
+                    new_fn = dict(fn)
+                    args = new_fn.get("arguments")
+                    if not isinstance(args, dict):
+                        # Accept JSON-encoded string; reject anything else.
+                        if isinstance(args, str) and args.strip():
+                            try:
+                                new_fn["arguments"] = json.loads(args)
+                            except (json.JSONDecodeError, ValueError):
+                                new_fn["arguments"] = {}
+                        else:
+                            new_fn["arguments"] = {}
+                        repaired += 1
+                    new_call["function"] = new_fn
+                new_calls.append(new_call)
+            fixed["tool_calls"] = new_calls
+        out.append(fixed)
+    if repaired:
+        logger.warning(
+            "[{}] sanitized {} message(s) before Ollama POST "
+            "(tool_calls arg shape or null content)",
+            request_id, repaired,
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Streaming SSE support — direct Ollama passthrough
 # ---------------------------------------------------------------------------
 
@@ -1563,6 +1637,15 @@ def _stream_chat_sse(
 
     # Build messages from conversation store + add user message
     messages = store.snapshot()
+
+    # Self-heal history pollution before sending to Ollama.
+    # Historical assistant turns occasionally stored tool_calls with
+    # `arguments` as an empty string instead of {}, which Ollama rejects
+    # with "json: cannot unmarshal string into Go struct field
+    # ChatRequest.messages.tool_calls.function.arguments". Rewrite the
+    # shape silently so a single bad row doesn't brick every subsequent
+    # chat. Logged at WARNING so repeat offenders are visible.
+    messages = _sanitize_message_history(messages, request_id)
 
     # When tools are available AND we're in home-command mode, strip
     # few-shot user/assistant examples from the personality preprompt.
@@ -1710,12 +1793,15 @@ def _stream_chat_sse(
         request_id, len(messages), len(tools),
         "home_command" if is_home_command else "chitchat",
     )
-    # TEMP DEBUG — chitchat time-prefix investigation (remove after diag)
+    # Temp chitchat trace — kept at INFO so time-prefix / context-bleed
+    # investigations don't require a code change. Logs the first 240
+    # chars of every message sent to Ollama on the chitchat path. Remove
+    # by flipping to DEBUG once the prompt shape is well-understood.
     if not is_home_command:
         for _i, _m in enumerate(messages):
             _role = _m.get("role", "?")
             _c = str(_m.get("content", ""))
-            logger.debug("[{}] msg[{}] role={} content={}", request_id, _i, _role, _c[:240])
+            logger.info("[{}] chitchat-msg[{}] role={} {!r}", request_id, _i, _role, _c[:240])
     body = json.dumps(payload).encode("utf-8")
 
     headers = {
