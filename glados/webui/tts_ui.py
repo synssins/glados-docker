@@ -3913,6 +3913,40 @@ a.dl-link:hover { background: var(--orange-dim); color: #fff; }
   padding-bottom: 0.4rem;
   border-bottom: 1px solid var(--border);
 }
+.cfg-placeholder-card {
+  /* Read-only "coming soon" cards on Integrations for MQTT / Media Stack
+     while those features are still on the roadmap. Kept visually quieter
+     than real config cards so operators don't mistake them for active
+     integrations. */
+  background: var(--bg-input);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-top: 12px;
+  opacity: 0.8;
+}
+.cfg-placeholder-title {
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.cfg-placeholder-desc {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+.cfg-placeholder-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
 .cfg-tab-btn {
   background: #222;
   border: 1px solid #444;
@@ -4839,24 +4873,26 @@ const FIELD_META = {
   'home_assistant.url':    { label: 'Home Assistant URL', desc: 'Base URL of your Home Assistant instance' },
   'home_assistant.ws_url': { label: 'WebSocket URL', desc: 'WebSocket endpoint for real-time HA events', advanced: true },
   'home_assistant.token':  { label: 'API Token', desc: 'Long-lived access token for HA', type: 'password' },
-  // â”€â”€ Global: Network â”€â”€
-  'network.serve_host':    { label: 'Server Host', desc: 'IP address for the file server', advanced: true },
-  'network.serve_port':    { label: 'Server Port', desc: 'Port for the audio file server', advanced: true },
-  // â”€â”€ Global: Paths â”€â”€
-  'paths.glados_root':     { label: 'GLaDOS Root Path', desc: 'Root directory of the GLaDOS installation', advanced: true },
-  // paths.nssm removed — NSSM is not used in the container deployment
-  'paths.audio_base':      { label: 'Audio Base Path', desc: 'Root directory for all audio files', advanced: true },
+  // â”€â”€ Global: Network â”€â”€ (Phase 6: hidden — env-driven, YAML edit is inert)
+  'network.serve_host':    { label: 'Server Host', desc: 'env-driven; edit via SERVE_HOST', hidden: true },
+  'network.serve_port':    { label: 'Server Port', desc: 'env-driven; edit via SERVE_PORT', hidden: true },
+  // â”€â”€ Global: Paths â”€â”€ (Phase 6: all hidden — env-driven, no WebUI-writable effect)
+  'paths.glados_root':     { label: 'GLaDOS Root Path', desc: 'env-driven; edit via GLADOS_ROOT', hidden: true },
+  'paths.audio_base':      { label: 'Audio Base Path', desc: 'env-driven; edit via GLADOS_AUDIO', hidden: true },
+  'paths.logs':            { label: 'Logs Path', desc: 'env-driven; edit via GLADOS_LOGS', hidden: true },
+  'paths.data':            { label: 'Data Path', desc: 'env-driven; edit via GLADOS_DATA', hidden: true },
+  'paths.assets':          { label: 'Assets Path', desc: 'env-driven; edit via GLADOS_ASSETS', hidden: true },
   // â”€â”€ Global: SSL â”€â”€
   // SSL fields are edited on the dedicated Configuration > SSL page
   // (cfgRenderSsl). They were previously duplicated here via FIELD_META
   // auto-rendering which produced two conflicting forms for the same
   // settings. Phase 5 removed the duplicates; the SSL page is the
   // single source of truth for ssl.*.
-  // â”€â”€ Global: Auth â”€â”€
-  'auth.enabled':          { label: 'Authentication Enabled', desc: 'Require login to access System and Config' },
+  // â”€â”€ Global: Auth â”€â”€ (Phase 6: all advanced — operators rarely touch this after initial setup)
+  'auth.enabled':          { label: 'Authentication Enabled', desc: 'Require login to access System and Config', advanced: true },
   'auth.password_hash':    { label: 'Password Hash', desc: 'Bcrypt hash (use set_password tool to change)', advanced: true, type: 'password' },
   'auth.session_secret':   { label: 'Session Secret', desc: 'Secret key for session tokens', advanced: true, type: 'password' },
-  'auth.session_timeout_hours': { label: 'Session Timeout (hours)', desc: 'How long before a session expires' },
+  'auth.session_timeout_hours': { label: 'Session Timeout (hours)', desc: 'How long before a session expires', advanced: true },
   // â”€â”€ Global: Mode Entities â”€â”€
   'mode_entities.maintenance_mode':    { label: 'Maintenance Mode Entity', desc: 'HA entity for maintenance mode', advanced: true },
   'mode_entities.maintenance_speaker': { label: 'Maintenance Speaker Entity', desc: 'HA entity for maintenance speaker selection', advanced: true },
@@ -4871,22 +4907,37 @@ const FIELD_META = {
     '00:00','01:00','02:00','03:00','04:00','05:00','06:00','07:00','08:00','09:00','10:00','11:00',
     '12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00','22:00','23:00'] },
   'silent_hours.min_tier': { label: 'Minimum Tier to Play', desc: 'Alerts below this tier are suppressed during silent hours', options: ['AMBIENT','LOW','MEDIUM','HIGH','CRITICAL'] },
+  // â”€â”€ Global: Audit â”€â”€ (Phase 6: hidden — deprecated / no WebUI-writable effect)
+  'audit.enabled':                 { label: 'Audit Log Enabled', desc: 'Write utterance/tool audit trail to JSONL', advanced: true },
+  'audit.path':                    { label: 'Audit Log Path', desc: 'env-driven via GLADOS_LOGS', hidden: true },
+  'audit.retention_days':          { label: 'Audit Retention (days)', desc: 'rotation not implemented', hidden: true },
+  // â”€â”€ Global: Weather â”€â”€ (Phase 6: unit fields hidden — UI preference, not backend)
+  'weather.latitude':              { label: 'Weather Latitude', desc: 'Used when auto_from_ha is false' },
+  'weather.longitude':             { label: 'Weather Longitude', desc: 'Used when auto_from_ha is false' },
+  'weather.auto_from_ha':          { label: 'Auto-read Weather from HA', desc: 'Read lat/long from your HA configuration' },
+  'weather.temperature_unit':      { label: 'Temperature Unit', desc: 'display preference', hidden: true },
+  'weather.wind_speed_unit':       { label: 'Wind Speed Unit', desc: 'display preference', hidden: true },
   // â”€â”€ Global: Tuning â”€â”€
   'tuning.llm_connect_timeout_s':  { label: 'LLM Connect Timeout (s)', desc: 'Seconds to wait for LLM connection', advanced: true },
   'tuning.llm_read_timeout_s':     { label: 'LLM Read Timeout (s)', desc: 'Max seconds to wait for LLM response', advanced: true },
   'tuning.tts_flush_chars':        { label: 'TTS Flush Threshold', desc: 'Characters to buffer before sending to TTS', advanced: true },
   'tuning.engine_pause_time':      { label: 'Engine Pause Time (s)', desc: 'Pause between engine loop iterations', advanced: true },
   'tuning.mode_cache_ttl_s':       { label: 'Mode Cache TTL (s)', desc: 'Seconds to cache HA mode entity states', advanced: true },
+  'tuning.engine_audio_default':   { label: 'Engine Audio Default', desc: 'no code consumers', hidden: true },
   // â”€â”€ Audio â”€â”€
-  'ha_output_dir':         { label: 'HA Output Directory', desc: 'Where HA playback files are stored', pathMask: '/app/audio_files/' },
-  'archive_dir':           { label: 'Archive Directory', desc: 'Where archived audio files go', pathMask: '/app/audio_files/' },
-  'archive_max_files':     { label: 'Max Archive Files', desc: 'Maximum files to keep in the archive' },
-  'tts_ui_output_dir':     { label: 'TTS UI Output', desc: 'Output directory for WebUI TTS generation', pathMask: '/app/audio_files/' },
-  'tts_ui_max_files':      { label: 'Max TTS UI Files', desc: 'Maximum generated files to keep' },
-  'chat_audio_dir':        { label: 'Chat Audio Directory', desc: 'Where chat audio responses are stored', pathMask: '/app/audio_files/' },
-  'chat_audio_max_files':  { label: 'Max Chat Audio Files', desc: 'Maximum chat audio files to keep' },
-  'announcements_dir':     { label: 'Announcements Directory', desc: 'Pre-generated announcement WAV files', pathMask: '/app/audio_files/', advanced: true },
-  'commands_dir':          { label: 'Commands Directory', desc: 'Pre-recorded command audio files', pathMask: '/app/audio_files/', advanced: true },
+  // Phase 6: audio directory paths are hidden — editing them via the UI
+  // can't create the destination folder, so changes either silently do
+  // nothing (path exists) or break playback (path doesn't exist).
+  // Advanced file-count caps stay behind the Advanced toggle.
+  'ha_output_dir':         { label: 'HA Output Directory', desc: 'env-driven via GLADOS_AUDIO', hidden: true },
+  'archive_dir':           { label: 'Archive Directory', desc: 'env-driven via GLADOS_AUDIO', hidden: true },
+  'archive_max_files':     { label: 'Max Archive Files', desc: 'Maximum files to keep in the archive', advanced: true },
+  'tts_ui_output_dir':     { label: 'TTS UI Output', desc: 'env-driven via GLADOS_AUDIO', hidden: true },
+  'tts_ui_max_files':      { label: 'Max TTS UI Files', desc: 'Maximum generated files to keep', advanced: true },
+  'chat_audio_dir':        { label: 'Chat Audio Directory', desc: 'env-driven via GLADOS_AUDIO', hidden: true },
+  'chat_audio_max_files':  { label: 'Max Chat Audio Files', desc: 'Maximum chat audio files to keep', advanced: true },
+  'announcements_dir':     { label: 'Announcements Directory', desc: 'env-driven via GLADOS_AUDIO', hidden: true },
+  'commands_dir':          { label: 'Commands Directory', desc: 'env-driven via GLADOS_AUDIO', hidden: true },
   'silence_between_sentences_ms': { label: 'Silence Between Sentences (ms)', desc: 'Milliseconds of silence inserted between sentences' },
   'sample_rate':           { label: 'Sample Rate (Hz)', desc: 'Audio sample rate for WAV output', advanced: true },
   // â”€â”€ Speakers â”€â”€
@@ -4909,7 +4960,7 @@ const SECTION_META = {
   // Phase 6 page names (operators see these titles in the sidebar).
   integrations:     { title: 'Integrations', desc: 'Home Assistant, MQTT, and media-stack integrations (MQTT + *arr/Plex arrive in later phases)' },
   'llm-services':   { title: 'LLM & Services', desc: 'Ollama, TTS (speaches), STT, vision — endpoint URLs, health, and model options' },
-  'audio-speakers': { title: 'Audio & Speakers', desc: 'HA media players, audio file paths, synthesis parameters, and silent hours' },
+  'audio-speakers': { title: 'Audio & Speakers', desc: 'HA media players and speech synthesis parameters' },
   personality:      { title: 'Personality', desc: 'Attitudes, TTS defaults, HEXACO traits, and emotion model' },
   memory:           { title: 'Memory', desc: 'ChromaDB retention, passive-fact defaults, and the review queue' },
   ssl:              { title: 'SSL', desc: 'HTTPS certificates — Let\'s Encrypt (DNS-01) or manual upload' },
@@ -5021,7 +5072,149 @@ function cfgRenderSection(section) {
       + '<span id="cfg-save-result" class="cfg-result"></span>'
       + '</div>';
   }
+
+  // Page-specific extras appended AFTER the main form + save button.
+  if (section === 'integrations') {
+    html += _cfgRenderIntegrationsExtras();
+  } else if (section === 'llm-services') {
+    html += _cfgRenderLLMServicesExtras();
+  }
+
   document.getElementById('cfg-form-area').innerHTML = html;
+}
+
+// Phase 6: placeholder cards for Stage 3 Phase 2 (MQTT peer bus) and
+// the post-Stage-3 media stack (*arr + Plex). Render as read-only cards
+// so operators know the page exists for future growth without requiring
+// real configuration yet.
+function _cfgRenderIntegrationsExtras() {
+  return ''
+    + '<div class="cfg-placeholder-card">'
+    +   '<div class="cfg-placeholder-title">MQTT <span class="cfg-placeholder-tag">Coming soon</span></div>'
+    +   '<div class="cfg-placeholder-desc">'
+    +     'Peer-bus integration with Node-RED / Sonorium arrives in '
+    +     '<strong>Stage 3 Phase 2</strong>. See <code>docs/Stage 3.md</code> for the plan.'
+    +   '</div>'
+    + '</div>'
+    + '<div class="cfg-placeholder-card">'
+    +   '<div class="cfg-placeholder-title">Media Stack <span class="cfg-placeholder-tag">Coming soon</span></div>'
+    +   '<div class="cfg-placeholder-desc">'
+    +     'Voice control for Radarr / Sonarr / Lidarr / Plex is targeted post-Stage-3; '
+    +     'track it in <code>docs/roadmap.md</code>.'
+    +   '</div>'
+    + '</div>';
+}
+
+// Phase 6: cross-section cards under LLM & Services so operators can tune
+// persona strength (personality.model_options) and request timeouts
+// (global.tuning.llm_*_timeout_s) without hunting through the schema.
+// Each card saves its own backing section independently.
+function _cfgRenderLLMServicesExtras() {
+  const mo = (_cfgData.personality || {}).model_options || {};
+  const t = ((_cfgData.global || {}).tuning) || {};
+  let html = '';
+
+  // Model Options card (personality.model_options)
+  html += '<div class="card" style="margin-top:14px;">';
+  html += '<div class="cfg-subsection-title">Model Options</div>';
+  html += '<div class="cfg-field"><label class="cfg-field-label">Temperature</label>'
+    + '<div class="cfg-field-desc">0.0 is deterministic, 1.0+ is creative</div>'
+    + '<input id="cfg-personality-model_options-temperature" data-path="model_options.temperature" data-type="number" type="number" step="any" value="' + escAttr(String(mo.temperature ?? 0.7)) + '"></div>';
+  html += '<div class="cfg-field"><label class="cfg-field-label">Top P</label>'
+    + '<div class="cfg-field-desc">Nucleus sampling threshold (0.0 - 1.0)</div>'
+    + '<input id="cfg-personality-model_options-top_p" data-path="model_options.top_p" data-type="number" type="number" step="any" value="' + escAttr(String(mo.top_p ?? 0.9)) + '"></div>';
+  html += '<div class="cfg-field"><label class="cfg-field-label">Context Window (num_ctx)</label>'
+    + '<div class="cfg-field-desc">Tokens of context the model sees per turn</div>'
+    + '<input id="cfg-personality-model_options-num_ctx" data-path="model_options.num_ctx" data-type="number" type="number" value="' + escAttr(String(mo.num_ctx ?? 16384)) + '"></div>';
+  html += '<div class="cfg-field"><label class="cfg-field-label">Repeat Penalty</label>'
+    + '<div class="cfg-field-desc">Higher values reduce parroting (typical 1.0 - 1.3)</div>'
+    + '<input id="cfg-personality-model_options-repeat_penalty" data-path="model_options.repeat_penalty" data-type="number" type="number" step="any" value="' + escAttr(String(mo.repeat_penalty ?? 1.1)) + '"></div>';
+  html += '<div class="cfg-save-row">'
+    + '<button class="cfg-save-btn" onclick="cfgSaveModelOptions()">Save Model Options</button>'
+    + '<span id="cfg-save-result-model-options" class="cfg-result"></span></div>';
+  html += '</div>';
+
+  // LLM Timeouts card (global.tuning.llm_*)
+  html += '<div class="card" style="margin-top:14px;" data-advanced="true">';
+  html += '<div class="cfg-subsection-title">LLM Timeouts <span class="cfg-placeholder-tag">advanced</span></div>';
+  html += '<div class="cfg-field"><label class="cfg-field-label">Connect Timeout (s)</label>'
+    + '<div class="cfg-field-desc">Seconds to wait for LLM connection</div>'
+    + '<input id="cfg-llm-connect-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_connect_timeout_s ?? 10)) + '"></div>';
+  html += '<div class="cfg-field"><label class="cfg-field-label">Read Timeout (s)</label>'
+    + '<div class="cfg-field-desc">Max seconds to wait for LLM response</div>'
+    + '<input id="cfg-llm-read-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_read_timeout_s ?? 180)) + '"></div>';
+  html += '<div class="cfg-save-row">'
+    + '<button class="cfg-save-btn" onclick="cfgSaveLLMTimeouts()">Save Timeouts</button>'
+    + '<span id="cfg-save-result-timeouts" class="cfg-result"></span></div>';
+  html += '</div>';
+
+  return html;
+}
+
+// Model Options: wrap the existing personality section save with a
+// targeted update — read current personality data, overlay the four
+// model_options fields, PUT the full personality payload back.
+async function cfgSaveModelOptions() {
+  const resultEl = document.getElementById('cfg-save-result-model-options');
+  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
+  const current = _cfgData.personality || {};
+  const next = Object.assign({}, current, {
+    model_options: {
+      temperature: Number(document.getElementById('cfg-personality-model_options-temperature').value),
+      top_p: Number(document.getElementById('cfg-personality-model_options-top_p').value),
+      num_ctx: parseInt(document.getElementById('cfg-personality-model_options-num_ctx').value, 10),
+      repeat_penalty: Number(document.getElementById('cfg-personality-model_options-repeat_penalty').value),
+    }
+  });
+  try {
+    const r = await fetch('/api/config/personality', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(next)
+    });
+    const resp = await r.json();
+    if (r.ok) {
+      _cfgData.personality = next;
+      if (resultEl) resultEl.textContent = '';
+      showToast('Model options saved. Restart for changes to take effect.', 'success');
+    } else if (resultEl) {
+      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
+      resultEl.className = 'cfg-result err';
+    }
+  } catch(e) {
+    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
+  }
+}
+
+// LLM Timeouts: targeted update of the global.tuning.llm_*_timeout_s
+// fields, preserving all other tuning + global settings.
+async function cfgSaveLLMTimeouts() {
+  const resultEl = document.getElementById('cfg-save-result-timeouts');
+  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
+  const current = _cfgData.global || {};
+  const tuning = Object.assign({}, current.tuning || {}, {
+    llm_connect_timeout_s: parseInt(document.getElementById('cfg-llm-connect-timeout').value, 10),
+    llm_read_timeout_s: parseInt(document.getElementById('cfg-llm-read-timeout').value, 10),
+  });
+  const next = Object.assign({}, current, { tuning });
+  try {
+    const r = await fetch('/api/config/global', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(next)
+    });
+    const resp = await r.json();
+    if (r.ok) {
+      _cfgData.global = next;
+      if (resultEl) resultEl.textContent = '';
+      showToast('LLM timeouts saved. Restart for changes to take effect.', 'success');
+    } else if (resultEl) {
+      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
+      resultEl.className = 'cfg-result err';
+    }
+  } catch(e) {
+    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
+  }
 }
 
 // Phase 6 merged page: renders Speakers + Audio side-by-side with
@@ -5068,20 +5261,36 @@ function cfgBuildForm(obj, section, prefix, skipKeys) {
     const path = prefix ? prefix + '.' + key : key;
     const fieldId = 'cfg-' + section + '-' + path.replace(/\./g, '-');
     const meta = FIELD_META[path] || {};
+    // Phase 6 user-friendly pass: hidden-flagged fields stay in the schema
+    // (Raw YAML / env still drive them) but disappear from the friendly
+    // form so non-technical users aren't asked to touch deprecated paths,
+    // env-only fields, or settings that have no UI-writable effect.
+    if (meta.hidden) continue;
     const label = meta.label || key;
     const desc = meta.desc || '';
     const isAdvanced = meta.advanced === true;
     const advAttr = isAdvanced ? ' data-advanced="true"' : '';
 
     if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      // Check if entire group is advanced
-      const groupAdvanced = Object.keys(value).every(k => {
+      // Skip the group entirely if every child is hidden — otherwise we'd
+      // render an empty <div class="cfg-group"> with just a heading, which
+      // is what Commit 1 explicitly set out to avoid elsewhere.
+      const childKeys = Object.keys(value);
+      const visibleChildKeys = childKeys.filter(k => {
+        const childPath = path ? path + '.' + k : k;
+        return !((FIELD_META[childPath] || {}).hidden === true);
+      });
+      if (visibleChildKeys.length === 0) continue;
+      // Check if every VISIBLE child is advanced — if so, the whole group
+      // can collapse behind the Advanced toggle. Hidden children don't
+      // factor in; they're never rendered either way.
+      const groupAdvanced = visibleChildKeys.every(k => {
         const childPath = path ? path + '.' + k : k;
         return (FIELD_META[childPath] || {}).advanced === true;
       });
       const gAdvAttr = groupAdvanced ? ' data-advanced="true"' : '';
       html += '<div class="cfg-group"' + gAdvAttr + '><div class="cfg-group-title">' + escHtml(key) + '</div>';
-      html += cfgBuildForm(value, section, path);
+      html += cfgBuildForm(value, section, path, skipKeys);
       html += '</div>';
     } else if (Array.isArray(value)) {
       // Skip arrays of objects (handled by custom renderers)
@@ -5144,9 +5353,15 @@ function _svcDiscoverKind(key) {
   return null;
 }
 
+// Services that are deprecated / have no operator-facing effect — kept
+// in the schema for backward compatibility but hidden from the friendly
+// Services grid. Raw YAML still shows them.
+const SERVICES_HIDDEN = new Set(['gladys_api']);
+
 function cfgRenderServices(data) {
   let html = '<div class="service-grid">';
   for (const [key, svc] of Object.entries(data)) {
+    if (SERVICES_HIDDEN.has(key)) continue;
     const name = SERVICE_NAMES[key] || key;
     const urlId = 'cfg-services-' + key + '-url';
     const discoverKind = _svcDiscoverKind(key);
