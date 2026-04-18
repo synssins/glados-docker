@@ -4969,7 +4969,11 @@ function cfgRenderSection(section) {
   } else if (section === 'ssl') {
     html += cfgRenderSsl(_cfgData.global && _cfgData.global.ssl ? _cfgData.global.ssl : {});
   } else {
-    html += cfgBuildForm(data, section, '');
+    // Skip keys that belong to a dedicated page (ssl → SSL tab) or are
+    // env-only (paths, network are driven by GLADOS_ROOT / SERVE_HOST
+    // etc. inside the container, so the YAML-backed form is inert).
+    const skipKeys = (section === 'global') ? ['ssl', 'paths', 'network'] : null;
+    html += cfgBuildForm(data, section, '', skipKeys);
   }
 
   if (section !== 'ssl') {
@@ -4981,9 +4985,14 @@ function cfgRenderSection(section) {
   document.getElementById('cfg-form-area').innerHTML = html;
 }
 
-function cfgBuildForm(obj, section, prefix) {
+function cfgBuildForm(obj, section, prefix, skipKeys) {
   let html = '';
   for (const [key, value] of Object.entries(obj)) {
+    // Top-level skip list: callers pass keys that belong to a dedicated
+    // page (e.g. `ssl` has its own tab) or are env-only. Only checked at
+    // the top level so a nested field named `ssl` inside another group
+    // is not accidentally hidden.
+    if (skipKeys && !prefix && skipKeys.indexOf(key) !== -1) continue;
     const path = prefix ? prefix + '.' + key : key;
     const fieldId = 'cfg-' + section + '-' + path.replace(/\./g, '-');
     const meta = FIELD_META[path] || {};

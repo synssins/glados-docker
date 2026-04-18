@@ -65,5 +65,13 @@ Thumbs.db
 .idea/
 *.swp
 
+# Claude Code — session-local launch config (may reference local paths/ports)
+.claude/
+
+# Dev-only WebUI scratch dirs written by tests/dev_webui.py + Playwright fixtures
+tests/.tmp-glados-data/
+tests/.playwright-report/
+tests/.playwright-trace/
+
 # Snyk — the .snyk suppression file SHOULD be committed when it exists.
 # Nothing to ignore here; suppressions are a reviewable part of the repo.
