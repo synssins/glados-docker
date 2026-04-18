@@ -246,15 +246,31 @@ class Disambiguator:
 
         # 8. Execute via WS call_service.
         try:
-            self._ha.call_service(
+            ws_resp = self._ha.call_service(
                 domain=target_domain,
                 service=service,
                 target={"entity_id": entity_ids},
                 timeout_s=_HA_CALL_TIMEOUT_S,
             )
         except Exception as exc:
+            # str(exc) is sometimes empty for low-level failures (e.g.
+            # connection drop mid-call). Capture the type so the audit
+            # row is useful for debugging.
+            err = f"{type(exc).__name__}: {exc}".rstrip(": ")
+            logger.warning("Tier 2 call_service raised: {}", err)
             return self._fall_through(
-                "call_service_failed", str(exc), t0,
+                "call_service_failed", err, t0,
+                candidates=candidates_summary,
+            )
+        # HA's WS may return success=false with an error payload instead
+        # of raising. Inspect and treat that as a fall-through too.
+        if isinstance(ws_resp, dict) and ws_resp.get("success") is False:
+            err = ws_resp.get("error") or {}
+            err_msg = (err.get("message") or err.get("code")
+                       or json.dumps(err)[:120])
+            logger.warning("Tier 2 call_service returned error: {}", err_msg)
+            return self._fall_through(
+                "call_service_returned_error", err_msg, t0,
                 candidates=candidates_summary,
             )
 
@@ -318,6 +334,26 @@ class Disambiguator:
             "(\"bedroom lights\", \"kitchen lamps\") refers to ALL fixtures "
             "of that type in the area — return every matching entity_id, "
             "not just one.\n\n"
+            "===== ACTIVITY INFERENCE =====\n"
+            "When the user describes wanting to DO an activity rather "
+            "than naming a device, look for a SCENE or SCRIPT whose "
+            "name matches that activity. The mapping is your job — do\n"
+            "not ask 'which device?' when the activity is clear.\n"
+            "  'I want to read in the living room' / 'time to read'\n"
+            "    → activate a scene with 'reading' in the name in that\n"
+            "      area (e.g. scene.living_scene_reading)\n"
+            "  'movie time' / 'I'm going to watch a movie'\n"
+            "    → activate a movie/cinema scene if one exists\n"
+            "  'I'm going to bed' / 'time for sleep' / 'goodnight'\n"
+            "    → activate sleep/bedtime/night scene/script\n"
+            "  'wake up' / 'good morning'\n"
+            "    → activate morning/wake scene/script\n"
+            "  'dinner time' / 'I'm cooking'\n"
+            "    → activate dinner/kitchen scene\n"
+            "If a scene with the activity name exists in the candidates,\n"
+            "PREFER it over individual lights/switches. Activities map\n"
+            "to scenes; only fall back to individual entities when no\n"
+            "scene matches.\n\n"
             "Universal quantifiers (\"all\", \"every\", \"whole house\", "
             "\"everything\") mean the operator wants the action applied "
             "broadly. Be DECISIVE, not cautious:\n"
