@@ -44,27 +44,28 @@ def test_cfg_build_form_skip_check_is_top_level_only(source: str) -> None:
     ), "skipKeys must only apply at the top level (prefix empty)"
 
 
-def test_global_section_skips_ssl_paths_network(source: str) -> None:
-    # The 'global' dispatch in cfgRenderSection must forward the skip list.
-    # Look for an array containing exactly these three keys in any order.
+def test_global_backing_skips_ssl_paths_network(source: str) -> None:
+    # The 'global' backing dispatch in cfgRenderSection must forward the
+    # skip list. This applies both when the virtual page is Integrations
+    # (section=integrations, backing=global) and when a legacy direct call
+    # uses section=global.
     pattern = re.compile(
-        r"section\s*===\s*'global'.*?\[\s*('ssl'|'paths'|'network')\s*,\s*"
+        r"backing\s*===\s*'global'.*?\[\s*('ssl'|'paths'|'network')\s*,\s*"
         r"('ssl'|'paths'|'network')\s*,\s*('ssl'|'paths'|'network')\s*\]",
         re.DOTALL,
     )
     m = pattern.search(source)
-    assert m, "Global section must pass skipKeys=['ssl','paths','network'] to cfgBuildForm"
+    assert m, "Global backing must pass skipKeys=['ssl','paths','network'] to cfgBuildForm"
     assert set(m.groups()) == {"'ssl'", "'paths'", "'network'"}
 
 
-def test_non_global_sections_do_not_inherit_skip_list(source: str) -> None:
-    # Guard against accidentally skipping keys on other sections. The
-    # conditional must gate the skip list on section === 'global'; the
-    # ternary may or may not wrap the comparison in parens.
+def test_non_global_backings_do_not_inherit_skip_list(source: str) -> None:
+    # Guard against accidentally skipping keys for other backings. The
+    # ternary must gate on backing === 'global' (may or may not wrap in parens).
     assert re.search(
-        r"section\s*===\s*'global'\)?\s*\?\s*\[\s*'ssl'\s*,\s*'paths'\s*,\s*'network'\s*\]",
+        r"backing\s*===\s*'global'\)?\s*\?\s*\[\s*'ssl'\s*,\s*'paths'\s*,\s*'network'\s*\]",
         source,
     ), (
-        "skipKeys for cfgBuildForm must be gated on section === 'global' "
-        "so other pages (services/speakers/audio/etc.) are unaffected"
+        "skipKeys for cfgBuildForm must be gated on backing === 'global' "
+        "so other pages (services/audio/etc.) are unaffected"
     )
