@@ -1509,11 +1509,31 @@ _AUTONOMY_NOISE_PREFIXES = (
 
 
 def _is_autonomy_noise(msg: dict[str, Any]) -> bool:
+    """True when this stored turn is engine-autonomy chatter that should
+    never appear in a user-facing chitchat context.
+
+    Three shapes captured in live traces:
+      - user turn whose content starts with "Autonomy update." / "[summary]"
+      - tool-role turn (tool results from MCP calls made by autonomy —
+        the chitchat path doesn't have tools loaded, so these are dead
+        context)
+      - assistant turn with no readable text (empty/None content) AND
+        a tool_calls payload — the stub that triggered a tool-role turn
+        we're about to drop anyway
+    """
+    role = msg.get("role")
+    if role == "tool":
+        return True
     content = msg.get("content")
-    if not isinstance(content, str):
-        return False
-    head = content.lstrip()
-    return any(head.startswith(p) for p in _AUTONOMY_NOISE_PREFIXES)
+    if role == "assistant":
+        text = (content or "").strip() if isinstance(content, str) else ""
+        if not text and msg.get("tool_calls"):
+            return True
+    if isinstance(content, str):
+        head = content.lstrip()
+        if any(head.startswith(p) for p in _AUTONOMY_NOISE_PREFIXES):
+            return True
+    return False
 
 
 def _sanitize_message_history(
