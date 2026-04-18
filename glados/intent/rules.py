@@ -72,6 +72,59 @@ def domain_filter_for_utterance(utterance: str) -> list[str] | None:
 
 
 # ---------------------------------------------------------------------------
+# Activity phrases — map to scene / script activation in Tier 2. Exact
+# phrase match (whole-phrase boundary). Kept small on purpose; the LLM
+# does the actual scene selection against the candidate list.
+# ---------------------------------------------------------------------------
+
+_ACTIVITY_PHRASES: frozenset[str] = frozenset({
+    "movie", "movie time", "cinema", "cinema time",
+    "bedtime", "time for bed", "going to bed", "going to sleep",
+    "time to sleep", "time to read", "reading time", "reading",
+    "goodnight", "good night",
+    "good morning", "wake up", "wake-up", "morning routine",
+    "dinner", "dinner time", "breakfast", "lunch",
+    "focus", "focus mode", "work mode",
+    "relax", "relax mode", "chill", "wind down",
+    "party", "party mode",
+})
+
+
+def _has_activity_phrase(utterance: str) -> bool:
+    if not utterance:
+        return False
+    # Normalise to lowercase, strip trailing punctuation from the ends,
+    # then whole-phrase-match with leading / trailing space guards so
+    # "wake" inside "I wake" doesn't falsely match "wake up".
+    norm = " " + utterance.strip().lower().strip(".,!?;:'\"") + " "
+    return any((" " + p + " ") in norm for p in _ACTIVITY_PHRASES)
+
+
+def looks_like_home_command(utterance: str) -> bool:
+    """Cheap precheck: does this utterance carry ANY signal that the
+    operator intends a home-automation action?
+
+    Phase 6 follow-up (2026-04-18): Tier 2 used to run its fuzzy
+    candidate match unconditionally. That produced garbage responses
+    for conversational utterances — "Say hello to my little friend,
+    his name is Alan" fuzzy-matched "Alan" across friendly names /
+    entity IDs and the LLM dutifully built an ambiguity response
+    listing raw entity IDs. Now Tier 2 skips the LLM call entirely
+    when there's no device-keyword and no activity phrase, and
+    falls through to Tier 3 (the chitchat-capable full LLM) instead.
+
+    True when:
+      • any keyword from the domain-filter map appears, OR
+      • a known activity phrase maps to a scene / script
+    """
+    if domain_filter_for_utterance(utterance) is not None:
+        return True
+    if _has_activity_phrase(utterance):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Rules dataclass — loadable from YAML
 # ---------------------------------------------------------------------------
 

@@ -861,12 +861,17 @@ def discover_voices(url: str) -> tuple[int, dict]:
     except Exception as exc:  # pragma: no cover - defensive
         return 502, {"error": str(exc)}
 
-    # Speaches returns a top-level list; some deployments wrap it in
-    # {"data": [...]}. Accept both.
-    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
-        raw = payload["data"]
-    elif isinstance(payload, list):
+    # Accept three upstream shapes:
+    #   • top-level list ([{...}, ...] or ["name", ...])
+    #   • OpenAI-style { "data": [...] }
+    #   • GLaDOS Piper / generic { "voices": [...] }
+    # Any of them yields `raw` — a list of voice entries (dict or str).
+    if isinstance(payload, list):
         raw = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        raw = payload["data"]
+    elif isinstance(payload, dict) and isinstance(payload.get("voices"), list):
+        raw = payload["voices"]
     else:
         return 502, {"error": "unexpected response shape"}
 

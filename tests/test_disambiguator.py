@@ -253,7 +253,9 @@ class TestDefensive:
             llm_response='{"decision":"execute","entity_ids":["light.a","switch.b"],'
                          '"service":"turn_off","speech":"ok","rationale":"x"}',
         )
-        r = disambig.run("turn off them", source="webui_chat")
+        # Utterance must pass the Phase 6 home-command precheck so Tier 2
+        # actually runs and exercises the mixed-domains fall-through path.
+        r = disambig.run("turn off the lights", source="webui_chat")
         assert r.should_fall_through is True
         assert "mixed_domains" in r.rationale
 
@@ -267,3 +269,132 @@ class TestDefensive:
         r = disambig.run("turn off the light", source="webui_chat")
         assert r.should_fall_through is True
         assert "call_service_failed" in r.rationale
+
+
+class TestHomeCommandPrecheck:
+    """Phase 6 follow-up — utterances with no device/activity signal must
+    skip Tier 2 entirely so the LLM never sees candidates for proper
+    nouns. Regression: "Say hello to my little friend, his name is
+    Alan" fuzzy-matched 'alan' across 12 entities and the LLM returned
+    a clarify response that read raw entity IDs to the operator."""
+
+    @pytest.mark.parametrize("utterance", [
+        "Say hello to my little friend.... His name is Alan.",
+        "Hello GLaDOS",
+        "How are you today?",
+        "What's your favorite color?",
+        "Tell me about cake",
+        "Please say something nice",
+    ])
+    def test_chitchat_falls_through_before_llm(self, utterance: str) -> None:
+        disambig, _, _ = _make(
+            cache_states=[
+                _state("binary_sensor.sm_alan_is_charging", "Alan charging", state="off"),
+                _state("sensor.user_b_state", "Alan T state", state="idle"),
+            ],
+            llm_response='{"decision":"clarify","speech":"should not run"}',
+        )
+        r = disambig.run(utterance, source="webui_chat")
+        assert r.should_fall_through is True
+        assert r.rationale.startswith("no_home_command_intent")
+        # LLM must NOT have been called on these utterances.
+        disambig._call_ollama.assert_not_called()
+
+    @pytest.mark.parametrize("utterance", [
+        "turn off the bedroom lights",
+        "dim the kitchen lamps",
+        "activate the evening scene",
+        "set the thermostat to 68",
+        "is the garage door closed",
+        "play some music in the living room",
+        "goodnight",
+        "movie time",
+        "wake up",
+    ])
+    def test_home_commands_reach_tier2(self, utterance: str) -> None:
+        """Utterances with a device keyword or activity phrase must
+        still reach Tier 2. Mock LLM returns a benign clarify so we
+        just need to confirm the LLM was called."""
+        disambig, _, _ = _make(
+            cache_states=[_state("light.bedroom", "Bedroom", state="off")],
+            llm_response='{"decision":"clarify","speech":"need more detail"}',
+        )
+        r = disambig.run(utterance, source="webui_chat")
+        # We don't care about the specific outcome — just that the
+        # precheck didn't short-circuit.
+        disambig._call_ollama.assert_called_once()
+        assert not r.rationale.startswith("no_home_command_intent")
+
+
+class TestSpeechEntityIdLeakGuard:
+    """Phase 6 follow-up — if the LLM's speech contains any candidate
+    entity_id (the 'Ambiguity detected: binary_sensor.sm_…' regression),
+    Tier 2 must fall through rather than voice developer strings."""
+
+    def test_leaked_entity_id_in_clarify_falls_through(self) -> None:
+        disambig, _, _ = _make(
+            cache_states=[
+                _state("binary_sensor.alan_is_charging", "Alan phone charging", state="off"),
+                _state("sensor.user_b_state", "Alan T state", state="idle"),
+            ],
+            # Utterance that DOES pass the precheck (has 'lights'),
+            # so we exercise the speech-leak guard specifically.
+            llm_response=(
+                '{"decision":"clarify",'
+                '"speech":"Ambiguity detected: binary_sensor.alan_is_charging, '
+                'sensor.user_b_state. Specify which Alan you mean.",'
+                '"rationale":"x"}'
+            ),
+        )
+        r = disambig.run("turn off the lights for Alan", source="webui_chat")
+        assert r.should_fall_through is True
+        assert "speech_leaked_entity_ids" in r.rationale
+
+    def test_clean_clarify_speech_is_preserved(self) -> None:
+        disambig, _, _ = _make(
+            cache_states=[
+                _state("light.bedroom_main", "Master Bedroom Main", state="on"),
+                _state("light.bedroom_reading", "Bedroom Reading Lamp", state="on"),
+            ],
+            llm_response=(
+                '{"decision":"clarify",'
+                '"speech":"Two candidates match: the master bedroom main '
+                'and the reading lamp. Specify.","rationale":"x"}'
+            ),
+        )
+        r = disambig.run("turn off the bedroom lights", source="webui_chat")
+        assert r.handled is True
+        assert r.should_fall_through is False
+        assert r.decision == "clarify"
+        assert "master bedroom" in r.speech.lower()
+
+
+class TestHomeCommandHelper:
+    """Unit coverage for the rules.looks_like_home_command helper itself."""
+
+    @pytest.mark.parametrize("utterance", [
+        "Say hello to my little friend.... His name is Alan.",
+        "Good evening",
+        "Tell me a joke",
+        "What time is it",
+        "",
+    ])
+    def test_non_home_commands_return_false(self, utterance: str) -> None:
+        from glados.intent.rules import looks_like_home_command
+        assert looks_like_home_command(utterance) is False
+
+    @pytest.mark.parametrize("utterance", [
+        "turn off the bedroom lights",
+        "set thermostat to 70",
+        "lock the front door",
+        "open the blinds",
+        "play music in the kitchen",
+        "activate the evening scene",
+        "goodnight",
+        "movie time",
+        "time for bed",
+        "wake up",
+    ])
+    def test_home_commands_return_true(self, utterance: str) -> None:
+        from glados.intent.rules import looks_like_home_command
+        assert looks_like_home_command(utterance) is True
