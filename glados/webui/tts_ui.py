@@ -4024,6 +4024,36 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 }
 .svc-health-dot.ok { background: var(--green); }
 .svc-health-dot.err { background: var(--red); }
+/* Phase 5 service auto-discovery */
+.svc-url-row { display: flex; gap: 6px; align-items: center; }
+.svc-url-row input { flex: 1; }
+.svc-discover-btn {
+  background: #2e2e35;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.svc-discover-btn:hover { background: #3a3a42; color: var(--orange); }
+.svc-discover-status {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  min-width: 70px;
+}
+.svc-discover-status.ok { color: var(--green); }
+.svc-discover-status.err { color: var(--red); }
+.svc-dropdown {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 0.84rem;
+}
 
 /* â”€â”€ Attitudes table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .att-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
@@ -4928,31 +4958,59 @@ function cfgBuildForm(obj, section, prefix) {
 
 /* â”€â”€ Services custom renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
+// Decide which discovery endpoint a given service should use.
+// Ollama URLs go through /api/tags; TTS URLs through /v1/voices.
+function _svcDiscoverKind(key) {
+  if (key === 'tts') return 'voices';
+  if (key.indexOf('ollama') === 0) return 'ollama';
+  return null;
+}
+
 function cfgRenderServices(data) {
   let html = '<div class="service-grid">';
   for (const [key, svc] of Object.entries(data)) {
     const name = SERVICE_NAMES[key] || key;
-    const fieldId = 'cfg-services-' + key + '-url';
-    const showVoice = (key === 'tts' && svc.voice !== undefined);
+    const urlId = 'cfg-services-' + key + '-url';
+    const discoverKind = _svcDiscoverKind(key);
+    const hasVoice = (key === 'tts' && svc.voice !== undefined);
+    const hasModel = (svc.model !== undefined) || (discoverKind === 'ollama');
     html += '<div class="service-card">'
       + '<div class="service-card-header">'
       + '<span class="svc-health-dot" id="svc-dot-' + key + '"></span>'
       + '<span class="service-card-name">' + escHtml(name) + '</span>'
       + '</div>'
-      + '<div class="cfg-field" style="margin-bottom:' + (showVoice ? '8px' : '0') + ';">'
+      + '<div class="cfg-field" style="margin-bottom:6px;">'
       + '<label class="cfg-field-label">URL</label>'
-      + '<input id="' + fieldId + '" data-path="' + key + '.url" data-type="string" value="' + escAttr(svc.url || '') + '">'
+      + '<div class="svc-url-row">'
+      +   '<input id="' + urlId + '" data-path="' + key + '.url" data-type="string" value="' + escAttr(svc.url || '') + '"'
+      +     (discoverKind ? ' onblur="svcUrlBlur(\'' + escAttr(key) + '\')"' : '')
+      +   '>';
+    if (discoverKind) {
+      html += '<button type="button" class="svc-discover-btn" title="Discover from upstream" onclick="svcDiscover(\'' + escAttr(key) + '\')">&#x21bb; Discover</button>';
+    }
+    html +=   '<span class="svc-discover-status" id="svc-status-' + key + '"></span>'
+      + '</div>'
       + '</div>';
-    if (showVoice) {
-      html += '<div class="cfg-field" style="margin-bottom:0;">'
+    if (hasVoice) {
+      html += '<div class="cfg-field" style="margin-bottom:6px;">'
         + '<label class="cfg-field-label">Voice</label>'
-        + '<input id="cfg-services-' + key + '-voice" data-path="' + key + '.voice" data-type="string" value="' + escAttr(svc.voice || '') + '">'
+        + '<select id="cfg-services-' + key + '-voice" data-path="' + key + '.voice" data-type="string" class="svc-dropdown">'
+        +   '<option value="' + escAttr(svc.voice || '') + '" selected>' + escHtml(svc.voice || '(none)') + '</option>'
+        + '</select>'
+        + '</div>';
+    }
+    if (hasModel) {
+      html += '<div class="cfg-field" style="margin-bottom:0;">'
+        + '<label class="cfg-field-label">Model</label>'
+        + '<select id="cfg-services-' + key + '-model" data-path="' + key + '.model" data-type="string" class="svc-dropdown">'
+        +   '<option value="' + escAttr(svc.model || '') + '" selected>' + escHtml(svc.model || '(click Discover to list)') + '</option>'
+        + '</select>'
         + '</div>';
     }
     html += '</div>';
   }
   html += '</div>';
-  // Ping services for health status
+  // Ping + seed dropdowns from current URLs.
   setTimeout(() => cfgPingServices(data), 100);
   return html;
 }
@@ -4964,12 +5022,87 @@ async function cfgPingServices(data) {
     const url = (data[key].url || '').replace(/\/$/, '');
     if (!url) { dot.className = 'svc-health-dot err'; continue; }
     try {
-      const r = await fetch(url + '/health', { signal: AbortSignal.timeout(3000) });
-      dot.className = 'svc-health-dot ' + (r.ok ? 'ok' : 'err');
+      // Use the new Phase 5 discover/health endpoint — it always returns
+      // 200 with ok:true/false, so we get the latency and status cleanly.
+      const r = await fetch('/api/discover/health?url=' + encodeURIComponent(url),
+                             { signal: AbortSignal.timeout(3500) });
+      const d = await r.json();
+      dot.className = 'svc-health-dot ' + (d.ok ? 'ok' : 'err');
+      if (d.latency_ms != null) dot.title = d.latency_ms + ' ms';
     } catch(e) {
       dot.className = 'svc-health-dot err';
     }
   }
+}
+
+// ── Service auto-discovery (Phase 5) ────────────────────────────
+let _svcBlurTimers = {};
+
+function svcUrlBlur(key) {
+  // Debounce blur-triggered discovery so rapid tab-throughs don't fire
+  // N simultaneous upstream calls. First one wins; subsequent blurs
+  // inside 300ms are dropped.
+  if (_svcBlurTimers[key]) clearTimeout(_svcBlurTimers[key]);
+  _svcBlurTimers[key] = setTimeout(() => { svcDiscover(key); }, 300);
+}
+
+async function svcDiscover(key) {
+  const kind = _svcDiscoverKind(key);
+  if (!kind) return;
+  const urlInput = document.getElementById('cfg-services-' + key + '-url');
+  const status = document.getElementById('svc-status-' + key);
+  if (!urlInput) return;
+  const url = (urlInput.value || '').trim().replace(/\/$/, '');
+  if (!url) {
+    if (status) status.textContent = '';
+    return;
+  }
+  if (status) { status.className = 'svc-discover-status'; status.textContent = 'discovering…'; }
+  try {
+    const r = await fetch('/api/discover/' + kind + '?url=' + encodeURIComponent(url));
+    const data = await r.json();
+    if (!r.ok) {
+      if (status) { status.className = 'svc-discover-status err'; status.textContent = data.error || 'failed'; }
+      return;
+    }
+    if (kind === 'ollama') {
+      _svcPopulateDropdown('cfg-services-' + key + '-model', (data.models || []).map(m => m.name));
+      if (status) { status.className = 'svc-discover-status ok'; status.textContent = data.count + ' models'; }
+    } else if (kind === 'voices') {
+      _svcPopulateDropdown('cfg-services-' + key + '-voice', (data.voices || []).map(v => v.name));
+      if (status) { status.className = 'svc-discover-status ok'; status.textContent = data.count + ' voices'; }
+    }
+    // Refresh the dot too — the URL may have changed.
+    const dot = document.getElementById('svc-dot-' + key);
+    if (dot) {
+      try {
+        const hr = await fetch('/api/discover/health?url=' + encodeURIComponent(url));
+        const hd = await hr.json();
+        dot.className = 'svc-health-dot ' + (hd.ok ? 'ok' : 'err');
+        if (hd.latency_ms != null) dot.title = hd.latency_ms + ' ms';
+      } catch(e) {}
+    }
+  } catch(e) {
+    if (status) { status.className = 'svc-discover-status err'; status.textContent = 'error'; }
+  }
+}
+
+function _svcPopulateDropdown(id, options) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const current = el.value;
+  const values = new Set(options || []);
+  if (current) values.add(current);  // keep current selection even if upstream hasn't loaded it
+  const sorted = Array.from(values).sort();
+  let html = '';
+  for (const v of sorted) {
+    const sel = (v === current) ? ' selected' : '';
+    html += '<option value="' + escAttr(v) + '"' + sel + '>' + escHtml(v) + '</option>';
+  }
+  if (html === '') {
+    html = '<option value="">(no options returned)</option>';
+  }
+  el.innerHTML = html;
 }
 
 /* â”€â”€ Personality custom renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
