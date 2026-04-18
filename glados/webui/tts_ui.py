@@ -3823,6 +3823,38 @@ a.dl-link:hover { background: var(--orange-dim); color: #fff; }
 .gpu-bar-fill.crit { background: #f44336; }
 .gpu-stat { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); margin-top: 4px; }
 
+/* -- Memory page (Phase 5) -- */
+.mem-fact, .mem-recent, .mem-pending {
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.mem-fact:last-child, .mem-recent:last-child, .mem-pending:last-child { border-bottom: none; }
+.mem-fact-text { font-size: 0.92rem; color: var(--text); }
+.mem-fact-meta { font-size: 0.72rem; color: var(--text-dim); margin-top: 3px; letter-spacing: 0.01em; }
+.mem-fact-actions { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+#memAddForm textarea {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 0.88rem;
+  resize: vertical;
+  min-height: 60px;
+}
+#memSearchInput {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  min-width: 160px;
+}
+.mem-radio-row label { margin-right: 16px; font-size: 0.85rem; }
+.mem-recent .mem-bump { color: var(--orange); font-weight: 500; }
+
 /* â”€â”€ Config Styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .cfg-section-header {
   margin-bottom: 1.25rem;
@@ -4464,6 +4496,75 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 </div>
 
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!-- ================================================================ -->
+<!-- CONFIGURATION > MEMORY (Phase 5)                                   -->
+<!-- ================================================================ -->
+<div id="tab-config-memory" class="tab-content">
+<div class="container" style="position:relative;">
+  <div id="memoryAuthOverlay" class="auth-overlay" style="display:none;">
+    <div class="auth-overlay-icon">&#128274;</div>
+    <div class="auth-overlay-text">Authentication required to access Memory</div>
+    <a href="/login" class="auth-overlay-btn">Sign In</a>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Memory configuration</div>
+    <div class="mem-radio-row">
+      <div class="mode-label" style="margin-bottom:4px;">Default status for new passive facts</div>
+      <label><input type="radio" name="memDefaultStatus" value="approved" onchange="memSaveDefaultStatus('approved')"> Approved (enters RAG immediately)</label>
+      <label><input type="radio" name="memDefaultStatus" value="pending" onchange="memSaveDefaultStatus('pending')"> Pending (manual review)</label>
+      <div class="mode-desc" style="margin-top:4px;">
+        Stored as <code>memory.passive_default_status</code>. Approved = reinforcement-on-repetition via ChromaDB similarity dedup.
+        Pending = facts queue below for operator approval before entering RAG.
+      </div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <button class="btn-small" onclick="memSweepRetention()">Sweep retention now</button>
+      <span id="memRetentionStatus" style="font-size:0.78rem;color:var(--text-dim);"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+      <div class="section-title" style="margin-bottom:0;">Long-term facts</div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input id="memSearchInput" type="text" placeholder="Search..." oninput="memSearchDebounced()">
+        <button class="btn-small" onclick="memShowAddForm()">+ Add</button>
+      </div>
+    </div>
+    <div id="memAddForm" style="display:none;margin-top:12px;">
+      <textarea id="memAddText" placeholder="Chris prefers the living room lights at 40% in the evening"></textarea>
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:0.82rem;color:var(--text-dim);">Importance:
+          <input id="memAddImportance" type="number" step="0.05" min="0" max="1" value="0.9" style="width:70px;margin-left:4px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;">
+        </label>
+        <button class="btn-small" onclick="memAddFact()">Save</button>
+        <button class="btn-small" onclick="memHideAddForm()" style="background:#555;">Cancel</button>
+      </div>
+    </div>
+    <div id="memFactsList" style="margin-top:12px;">Loading...</div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div class="section-title" style="margin-bottom:0;">Recent activity</div>
+      <button class="btn-small" onclick="memLoadRecent()">Refresh</button>
+    </div>
+    <div class="mode-desc" style="margin-top:4px;">Last 10 facts added or reinforced.</div>
+    <div id="memRecentList" style="margin-top:10px;">Loading...</div>
+  </div>
+
+  <div class="card" id="memPendingCard" style="display:none;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div class="section-title" style="margin-bottom:0;">Pending review</div>
+      <button class="btn-small" onclick="memLoadPending()">Refresh</button>
+    </div>
+    <div class="mode-desc" style="margin-top:4px;">Facts auto-extracted but not yet approved for RAG.</div>
+    <div id="memPendingList" style="margin-top:10px;">Loading...</div>
+  </div>
+</div>
+</div>
+
 <!-- TAB: TRAINING MONITOR                                          -->
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 <div id="tab-training" class="tab-content">
@@ -5290,6 +5391,349 @@ async function cfgReload() {
 document.addEventListener('DOMContentLoaded', () => {
   cfgLoadAll();
 });
+
+/* ===============================================================
+   Memory page (Phase 5) — long-term facts, recent activity,
+   passive default-status toggle, manual retention sweep.
+   =============================================================== */
+
+let _memCachedConfig = null;
+
+function memoryLoadAll() {
+  memLoadConfig();
+  memLoadFacts();
+  memLoadRecent();
+}
+
+async function memLoadConfig() {
+  try {
+    const r = await fetch('/api/config/memory');
+    if (!r.ok) return;
+    const cfg = await r.json();
+    _memCachedConfig = cfg;
+    const defaultStatus = cfg.passive_default_status || 'approved';
+    document.querySelectorAll('input[name="memDefaultStatus"]').forEach(rb => {
+      rb.checked = (rb.value === defaultStatus);
+    });
+    const pendingCard = document.getElementById('memPendingCard');
+    if (pendingCard) {
+      pendingCard.style.display = (defaultStatus === 'pending') ? '' : 'none';
+    }
+    if (defaultStatus === 'pending') memLoadPending();
+  } catch(e) { /* ignore */ }
+}
+
+async function memSaveDefaultStatus(val) {
+  if (!_memCachedConfig) {
+    // Fetch latest before PUT to preserve other fields.
+    try {
+      const r = await fetch('/api/config/memory');
+      if (r.ok) _memCachedConfig = await r.json();
+    } catch(e) {}
+  }
+  const body = Object.assign({}, _memCachedConfig || {}, {passive_default_status: val});
+  try {
+    const r = await fetch('/api/config/memory', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      showToast('Save failed: ' + t, 'error');
+      return;
+    }
+    showToast('Default status saved: ' + val, 'success');
+    memLoadConfig();
+  } catch(e) {
+    showToast('Save failed: ' + e.message, 'error');
+  }
+}
+
+function memShowAddForm() { document.getElementById('memAddForm').style.display = ''; }
+function memHideAddForm() {
+  document.getElementById('memAddForm').style.display = 'none';
+  document.getElementById('memAddText').value = '';
+}
+
+async function memAddFact() {
+  const text = document.getElementById('memAddText').value.trim();
+  if (!text) { showToast('Text required', 'error'); return; }
+  const importance = parseFloat(document.getElementById('memAddImportance').value);
+  try {
+    const r = await fetch('/api/memory/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({document: text, importance: importance}),
+    });
+    const data = await r.json();
+    if (!data.added) {
+      showToast('Add failed: ' + (data.error || 'unknown'), 'error');
+      return;
+    }
+    memHideAddForm();
+    memLoadFacts();
+    memLoadRecent();
+    showToast('Fact added', 'success');
+  } catch(e) {
+    showToast('Add failed: ' + e.message, 'error');
+  }
+}
+
+let _memSearchTimer;
+function memSearchDebounced() {
+  clearTimeout(_memSearchTimer);
+  _memSearchTimer = setTimeout(memLoadFacts, 300);
+}
+
+async function memLoadFacts() {
+  const q = document.getElementById('memSearchInput');
+  const qv = q ? q.value.trim() : '';
+  const url = qv
+    ? '/api/memory/list?q=' + encodeURIComponent(qv) + '&limit=50'
+    : '/api/memory/list?limit=50';
+  try {
+    const r = await fetch(url);
+    const data = await r.json();
+    _memRenderFacts(data.rows || []);
+  } catch(e) {
+    document.getElementById('memFactsList').textContent = 'Load failed: ' + e.message;
+  }
+}
+
+function _memRenderFacts(rows) {
+  const el = document.getElementById('memFactsList');
+  if (rows.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No facts yet. Click + Add to record one.</div>';
+    return;
+  }
+  let html = '';
+  rows.forEach(r => { html += _memFactCard(r); });
+  el.innerHTML = html;
+}
+
+function _memFactCard(r) {
+  const m = r.metadata || {};
+  const sourceRaw = m.source || '';
+  const source = sourceRaw.replace(/^user_/, '') || 'unknown';
+  const importance = (m.importance != null) ? Number(m.importance).toFixed(2) : '?';
+  const mentions = m.mention_count || 1;
+  const age = _memFmtAge(m.written_at);
+  const doc = escHtml(r.document || '');
+  const id = escAttr(r.id || '');
+  return '<div class="mem-fact" data-id="' + id + '">'
+    + '<div class="mem-fact-text">' + doc + '</div>'
+    + '<div class="mem-fact-meta">source=' + escHtml(source)
+      + '  importance=' + importance
+      + '  mentions=' + mentions
+      + '  age=' + age + '</div>'
+    + '<div class="mem-fact-actions">'
+    +   '<button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
+    +   ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
+    + '</div></div>';
+}
+
+function _memFmtAge(ts) {
+  if (!ts) return '?';
+  const d = (Date.now() / 1000) - Number(ts);
+  if (d < 60)    return Math.max(0, Math.floor(d)) + 's';
+  if (d < 3600)  return Math.floor(d / 60) + 'm';
+  if (d < 86400) return Math.floor(d / 3600) + 'h';
+  return Math.floor(d / 86400) + 'd';
+}
+
+async function memEdit(id) {
+  const row = document.querySelector('.mem-fact[data-id="' + id + '"], .mem-recent[data-id="' + id + '"], .mem-pending[data-id="' + id + '"]');
+  const currentText = row ? (row.querySelector('.mem-fact-text, strong') || {}).textContent || '' : '';
+  const newText = prompt('Edit fact:', currentText);
+  if (newText == null || newText.trim() === '' || newText.trim() === currentText.trim()) return;
+  try {
+    await fetch('/api/memory/' + encodeURIComponent(id) + '/edit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({document: newText.trim()}),
+    });
+    memLoadFacts(); memLoadRecent(); memLoadPending();
+    showToast('Edited', 'success');
+  } catch(e) {
+    showToast('Edit failed: ' + e.message, 'error');
+  }
+}
+
+async function memDelete(id) {
+  if (!confirm('Delete this fact? This cannot be undone.')) return;
+  try {
+    await fetch('/api/memory/' + encodeURIComponent(id), {method: 'DELETE'});
+    memLoadFacts(); memLoadRecent(); memLoadPending();
+    showToast('Deleted', 'success');
+  } catch(e) {
+    showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+async function memPromote(id) {
+  try {
+    await fetch('/api/memory/' + encodeURIComponent(id) + '/promote', {method: 'POST'});
+    memLoadPending(); memLoadFacts(); memLoadRecent();
+    showToast('Approved', 'success');
+  } catch(e) {
+    showToast('Approve failed: ' + e.message, 'error');
+  }
+}
+
+async function memReject(id) {
+  if (!confirm('Reject this fact? It will not enter RAG.')) return;
+  try {
+    await fetch('/api/memory/' + encodeURIComponent(id) + '/demote', {method: 'POST'});
+    memLoadPending();
+    showToast('Rejected', 'success');
+  } catch(e) {
+    showToast('Reject failed: ' + e.message, 'error');
+  }
+}
+
+// Recent activity: reuses /api/memory/list; sorts by max(written_at,
+// last_mentioned_at) and shows the top 10. Reinforcement-bump rows
+// can offer "Update wording from latest mention" when last_mention_text
+// differs from the canonical document.
+async function memLoadRecent() {
+  try {
+    const r = await fetch('/api/memory/list?limit=200');
+    const data = await r.json();
+    const rows = (data.rows || []).slice();
+    rows.sort((a, b) => {
+      const am = a.metadata || {}, bm = b.metadata || {};
+      const at = Math.max(Number(am.last_mentioned_at || 0), Number(am.written_at || 0));
+      const bt = Math.max(Number(bm.last_mentioned_at || 0), Number(bm.written_at || 0));
+      return bt - at;
+    });
+    _memRenderRecent(rows.slice(0, 10));
+  } catch(e) {
+    document.getElementById('memRecentList').textContent = 'Load failed: ' + e.message;
+  }
+}
+
+function _memRenderRecent(rows) {
+  const el = document.getElementById('memRecentList');
+  if (rows.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No recent activity.</div>';
+    return;
+  }
+  let html = '';
+  rows.forEach(r => { html += _memRecentItem(r); });
+  el.innerHTML = html;
+}
+
+function _memRecentItem(r) {
+  const m = r.metadata || {};
+  const doc = escHtml(r.document || '');
+  const id = escAttr(r.id || '');
+  const mentions = m.mention_count || 1;
+  const isReinforcement = mentions > 1;
+  const age = _memFmtAge(Math.max(Number(m.last_mentioned_at || 0), Number(m.written_at || 0)));
+  const lastText = m.last_mention_text || '';
+  const canUpdate = isReinforcement && lastText && lastText !== (r.document || '');
+  const importance = Number(m.importance || 0).toFixed(2);
+  const origImportance = Number(m.original_importance || 0).toFixed(2);
+  let label = isReinforcement
+    ? '<span class="mem-bump">reinforced</span> importance ' + origImportance + ' &rarr; ' + importance + ', mentions=' + mentions
+    : 'new fact';
+  let html = '<div class="mem-recent" data-id="' + id + '">'
+    + '<div><strong>' + doc + '</strong></div>'
+    + '<div class="mem-fact-meta">' + label + '  &bull;  ' + age + ' ago</div>';
+  if (canUpdate) {
+    html += '<div class="mem-fact-meta">Latest mention: &ldquo;' + escHtml(lastText) + '&rdquo;</div>';
+    html += '<div class="mem-fact-actions">'
+      + '<button class="btn-small" onclick="memUpdateWording(\'' + id + '\')">Update wording from latest mention</button>'
+      + ' <button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
+      + ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
+      + '</div>';
+  } else {
+    html += '<div class="mem-fact-actions">'
+      + '<button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
+      + ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
+      + '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+async function memUpdateWording(id) {
+  // Refetch to get the latest last_mention_text for the target id,
+  // then POST the edit. Keeps the button idempotent and avoids stale
+  // cached text.
+  try {
+    const r = await fetch('/api/memory/list?limit=200');
+    const data = await r.json();
+    const match = (data.rows || []).find(x => x.id === id);
+    if (!match) return;
+    const lt = (match.metadata || {}).last_mention_text;
+    if (!lt) { showToast('No alternate wording available', 'error'); return; }
+    await fetch('/api/memory/' + encodeURIComponent(id) + '/edit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({document: lt}),
+    });
+    memLoadFacts(); memLoadRecent();
+    showToast('Wording updated', 'success');
+  } catch(e) {
+    showToast('Update failed: ' + e.message, 'error');
+  }
+}
+
+async function memLoadPending() {
+  try {
+    const r = await fetch('/api/memory/pending?limit=50');
+    const data = await r.json();
+    const el = document.getElementById('memPendingList');
+    const rows = data.rows || [];
+    if (rows.length === 0) {
+      el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing pending.</div>';
+      return;
+    }
+    let html = '';
+    rows.forEach(r => { html += _memPendingCard(r); });
+    el.innerHTML = html;
+  } catch(e) {
+    document.getElementById('memPendingList').textContent = 'Load failed: ' + e.message;
+  }
+}
+
+function _memPendingCard(r) {
+  const m = r.metadata || {};
+  const doc = escHtml(r.document || '');
+  const id = escAttr(r.id || '');
+  const importance = Number(m.importance || 0).toFixed(2);
+  const age = _memFmtAge(m.written_at);
+  return '<div class="mem-pending" data-id="' + id + '">'
+    + '<div><strong>' + doc + '</strong></div>'
+    + '<div class="mem-fact-meta">source=passive  importance=' + importance + '  age=' + age + '</div>'
+    + '<div class="mem-fact-actions">'
+    +   '<button class="btn-small" onclick="memPromote(\'' + id + '\')">Approve</button>'
+    +   ' <button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
+    +   ' <button class="btn-small" style="background:#c0392b;" onclick="memReject(\'' + id + '\')">Reject</button>'
+    + '</div></div>';
+}
+
+async function memSweepRetention() {
+  const s = document.getElementById('memRetentionStatus');
+  s.textContent = 'Sweeping...';
+  try {
+    const r = await fetch('/api/retention/sweep', {method: 'POST'});
+    const data = await r.json();
+    if (data.ok) {
+      const parts = Object.entries(data.counts || {}).map(([k, v]) => k + '=' + v).join(', ');
+      s.textContent = 'Done: ' + (parts || 'no changes');
+      showToast('Retention swept', 'success');
+    } else {
+      s.textContent = 'Error: ' + (data.error || 'unknown');
+      showToast('Sweep failed', 'error');
+    }
+  } catch(e) {
+    s.textContent = 'Error: ' + e.message;
+    showToast('Sweep failed: ' + e.message, 'error');
+  }
+}
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Shared utilities

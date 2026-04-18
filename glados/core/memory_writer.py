@@ -47,11 +47,89 @@ def _get_config() -> dict[str, Any]:
 # Shared write path
 # ---------------------------------------------------------------------------
 
+def _memory_cfg() -> Any:
+    """Fetch the live MemoryConfig. Falls back to a fresh MemoryConfig()
+    default if config_store import fails (tests, cold import order)."""
+    try:
+        from glados.core.config_store import cfg as _cfg
+        return _cfg.memory
+    except Exception:
+        from glados.core.config_store import MemoryConfig
+        return MemoryConfig()
+
+
+def _find_or_reinforce(
+    memory_store: Any,
+    fact: str,
+    threshold: float,
+    reinforce_step: float,
+    importance_cap: float,
+) -> str | None:
+    """Look for a near-duplicate approved fact; if found, bump its
+    importance + mention_count and return its id. Returns None when no
+    match exists within `threshold` cosine distance.
+
+    Stage 3 Phase 5 — dedup-with-reinforcement. Operator preference is
+    that repetition reinforces existing facts instead of growing a
+    lopsided pile of almost-identical rows in ChromaDB.
+    """
+    try:
+        matches = memory_store.query(
+            text=fact,
+            collection="semantic",
+            n=1,
+            where={"review_status": "approved"},
+        )
+    except Exception as exc:
+        logger.warning("memory_writer: dedup query failed: {}", exc)
+        return None
+
+    if not matches:
+        return None
+
+    top = matches[0]
+    dist = top.get("distance")
+    if dist is None or dist > threshold:
+        return None
+
+    entry_id = top.get("id")
+    meta = dict(top.get("metadata") or {})
+    current_importance = float(meta.get("importance") or 0.0)
+    original = meta.get("original_importance")
+    if original is None:
+        original = current_importance
+    new_importance = min(current_importance + reinforce_step, importance_cap)
+    mention_count = int(meta.get("mention_count") or 1) + 1
+
+    try:
+        ok = memory_store.update(
+            entry_id, "semantic",
+            metadata_updates={
+                "importance": round(new_importance, 2),
+                "mention_count": mention_count,
+                "last_mentioned_at": time.time(),
+                "last_mention_text": fact,
+                "original_importance": round(float(original), 2),
+            },
+        )
+    except Exception as exc:
+        logger.warning("memory_writer: dedup update failed: {}", exc)
+        return None
+
+    if not ok:
+        return None
+    logger.info(
+        "memory_writer: reinforced {} (dist={:.3f} importance {:.2f}→{:.2f} mentions={})",
+        entry_id, dist, current_importance, new_importance, mention_count,
+    )
+    return entry_id
+
+
 def write_fact(
     memory_store: Any,
     fact: str,
     source: str = "explicit",
-    importance: float = 0.9,
+    importance: float | None = None,
     review_status: str | None = None,
 ) -> bool:
     """
@@ -61,15 +139,22 @@ def write_fact(
         memory_store: MemoryStore instance (from engine.memory_store)
         fact: Plain text fact to store
         source: "explicit" | "passive" | "compaction"
-        importance: 0.0-1.0 relevance weight
-        review_status: Stage 3 Phase D — "approved" | "pending" | "rejected".
-            When None, derived from `source`: explicit/compaction default to
-            "approved" (operator-initiated or summary), passive defaults to
-            "pending" (auto-extracted, needs review). The MemoryContext
-            RAG layer filters to "approved" only by default.
+        importance: 0.0-1.0 relevance weight. When None, defaults to
+            `passive_base_importance` for source="passive", 0.9 otherwise.
+        review_status: "approved" | "pending" | "rejected". When None,
+            derived from `source` + MemoryConfig: explicit/compaction
+            default to "approved"; passive defaults to
+            `passive_default_status` (Phase 5: "approved" by default,
+            configurable to "pending" to restore Phase D review flow).
+
+    For source="passive" landing at "approved", the fact is first
+    matched against existing approved rows by cosine similarity; on a
+    match within `passive_dedup_threshold` the existing row is
+    reinforced (importance +step, mention_count +1) instead of a new
+    row being added.
 
     Returns:
-        True if written successfully, False otherwise.
+        True if written or reinforced successfully, False otherwise.
     """
     if not memory_store:
         logger.warning("memory_writer: no memory store available")
@@ -79,17 +164,40 @@ def write_fact(
     if not fact:
         return False
 
+    mcfg = _memory_cfg()
+    passive_default = getattr(mcfg, "passive_default_status", "approved")
+    dedup_threshold = float(getattr(mcfg, "passive_dedup_threshold", 0.30))
+    base_importance = float(getattr(mcfg, "passive_base_importance", 0.5))
+    reinforce_step = float(getattr(mcfg, "passive_reinforce_step", 0.05))
+    importance_cap = float(getattr(mcfg, "passive_importance_cap", 0.95))
+
     if review_status is None:
-        review_status = "pending" if source == "passive" else "approved"
+        review_status = passive_default if source == "passive" else "approved"
+
+    if importance is None:
+        importance = base_importance if source == "passive" else 0.9
+
+    # Dedup-with-reinforcement runs only when a passive write is going
+    # straight to "approved" — "pending" rows stay distinct so the
+    # operator can triage each mention in the review queue.
+    if source == "passive" and review_status == "approved":
+        existing_id = _find_or_reinforce(
+            memory_store, fact, dedup_threshold, reinforce_step, importance_cap,
+        )
+        if existing_id is not None:
+            return True
 
     try:
         memory_store.add_semantic(
             text=fact,
             metadata={
                 "source": f"user_{source}",
-                "importance": round(importance, 2),
+                "importance": round(float(importance), 2),
+                "original_importance": round(float(importance), 2),
                 "written_at": time.time(),
                 "review_status": review_status,
+                "mention_count": 1,
+                "last_mentioned_at": time.time(),
             },
         )
         logger.info(
