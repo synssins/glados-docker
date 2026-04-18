@@ -172,21 +172,22 @@ argument away.
 
 ## Stage 3 Phase 6 follow-ups (post-Change 11)
 
-### WebUI Logs view (medium)
+### WebUI Logs view ✅ Shipped
 
-Phase 6 hid every log/audit path field from the friendly forms —
-editing them via the UI can't create the destination directory, so
-the right fix is "surface the logs, hide the paths". Build a
-dedicated Logs page (Configuration sidebar, peer to Memory) that:
+Landed 2026-04-18. Configuration > Logs page sits between Memory and
+SSL in the sidebar. Three log sources: the container's own stdout
+(via `docker logs glados --timestamps`), ChromaDB stdout (via
+`docker logs glados-chromadb`), and `audit.jsonl` from disk. Controls:
+source dropdown, lines-back (100 / 500 / 1000 / 2000 / 5000), level
+filter (all / warn+error / error-only), Refresh button, and a 10-second
+Auto-refresh toggle that tears down on nav-away. WARN / ERROR / SUCCESS
+/ INFO / DEBUG spans are color-coded. Endpoints: `GET /api/logs/sources`
+and `GET /api/logs/tail?source=<key>&lines=<n>`, both auth-protected
+and read-only. 5000-line hard cap on tail responses.
 
-- Streams recent content from `/app/logs/*.log` + `/app/logs/audit.jsonl`
-  via a new `GET /api/logs/tail?file=...&lines=...` endpoint
-  (auth-protected; read-only; no path editing).
-- Offers a friendly filter row (level: errors/warnings/all; file
-  selector; lines-back slider).
-- Colorises WARN/ERROR lines so operators spot issues without reading
-  raw JSONL.
-- Tails live with a Server-Sent Events stream while the tab is active.
+Live SSE streaming was considered but skipped for v1 — the 10 s
+polling timer is simpler and covers the main use case (watching errors
+scroll in while reproducing an issue).
 
 ### System-page absorption of auth/audit/mode_entities.maintenance_* (small)
 
@@ -204,6 +205,46 @@ Shipped with the 2026-04-18 hotfix alongside the Tier 2 conversational
 bleed fix. The `discover_voices` handler now accepts the
 `{"voices": [...]}` shape GLaDOS Piper returns, in addition to the
 pre-existing top-level-list and OpenAI `{"data": [...]}` shapes.
+
+### Tier 3 latency on conversational turns is ~45-80s (medium)
+
+Even after the 2026-04-18 hotfix that stops loading the MCP tool
+catalog for chitchat (`mode=chitchat, 0 tools` in SSE log), warm
+streaming responses to a 10-15 message context still run 45-60s
+on `qwen2.5:14b-instruct-q4_K_M`. Rough decomposition: Ollama
+model steady-state on the autonomy T4 is ~12 tok/s; the interactive
+Arc B60 instance that hosts `glados:latest` is ~33 tok/s. WebUI chat
+currently uses `cfg.llm_model` which is pointed at the autonomy
+Ollama per the operator's 2026-04-18 model-swap. Candidates:
+
+- Route WebUI chat to the interactive Ollama endpoint (B60, 33 tok/s)
+  instead of the autonomy endpoint — matches the host-native split
+  of "autonomy = background, interactive = user-facing".
+- Reduce prompt size further: personality preprompt + few-shot
+  examples are 10+ messages; compact them into a single system
+  message for chitchat turns.
+- Investigate Ollama KV-cache reuse across turns — each SSE roundtrip
+  looks like it's re-submitting full history. If ctx_cache=true
+  isn't being set, KV reuse across turns is disabled.
+
+### Conversation history pollution (medium)
+
+When a prior turn produces a poor-quality response (e.g. the Tier 2
+`Ambiguity detected:` regression or an earlier home-framed reply to
+chitchat), that reply is stored in `conversation.db` and every
+subsequent turn pulls it back into context. The LLM then mimics the
+bad pattern for dozens of follow-ups. Post-hotfix verification
+required a manual `DELETE FROM messages` to stop the mimicry.
+
+Two complementary fixes:
+- **Operator-facing:** add a "Clear conversation" button to the
+  Memory page or the Chat tab. Nukes the `default` partition and
+  re-seeds with the personality preprompt. Read-only in the UI,
+  confirm dialog before executing.
+- **Automated:** compaction agent should drop obvious failure
+  responses at summarization time. Heuristics: responses starting
+  with "Ambiguity detected:", responses whose speech contains HA
+  entity IDs, responses that clearly don't match the utterance.
 
 ### Chitchat responses prefix every answer with the time (small)
 
