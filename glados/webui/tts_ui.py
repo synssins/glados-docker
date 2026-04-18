@@ -31,6 +31,7 @@ import uuid
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -786,6 +787,125 @@ def _build_multipart(audio_bytes: bytes, content_type: str) -> tuple[bytes, str]
 
 
 # ---------------------------------------------------------------------------
+# Stage 3 Phase 5 â€” Service auto-discovery helpers
+# ---------------------------------------------------------------------------
+# Module-level so they can be unit tested without spinning up the
+# Handler / HTTP stack. Each returns (status_code, payload_dict) the
+# handler hands straight to _send_json.
+
+_DISCOVERY_TIMEOUT_S = 4.0
+
+
+def _http_get_json(url: str, timeout: float = _DISCOVERY_TIMEOUT_S) -> Any:
+    """Minimal JSON-GET. Raises on any failure so callers can classify."""
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (operator-supplied URL)
+        data = resp.read()
+    return json.loads(data.decode("utf-8", errors="replace"))
+
+
+def _normalize_base_url(url: str) -> str:
+    """Strip trailing slash; reject empty / non-http URLs early."""
+    url = (url or "").strip().rstrip("/")
+    if not url:
+        raise ValueError("url is required")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("url must be http:// or https://")
+    return url
+
+
+def discover_ollama(url: str) -> tuple[int, dict]:
+    """GET <url>/api/tags and return model list."""
+    try:
+        base = _normalize_base_url(url)
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    try:
+        payload = _http_get_json(f"{base}/api/tags")
+    except urllib.error.URLError as exc:
+        return 502, {"error": f"unreachable: {exc.reason}"}
+    except json.JSONDecodeError:
+        return 502, {"error": "invalid JSON response"}
+    except Exception as exc:  # pragma: no cover - defensive
+        return 502, {"error": str(exc)}
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        return 502, {"error": "unexpected response shape"}
+
+    models = []
+    for m in raw_models:
+        if isinstance(m, dict) and m.get("name"):
+            models.append({
+                "name": m.get("name"),
+                "size": m.get("size"),
+                "modified_at": m.get("modified_at"),
+            })
+    return 200, {"url": base, "models": models, "count": len(models)}
+
+
+def discover_voices(url: str) -> tuple[int, dict]:
+    """GET <url>/v1/voices and return voice list (OpenAI-compatible
+    Speaches shape)."""
+    try:
+        base = _normalize_base_url(url)
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    try:
+        payload = _http_get_json(f"{base}/v1/voices")
+    except urllib.error.URLError as exc:
+        return 502, {"error": f"unreachable: {exc.reason}"}
+    except json.JSONDecodeError:
+        return 502, {"error": "invalid JSON response"}
+    except Exception as exc:  # pragma: no cover - defensive
+        return 502, {"error": str(exc)}
+
+    # Speaches returns a top-level list; some deployments wrap it in
+    # {"data": [...]}. Accept both.
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        raw = payload["data"]
+    elif isinstance(payload, list):
+        raw = payload
+    else:
+        return 502, {"error": "unexpected response shape"}
+
+    voices = []
+    for v in raw:
+        if isinstance(v, dict):
+            name = v.get("voice_id") or v.get("id") or v.get("name")
+            if name:
+                voices.append({"name": name, "model": v.get("model_id") or v.get("model")})
+        elif isinstance(v, str):
+            voices.append({"name": v, "model": None})
+    return 200, {"url": base, "voices": voices, "count": len(voices)}
+
+
+def discover_health(url: str, path: str = "/health") -> tuple[int, dict]:
+    """Reachability check: HTTP GET <url>/health (or custom path).
+    Returns 200 with `ok: true` when upstream returns 2xx, else `ok: false`."""
+    try:
+        base = _normalize_base_url(url)
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    req = urllib.request.Request(f"{base}{path}")
+    started = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=_DISCOVERY_TIMEOUT_S) as resp:  # noqa: S310
+            status = resp.status
+            ok = 200 <= status < 300
+    except urllib.error.HTTPError as exc:
+        return 200, {"url": base, "ok": False, "status": exc.code,
+                     "latency_ms": int((time.time() - started) * 1000)}
+    except urllib.error.URLError as exc:
+        return 200, {"url": base, "ok": False, "status": None,
+                     "reason": str(exc.reason),
+                     "latency_ms": int((time.time() - started) * 1000)}
+    return 200, {"url": base, "ok": ok, "status": status,
+                 "latency_ms": int((time.time() - started) * 1000)}
+
+
+# ---------------------------------------------------------------------------
 # HTTP Handler
 # ---------------------------------------------------------------------------
 
@@ -938,6 +1058,8 @@ class Handler(BaseHTTPRequestHandler):
             self._get_memory_list()
         elif p == "/api/memory/pending" or p.startswith("/api/memory/pending?"):
             self._get_memory_pending()
+        elif p.startswith("/api/discover/"):
+            self._discover()
         elif p == "/api/config":
             self._get_config()
         elif p.startswith("/api/config/"):
@@ -1047,6 +1169,10 @@ class Handler(BaseHTTPRequestHandler):
             self._memory_action("demote")
         elif p.startswith("/api/memory/") and p.endswith("/edit"):
             self._memory_action("edit")
+        elif p == "/api/memory/add":
+            self._post_memory_add()
+        elif p == "/api/retention/sweep":
+            self._post_retention_sweep()
         elif p == "/api/hub75/test/cycle":
             self._hub75_test_cycle()
         elif p == "/api/hub75/test/blank":
@@ -2291,6 +2417,90 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json(400, {"error": f"unknown action {action!r}"})
+
+    def _post_memory_add(self):
+        """Operator-initiated long-term fact. Writes as source='explicit'
+        so it lands approved and RAG-eligible immediately. Body:
+          {"document": "Chris prefers dark roast", "importance": 0.9}
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+        except Exception:
+            self._send_json(400, {"error": "invalid JSON"})
+            return
+        doc = (body.get("document") or "").strip()
+        if not doc:
+            self._send_json(400, {"error": "document is required"})
+            return
+        try:
+            importance = float(body.get("importance", 0.9))
+        except (TypeError, ValueError):
+            importance = 0.9
+        importance = max(0.0, min(importance, 1.0))
+
+        store = self._memory_store()
+        if store is None:
+            self._send_json(503, {"error": "memory store unavailable"})
+            return
+
+        from glados.core.memory_writer import write_fact
+        ok = write_fact(store, doc, source="explicit", importance=importance,
+                        review_status="approved")
+        self._send_json(200 if ok else 500,
+                        {"added": ok, "document": doc, "importance": importance})
+
+    # ── Stage 3 Phase 5: Service discovery + manual retention sweep ─
+
+    def _discover(self):
+        """Fan out to the discovery helpers at module scope.
+
+        Accepts GET /api/discover/{ollama,voices,health}?url=<base>.
+        Query-param-only (never body) — this is a GET.
+        """
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        kind = parsed.path.rsplit("/", 1)[-1]
+        params = parse_qs(parsed.query)
+        url = (params.get("url", [""])[0] or "").strip()
+        if not url:
+            self._send_json(400, {"error": "url query param is required"})
+            return
+
+        if kind == "ollama":
+            status, payload = discover_ollama(url)
+        elif kind == "voices":
+            status, payload = discover_voices(url)
+        elif kind == "health":
+            status, payload = discover_health(url)
+        else:
+            self._send_json(404, {"error": f"unknown discovery kind {kind!r}"})
+            return
+        self._send_json(status, payload)
+
+    def _post_retention_sweep(self):
+        """Manually trigger RetentionAgent.sweep_once(). Useful for
+        operators verifying retention config without waiting for the
+        hourly tick. Returns the counts dict from the sweeper."""
+        try:
+            import glados.core.api_wrapper as _aw
+            engine = getattr(_aw, "_engine", None)
+            agent = getattr(engine, "_retention_agent", None) if engine else None
+        except Exception:
+            agent = None
+
+        if agent is None:
+            self._send_json(503, {"error": "retention agent unavailable"})
+            return
+
+        try:
+            result = agent.sweep_once()
+        except Exception as exc:
+            self._send_json(500, {"error": str(exc)})
+            return
+        # sweep_once returns a dict[str, int] from the current impl.
+        safe = result if isinstance(result, dict) else {}
+        self._send_json(200, {"ok": True, "counts": safe})
 
     def _clear_log(self):
         """Truncate a service log file."""
@@ -4375,8 +4585,11 @@ const FIELD_META = {
   // paths.nssm removed — NSSM is not used in the container deployment
   'paths.audio_base':      { label: 'Audio Base Path', desc: 'Root directory for all audio files', advanced: true },
   // â”€â”€ Global: SSL â”€â”€
-  'ssl.domain':            { label: 'SSL Domain', desc: 'Domain name for SSL certificate', advanced: true },
-  'ssl.certbot_dir':       { label: 'Certbot Directory', desc: 'Path to Let\'s Encrypt certificates', advanced: true },
+  // SSL fields are edited on the dedicated Configuration > SSL page
+  // (cfgRenderSsl). They were previously duplicated here via FIELD_META
+  // auto-rendering which produced two conflicting forms for the same
+  // settings. Phase 5 removed the duplicates; the SSL page is the
+  // single source of truth for ssl.*.
   // â”€â”€ Global: Auth â”€â”€
   'auth.enabled':          { label: 'Authentication Enabled', desc: 'Require login to access System and Config' },
   'auth.password_hash':    { label: 'Password Hash', desc: 'Bcrypt hash (use set_password tool to change)', advanced: true, type: 'password' },
