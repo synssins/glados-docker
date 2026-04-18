@@ -1159,6 +1159,51 @@ def _persona_rewrite(plain: str, utterance: str = "") -> str:
     return result.text or plain
 
 
+def _last_ha_conversation_id() -> "str | None":
+    """Look up the most-recent HA conversation_id from the engine's
+    conversation store. Returns None when the store is unavailable or
+    no HA exchange has been recorded yet."""
+    global _engine
+    if _engine is None:
+        return None
+    try:
+        return _engine._conversation_store.latest_ha_conversation_id()
+    except Exception:
+        return None
+
+
+def _append_tier_exchange(
+    user_message: str,
+    assistant_speech: str,
+    *,
+    origin: str,
+    tier: int,
+    ha_conversation_id: "str | None" = None,
+) -> None:
+    """Persist a Tier 1/2 (user, assistant) exchange into the engine's
+    ConversationStore so subsequent Tier 3 calls have multi-turn context.
+
+    Without this, "Turn off the whole house" → "All lights" would lose
+    the verb-context from the prior turn (the failure case observed in
+    Stage 3 Phase 1 testing). Best-effort: any persistence error is
+    logged and swallowed so the user-facing response still returns."""
+    global _engine
+    if _engine is None or not assistant_speech:
+        return
+    try:
+        _engine._conversation_store.append_multiple(
+            [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": assistant_speech},
+            ],
+            source=origin,
+            tier=tier,
+            ha_conversation_id=ha_conversation_id,
+        )
+    except Exception as exc:
+        logger.debug("Tier {} conversation persist failed: {}", tier, exc)
+
+
 def _emit_tier1_sse_response(
     handler: "APIHandler", request_id: str, text: str,
 ) -> None:
@@ -1247,8 +1292,13 @@ def _try_tier1_nonstreaming(
     if bridge is None:
         return False
     t0 = time.perf_counter()
+    # Phase B: pass HA's prior conversation_id forward so HA can
+    # maintain its multi-turn context across utterances.
+    prior_conv = _last_ha_conversation_id()
     try:
-        result = bridge.process(user_message, timeout_s=5.0)
+        result = bridge.process(
+            user_message, conversation_id=prior_conv, timeout_s=5.0,
+        )
     except Exception as exc:
         logger.debug("Tier 1 bridge call failed (non-stream): {}", exc)
         return False
@@ -1281,6 +1331,10 @@ def _try_tier1_nonstreaming(
                         "finish_reason": "stop",
                     }],
                 })
+                _append_tier_exchange(
+                    user_message, speech, origin=origin, tier=2,
+                    ha_conversation_id=result.conversation_id,
+                )
                 return True
         return False
 
@@ -1308,6 +1362,10 @@ def _try_tier1_nonstreaming(
             latency_ms=elapsed_ms,
         ))
         return False
+    _append_tier_exchange(
+        user_message, speech, origin=origin, tier=1,
+        ha_conversation_id=result.conversation_id,
+    )
     audit(AuditEvent(
         ts=time.time(), origin=origin, kind="intent", tier=1,
         utterance=user_message, result="ok",
@@ -1317,6 +1375,7 @@ def _try_tier1_nonstreaming(
             "speech_plain": plain_speech[:500],
             "speech": speech[:500],
             "rewrote": speech != plain_speech,
+            "conversation_id": result.conversation_id,
         },
     ))
     logger.info("Tier 1 hit (non-stream): {} -> {} ({}ms)",
@@ -1335,8 +1394,14 @@ def _try_tier1_fast_path(
     if bridge is None:
         return False
     t0 = time.perf_counter()
+    # Phase B: pass HA's prior conversation_id forward so HA's intent
+    # parser maintains its own multi-turn context (e.g., follow-ups
+    # like "All lights" inherit the verb from the prior "turn off").
+    prior_conv = _last_ha_conversation_id()
     try:
-        result = bridge.process(user_message, timeout_s=5.0)
+        result = bridge.process(
+            user_message, conversation_id=prior_conv, timeout_s=5.0,
+        )
     except Exception as exc:
         logger.debug("Tier 1 bridge call failed: {}", exc)
         return False
@@ -1361,6 +1426,10 @@ def _try_tier1_fast_path(
                 request_id = uuid.uuid4().hex[:12]
                 try:
                     _emit_tier1_sse_response(handler, request_id, speech)
+                    _append_tier_exchange(
+                        user_message, speech, origin=origin, tier=2,
+                        ha_conversation_id=result.conversation_id,
+                    )
                     return True
                 except Exception as exc:
                     logger.warning("Tier 2 SSE write failed: {}", exc)
@@ -1387,6 +1456,10 @@ def _try_tier1_fast_path(
             latency_ms=elapsed_ms,
         ))
         return False
+    _append_tier_exchange(
+        user_message, speech, origin=origin, tier=1,
+        ha_conversation_id=result.conversation_id,
+    )
     audit(AuditEvent(
         ts=time.time(),
         origin=origin,
