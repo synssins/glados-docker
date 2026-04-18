@@ -52,6 +52,7 @@ def write_fact(
     fact: str,
     source: str = "explicit",
     importance: float = 0.9,
+    review_status: str | None = None,
 ) -> bool:
     """
     Write a single fact to ChromaDB.
@@ -61,6 +62,11 @@ def write_fact(
         fact: Plain text fact to store
         source: "explicit" | "passive" | "compaction"
         importance: 0.0-1.0 relevance weight
+        review_status: Stage 3 Phase D — "approved" | "pending" | "rejected".
+            When None, derived from `source`: explicit/compaction default to
+            "approved" (operator-initiated or summary), passive defaults to
+            "pending" (auto-extracted, needs review). The MemoryContext
+            RAG layer filters to "approved" only by default.
 
     Returns:
         True if written successfully, False otherwise.
@@ -73,6 +79,9 @@ def write_fact(
     if not fact:
         return False
 
+    if review_status is None:
+        review_status = "pending" if source == "passive" else "approved"
+
     try:
         memory_store.add_semantic(
             text=fact,
@@ -80,9 +89,13 @@ def write_fact(
                 "source": f"user_{source}",
                 "importance": round(importance, 2),
                 "written_at": time.time(),
+                "review_status": review_status,
             },
         )
-        logger.info("memory_writer: stored [{}] fact: {:.100}", source, fact)
+        logger.info(
+            "memory_writer: stored [{} status={}] fact: {:.100}",
+            source, review_status, fact,
+        )
         return True
     except Exception as exc:
         logger.error("memory_writer: ChromaDB write failed: {}", exc)

@@ -283,6 +283,97 @@ class MemoryStore:
             logger.error("Failed to delete from {}: {}", collection, exc)
             return 0
 
+    # ── Review queue (Stage 3 Phase D) ───────────────────────────
+
+    def list_by_status(
+        self,
+        review_status: str,
+        collection: str = "semantic",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return entries whose `review_status` metadata matches.
+
+        Used by the review queue UI to show pending facts the operator
+        needs to triage. `review_status` values: "approved", "pending",
+        "rejected". Legacy entries (pre-Phase D) have no review_status
+        and are NOT returned by this method — query them by passing
+        review_status="" or by using the existing query() method
+        without filter."""
+        col = self._get_collection(collection)
+        try:
+            count = col.count()
+            if count == 0:
+                return []
+            results = col.get(
+                where={"review_status": review_status},
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.error("Failed to list by status: {}", exc)
+            return []
+
+        entries: list[dict[str, Any]] = []
+        if results and results.get("ids"):
+            for i, entry_id in enumerate(results["ids"]):
+                entries.append({
+                    "id": entry_id,
+                    "document": (results["documents"][i]
+                                 if results.get("documents") else ""),
+                    "metadata": (results["metadatas"][i]
+                                 if results.get("metadatas") else {}),
+                })
+        return entries
+
+    def get_by_id(
+        self, entry_id: str, collection: str = "semantic",
+    ) -> dict[str, Any] | None:
+        """Fetch a single entry by id, or None if not found."""
+        col = self._get_collection(collection)
+        try:
+            results = col.get(ids=[entry_id])
+        except Exception as exc:
+            logger.error("Failed to get_by_id: {}", exc)
+            return None
+        if not results or not results.get("ids") or not results["ids"]:
+            return None
+        return {
+            "id": results["ids"][0],
+            "document": (results["documents"][0]
+                         if results.get("documents") else ""),
+            "metadata": (results["metadatas"][0]
+                         if results.get("metadatas") else {}),
+        }
+
+    def update(
+        self,
+        entry_id: str,
+        collection: str = "semantic",
+        *,
+        document: str | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> bool:
+        """Update document text and/or merge metadata for an existing
+        entry. Used by the review queue's promote/demote/edit actions."""
+        existing = self.get_by_id(entry_id, collection)
+        if existing is None:
+            return False
+        col = self._get_collection(collection)
+        new_doc = document if document is not None else existing.get("document", "")
+        merged_meta = dict(existing.get("metadata") or {})
+        if metadata_updates:
+            merged_meta.update(_sanitize_metadata(metadata_updates))
+        merged_meta["updated_at"] = time.time()
+        try:
+            col.update(
+                ids=[entry_id],
+                documents=[_sanitize_text(new_doc)] if document is not None else None,
+                metadatas=[_sanitize_metadata(merged_meta)],
+            )
+            return True
+        except Exception as exc:
+            logger.error("Failed to update {}: {}", entry_id, exc)
+            return False
+
     # ── Health ────────────────────────────────────────────────────
 
     def health_check(self) -> bool:

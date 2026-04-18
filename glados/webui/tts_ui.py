@@ -934,6 +934,10 @@ class Handler(BaseHTTPRequestHandler):
             self._get_logs()
         elif p == "/api/audit/recent" or p.startswith("/api/audit/recent?"):
             self._get_audit_recent()
+        elif p == "/api/memory/list" or p.startswith("/api/memory/list?"):
+            self._get_memory_list()
+        elif p == "/api/memory/pending" or p.startswith("/api/memory/pending?"):
+            self._get_memory_pending()
         elif p == "/api/config":
             self._get_config()
         elif p.startswith("/api/config/"):
@@ -1037,6 +1041,12 @@ class Handler(BaseHTTPRequestHandler):
             self._clear_audio_dir()
         elif p == "/api/logs/clear":
             self._clear_log()
+        elif p.startswith("/api/memory/") and p.endswith("/promote"):
+            self._memory_action("promote")
+        elif p.startswith("/api/memory/") and p.endswith("/demote"):
+            self._memory_action("demote")
+        elif p.startswith("/api/memory/") and p.endswith("/edit"):
+            self._memory_action("edit")
         elif p == "/api/hub75/test/cycle":
             self._hub75_test_cycle()
         elif p == "/api/hub75/test/blank":
@@ -1086,6 +1096,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/files/"):
             self._delete_file()
+        elif self.path.startswith("/api/memory/"):
+            self._memory_action("delete")
         else:
             self._send_error(404, "Not found")
 
@@ -2122,6 +2134,163 @@ class Handler(BaseHTTPRequestHandler):
             "count": len(rows),
             "path": str(audit_path),
         })
+
+    # ── Stage 3 Phase D: Memory review queue endpoints ─────────────
+
+    def _memory_store(self):
+        """Look up the live MemoryStore from the engine. Returns None
+        if unavailable (engine not yet up, or ChromaDB down)."""
+        try:
+            import glados.core.api_wrapper as _aw
+            engine = getattr(_aw, "_engine", None)
+            return getattr(engine, "memory_store", None) if engine else None
+        except Exception:
+            return None
+
+    def _get_memory_list(self):
+        """List approved facts from the semantic collection.
+
+        Query params:
+          limit  — max rows (default 100, cap 500)
+          q      — optional similarity-search query; if absent, returns
+                   the most recent N facts by storage order.
+        """
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        try:
+            limit = min(int(params.get("limit", ["100"])[0]), 500)
+        except ValueError:
+            limit = 100
+        q = params.get("q", [""])[0].strip()
+
+        store = self._memory_store()
+        if store is None:
+            self._send_json(200, {"rows": [], "warning": "memory store unavailable"})
+            return
+
+        try:
+            if q:
+                rows = store.query(text=q, collection="semantic", n=limit)
+            else:
+                rows = store.list_by_status("approved", "semantic", limit=limit)
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+            return
+
+        # Don't leak ChromaDB internals; return shape the UI expects.
+        self._send_json(200, {
+            "rows": [
+                {
+                    "id": r.get("id"),
+                    "document": r.get("document", ""),
+                    "metadata": r.get("metadata", {}),
+                    "distance": r.get("distance"),
+                }
+                for r in rows
+            ],
+            "count": len(rows),
+        })
+
+    def _get_memory_pending(self):
+        """List facts queued for operator review (review_status='pending')."""
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        try:
+            limit = min(int(parse_qs(parsed.query).get("limit", ["100"])[0]), 500)
+        except ValueError:
+            limit = 100
+        store = self._memory_store()
+        if store is None:
+            self._send_json(200, {"rows": [], "warning": "memory store unavailable"})
+            return
+        try:
+            rows = store.list_by_status("pending", "semantic", limit=limit)
+        except Exception as e:
+            self._send_json(500, {"error": str(e)})
+            return
+        self._send_json(200, {
+            "rows": [
+                {
+                    "id": r.get("id"),
+                    "document": r.get("document", ""),
+                    "metadata": r.get("metadata", {}),
+                }
+                for r in rows
+            ],
+            "count": len(rows),
+        })
+
+    def _memory_action(self, action: str):
+        """Handle promote / demote / edit / delete of a memory entry.
+
+        URL shape: /api/memory/<entry_id>/<action> for promote/demote/edit;
+        DELETE /api/memory/<entry_id> for delete.
+        """
+        # Extract entry_id from the path.
+        path = self.path.rstrip("/")
+        if action == "delete":
+            entry_id = path[len("/api/memory/"):]
+        else:
+            # /api/memory/<id>/<action>
+            entry_id = path[len("/api/memory/"):-len("/" + action)]
+        if not entry_id or "/" in entry_id:
+            self._send_json(400, {"error": "invalid entry id"})
+            return
+
+        store = self._memory_store()
+        if store is None:
+            self._send_json(503, {"error": "memory store unavailable"})
+            return
+
+        if action == "delete":
+            n = store.delete_ids("semantic", [entry_id])
+            self._send_json(200, {"deleted": n})
+            return
+
+        if action == "promote":
+            ok = store.update(
+                entry_id, "semantic",
+                metadata_updates={"review_status": "approved"},
+            )
+            self._send_json(200 if ok else 404, {"updated": ok})
+            return
+
+        if action == "demote":
+            ok = store.update(
+                entry_id, "semantic",
+                metadata_updates={"review_status": "rejected"},
+            )
+            self._send_json(200 if ok else 404, {"updated": ok})
+            return
+
+        if action == "edit":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length))
+            except Exception:
+                self._send_json(400, {"error": "invalid JSON"})
+                return
+            new_doc = body.get("document")
+            new_status = body.get("review_status")
+            new_importance = body.get("importance")
+            updates: dict = {}
+            if new_status:
+                updates["review_status"] = new_status
+            if new_importance is not None:
+                try:
+                    updates["importance"] = float(new_importance)
+                except (TypeError, ValueError):
+                    pass
+            ok = store.update(
+                entry_id, "semantic",
+                document=new_doc,
+                metadata_updates=updates if updates else None,
+            )
+            self._send_json(200 if ok else 404, {"updated": ok})
+            return
+
+        self._send_json(400, {"error": f"unknown action {action!r}"})
 
     def _clear_log(self):
         """Truncate a service log file."""

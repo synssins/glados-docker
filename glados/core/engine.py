@@ -322,9 +322,13 @@ class Glados:
                                 _loaded)
             except Exception as exc:
                 logger.warning("ConversationStore hydrate failed: {}", exc)
-        # Stage 3 Phase C: background retention sweeper. Reads policy
-        # from cfg.memory; clamps max_days at the hard cap. Runs hourly
-        # by default. Failure is non-fatal.
+        # Stage 3 Phase C+E: background retention sweeper. Reads policy
+        # from cfg.memory; clamps max_days at the hard cap. Also enforces
+        # episodic_ttl_hours on ChromaDB. Runs hourly by default. Failure
+        # is non-fatal. The memory_store wiring is deferred — this runs
+        # before the engine wires up self.memory_store, so we pass None
+        # for now and the agent only does conversation-DB pruning until
+        # _attach_memory_store_to_retention is called later in init.
         self._retention_agent = None
         if self._conversation_db is not None:
             try:
@@ -337,6 +341,7 @@ class Glados:
                     hard_cap_days=_mem.conversation_hard_cap_days,
                     max_disk_mb=_mem.conversation_max_disk_mb,
                     sweep_interval_s=_mem.retention_sweep_interval_s,
+                    episodic_ttl_hours=_mem.episodic_ttl_hours,
                 )
                 self._retention_agent.start()
             except Exception as exc:
@@ -394,6 +399,11 @@ class Glados:
             logger.warning("ChromaDB unavailable — memory context disabled: {}", exc)
             _mem_store = None
         self.memory_store: MemoryStore | None = _mem_store
+        # Stage 3 Phase E: now that memory_store exists, give the
+        # already-running RetentionAgent a reference so its next
+        # sweep can also enforce ChromaDB episodic_ttl_hours.
+        if self._retention_agent is not None and _mem_store is not None:
+            self._retention_agent._memory_store = _mem_store
         self.memory_context = MemoryContext(store=_mem_store, config=MemoryContextConfig())
         self.context_builder.register(
             "memory",

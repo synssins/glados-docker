@@ -83,6 +83,16 @@ class MemoryContext:
         if store is None:
             return None
 
+        # Stage 3 Phase D: only retrieve facts that have been approved
+        # for RAG injection. Pending facts (auto-extracted, awaiting
+        # review) and rejected facts are excluded. We over-fetch and
+        # filter client-side because legacy facts (pre-Phase D) have
+        # NO review_status metadata and ChromaDB's $eq filter would
+        # drop them too — those should still surface.
+        def _is_approved_or_legacy(meta: dict[str, Any]) -> bool:
+            status = meta.get("review_status")
+            return status is None or status == "approved"
+
         # Try semantic query first
         results = []
         if query.strip():
@@ -90,13 +100,13 @@ class MemoryContext:
                 raw = store.query(
                     text=query,
                     collection="semantic",
-                    n=self._config.max_results,
+                    n=self._config.max_results * 3,  # over-fetch then filter
                 )
-                # Filter by distance threshold
                 results = [
                     r for r in raw
                     if r.get("distance", 1.0) <= self._config.max_distance
-                ]
+                    and _is_approved_or_legacy(r.get("metadata", {}))
+                ][:self._config.max_results]
             except Exception as exc:
                 logger.warning("MemoryContext: query failed: {}", exc)
 
@@ -106,9 +116,12 @@ class MemoryContext:
                 raw = store.query(
                     text="GLaDOS home assistant memory facts",
                     collection="semantic",
-                    n=self._config.max_results,
+                    n=self._config.max_results * 3,
                 )
-                results = raw[:self._config.max_results]
+                results = [
+                    r for r in raw
+                    if _is_approved_or_legacy(r.get("metadata", {}))
+                ][:self._config.max_results]
             except Exception as exc:
                 logger.warning("MemoryContext: fallback query failed: {}", exc)
 
