@@ -25,11 +25,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 try:  # rapidfuzz is a production dep, but some test envs may not have it.
-    from rapidfuzz import fuzz, process
+    from rapidfuzz import fuzz, process, utils as _rf_utils
     _RAPIDFUZZ_AVAILABLE = True
 except ImportError:  # pragma: no cover - only hit in bare dev envs
     fuzz = None
     process = None
+    _rf_utils = None
     _RAPIDFUZZ_AVAILABLE = False
 
 
@@ -42,8 +43,12 @@ _DOMAIN_CUTOFFS: dict[str, int] = {
     "light": 75,
     "switch": 75,
     "fan": 75,
-    "scene": 75,
-    "script": 75,
+    # Scenes/scripts are loose semantic categories — users say "evening
+    # scene" or "movie mode" without matching the operator's exact
+    # friendly_name like "Living Room Scene: Evening". Lower cutoff so
+    # these match.
+    "scene": 60,
+    "script": 60,
     "media_player": 75,
     "climate": 80,
     "input_boolean": 80,
@@ -55,6 +60,32 @@ _DOMAIN_CUTOFFS: dict[str, int] = {
     "sensor": 75,         # Read-only; used for state queries.
     "binary_sensor": 75,
 }
+
+
+# Command-verb stopwords stripped from user queries before fuzzy
+# matching. They consume tokens that don't help identify the entity
+# and dilute WRatio scores. Order doesn't matter; matching is on words.
+_QUERY_STOPWORDS: frozenset[str] = frozenset({
+    "activate", "deactivate", "trigger", "run", "start", "stop",
+    "turn", "switch", "set", "make", "please",
+    "the", "a", "an", "my", "some",
+    "on", "off",            # status verbs — consumed by domain inference instead
+    "to", "for", "in", "of",
+})
+
+
+def _preprocess_query(query: str) -> str:
+    """Strip command-verb noise so fuzzy match focuses on the entity
+    name. 'activate the evening scene' -> 'evening scene'. Always lower-
+    cased. Leaves the query unchanged if it shrinks to nothing
+    (defensive: don't make a meaningful query empty)."""
+    if not query:
+        return query
+    words = [w.strip(".,!?;:'\"") for w in query.split()]
+    kept = [w for w in words if w and w.lower() not in _QUERY_STOPWORDS]
+    if not kept:
+        return query.strip().lower()
+    return " ".join(kept).lower()
 
 # Sensitive domains: fuzzy match produces wrong-device outcomes with
 # real-world consequences. Require exact friendly_name or alias match
@@ -100,17 +131,22 @@ class EntityState:
     attributes: dict[str, Any] = field(default_factory=dict)
 
     def searchable_names(self) -> list[str]:
-        """Names to use for fuzzy matching: friendly_name + aliases +
-        entity_id (as a low-quality fallback)."""
+        """Names to use for fuzzy matching.
+
+        Prefer friendly_name + aliases. Only fall back to the entity_id-
+        derived label when both are empty. Otherwise the entity_id form
+        produces false high scores for common short words: e.g.
+        `scene.scene_go_away` would match the query 'activate the evening
+        scene' on the token "scene" alone (~85), beating real
+        friendly_name candidates that score in the 40s but actually
+        relate to evening."""
         names = [self.friendly_name] if self.friendly_name else []
         names.extend(a for a in self.aliases if a)
-        # Include entity_id with underscores replaced by spaces so a user
-        # saying "kitchen ceiling" can still match `light.kitchen_ceiling`
-        # even if friendly_name is empty.
+        if names:
+            return names
+        # Last-resort fallback for unlabeled entities.
         local = self.entity_id.split(".", 1)[-1].replace("_", " ")
-        if local and local not in names:
-            names.append(local)
-        return names
+        return [local] if local else []
 
 
 @dataclass
@@ -248,7 +284,9 @@ class EntityCache:
             # This path exists so bare dev envs can import the module.
             return self._exact_match_fallback(query, domain_filter, limit)
 
-        q = query.strip().lower()
+        # Strip command verbs so we match on the entity-identifying part:
+        # "activate the evening scene" -> "evening scene".
+        q = _preprocess_query(query)
         scored: list[CandidateMatch] = []
         for entity in self.snapshot():
             if domain_filter and entity.domain not in domain_filter:
@@ -256,8 +294,14 @@ class EntityCache:
             names = entity.searchable_names()
             if not names:
                 continue
-            # Find the best-matching name on this entity.
-            best = process.extractOne(q, names, scorer=fuzz.WRatio)
+            # Find the best-matching name on this entity. `default_process`
+            # lowercases + strips punctuation on both sides so case
+            # mismatches and "Scene:" prefixes don't tank legitimate
+            # scores.
+            best = process.extractOne(
+                q, names, scorer=fuzz.WRatio,
+                processor=_rf_utils.default_process,
+            )
             if best is None:
                 continue
             matched_name, score, _ = best

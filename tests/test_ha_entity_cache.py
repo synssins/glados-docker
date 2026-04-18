@@ -186,6 +186,77 @@ class TestFuzzyMatching:
         assert matches[0].score >= matches[1].score
 
 
+class TestSearchableNames:
+    def test_friendly_name_used_when_set(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([_state("scene.scene_go_away", "Scene: GO AWAY")])
+        ent = cache.get("scene.scene_go_away")
+        names = ent.searchable_names()
+        # entity_id-derived name MUST be omitted when friendly_name exists,
+        # otherwise it produces false matches like "scene go away" hitting
+        # "evening scene" queries on shared word "scene".
+        assert names == ["Scene: GO AWAY"]
+        assert "scene go away" not in [n.lower() for n in names]
+
+    def test_aliases_only_when_friendly_name_empty(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.x", "", aliases=["alias one"]),
+        ])
+        names = cache.get("light.x").searchable_names()
+        assert "alias one" in names
+        assert "x" not in names  # entity_id fallback skipped because alias exists
+
+    def test_entity_id_fallback_when_no_label(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([_state("light.kitchen_ceiling", "")])
+        names = cache.get("light.kitchen_ceiling").searchable_names()
+        assert names == ["kitchen ceiling"]
+
+
+class TestSceneRegression:
+    """Regression for: 'activate the evening scene' resolving to
+    scene.scene_go_away because the entity_id-derived 'scene go away'
+    matched the word 'scene' in the query at score 85, beating the real
+    'Living Room Scene: Evening' candidate (score 43-47)."""
+
+    def test_evening_scene_picks_evening_friendly_name(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("scene.scene_go_away",            "Scene: GO AWAY"),
+            _state("scene.living_room_scene_evening","Living Room Scene: Evening"),
+            _state("scene.scene_morning_wake_up",    "Scene: Morning wake up"),
+            _state("scene.evening_restore_snapshot", "evening_restore_snapshot"),
+        ])
+        results = cache.get_candidates(
+            "activate the evening scene", domain_filter=["scene"], limit=10,
+        )
+        assert results, "no candidates returned for evening scene query"
+        ids = [r.entity.entity_id for r in results]
+        # The evening-named scenes must appear; the unrelated "Go Away"
+        # must NOT be the top result.
+        assert "scene.scene_go_away" not in ids[:1], (
+            f"go_away wrongly outranked: {ids}"
+        )
+        evening_match = next(
+            (r for r in results if "evening" in r.entity.entity_id), None
+        )
+        assert evening_match is not None, (
+            f"no evening-related scene in candidates: {ids}"
+        )
+
+    def test_query_preprocessor_strips_command_verbs(self) -> None:
+        from glados.ha.entity_cache import _preprocess_query
+        assert _preprocess_query("activate the evening scene") == "evening scene"
+        assert _preprocess_query("turn off the kitchen lights") == "kitchen lights"
+        assert _preprocess_query("please run the bedtime script") == "bedtime script"
+
+    def test_query_preprocessor_does_not_eat_meaningful_short_query(self) -> None:
+        from glados.ha.entity_cache import _preprocess_query
+        # If stripping leaves nothing, fall back to lowered original.
+        assert _preprocess_query("on") == "on"
+
+
 class TestCutoffs:
     def test_sensitive_domain_gets_100_cutoff(self) -> None:
         e = EntityState(
