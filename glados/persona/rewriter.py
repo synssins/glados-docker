@@ -126,11 +126,11 @@ information. You do not invent facts. You preserve every fact in the
 input — entity names, numbers, states, room names — but restyle the
 phrasing.
 
-GLaDOS persona: cold, condescending, dryly menacing, scientific. She
-refers to the user as 'test subject'. Mentions Aperture Science where
-natural. Treats domestic tasks as 'enrichment center procedures'.
-Sarcastic. Backhanded. Never apologizes sincerely. Never says 'please'.
-Never uses an exclamation point.
+GLaDOS persona: cold, condescending, dryly menacing, scientific.
+Mentions Aperture Science where natural. Treats domestic tasks as
+'enrichment center procedures'. Sarcastic. Backhanded. Never
+apologizes sincerely. Never says 'please'. Never uses an exclamation
+point.
 
 Hard rules:
 - Output ONE OR TWO sentences. No more.
@@ -140,6 +140,9 @@ Hard rules:
   on/off states, times) from the input. Do not change them.
 - Do not add new device actions or instructions.
 - Do not break character. No "as an AI" disclaimers.
+- DO NOT address the user as 'test subject', 'subject', 'human',
+  'human being', or any vocative label. Speak ABOUT the action.
+  Never tack a noun-of-address onto the end of a sentence.
 
 Examples:
 - Input:  "Turned off the kitchen light."
@@ -147,9 +150,11 @@ Examples:
 - Input:  "The temperature in the office is 72 degrees."
   Output: "Office thermal regulation reports seventy-two degrees. Within tolerance, for now."
 - Input:  "Turned on the bedroom lights."
-  Output: "Bedroom illumination engaged. Try not to bask in it, test subject."
+  Output: "Bedroom illumination engaged. Try not to bask in it."
 - Input:  "It is 2:22 PM."
   Output: "The clock reports two twenty-two PM. I'm sure that's riveting."
+- Input:  "Activated the living room reading scene."
+  Output: "Living room reading scene engaged. Enjoy your literature."
 """
 
 
@@ -161,8 +166,9 @@ def _build_user_prompt(plain_text: str, context_hint: str) -> str:
 
 
 def _clean_output(raw: str) -> str:
-    """Strip code fences, leading "Here is..." chatter, and outer quotes
-    that small models sometimes wrap their output in."""
+    """Strip code fences, leading "Here is..." chatter, outer quotes
+    that small models sometimes wrap their output in, and trailing
+    vocative labels like "test subject" that the operator dislikes."""
     s = raw.strip()
     # Strip code fences.
     if s.startswith("```"):
@@ -179,7 +185,50 @@ def _clean_output(raw: str) -> str:
     # Strip surrounding quotes.
     if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
         s = s[1:-1]
+    s = _strip_trailing_vocative(s.strip())
     return s.strip()
+
+
+# Vocative labels the user has banned. Matched as a trailing form-of-
+# address: ", test subject." / "—test subject." / " test subject!".
+# Case-insensitive. Punctuation around them gets cleaned up.
+_BANNED_VOCATIVES: tuple[str, ...] = (
+    "test subject",
+    "subject",
+    "test subjects",
+    "subjects",
+    "human",
+    "humans",
+    "human being",
+    "human beings",
+    "meatbag",
+    "meatbags",
+)
+
+
+def _strip_trailing_vocative(text: str) -> str:
+    """Remove a trailing form-of-address like ", test subject." even if
+    the LLM ignored the prompt instruction. Operates per-sentence so
+    only the END of a sentence is trimmed; references in the middle
+    of prose (rare, but possible) are left alone."""
+    if not text:
+        return text
+    import re
+    # Match: optional separator (comma / dash / nothing), the vocative,
+    # then optional terminal punctuation, anchored to end-of-string OR
+    # end-of-sentence. Sorted longest-first so "test subject" wins
+    # over "subject".
+    vocs = sorted(_BANNED_VOCATIVES, key=len, reverse=True)
+    pattern = (
+        r"(\s*[,\-\u2014\u2013]?\s*)\b("
+        + "|".join(re.escape(v) for v in vocs)
+        + r")\b(\s*[.!?]?)(\s*)$"
+    )
+    new = re.sub(pattern, r"\3", text, flags=re.IGNORECASE)
+    # If we trimmed and the result lacks terminal punctuation, add one.
+    if new != text and new and new[-1] not in ".!?":
+        new = new.rstrip(",;: \t") + "."
+    return new
 
 
 # ---------------------------------------------------------------------------
