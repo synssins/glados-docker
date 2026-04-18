@@ -322,6 +322,25 @@ class Glados:
                                 _loaded)
             except Exception as exc:
                 logger.warning("ConversationStore hydrate failed: {}", exc)
+        # Stage 3 Phase C: background retention sweeper. Reads policy
+        # from cfg.memory; clamps max_days at the hard cap. Runs hourly
+        # by default. Failure is non-fatal.
+        self._retention_agent = None
+        if self._conversation_db is not None:
+            try:
+                from ..autonomy.agents.retention_agent import RetentionAgent
+                from .config_store import cfg as _cfg_local
+                _mem = _cfg_local.memory
+                self._retention_agent = RetentionAgent(
+                    self._conversation_db,
+                    max_days=_mem.conversation_max_days,
+                    hard_cap_days=_mem.conversation_hard_cap_days,
+                    max_disk_mb=_mem.conversation_max_disk_mb,
+                    sweep_interval_s=_mem.retention_sweep_interval_s,
+                )
+                self._retention_agent.start()
+            except Exception as exc:
+                logger.warning("RetentionAgent init failed: {}", exc)
         self.vision_config = vision_config
         self.autonomy_config = autonomy_config or AutonomyConfig()
         self.vision_state: VisionState | None = VisionState() if self.vision_config else None
