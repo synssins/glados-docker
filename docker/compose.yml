@@ -29,6 +29,13 @@ services:
       dockerfile: Dockerfile
     image: glados:latest
     container_name: glados
+    # Grant access to the host's docker group so the Configuration > Logs
+    # page can read container/chromadb stdout via the docker socket. Find
+    # the GID on your host with:   getent group docker
+    # Leave this block commented out (or set to 0) if you don't need the
+    # Logs page's container sources; the rest of the WebUI still works.
+    group_add:
+      - "${GLADOS_DOCKER_GID:-0}"
     ports:
       - "8015:8015"   # OpenAI-compatible persona API
       - "8052:8052"   # Admin WebUI (config editor, health, TTS generator, chat)
@@ -38,6 +45,10 @@ services:
       - glados_audio:/app/audio_files
       - glados_logs:/app/logs
       - glados_certs:/app/certs
+      # Read-only docker socket — powers the Configuration > Logs page's
+      # container and chromadb sources (tail via Engine API, never exec).
+      # :ro means the container cannot start/stop/remove anything.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - GLADOS_CONFIG=/app/configs/config.yaml
     env_file:
