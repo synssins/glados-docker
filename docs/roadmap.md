@@ -43,6 +43,10 @@ Source-tagging + per-domain intent allowlist gates sensitive operations
 - ✅ **Phase 5** — Full WebUI restructure + Memory tab +
   dedup-with-reinforcement + service auto-discovery. **Live in
   production.** 178 tests pass. See CHANGES.md Change 10 for details.
+- ✅ **Phase 6** — Configuration menu reorganization + YAML
+  minimization + user-friendly defaults + same-stack mDNS defaults.
+  **Live in production.** 255 tests pass. See CHANGES.md Change 11
+  for details.
 
 See `docs/CHANGES.md` Change 8 + Change 9 for full landing details.
 
@@ -163,6 +167,54 @@ The SQLite schema already supports it; everything still uses the
 single `"default"` partition. When multi-user WebUI auth or MQTT
 peer-bus integration arrives, switching is just a constructor
 argument away.
+
+---
+
+## Stage 3 Phase 6 follow-ups (post-Change 11)
+
+### WebUI Logs view (medium)
+
+Phase 6 hid every log/audit path field from the friendly forms —
+editing them via the UI can't create the destination directory, so
+the right fix is "surface the logs, hide the paths". Build a
+dedicated Logs page (Configuration sidebar, peer to Memory) that:
+
+- Streams recent content from `/app/logs/*.log` + `/app/logs/audit.jsonl`
+  via a new `GET /api/logs/tail?file=...&lines=...` endpoint
+  (auth-protected; read-only; no path editing).
+- Offers a friendly filter row (level: errors/warnings/all; file
+  selector; lines-back slider).
+- Colorises WARN/ERROR lines so operators spot issues without reading
+  raw JSONL.
+- Tails live with a Server-Sent Events stream while the tab is active.
+
+### System-page absorption of auth/audit/mode_entities.maintenance_* (small)
+
+Phase 6's Integrations page still renders `auth`, `audit`,
+`mode_entities`, `silent_hours`, and `tuning` groups under the
+"global" backing. Auth is already behind the Advanced toggle per
+operator feedback, but the naming mismatch (these aren't integrations)
+is worth resolving. Move them to a proper System-config form inside
+`tab-config-system`, and then drop those groups from the Integrations
+auto-form via extended `skipKeys`.
+
+### TTS Engine "unexpected response shape" on Discover (small)
+
+Shown in the 2026-04-18 screenshot. Pre-existing Phase 5 bug in the
+`/api/discover/voices` handler — some upstream speaches builds return
+`{"voices":[...]}` instead of top-level list or OpenAI `{"data":[...]}`.
+Add the third shape to the parser in `_handle_discover_voices`. Not
+caused by Phase 6; surfaces on the LLM & Services page (where Services
+now live).
+
+### Actually delete the deprecated config fields (later)
+
+Commit 2 marked 13 fields `Field(deprecated=True)` with loguru WARN
+on YAML. After operators confirm none are needed (give it a release
+cycle in production), remove the fields from the pydantic models,
+drop the corresponding `FIELD_META` entries, and simplify the
+warn-validators. No code references them today, so deletion is
+just schema cleanup.
 
 ---
 

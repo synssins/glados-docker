@@ -814,4 +814,138 @@ plus a review-queue override test in `test_memory_review.py`.
 
 ---
 
+## Change 11 — Stage 3 Phase 6: Configuration reorganization + YAML minimization + user-friendly defaults
+
+**Date:** 2026-04-18
+**Status:** Complete
+**Commits:** `68308a0` → `452b810` (five code commits plus the docs/deploy commit that carries this entry)
+
+### Why
+
+Phase 5's operator feedback surfaced three problems:
+
+1. **Empty / duplicate groups on Global.** The auto-form walked every
+   key under `_cfgData.global`, so `ssl` (which has its own SSL tab)
+   and `paths` / `network` (env-driven, YAML edit is inert inside the
+   container) rendered as redundant groups alongside real HA settings.
+2. **YAML drift.** `configs/config.example.yaml` pinned service URLs
+   to `host.docker.internal:*` that never matched how operators
+   actually configured the container, and the WebUI+YAML split was
+   underdocumented.
+3. **Menu didn't match mental model.** Nine flat entries
+   (System / Global / Services / Speakers / Audio / Personality / SSL /
+   Memory / Raw YAML) forced operators to remember which Global group
+   held what; HA lived under "Global" instead of anywhere labeled
+   "integrations"; Services and Speakers/Audio were split in ways
+   that didn't match how they're thought about.
+
+Operator also made explicit: **friendly by default, technical on
+demand.** The baseline UI should not show fields the user can't
+usefully change (env-driven paths, deprecated knobs, auth internals,
+audit paths) — those live in Raw YAML or behind the Advanced toggle.
+
+### What landed (five code commits)
+
+**Commit 1 — `cfgBuildForm` skipKeys parameter** (`68308a0`)
+Added a `skipKeys` argument to the JS form builder and taught the
+Global/Integrations branch to pass `['ssl', 'paths', 'network']`.
+Also landed the WebUI dev harness used to verify the rest of Phase 6
+(`tests/dev_webui.py` + `.claude/launch.json` for the Preview MCP).
+
+**Commit 2 — pydantic deprecation markers + warn-log validators** (`bbe84ea`)
+13 deletion-candidate fields got `Field(deprecated=True)` and a
+loguru `WARNING` on YAML presence: `paths.*` (5), `network.*` (2),
+`audit.path`, `audit.retention_days`, `tuning.engine_audio_default`,
+`weather.temperature_unit`, `weather.wind_speed_unit`,
+`services.gladys_api`. Pydantic same-stack defaults already matched
+the plan's targets (`http://ollama:11434`, `http://speaches:8800`,
+`http://glados-vision:8016`, `http://chromadb:8000`,
+`http://homeassistant.local:8123`); no default change needed.
+
+**Commit 3 — strip URLs + deprecated fields from config.example.yaml** (`fac78d0`)
+Rewrote the committed example to document the new override priority
+(env → WebUI → pydantic defaults) and ship only operator-mandatory
+non-URL fields (HA token, auth, TTS voice/model, optional Discord).
+Regression-guard tests prevent the example from ever reintroducing
+URL pins or deprecated fields.
+
+**Commit 4 — sidebar restructure** (`fb17b75`)
+Flipped the Configuration submenu from nine entries to eight:
+
+    Global    → Integrations
+    Services  → LLM & Services
+    Speakers ↘ Audio & Speakers (merged, per-subsection Save buttons)
+    Audio    ↗
+
+A `_CFG_BACKING` map routes virtual pages to existing backing
+sections for data access + save. Legacy localStorage keys
+(`config.global` / `.services` / `.speakers` / `.audio` and the
+pre-Phase-5 `'control'` / `'config'`) migrate to their Phase 6
+equivalents via `_migrateLegacyKey`. `cfgSaveSection` gained an
+optional second argument so the merged page's two Save buttons
+route their status to per-subsection spans.
+
+**Commit 5 — user-friendly defaults** (`452b810`)
+`cfgBuildForm` now honours `hidden: true` in FIELD_META; groups with
+all children hidden are skipped; `groupAdvanced` operates on visible
+children only so mixed hidden+advanced groups collapse cleanly.
+Deprecated / env-only / path fields marked hidden — they stay in the
+schema and Raw YAML but drop off the friendly forms entirely. Auth
+bumped to advanced (operators don't touch session timeout after
+initial setup). Integrations gained MQTT + Media Stack placeholder
+cards (dashed border, "COMING SOON" tag). LLM & Services gained a
+Model Options card (temperature, top_p, num_ctx, repeat_penalty;
+saves to `/api/config/personality`) and an LLM Timeouts card
+(connect/read; saves to `/api/config/global`; marked advanced).
+`gladys_api` dropped from the Services grid via a `SERVICES_HIDDEN`
+set.
+
+### Operator-visible effects
+
+- Configuration sidebar is tighter and uses names that match mental
+  model: System / Integrations / LLM & Services / Audio & Speakers /
+  Personality / Memory / SSL / Raw YAML.
+- Default form view is what the operator would plausibly change — env
+  paths, deprecated flags, auth internals hide until Advanced is on.
+- Same-stack deployments (Ollama / speaches / chromadb / glados-vision
+  in the same compose stack) work with NO URL configuration — first
+  launch picks up pydantic defaults, operator only needs an HA token.
+- Operators with legacy YAML URLs upgrade silently — pydantic still
+  parses hardcoded IPs without warning (unless the field is one of
+  the newly deprecated ones, in which case a one-line WARNING fires
+  on startup so they know to clean up).
+- Fields moved to new pages keep saving to their original backing
+  section; `/api/config/<section>` endpoints are unchanged.
+
+### Tests
+
+**255 pass** (was 178 + 77 new across five files):
+- `test_webui_cfg_form.py` (4) — `cfgBuildForm` skipKeys guard (Commit 1)
+- `test_config_defaults.py` (22) — same-stack defaults, env-wins-for-HA,
+  YAML backward-compat, per-field deprecation warnings (Commits 2-3)
+- `test_webui_nav_restructure.py` (23) — sidebar entries, legacy-key
+  migration, virtual-backing dispatch, custom renderer wiring (Commit 4)
+- `test_webui_friendly_defaults.py` (28) — hidden-flag guard,
+  visible-only group-advanced logic, per-field hidden markers,
+  placeholder cards, Model Options + LLM Timeouts cards (Commit 5)
+
+### Known follow-ups (not in Phase 6 scope)
+
+- **Logs view** — Commit 5 hid all log / audit path fields on the
+  friendly forms. The right replacement is a dedicated Logs page
+  that reads recent content from `/app/logs/*.log` and renders it
+  in a user-friendly tail view. Net-new feature; tracked in
+  `docs/roadmap.md`.
+- **System-page absorption of auth/audit/mode_entities.maintenance_*** —
+  Plan called for moving these off Integrations. Commit 5 worked
+  around it by making them advanced, but a dedicated System-config
+  form would be cleaner. Roadmap entry added.
+- **Actually deleting the deprecated fields** — scheduled for one
+  release after operators confirm they're unused.
+- **TTS Engine "unexpected response shape"** on Discover — surfaced
+  in operator's 2026-04-18 screenshot; pre-existing Phase 5 bug,
+  not caused by Phase 6. Roadmap entry added.
+
+---
+
 ---
