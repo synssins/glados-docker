@@ -289,7 +289,39 @@ class Glados:
         self.tool_timeout = tool_timeout
         self.mcp_servers = mcp_servers or []
         self.robot_manager = None
-        self._conversation_store = ConversationStore(initial_messages=list(personality_preprompt))
+        # Stage 3 Phase B: SQLite-backed conversation persistence so
+        # history survives container restarts and Tier 1/2 exchanges
+        # become context for subsequent Tier 3 calls. The DB is opened
+        # under GLADOS_DATA (default /app/data/conversation.db). If
+        # opening fails (disk read-only, permission, etc.), fall back
+        # to in-memory only — the engine must keep running.
+        try:
+            from .conversation_db import ConversationDB
+            _conv_db_path = os.path.join(
+                os.environ.get("GLADOS_DATA", "/app/data"),
+                "conversation.db",
+            )
+            self._conversation_db: ConversationDB | None = ConversationDB(_conv_db_path)
+        except Exception as exc:
+            logger.warning("ConversationDB init failed, in-memory only: {}", exc)
+            self._conversation_db = None
+        self._conversation_store = ConversationStore(
+            initial_messages=list(personality_preprompt),
+            db=self._conversation_db,
+            conversation_id=os.environ.get("GLADOS_CONVERSATION_ID", "default"),
+        )
+        # Hydrate from disk so prior turns are visible on restart.
+        # Limit to recent N to avoid replaying months of history into
+        # every LLM call; compaction summaries below the limit still
+        # live in ChromaDB and surface via RAG.
+        if self._conversation_db is not None:
+            try:
+                _loaded = self._conversation_store.load_from_db(limit=200)
+                if _loaded:
+                    logger.info("ConversationStore hydrated with {} prior messages",
+                                _loaded)
+            except Exception as exc:
+                logger.warning("ConversationStore hydrate failed: {}", exc)
         self.vision_config = vision_config
         self.autonomy_config = autonomy_config or AutonomyConfig()
         self.vision_state: VisionState | None = VisionState() if self.vision_config else None
