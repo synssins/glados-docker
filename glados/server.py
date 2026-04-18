@@ -152,14 +152,15 @@ def _init_ha_client() -> None:
             or os.environ.get("OLLAMA_AUTONOMY_URL", "").strip()
             or cfg.service_url("ollama_autonomy")
         )
-        # Default to qwen2.5 3B instruct: a clean small instruction-
-        # follower that produces JSON reliably and runs in ~2s on the
-        # autonomy GPU (vs ~12s for the 14B). The "glados" model has
-        # the persona baked in and tends to fight structured-output
-        # requests, and the 14B is overkill for a constrained JSON
-        # decision over a small candidate list.
+        # Disambiguator default: qwen2.5 14B. This task has a long,
+        # complex prompt (rules, candidate list, schema, examples) and
+        # weak instruction-following produces vague clarifications
+        # like "Multiple groups match." The 14B follows the explicit
+        # "name the candidates" rule reliably. ~5s per call once warm.
+        # The smaller 3B model worked for JSON shape but ignored the
+        # complex naming and persona instructions.
         disambig_model = os.environ.get(
-            "DISAMBIGUATOR_MODEL", "qwen2.5:3b-instruct-q4_K_M"
+            "DISAMBIGUATOR_MODEL", "qwen2.5:14b-instruct-q4_K_M"
         )
         # Operator's disambiguation rules YAML, optional.
         config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
@@ -179,9 +180,12 @@ def _init_ha_client() -> None:
         # light." -> GLaDOS-voiced restyling). Same Ollama as the
         # disambiguator; smaller models work well here since the input
         # is short and the output is constrained to one or two sentences.
+        # Rewriter uses the 3B by default — it's a simple style task
+        # (input ≤500 chars, output ≤2 sentences) that the small model
+        # handles in <1s with high quality. Don't fall back to the
+        # disambiguator's 14B; that defeats the latency win on Tier 1.
         rewriter_model = os.environ.get(
-            "REWRITER_MODEL",
-            os.environ.get("DISAMBIGUATOR_MODEL", "qwen2.5:3b-instruct-q4_K_M"),
+            "REWRITER_MODEL", "qwen2.5:3b-instruct-q4_K_M",
         )
         rewriter = PersonaRewriter(ollama_url=ollama_url, model=rewriter_model)
         init_rewriter(rewriter)
