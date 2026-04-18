@@ -143,16 +143,25 @@ def _init_ha_client() -> None:
         # Tier 2 disambiguator. Uses the autonomy Ollama (faster T4)
         # because the disambiguator is on the latency path and produces
         # short JSON, not free-form prose.
-        try:
-            ollama_url = cfg.service_url("ollama_autonomy")
-        except KeyError:
-            ollama_url = cfg.service_url("ollama_interactive")
+        # Env vars take precedence over services.yaml (which often has
+        # stale hardcoded URLs). DISAMBIGUATOR_OLLAMA_URL is the explicit
+        # override; OLLAMA_AUTONOMY_URL is the next preference.
+        ollama_url = (
+            os.environ.get("DISAMBIGUATOR_OLLAMA_URL", "").strip()
+            or os.environ.get("OLLAMA_AUTONOMY_URL", "").strip()
+            or cfg.service_url("ollama_autonomy")
+        )
+        # Default to qwen2.5 14B instruct: a clean instruction-follower
+        # that produces JSON reliably. The "glados" model has the persona
+        # baked in and tends to fight structured-output requests.
+        disambig_model = os.environ.get(
+            "DISAMBIGUATOR_MODEL", "qwen2.5:14b-instruct-q4_K_M"
+        )
         # Operator's disambiguation rules YAML, optional.
         config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
         rules = load_rules_from_yaml(
             os.path.join(config_dir, "disambiguation.yaml")
         )
-        disambig_model = os.environ.get("DISAMBIGUATOR_MODEL", "glados")
         disambig = Disambiguator(
             ha_client=client, cache=cache,
             ollama_url=ollama_url, model=disambig_model,
