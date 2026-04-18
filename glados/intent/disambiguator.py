@@ -36,6 +36,7 @@ from .rules import (
     DisambiguationRules,
     IntentAllowlist,
     domain_filter_for_utterance,
+    looks_like_home_command,
 )
 
 
@@ -126,6 +127,17 @@ class Disambiguator:
         """Drive a single utterance through Tier 2."""
         t0 = time.perf_counter()
 
+        # 0. Home-command precheck. Without this, a conversational
+        # utterance like "Say hello to my friend, his name is Alan"
+        # gets fuzzy-matched against every entity in the house and
+        # the LLM produces an ambiguity response. Tier 3 is the
+        # right place to handle chitchat.
+        if not looks_like_home_command(utterance):
+            return self._fall_through(
+                "no_home_command_intent",
+                utterance[:120], t0,
+            )
+
         # 1. Pull candidates from the cache. Bump limit when the user
         # used a universal quantifier — they want broad action and the
         # default 12 truncates the candidate list well before the LLM
@@ -184,6 +196,24 @@ class Disambiguator:
         # 5. Branch by decision.
         latency_ms = int((time.perf_counter() - t0) * 1000)
         candidates_summary = _summarize_candidates(candidates)
+
+        # 4b. Defense-in-depth: reject speech that leaked candidate
+        # entity IDs verbatim. The 2026-04-18 regression surfaced a
+        # clarify response of the form
+        #     "Ambiguity detected: binary_sensor.user_b_tablet_charging,
+        #      sensor.user_b_state_two. Specify which Alan you mean."
+        # which read raw developer-format strings to the operator.
+        # Fall through to Tier 3 rather than voicing them.
+        if speech and _speech_leaks_entity_ids(speech, candidates):
+            logger.warning(
+                "Tier 2 speech leaked entity_ids; falling through: {}",
+                speech[:200],
+            )
+            return self._fall_through(
+                "speech_leaked_entity_ids",
+                speech[:200], t0,
+                candidates=candidates_summary,
+            )
 
         if action == "clarify":
             return DisambiguationResult(
@@ -581,6 +611,27 @@ def _safe_parse_json(raw: str) -> dict[str, Any] | None:
             except (json.JSONDecodeError, ValueError):
                 return None
         return None
+
+
+def _speech_leaks_entity_ids(
+    speech: str,
+    candidates: list[CandidateMatch],
+) -> bool:
+    """True when the LLM's speech field contains any entity_id from the
+    candidate list. Entity IDs (`light.room_a_ceiling`,
+    `sensor.user_b_state_two`, …) are developer-format strings and must
+    never be voiced to the operator — the prompt asks for friendly
+    names, but models occasionally substitute the entity_id when
+    friendly_name and id are both meaningful to them."""
+    if not speech:
+        return False
+    # Any candidate entity_id appearing verbatim in speech is enough
+    # evidence that the LLM substituted IDs for names.
+    for c in candidates:
+        eid = c.entity.entity_id
+        if eid and eid in speech:
+            return True
+    return False
 
 
 def _summarize_candidates(candidates: list[CandidateMatch]) -> list[dict[str, Any]]:
