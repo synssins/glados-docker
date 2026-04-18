@@ -3901,6 +3901,18 @@ a.dl-link:hover { background: var(--orange-dim); color: #fff; }
   font-size: 0.8rem;
   color: var(--text-dim);
 }
+.cfg-subsection-title {
+  /* Merged Phase 6 pages (e.g. Audio & Speakers) stack two backing
+     sections under one header; this subsection title separates them. */
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--orange);
+  margin: 0.25rem 0 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
 .cfg-tab-btn {
   background: #222;
   border: 1px solid #444;
@@ -4279,13 +4291,12 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
     </a>
     <div class="nav-children">
       <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
-      <a class="nav-item" data-nav-key="config.global" onclick="navigateTo('config.global')" data-requires-auth="true">Global</a>
-      <a class="nav-item" data-nav-key="config.services" onclick="navigateTo('config.services')" data-requires-auth="true">Services</a>
-      <a class="nav-item" data-nav-key="config.speakers" onclick="navigateTo('config.speakers')" data-requires-auth="true">Speakers</a>
-      <a class="nav-item" data-nav-key="config.audio" onclick="navigateTo('config.audio')" data-requires-auth="true">Audio</a>
+      <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')" data-requires-auth="true">Integrations</a>
+      <a class="nav-item" data-nav-key="config.llm-services" onclick="navigateTo('config.llm-services')" data-requires-auth="true">LLM &amp; Services</a>
+      <a class="nav-item" data-nav-key="config.audio-speakers" onclick="navigateTo('config.audio-speakers')" data-requires-auth="true">Audio &amp; Speakers</a>
       <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')" data-requires-auth="true">Personality</a>
-      <a class="nav-item" data-nav-key="config.ssl" onclick="navigateTo('config.ssl')" data-requires-auth="true">SSL</a>
       <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')" data-requires-auth="true">Memory</a>
+      <a class="nav-item" data-nav-key="config.ssl" onclick="navigateTo('config.ssl')" data-requires-auth="true">SSL</a>
       <a class="nav-item" data-nav-key="config.raw" onclick="navigateTo('config.raw')" data-requires-auth="true">Raw YAML</a>
     </div>
     <!-- Training removed: piper_train is a host-native tool, not available in container -->
@@ -4302,7 +4313,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
     <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')">Chat</a>
     <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')">TTS</a>
     <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
-    <a class="nav-item" data-nav-key="config.global" onclick="navigateTo('config.global')" data-requires-auth="true">Config</a>
+    <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')" data-requires-auth="true">Config</a>
     <!-- Training removed: not available in container -->
   </div>
 </div>
@@ -4895,13 +4906,23 @@ const FIELD_META = {
 };
 
 const SECTION_META = {
-  global:      { title: 'Global Settings', desc: 'Home Assistant connection, network, paths, authentication, silent hours, and tuning' },
-  services:    { title: 'Services', desc: 'Service endpoint URLs and health status for all GLaDOS services' },
-  speakers:    { title: 'Speakers', desc: 'Home Assistant media player configuration' },
-  audio:       { title: 'Audio', desc: 'Audio file paths, limits, and synthesis parameters' },
-  personality: { title: 'Personality', desc: 'Attitudes, TTS defaults, HEXACO traits, and emotion model' },
-  robots:      { title: 'Robots', desc: 'Robot node integration â€” ESP32 nodes, bots, and emergency stop' },
-  raw:         { title: 'Raw YAML', desc: 'Edit configuration files directly as YAML' },
+  // Phase 6 page names (operators see these titles in the sidebar).
+  integrations:     { title: 'Integrations', desc: 'Home Assistant, MQTT, and media-stack integrations (MQTT + *arr/Plex arrive in later phases)' },
+  'llm-services':   { title: 'LLM & Services', desc: 'Ollama, TTS (speaches), STT, vision — endpoint URLs, health, and model options' },
+  'audio-speakers': { title: 'Audio & Speakers', desc: 'HA media players, audio file paths, synthesis parameters, and silent hours' },
+  personality:      { title: 'Personality', desc: 'Attitudes, TTS defaults, HEXACO traits, and emotion model' },
+  memory:           { title: 'Memory', desc: 'ChromaDB retention, passive-fact defaults, and the review queue' },
+  ssl:              { title: 'SSL', desc: 'HTTPS certificates — Let\'s Encrypt (DNS-01) or manual upload' },
+  raw:              { title: 'Raw YAML', desc: 'Edit configuration files directly as YAML' },
+  // Legacy section metas kept as defensive fallback — navigateTo() migrates
+  // legacy nav keys to their Phase 6 equivalents, but direct cfgRenderSection
+  // calls from elsewhere (error paths, older browser tabs, etc.) still find
+  // a title instead of rendering the bare key.
+  global:           { title: 'Integrations', desc: 'Home Assistant connection and related integration settings' },
+  services:         { title: 'LLM & Services', desc: 'Service endpoint URLs and health' },
+  speakers:         { title: 'Audio & Speakers', desc: 'Home Assistant media player configuration' },
+  audio:            { title: 'Audio & Speakers', desc: 'Audio file paths, limits, and synthesis parameters' },
+  robots:           { title: 'Robots', desc: 'Robot node integration — ESP32 nodes, bots, and emergency stop' },
 };
 
 const SERVICE_NAMES = {
@@ -4949,22 +4970,39 @@ function cfgSwitchSection(name, btn) {
   }
 }
 
+// Phase 6: virtual pages map onto existing backing sections for data
+// access + save semantics. Field IDs use the backing name so
+// cfgCollectForm / cfgSaveSection keep working unchanged.
+const _CFG_BACKING = {
+  'integrations':   'global',
+  'llm-services':   'services',
+  // 'audio-speakers' has no single backing — rendered by a custom
+  // path that calls cfgBuildForm twice (speakers + audio) with
+  // per-subsection save buttons.
+};
+
 function cfgRenderSection(section) {
-  const data = (section === 'ssl') ? (_cfgData.global || {}) : _cfgData[section];
+  if (section === 'audio-speakers') {
+    _cfgRenderAudioSpeakers();
+    return;
+  }
+  const backing = _CFG_BACKING[section] || section;
+
+  const data = (section === 'ssl') ? (_cfgData.global || {}) : _cfgData[backing];
   if (!data) {
     document.getElementById('cfg-form-area').innerHTML =
       '<div style="color:#ff6666;padding:20px;">Section not loaded. Click Reload.</div>';
     return;
   }
-  const meta = SECTION_META[section] || {};
+  const meta = SECTION_META[section] || SECTION_META[backing] || {};
   let html = '<div class="cfg-section-header">'
     + '<div class="cfg-section-title">' + escHtml(meta.title || section) + '</div>'
     + '<div class="cfg-section-desc">' + escHtml(meta.desc || '') + '</div>'
     + '</div>';
 
-  if (section === 'services') {
+  if (backing === 'services') {
     html += cfgRenderServices(data);
-  } else if (section === 'personality') {
+  } else if (backing === 'personality') {
     html += cfgRenderPersonality(data);
   } else if (section === 'ssl') {
     html += cfgRenderSsl(_cfgData.global && _cfgData.global.ssl ? _cfgData.global.ssl : {});
@@ -4972,16 +5010,50 @@ function cfgRenderSection(section) {
     // Skip keys that belong to a dedicated page (ssl → SSL tab) or are
     // env-only (paths, network are driven by GLADOS_ROOT / SERVE_HOST
     // etc. inside the container, so the YAML-backed form is inert).
-    const skipKeys = (section === 'global') ? ['ssl', 'paths', 'network'] : null;
-    html += cfgBuildForm(data, section, '', skipKeys);
+    const skipKeys = (backing === 'global') ? ['ssl', 'paths', 'network'] : null;
+    html += cfgBuildForm(data, backing, '', skipKeys);
   }
 
   if (section !== 'ssl') {
+    const label = meta.title || backing;
     html += '<div class="cfg-save-row">'
-      + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'' + section + '\')">Save ' + escHtml(section) + '</button>'
+      + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'' + backing + '\')">Save ' + escHtml(label) + '</button>'
       + '<span id="cfg-save-result" class="cfg-result"></span>'
       + '</div>';
   }
+  document.getElementById('cfg-form-area').innerHTML = html;
+}
+
+// Phase 6 merged page: renders Speakers + Audio side-by-side with
+// per-subsection Save buttons (each targets its own backing section).
+function _cfgRenderAudioSpeakers() {
+  const speakers = _cfgData.speakers;
+  const audio = _cfgData.audio;
+  if (!speakers || !audio) {
+    document.getElementById('cfg-form-area').innerHTML =
+      '<div style="color:#ff6666;padding:20px;">Audio &amp; Speakers sections not loaded. Click Reload.</div>';
+    return;
+  }
+  const meta = SECTION_META['audio-speakers'] || {};
+  let html = '<div class="cfg-section-header">'
+    + '<div class="cfg-section-title">' + escHtml(meta.title || 'Audio & Speakers') + '</div>'
+    + '<div class="cfg-section-desc">' + escHtml(meta.desc || '') + '</div>'
+    + '</div>';
+
+  html += '<div class="cfg-subsection-title">Speakers</div>';
+  html += cfgBuildForm(speakers, 'speakers', '');
+  html += '<div class="cfg-save-row">'
+    + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'speakers\', \'cfg-save-result-speakers\')">Save Speakers</button>'
+    + '<span id="cfg-save-result-speakers" class="cfg-result"></span>'
+    + '</div>';
+
+  html += '<div class="cfg-subsection-title" style="margin-top:18px;">Audio</div>';
+  html += cfgBuildForm(audio, 'audio', '');
+  html += '<div class="cfg-save-row">'
+    + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'audio\', \'cfg-save-result-audio\')">Save Audio</button>'
+    + '<span id="cfg-save-result-audio" class="cfg-result"></span>'
+    + '</div>';
+
   document.getElementById('cfg-form-area').innerHTML = html;
 }
 
@@ -5527,11 +5599,16 @@ function cfgRenderSsl(ssl) {
   return html;
 }
 
-async function cfgSaveSection(section) {
+async function cfgSaveSection(section, resultElId) {
+  // resultElId is optional — defaults to the page-wide #cfg-save-result.
+  // Merged pages (Audio & Speakers) pass a per-subsection ID so each
+  // save button updates its own status span.
   const data = cfgCollectForm(section);
-  const resultEl = document.getElementById('cfg-save-result');
-  resultEl.textContent = 'Saving...';
-  resultEl.className = 'cfg-result';
+  const resultEl = document.getElementById(resultElId || 'cfg-save-result');
+  if (resultEl) {
+    resultEl.textContent = 'Saving...';
+    resultEl.className = 'cfg-result';
+  }
   try {
     const r = await fetch('/api/config/' + section, {
       method: 'PUT',
@@ -5540,16 +5617,18 @@ async function cfgSaveSection(section) {
     });
     const resp = await r.json();
     if (r.ok) {
-      resultEl.textContent = '';
+      if (resultEl) resultEl.textContent = '';
       showToast('Saved! Restart services for changes to take effect.', 'success');
       _cfgData[section] = data;
-    } else {
+    } else if (resultEl) {
       resultEl.textContent = resp.error || ('Error (' + r.status + ')');
       resultEl.className = 'cfg-result err';
     }
   } catch(e) {
-    resultEl.textContent = 'Error: ' + e.message;
-    resultEl.className = 'cfg-result err';
+    if (resultEl) {
+      resultEl.textContent = 'Error: ' + e.message;
+      resultEl.className = 'cfg-result err';
+    }
   }
 }
 
@@ -5992,11 +6071,20 @@ function _panelIdFor(key) {
   return 'tab-' + key;
 }
 
-// Legacy keys (pre-Phase-5) stored 'tts'/'chat'/'control'/'config'.
-// Translate on read so operators don't see a blank page after upgrade.
+// Legacy keys translated on read so operators don't see a blank page
+// after upgrade. Two generations of legacy keys are supported now:
+//   • pre-Phase-5: bare 'tts'/'chat'/'control'/'config'
+//   • pre-Phase-6: 'config.global' / '.services' / '.speakers' / '.audio'
+// If cfgLoadAll hasn't populated _cfgData yet by the time these old
+// pages were stored, the new virtual equivalents still render once
+// the data arrives.
 function _migrateLegacyKey(k) {
   if (k === 'control') return 'config.system';
-  if (k === 'config')  return 'config.global';
+  if (k === 'config')  return 'config.integrations';
+  if (k === 'config.global')    return 'config.integrations';
+  if (k === 'config.services')  return 'config.llm-services';
+  if (k === 'config.speakers')  return 'config.audio-speakers';
+  if (k === 'config.audio')     return 'config.audio-speakers';
   return k;
 }
 
