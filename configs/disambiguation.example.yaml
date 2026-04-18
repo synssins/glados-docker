@@ -1,0 +1,40 @@
+# Tier 2 disambiguation rules — copy to disambiguation.yaml on the
+# container's mounted /app/configs/ to override defaults.
+#
+# These rules become part of the LLM's system prompt every time Tier 1
+# misses and Tier 2 takes over. Edits are reloaded on container
+# restart (no hot-reload yet).
+
+# Operator naming convention. Free-form; rendered into the prompt
+# verbatim. Help the LLM map house slang to entity selection.
+naming_convention:
+  "lamp / lamps":     "plug-in fixtures or smart bulbs"
+  "light / lights":   "overhead fixtures (plural = all of them in scope)"
+  "switch / switches": "physical wall switches"
+  "strip / strips":   "LED strip lights"
+  "scene":            "named lighting/automation scene"
+
+# Words that always mean "the ceiling fixture", overriding the generic
+# "lights" group.
+overhead_synonyms:
+  - overhead
+  - ceiling
+  - ceiling light
+  - ceiling fixture
+
+# Whether to filter candidates by current state when the action implies
+# a transition (turn_off → only consider 'on'; turn_on → only 'off').
+state_inference: true
+
+# Skip state-based inference if any candidate's state hasn't been
+# refreshed from HA in this many seconds — stale state would cause
+# wrong-device outcomes.
+max_state_age_seconds: 5.0
+
+# Top-N fuzzy candidates to pass to the LLM. More candidates = better
+# context but slower LLM call.
+candidate_limit: 12
+
+# Free-form text appended to the system prompt. Use for site-specific
+# quirks — e.g. "the office lights are unreliable, prefer the desk lamp".
+extra_guidance: ""
