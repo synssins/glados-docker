@@ -123,6 +123,7 @@ def _init_ha_client() -> None:
         from glados.intent import (
             Disambiguator, init_disambiguator, load_rules_from_yaml,
         )
+        from glados.persona import PersonaRewriter, init_rewriter
 
         token = cfg.ha_token
         ws_url = cfg.ha_ws_url
@@ -151,11 +152,14 @@ def _init_ha_client() -> None:
             or os.environ.get("OLLAMA_AUTONOMY_URL", "").strip()
             or cfg.service_url("ollama_autonomy")
         )
-        # Default to qwen2.5 14B instruct: a clean instruction-follower
-        # that produces JSON reliably. The "glados" model has the persona
-        # baked in and tends to fight structured-output requests.
+        # Default to qwen2.5 3B instruct: a clean small instruction-
+        # follower that produces JSON reliably and runs in ~2s on the
+        # autonomy GPU (vs ~12s for the 14B). The "glados" model has
+        # the persona baked in and tends to fight structured-output
+        # requests, and the 14B is overkill for a constrained JSON
+        # decision over a small candidate list.
         disambig_model = os.environ.get(
-            "DISAMBIGUATOR_MODEL", "qwen2.5:14b-instruct-q4_K_M"
+            "DISAMBIGUATOR_MODEL", "qwen2.5:3b-instruct-q4_K_M"
         )
         # Operator's disambiguation rules YAML, optional.
         config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
@@ -170,6 +174,18 @@ def _init_ha_client() -> None:
         init_disambiguator(disambig)
         logger.info("Tier 2 disambiguator ready; ollama={} model={}",
                     ollama_url, disambig_model)
+
+        # Persona rewriter for Tier 1 hits (HA's plain "Turned off the
+        # light." -> GLaDOS-voiced restyling). Same Ollama as the
+        # disambiguator; smaller models work well here since the input
+        # is short and the output is constrained to one or two sentences.
+        rewriter_model = os.environ.get(
+            "REWRITER_MODEL",
+            os.environ.get("DISAMBIGUATOR_MODEL", "qwen2.5:3b-instruct-q4_K_M"),
+        )
+        rewriter = PersonaRewriter(ollama_url=ollama_url, model=rewriter_model)
+        init_rewriter(rewriter)
+        logger.info("Persona rewriter ready; model={}", rewriter_model)
     except Exception as exc:
         logger.warning("HA WS / Tier 2 init failed: {}", exc)
 

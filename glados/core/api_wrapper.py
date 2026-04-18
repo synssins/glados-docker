@@ -35,6 +35,7 @@ from glados.doorbell.screener import DoorbellScreener
 from glados.observability import AuditEvent, Origin, audit
 from glados import ha as _ha
 from glados import intent as _intent
+from glados import persona as _persona
 
 # Container-aware path resolution
 _GLADOS_ROOT = Path(os.environ.get("GLADOS_ROOT", "/app"))
@@ -1141,6 +1142,23 @@ def _get_engine_response_with_retry(
 # Stage 3 Phase 1 — Tier 1 fast path via HA conversation API
 # ---------------------------------------------------------------------------
 
+def _persona_rewrite(plain: str, utterance: str = "") -> str:
+    """Run plain Tier 1 / Tier 2 speech through the persona rewriter.
+
+    Best-effort: any failure (rewriter not initialized, LLM down, bad
+    output) returns the original `plain` text. The user always gets a
+    real reply; persona is a polish layer."""
+    rw = _persona.get_rewriter()
+    if rw is None or not plain:
+        return plain
+    try:
+        result = rw.rewrite(plain, context_hint=utterance[:200])
+    except Exception as exc:
+        logger.debug("Persona rewriter raised: {} (returning original)", exc)
+        return plain
+    return result.text or plain
+
+
 def _emit_tier1_sse_response(
     handler: "APIHandler", request_id: str, text: str,
 ) -> None:
@@ -1266,7 +1284,8 @@ def _try_tier1_nonstreaming(
                 return True
         return False
 
-    speech = result.speech or "Action executed."
+    plain_speech = result.speech or "Action executed."
+    speech = _persona_rewrite(plain_speech, utterance=user_message)
     request_id = uuid.uuid4().hex[:12]
     payload = {
         "id": f"chatcmpl-{request_id}",
@@ -1292,11 +1311,17 @@ def _try_tier1_nonstreaming(
     audit(AuditEvent(
         ts=time.time(), origin=origin, kind="intent", tier=1,
         utterance=user_message, result="ok",
-        latency_ms=elapsed_ms,
-        extra={"response_type": result.response_type, "speech": speech[:500]},
+        latency_ms=int((time.perf_counter() - t0) * 1000),
+        extra={
+            "response_type": result.response_type,
+            "speech_plain": plain_speech[:500],
+            "speech": speech[:500],
+            "rewrote": speech != plain_speech,
+        },
     ))
     logger.info("Tier 1 hit (non-stream): {} -> {} ({}ms)",
-                user_message[:60], speech[:80], elapsed_ms)
+                user_message[:60], speech[:80],
+                int((time.perf_counter() - t0) * 1000))
     return True
 
 
@@ -1341,11 +1366,11 @@ def _try_tier1_fast_path(
                     logger.warning("Tier 2 SSE write failed: {}", exc)
         return False
 
-    # Tier 1 hit — send HA's speech back as the final response. Phase 1
-    # MVP returns HA's plain text verbatim; a persona rewrite layer is
-    # a follow-up commit so we can measure the intercept point works
-    # before adding another LLM round trip.
-    speech = result.speech or "Action executed."
+    # Tier 1 hit — restyle HA's plain confirmation in GLaDOS voice
+    # before emitting. The rewriter is best-effort; on failure the
+    # original HA speech is sent as-is so the user always gets a reply.
+    plain_speech = result.speech or "Action executed."
+    speech = _persona_rewrite(plain_speech, utterance=user_message)
     request_id = uuid.uuid4().hex[:12]
     try:
         _emit_tier1_sse_response(handler, request_id, speech)
@@ -1369,15 +1394,17 @@ def _try_tier1_fast_path(
         tier=1,
         utterance=user_message,
         result="ok",
-        latency_ms=elapsed_ms,
+        latency_ms=int((time.perf_counter() - t0) * 1000),
         extra={
             "response_type": result.response_type,
+            "speech_plain": plain_speech[:500],
             "speech": speech[:500],
+            "rewrote": speech != plain_speech,
             "conversation_id": result.conversation_id,
         },
     ))
     logger.info("Tier 1 hit: {} -> {} ({}ms)", user_message[:60],
-                speech[:80], elapsed_ms)
+                speech[:80], int((time.perf_counter() - t0) * 1000))
     return True
 
 

@@ -1,0 +1,200 @@
+"""Persona rewriter for Tier 1 responses.
+
+Tier 1 (HA conversation API) returns plain-English text like
+"Turned off the kitchen light." That's correct but bland — the user
+expects GLaDOS's voice. This module transforms HA's plain confirmation
+into a GLaDOS-flavored reply via a short Ollama call.
+
+Design notes:
+- Uses the same fast autonomy Ollama as the disambiguator. Short prompt,
+  short output → typically 2-5s on the 14B model, 1-2s on a 3B model.
+- Pure best-effort. If the LLM is slow, errors, or returns garbage,
+  the caller falls back to HA's original speech. The user always gets
+  a real response; the persona is a polish layer, not a hard dependency.
+- No tools. No state. The LLM only restyles the input string.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+import urllib.request
+from dataclasses import dataclass
+from typing import Any
+
+from loguru import logger
+
+
+# Tunables. Both env-overridable so the operator can dial them per
+# deployment without a code change.
+_REWRITER_TIMEOUT_S = float(os.environ.get("REWRITER_TIMEOUT_S", "8"))
+_REWRITER_MAX_INPUT_CHARS = 500
+_REWRITER_MAX_OUTPUT_CHARS = 400
+
+
+@dataclass
+class RewriteResult:
+    """Outcome of one rewrite attempt."""
+    success: bool
+    text: str               # Rewritten text on success, or original on failure
+    latency_ms: int
+    error: str = ""
+
+
+class PersonaRewriter:
+    """Stateless rewriter. Safe to call concurrently.
+
+    `rewrite(plain_text)` returns the GLaDOS-voiced restyling, or the
+    original `plain_text` if the LLM call fails. Never raises.
+    """
+
+    def __init__(self, ollama_url: str, model: str) -> None:
+        self._ollama_url = ollama_url.rstrip("/")
+        self._model = model
+
+    def rewrite(self, plain_text: str, context_hint: str = "") -> RewriteResult:
+        """Restyle `plain_text` in GLaDOS's voice.
+
+        `context_hint` is optional extra context for the LLM (e.g. the
+        original user utterance) so it can match tone to the situation.
+        Empty hint is fine.
+        """
+        t0 = time.perf_counter()
+        if not plain_text or not plain_text.strip():
+            return RewriteResult(success=True, text=plain_text, latency_ms=0)
+
+        # Hard cap input size to bound LLM latency / token cost.
+        input_text = plain_text[:_REWRITER_MAX_INPUT_CHARS]
+
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": _build_user_prompt(input_text, context_hint)},
+        ]
+        body = json.dumps({
+            "model": self._model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": 0.6,    # some creativity, not chaos
+                "top_p": 0.9,
+                "num_ctx": 1024,
+                "num_predict": 200,    # cap output token count
+            },
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            self._ollama_url + "/api/chat",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=_REWRITER_TIMEOUT_S) as resp:
+                data = json.loads(resp.read())
+        except Exception as exc:
+            logger.debug("PersonaRewriter call failed: {} (returning original)", exc)
+            return RewriteResult(
+                success=False, text=plain_text,
+                latency_ms=int((time.perf_counter() - t0) * 1000),
+                error=str(exc),
+            )
+
+        out = (data.get("message") or {}).get("content", "") or ""
+        out = _clean_output(out)
+        if not out:
+            return RewriteResult(
+                success=False, text=plain_text,
+                latency_ms=int((time.perf_counter() - t0) * 1000),
+                error="empty_output",
+            )
+        if len(out) > _REWRITER_MAX_OUTPUT_CHARS:
+            out = out[:_REWRITER_MAX_OUTPUT_CHARS].rstrip() + "..."
+        return RewriteResult(
+            success=True, text=out,
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Prompt assembly
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPT = """\
+ROLE: You are a tone editor. Your only job is to rewrite a plain
+confirmation message into GLaDOS's voice from Portal. You do not add
+information. You do not invent facts. You preserve every fact in the
+input — entity names, numbers, states, room names — but restyle the
+phrasing.
+
+GLaDOS persona: cold, condescending, dryly menacing, scientific. She
+refers to the user as 'test subject'. Mentions Aperture Science where
+natural. Treats domestic tasks as 'enrichment center procedures'.
+Sarcastic. Backhanded. Never apologizes sincerely. Never says 'please'.
+Never uses an exclamation point.
+
+Hard rules:
+- Output ONE OR TWO sentences. No more.
+- Output prose only — no JSON, no quotes around the response,
+  no preamble like "Here is the rewrite:".
+- Preserve every concrete fact (entity names, room names, numbers,
+  on/off states, times) from the input. Do not change them.
+- Do not add new device actions or instructions.
+- Do not break character. No "as an AI" disclaimers.
+
+Examples:
+- Input:  "Turned off the kitchen light."
+  Output: "Kitchen illumination, terminated. Predictable."
+- Input:  "The temperature in the office is 72 degrees."
+  Output: "Office thermal regulation reports seventy-two degrees. Within tolerance, for now."
+- Input:  "Turned on the bedroom lights."
+  Output: "Bedroom illumination engaged. Try not to bask in it, test subject."
+- Input:  "It is 2:22 PM."
+  Output: "The clock reports two twenty-two PM. I'm sure that's riveting."
+"""
+
+
+def _build_user_prompt(plain_text: str, context_hint: str) -> str:
+    parts = [f"Rewrite this in GLaDOS's voice:\n\n{plain_text}"]
+    if context_hint:
+        parts.append(f"\n(For context, the user said: {context_hint!r})")
+    return "\n".join(parts)
+
+
+def _clean_output(raw: str) -> str:
+    """Strip code fences, leading "Here is..." chatter, and outer quotes
+    that small models sometimes wrap their output in."""
+    s = raw.strip()
+    # Strip code fences.
+    if s.startswith("```"):
+        s = s.strip("`").strip()
+        if s.lower().startswith("text\n") or s.lower().startswith("plaintext\n"):
+            s = s.split("\n", 1)[1] if "\n" in s else s
+    # Drop common preambles.
+    for prefix in (
+        "here is the rewrite:", "here's the rewrite:",
+        "rewrite:", "glados:", "response:",
+    ):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix):].lstrip()
+    # Strip surrounding quotes.
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        s = s[1:-1]
+    return s.strip()
+
+
+# ---------------------------------------------------------------------------
+# Singleton
+# ---------------------------------------------------------------------------
+
+_REWRITER: PersonaRewriter | None = None
+_LOCK = threading.Lock()
+
+
+def init_rewriter(rewriter: PersonaRewriter) -> None:
+    global _REWRITER
+    with _LOCK:
+        _REWRITER = rewriter
+
+
+def get_rewriter() -> PersonaRewriter | None:
+    return _REWRITER
