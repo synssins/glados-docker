@@ -76,12 +76,26 @@ class TestWriteFactReviewStatus:
         assert ok is True
         assert store.semantic[0]["metadata"]["review_status"] == "approved"
 
-    def test_passive_default_pending(self) -> None:
-        """LLM auto-extracted facts are lower-trust — go to review queue
-        first. Operator promotes them before they enter RAG."""
+    def test_passive_default_approved(self) -> None:
+        """Phase 5 refinement: passive-extracted facts default to
+        'approved' and enter RAG immediately. Repetition reinforces via
+        ChromaDB dedup instead of queueing for operator promotion. See
+        test_memory_dedup.py for the reinforcement contract and
+        test_passive_status_pending_override for the legacy flow."""
         store = _FakeMemoryStore()
         ok = write_fact(store, "ResidentA went to bed at 10pm",
                          source="passive", importance=0.6)
+        assert ok is True
+        assert store.semantic[0]["metadata"]["review_status"] == "approved"
+
+    def test_passive_status_pending_override(self) -> None:
+        """Operator can restore the Phase D review-queue flow by passing
+        review_status='pending' (or setting MemoryConfig.passive_default_status).
+        New facts then wait for operator promotion before entering RAG."""
+        store = _FakeMemoryStore()
+        ok = write_fact(store, "ResidentA went to bed at 10pm",
+                         source="passive", importance=0.6,
+                         review_status="pending")
         assert ok is True
         assert store.semantic[0]["metadata"]["review_status"] == "pending"
 

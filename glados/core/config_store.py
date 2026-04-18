@@ -352,6 +352,22 @@ class MemoryConfig(BaseModel):
     # How often the retention sweeper runs (seconds).
     retention_sweep_interval_s: int = 3600  # hourly
 
+    # Stage 3 Phase 5: passive memory dedup-with-reinforcement.
+    # Passive-extracted facts default to review_status="approved" so
+    # they enter RAG immediately (the old "pending" flow required
+    # operator promotion, which made the feature effectively unused).
+    # On each subsequent similar mention, the existing fact is
+    # reinforced (importance bumped, mention_count incremented) via
+    # cosine-distance matching in ChromaDB rather than duplicating.
+    # Operator can set passive_default_status="pending" to restore the
+    # review-queue flow; the Memory UI renders a Pending panel in that
+    # case. See docs/CHANGES.md Change 10.
+    passive_default_status: str = "approved"
+    passive_dedup_threshold: float = 0.30
+    passive_base_importance: float = 0.5
+    passive_reinforce_step: float = 0.05
+    passive_importance_cap: float = 0.95
+
 
 class ObserverEntityRule(BaseModel):
     entity_id: str
