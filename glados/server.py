@@ -110,11 +110,18 @@ def _init_ha_client() -> None:
     Runs in the background; the client reconnects if HA is unreachable.
     Failure here must not block engine startup — fast-path intercept
     will simply see `get_bridge() is None` and fall through.
+
+    Also stands up the Tier 2 disambiguator so it can take over when
+    Tier 1 (HA conversation API) misses with should_disambiguate.
     """
     try:
+        import os
         from glados.core.config_store import cfg
         from glados.ha import (
             ConversationBridge, EntityCache, HAClient, init_singletons,
+        )
+        from glados.intent import (
+            Disambiguator, init_disambiguator, load_rules_from_yaml,
         )
 
         token = cfg.ha_token
@@ -132,8 +139,30 @@ def _init_ha_client() -> None:
         bridge = ConversationBridge(client)
         init_singletons(client, bridge, cache)
         logger.info("HA WS client started; url={}", ws_url)
+
+        # Tier 2 disambiguator. Uses the autonomy Ollama (faster T4)
+        # because the disambiguator is on the latency path and produces
+        # short JSON, not free-form prose.
+        try:
+            ollama_url = cfg.service_url("ollama_autonomy")
+        except KeyError:
+            ollama_url = cfg.service_url("ollama_interactive")
+        # Operator's disambiguation rules YAML, optional.
+        config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
+        rules = load_rules_from_yaml(
+            os.path.join(config_dir, "disambiguation.yaml")
+        )
+        disambig_model = os.environ.get("DISAMBIGUATOR_MODEL", "glados")
+        disambig = Disambiguator(
+            ha_client=client, cache=cache,
+            ollama_url=ollama_url, model=disambig_model,
+            rules=rules,
+        )
+        init_disambiguator(disambig)
+        logger.info("Tier 2 disambiguator ready; ollama={} model={}",
+                    ollama_url, disambig_model)
     except Exception as exc:
-        logger.warning("HA WS client init failed: {}", exc)
+        logger.warning("HA WS / Tier 2 init failed: {}", exc)
 
 
 def main() -> None:
