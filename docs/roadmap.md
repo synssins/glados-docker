@@ -109,13 +109,30 @@ the larger model). Possible improvements:
 
 ## Stage 3 Phase 4 follow-ups (post-Change 9)
 
-### WebUI Memory tab (medium)
+### WebUI Memory tab + full UI restructure (in planning, Phase 5)
 
-Phase D shipped the backend endpoints (GET /api/memory/list,
-/pending, POST /promote, /demote, /edit, DELETE /<id>). The
-HTML/JS panel that surfaces these to operators — paginated pending
-list, search across approved facts, threshold sliders, batch
-promote/demote — is still pending. Today operators must use curl.
+**Plan approved 2026-04-18; implementation deferred to next session.**
+Plan file: `C:\Users\Administrator\.claude\plans\mellow-purring-kitten.md`
+(see "Stage 3 Phase 5"). Documented as Change 10 (planned) in
+`docs/CHANGES.md`.
+
+Scope expanded beyond just the Memory tab into a full WebUI
+restructure:
+- Configuration becomes a parent menu with sub-items in the left
+  sidebar; System nests inside Configuration; auto-expand when on
+  any Config child page; default page changes to Chat.
+- Service auto-discovery (Ollama models, TTS voices) via Discover
+  button + auto-fetch on URL change.
+- SSL field duplication in Global removed.
+- Memory page redesigned around dedup-with-reinforcement: passive-
+  extracted facts default to approved + bump importance on
+  repetition; configurable per-deployment.
+- UX polish: toast notifications, confirm dialogs, sidebar engine
+  status indicator, distinctive heading font.
+
+Backend Phase D memory endpoints already exist; UI work + a small
+set of new endpoints (discover/*, memory/add, retention/sweep)
+land together.
 
 ### Scheduled daily summarization (low)
 
