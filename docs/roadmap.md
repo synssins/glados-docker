@@ -198,14 +198,30 @@ is worth resolving. Move them to a proper System-config form inside
 `tab-config-system`, and then drop those groups from the Integrations
 auto-form via extended `skipKeys`.
 
-### TTS Engine "unexpected response shape" on Discover (small)
+### TTS Engine "unexpected response shape" on Discover ✅ Fixed in commit `7768ce4`
 
-Shown in the 2026-04-18 screenshot. Pre-existing Phase 5 bug in the
-`/api/discover/voices` handler — some upstream speaches builds return
-`{"voices":[...]}` instead of top-level list or OpenAI `{"data":[...]}`.
-Add the third shape to the parser in `_handle_discover_voices`. Not
-caused by Phase 6; surfaces on the LLM & Services page (where Services
-now live).
+Shipped with the 2026-04-18 hotfix alongside the Tier 2 conversational
+bleed fix. The `discover_voices` handler now accepts the
+`{"voices": [...]}` shape GLaDOS Piper returns, in addition to the
+pre-existing top-level-list and OpenAI `{"data": [...]}` shapes.
+
+### Chitchat responses prefix every answer with the time (small)
+
+Symptom surfaced 2026-04-18 while verifying the Alan hotfix: on Tier 3
+chitchat, "Tell me a joke about cats" and "What's the fastest animal
+on earth?" both returned responses like "The chronometer reports
+12:47 PM. Fascinating inquiry; did not expect a scientific query at
+this hour." — the clock announcement leads and in some cases the
+model never gets to the actual answer. Expected behavior: mention
+the time only when it's contextually relevant (morning/evening
+greetings, scheduling questions, "what time is it").
+
+Likely culprits: a system-message nudge that over-weights the current
+time, or a tool call to `get_time` that fires for every turn. Check
+`api_wrapper.py` `_stream_chat_sse` system-message assembly and the
+MCP tool selection logic. Pre-existing behavior — NOT introduced by
+Phase 6; unblocked deployment of the Alan hotfix so filed here
+rather than chasing inline.
 
 ### Actually delete the deprecated config fields (later)
 
