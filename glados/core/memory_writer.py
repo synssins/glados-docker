@@ -222,7 +222,7 @@ def detect_explicit_memory(message: str) -> str | None:
 
     Examples:
         "Remember that I prefer the bedroom at 68 degrees"
-          → "ResidentA prefers the bedroom at 68 degrees"
+          → "Alex prefers the bedroom at 68 degrees"
         "Note that Pet1 is not allowed in the office"
           → "Pet1 is not allowed in the office"
     """
@@ -375,7 +375,7 @@ def classify_and_extract(
             llm_config,
             system_prompt=(
                 "Extract the key personal fact from this message as a single, "
-                "clear sentence in third person (e.g. 'ResidentA prefers...' not 'I prefer...'). "
+                "clear sentence in third person (e.g. 'Alex prefers...' not 'I prefer...'). "
                 "Be specific and concise. Output only the fact sentence, nothing else."
             ),
             user_prompt=message,

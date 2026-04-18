@@ -2421,7 +2421,7 @@ class Handler(BaseHTTPRequestHandler):
     def _post_memory_add(self):
         """Operator-initiated long-term fact. Writes as source='explicit'
         so it lands approved and RAG-eligible immediately. Body:
-          {"document": "ResidentA prefers dark roast", "importance": 0.9}
+          {"document": "The operator prefers dark roast", "importance": 0.9}
         """
         try:
             length = int(self.headers.get("Content-Length", 0))
@@ -4604,7 +4604,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
       </div>
     </div>
     <div id="memAddForm" style="display:none;margin-top:12px;">
-      <textarea id="memAddText" placeholder="ResidentA prefers the living room lights at 40% in the evening"></textarea>
+      <textarea id="memAddText" placeholder="The operator prefers the living room lights at 40% in the evening"></textarea>
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <label style="font-size:0.82rem;color:var(--text-dim);">Importance:
           <input id="memAddImportance" type="number" step="0.05" min="0" max="1" value="0.9" style="width:70px;margin-left:4px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;">

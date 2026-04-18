@@ -65,10 +65,10 @@ class MemoryStore:
         mem.add_episodic("Front door opened", {"entity": "binary_sensor.front_door"})
 
         # Write semantic fact
-        mem.add_semantic("ResidentA prefers lights at 40% brightness in the evening")
+        mem.add_semantic("The operator prefers lights at 40% brightness in the evening")
 
         # Query relevant memories for context injection
-        results = mem.query("What does ResidentA like?", collection="semantic", n=5)
+        results = mem.query("What does the operator like?", collection="semantic", n=5)
     """
 
     EPISODIC = "episodic"

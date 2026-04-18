@@ -71,7 +71,7 @@ class TestWriteFactReviewStatus:
         """User-typed 'remember that...' is high-trust — auto-approved
         and immediately RAG-eligible."""
         store = _FakeMemoryStore()
-        ok = write_fact(store, "ResidentA likes dark roast",
+        ok = write_fact(store, "The operator likes dark roast",
                          source="explicit", importance=0.9)
         assert ok is True
         assert store.semantic[0]["metadata"]["review_status"] == "approved"
@@ -83,7 +83,7 @@ class TestWriteFactReviewStatus:
         test_memory_dedup.py for the reinforcement contract and
         test_passive_status_pending_override for the legacy flow."""
         store = _FakeMemoryStore()
-        ok = write_fact(store, "ResidentA went to bed at 10pm",
+        ok = write_fact(store, "The operator went to bed at 10pm",
                          source="passive", importance=0.6)
         assert ok is True
         assert store.semantic[0]["metadata"]["review_status"] == "approved"
@@ -93,7 +93,7 @@ class TestWriteFactReviewStatus:
         review_status='pending' (or setting MemoryConfig.passive_default_status).
         New facts then wait for operator promotion before entering RAG."""
         store = _FakeMemoryStore()
-        ok = write_fact(store, "ResidentA went to bed at 10pm",
+        ok = write_fact(store, "The operator went to bed at 10pm",
                          source="passive", importance=0.6,
                          review_status="pending")
         assert ok is True
