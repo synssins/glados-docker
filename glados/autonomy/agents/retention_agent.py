@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -45,6 +45,8 @@ class RetentionAgent:
         hard_cap_days: int = 180,
         max_disk_mb: int = 500,
         sweep_interval_s: int = 3600,
+        memory_store: "Any | None" = None,
+        episodic_ttl_hours: int = 168,
     ) -> None:
         # Clamp max_days to the hard cap immediately so a misconfigured
         # operator setting doesn't silently keep history forever.
@@ -58,6 +60,13 @@ class RetentionAgent:
         self._max_age_s = max_days * 86400
         self._max_disk_bytes = max_disk_mb * 1024 * 1024
         self._sweep_interval_s = max(60, sweep_interval_s)  # min 1 minute
+        # Stage 3 Phase E: ChromaDB episodic TTL enforcement. The
+        # existing `episodic_ttl_hours` config field was a placeholder;
+        # this sweeper now actually deletes episodic entries older than
+        # the TTL each tick. Semantic facts are NOT touched — those
+        # persist indefinitely (they're operator-curated knowledge).
+        self._memory_store = memory_store
+        self._episodic_ttl_s = max(0, episodic_ttl_hours) * 3600
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_sweep_at: float = 0.0
@@ -103,7 +112,7 @@ class RetentionAgent:
         return self._sweep_once()
 
     def _sweep_once(self) -> dict[str, int]:
-        results = {"age_pruned": 0, "size_pruned": 0}
+        results = {"age_pruned": 0, "size_pruned": 0, "episodic_pruned": 0}
         try:
             results["age_pruned"] = self._prune_by_age()
         except Exception as exc:
@@ -112,15 +121,41 @@ class RetentionAgent:
             results["size_pruned"] = self._prune_by_size()
         except Exception as exc:
             logger.warning("RetentionAgent size prune failed: {}", exc)
+        try:
+            results["episodic_pruned"] = self._prune_episodic()
+        except Exception as exc:
+            logger.warning("RetentionAgent episodic prune failed: {}", exc)
         self._last_sweep_at = time.time()
         self._last_pruned = sum(results.values())
         if self._last_pruned > 0:
             logger.info(
-                "RetentionAgent sweep: pruned {} (age={}, size={}); db={:.1f} MB",
-                self._last_pruned, results["age_pruned"], results["size_pruned"],
+                "RetentionAgent sweep: pruned {} (age={}, size={}, episodic={}); db={:.1f} MB",
+                self._last_pruned, results["age_pruned"],
+                results["size_pruned"], results["episodic_pruned"],
                 self._db.disk_size_bytes() / (1024 * 1024),
             )
         return results
+
+    def _prune_episodic(self) -> int:
+        """Delete ChromaDB episodic entries older than the TTL.
+        Semantic collection is intentionally untouched — it holds
+        operator-curated facts that should persist indefinitely."""
+        if self._memory_store is None or self._episodic_ttl_s <= 0:
+            return 0
+        cutoff = time.time() - self._episodic_ttl_s
+        try:
+            old = self._memory_store.get_episodic_before(cutoff)
+        except Exception as exc:
+            logger.debug("RetentionAgent episodic listing failed: {}", exc)
+            return 0
+        if not old:
+            return 0
+        ids = [e["id"] for e in old if e.get("id")]
+        try:
+            return self._memory_store.delete_ids("episodic", ids)
+        except Exception as exc:
+            logger.warning("RetentionAgent episodic delete failed: {}", exc)
+            return 0
 
     def _prune_by_age(self) -> int:
         cutoff = time.time() - self._max_age_s
