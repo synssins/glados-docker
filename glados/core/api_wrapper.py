@@ -1602,11 +1602,17 @@ def _stream_chat_sse(
             pass
 
     # Build request payload
+    # Stage 3 Phase A: model_options come from PersonalityConfig.model_options
+    # so the operator can tune temperature/top_p/num_ctx/repeat_penalty per
+    # deployment without code changes. Critical for the neutral-base-model
+    # path (qwen2.5:14b-instruct vs the retired glados:latest Modelfile) —
+    # persona strength is more sensitive to these parameters when no SYSTEM
+    # is baked into the Modelfile.
     payload: dict[str, Any] = {
         "model": glados.llm_model,
         "stream": True,
         "messages": messages,
-        "options": {"num_ctx": 16384},  # Override Modelfile 8192 to fit personality + tools
+        "options": cfg.personality.model_options.to_ollama_options(),
     }
     if tools:
         payload["tools"] = tools
