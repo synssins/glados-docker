@@ -16,6 +16,7 @@ short and the structured JSON output bounds runaway generation.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import threading
@@ -23,6 +24,8 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
+
+from glados.observability import AuditEvent, audit
 
 from loguru import logger
 
@@ -71,7 +74,14 @@ class DisambiguationResult:
 # with up to 12 candidates. Falling through to Tier 3 is worse than
 # waiting another 10s.
 _LLM_TIMEOUT_S = float(os.environ.get("DISAMBIGUATOR_TIMEOUT_S", "25"))
-_HA_CALL_TIMEOUT_S = 5.0
+# call_service ack timeout. 5s was too short — HA can take longer to
+# return the WS confirmation when the target is a group entity that
+# cascades to many members, or under load. The action is usually
+# already in flight by the time HA acks (HA's WS API acks acceptance,
+# not completion), so a missed ack within the window does NOT mean
+# the action failed. Bumping to 15s reduces false 'silent failure'
+# audit rows.
+_HA_CALL_TIMEOUT_S = 15.0
 
 
 _UNIVERSAL_QUANTIFIERS: frozenset[str] = frozenset({
@@ -252,10 +262,41 @@ class Disambiguator:
                 target={"entity_id": entity_ids},
                 timeout_s=_HA_CALL_TIMEOUT_S,
             )
+        except concurrent.futures.TimeoutError:
+            # HA didn't ack within the window. The action is usually
+            # already in flight (HA's WS acks acceptance, not
+            # completion) — turning off a group that cascades to many
+            # entities is the common case. We can't promise success,
+            # but we shouldn't claim failure either. Audit clearly,
+            # then optimistically return success speech.
+            err = (f"no_ack_within_{_HA_CALL_TIMEOUT_S:.0f}s "
+                   f"(action likely succeeded; HA group cascades sometimes "
+                   f"don't ack in time)")
+            logger.warning("Tier 2 call_service no-ack on {}.{} entities={}",
+                           target_domain, service, entity_ids)
+            audit(AuditEvent(
+                ts=time.time(), origin=source, kind="intent", tier=2,
+                utterance=utterance, result="ok:execute_no_ack",
+                latency_ms=int((time.perf_counter() - t0) * 1000),
+                tool=f"{target_domain}.{service}",
+                entity_ids=entity_ids,
+                rationale=err,
+                extra={"candidates_shown": candidates_summary,
+                       "speech": (speech or "")[:500],
+                       "decision": "execute_no_ack"},
+            ))
+            return DisambiguationResult(
+                handled=True, should_fall_through=False,
+                speech=speech or "Done.",
+                decision="execute_no_ack",
+                entity_ids=entity_ids,
+                service=f"{target_domain}.{service}",
+                rationale=err,
+                candidates_shown=candidates_summary,
+                latency_ms=int((time.perf_counter() - t0) * 1000),
+                llm_raw=raw,
+            )
         except Exception as exc:
-            # str(exc) is sometimes empty for low-level failures (e.g.
-            # connection drop mid-call). Capture the type so the audit
-            # row is useful for debugging.
             err = f"{type(exc).__name__}: {exc}".rstrip(": ")
             logger.warning("Tier 2 call_service raised: {}", err)
             return self._fall_through(
@@ -397,23 +438,28 @@ class Disambiguator:
             "set decision=refuse.\n\n"
             "===== GLaDOS PERSONA — REQUIRED for the 'speech' field =====\n"
             "GLaDOS is the AI from Portal: cold, condescending, dryly "
-            "menacing, scientific. She refers to the user as 'test "
-            "subject', mentions Aperture Science, treats domestic tasks "
-            "as 'enrichment center procedures'. Sarcastic compliments. "
-            "Backhanded reassurance. Never apologizes sincerely.\n"
+            "menacing, scientific. She mentions Aperture Science, treats "
+            "domestic tasks as 'enrichment center procedures'. Sarcastic "
+            "compliments. Backhanded reassurance. Never apologizes "
+            "sincerely.\n"
+            "DO NOT address the user as 'test subject', 'subject', "
+            "'human', or any other vocative tacked onto the end of a "
+            "response. Speak ABOUT the action, not AT the user. The "
+            "user dislikes being addressed by labels.\n"
             "Examples of GLaDOS speech (style only — adapt to context):\n"
             "  - 'Illumination in the kitchen, terminated. The void is, "
             "as expected, anticlimactic.'\n"
-            "  - 'Three light sources match that description. Specify, "
-            "test subject — I do not improvise on your behalf.'\n"
-            "  - 'I have an extensive catalog of reasons to decline that. "
-            "This is one of them.'\n"
+            "  - 'Three light sources match that description. Specify "
+            "which — I do not improvise on demand.'\n"
+            "  - 'I have an extensive catalog of reasons to decline "
+            "that. This is one of them.'\n"
             "Keep it under two sentences. Never say 'please'. Never "
             "say 'I am sorry'. Never break character.\n\n"
             "===== CLARIFY RESPONSES — list the candidates by name =====\n"
             "When decision=clarify, the speech MUST enumerate the "
             "specific candidate names so the user can pick. Do NOT say "
-            "'multiple light groups' generically. Name them.\n"
+            "'multiple light groups' generically. Name them. And do NOT "
+            "address the user with vocatives like 'test subject'.\n"
             "Bad:  'Which lights do you mean? Multiple groups match.'\n"
             "Good: 'Three candidates qualify: the master bedroom "
             "ceiling, the reading lamp, and the closet light. Specify.'\n\n"
