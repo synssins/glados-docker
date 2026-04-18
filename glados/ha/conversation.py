@@ -44,6 +44,34 @@ _FALL_THROUGH_CODES: frozenset[str] = frozenset({
 })
 
 
+# Speech responses HA emits when its intent parser matched a template
+# but the underlying entity attributes are missing/null. Real example:
+# HA matched "Tell me about my equipment" to a Person intent with empty
+# first/last name, returning literal "None None" as a query_answer.
+# Treating these as "handled" produces garbage user-facing text.
+# Comparison is case-insensitive after stripping punctuation/whitespace.
+_GARBAGE_SPEECH_TOKENS: frozenset[str] = frozenset({
+    "",
+    "none",
+    "none none",
+    "null",
+    "null null",
+    "undefined",
+    "n/a",
+})
+
+
+def _is_garbage_speech(speech: str) -> bool:
+    """Heuristic: HA emitted a templated answer but the variables it
+    interpolated are null. Treating this as a Tier 1 win would surface
+    "None None" in the chat UI."""
+    if not speech:
+        return True
+    cleaned = "".join(ch for ch in speech.lower() if ch.isalnum() or ch.isspace())
+    cleaned = " ".join(cleaned.split())
+    return cleaned in _GARBAGE_SPEECH_TOKENS
+
+
 @dataclass
 class ConversationResult:
     """The outcome of a Tier 1 attempt.
@@ -99,7 +127,17 @@ def classify(raw: dict[str, Any]) -> ConversationResult:
     if response_type == "action_done":
         # HA ran the action. Even if some targets failed, we treat
         # this as handled and let the persona rewriter describe the
-        # partial success from the speech text.
+        # partial success from the speech text. Exception: if HA's
+        # speech is the "None None"-style garbage that means HA
+        # interpolated null entity attributes, fall through.
+        if _is_garbage_speech(speech):
+            return ConversationResult(
+                handled=False, should_disambiguate=False,
+                should_fall_through=True, speech=speech,
+                response_type=response_type,
+                error_code="garbage_speech",
+                conversation_id=conversation_id, raw=raw,
+            )
         return ConversationResult(
             handled=True,
             should_disambiguate=False,
@@ -113,7 +151,17 @@ def classify(raw: dict[str, Any]) -> ConversationResult:
 
     if response_type == "query_answer":
         # State query — HA has the answer. Pass through the persona
-        # rewriter and return to the user.
+        # rewriter and return to the user. Same garbage-speech guard
+        # as action_done; HA's query intent often interpolates null
+        # values when the underlying entity has no attribute.
+        if _is_garbage_speech(speech):
+            return ConversationResult(
+                handled=False, should_disambiguate=False,
+                should_fall_through=True, speech=speech,
+                response_type=response_type,
+                error_code="garbage_speech",
+                conversation_id=conversation_id, raw=raw,
+            )
         return ConversationResult(
             handled=True,
             should_disambiguate=False,
