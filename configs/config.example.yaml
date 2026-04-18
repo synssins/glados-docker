@@ -1,58 +1,57 @@
 # GLaDOS Container — Example Configuration
-# Copy this to config.yaml and fill in your values.
-# config.yaml is gitignored and will never be committed.
-# This file (config.example.yaml) IS committed — keep it free of real values.
+#
+# Stage 3 Phase 6 (2026-04-18): upstream service URLs are now managed
+# through the WebUI and pydantic defaults, not this YAML.
+#
+# Same-stack defaults (apply automatically when you omit the URL):
+#   Home Assistant:  http://homeassistant.local:8123    (mDNS)
+#   Ollama:          http://ollama:11434                (docker service name)
+#   speaches (TTS):  http://speaches:8800               (docker service name)
+#   speaches (STT):  http://speaches:8800               (docker service name)
+#   glados-vision:   http://glados-vision:8016          (docker service name)
+#   ChromaDB:        http://chromadb:8000               (docker service name)
+#
+# Override priority:
+#   1. env var (HA_URL, HA_TOKEN, OLLAMA_URL, SPEACHES_URL, VISION_URL,
+#      CHROMADB_HOST, CHROMADB_PORT, etc.) — set via compose/.env
+#   2. URL edited in the WebUI (Configuration → LLM & Services or
+#      Integrations → Home Assistant) — persisted back to this YAML
+#   3. Pydantic default (the same-stack values above)
+#
+# Copy this file to `config.yaml` and fill in at minimum the HA token.
+# `config.yaml` is gitignored and will never be committed.
 
 # ---------------------------------------------------------------------------
-# Home Assistant
+# Home Assistant — token is the only required field for HA integration.
+# Leave `url` / `ws_url` unset to use the mDNS default, or set them to
+# your HA IP if mDNS isn't available on your network.
 # ---------------------------------------------------------------------------
 home_assistant:
-  url: "http://YOUR_HA_IP:8123"
-  ws_url: "ws://YOUR_HA_IP:8123/api/websocket"
   token: "YOUR_LONG_LIVED_HA_TOKEN"
+  # url: "http://192.168.1.104:8123"
+  # ws_url: "ws://192.168.1.104:8123/api/websocket"
 
 # ---------------------------------------------------------------------------
-# External service URLs — GLaDOS calls these; it does NOT host them.
-# Run Ollama and speaches wherever you like (host-native, another compose
-# stack, another machine) and point at their URLs here. The env vars in
-# .env override these values at runtime.
-# ---------------------------------------------------------------------------
-services:
-  ollama_interactive:
-    url: "http://host.docker.internal:11434"
-  ollama_autonomy:
-    url: "http://host.docker.internal:11436"       # separate instance if available
-  ollama_vision:
-    url: "http://host.docker.internal:11435"       # separate instance if available
-  speaches:
-    url: "http://host.docker.internal:8800"
-    # Voice identifier registered in YOUR speaches instance. Until the
-    # GLaDOS Kokoro voice is registered (Stage 4 work), use any stock
-    # speaches voice — character is preserved by the LLM system prompt.
-    tts_voice: "glados"
-    tts_model: "hexgrad/Kokoro-82M"
-    stt_model: "Systran/faster-whisper-small"
-  chromadb:
-    # In-compose service — GLaDOS's dedicated memory store.
-    url: "http://chromadb:8000"
-
-# ---------------------------------------------------------------------------
-# Network — used for serving audio files back to HA media players
-# ---------------------------------------------------------------------------
-network:
-  serve_host: "YOUR_AIBOX_IP"       # IP reachable by HA
-  serve_port: 5051
-
-# ---------------------------------------------------------------------------
-# Auth — WebUI login
+# WebUI authentication — set the password via:
+#   docker exec glados python -m glados.tools.set_password
 # ---------------------------------------------------------------------------
 auth:
   enabled: true
   session_timeout_hours: 24
-  # Password hash set via: docker exec glados python -m glados.tools.set_password
 
 # ---------------------------------------------------------------------------
-# Discord (optional — leave blank to disable)
+# Service-specific tunables (URLs intentionally omitted — see defaults
+# above or use the WebUI). Keep only non-URL fields here.
+# ---------------------------------------------------------------------------
+services:
+  tts:
+    voice: "glados"
+    model: "hexgrad/Kokoro-82M"
+  stt:
+    model: "Systran/faster-whisper-small"
+
+# ---------------------------------------------------------------------------
+# Discord (optional — leave empty to disable)
 # ---------------------------------------------------------------------------
 discord:
   bot_token: ""
@@ -61,26 +60,14 @@ discord:
   allowed_user_ids: []
 
 # ---------------------------------------------------------------------------
-# GLaDOS API — which port the persona layer listens on
+# NOTE — fields intentionally NOT shown in this example:
+#   services.*.url           — use defaults or WebUI
+#   network.serve_host/port  — env-driven (SERVE_HOST / SERVE_PORT), deprecated
+#   paths.*                  — env-driven (GLADOS_ROOT etc.), deprecated
+#   audit.path, .retention_days — env-driven / unimplemented, deprecated
+#   weather.temperature_unit, .wind_speed_unit — moving to UI state, deprecated
+#   services.gladys_api      — reserved endpoint with no consumers, deprecated
+#
+# All of the above continue to parse for backward compatibility but now
+# emit a one-line WARNING at startup so you know to remove them.
 # ---------------------------------------------------------------------------
-api:
-  host: "0.0.0.0"
-  port: 8015
-
-# ---------------------------------------------------------------------------
-# WebUI
-# ---------------------------------------------------------------------------
-webui:
-  host: "0.0.0.0"
-  port: 8052
-  ssl:
-    enabled: false
-    cert_path: "/app/certs/cert.pem"
-    key_path: "/app/certs/key.pem"
-    # Let's Encrypt via DNS-01 challenge — no inbound port exposure required.
-    # DNS-01 verifies domain ownership via a TXT record in your DNS zone.
-    # Your DNS provider must support API-based record creation/deletion.
-    # Set provider credentials in .env (never commit real values).
-    # Options for ACME sidecar: adferrand/lego-auto, certbot + DNS plugin, Caddy.
-    # Self-signed certs are an alternative for air-gapped/fully-local installs.
-    domain: ""   # e.g. glados.home.yourdomain.com
