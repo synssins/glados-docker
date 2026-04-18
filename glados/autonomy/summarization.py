@@ -123,7 +123,7 @@ def extract_facts(
 
     system_prompt = """You extract important personal facts from conversations for long-term memory storage.
 
-Output one fact per line in third person (e.g. "Chris prefers..." not "I prefer...").
+Output one fact per line in third person (e.g. "Alex prefers..." not "I prefer...").
 Only extract facts that are worth remembering across sessions — months from now.
 
 INCLUDE:

@@ -83,7 +83,7 @@ class TestPassiveDedup:
         """No similar prior fact → standard write path. Metadata carries
         the new Phase 5 fields."""
         store = _DedupFakeStore()
-        ok = write_fact(store, "Chris likes dark roast coffee", source="passive")
+        ok = write_fact(store, "The operator likes dark roast coffee", source="passive")
         assert ok is True
         assert len(store.semantic) == 1
         meta = store.semantic[0]["metadata"]
@@ -96,7 +96,7 @@ class TestPassiveDedup:
         no new add_semantic row."""
         existing = {
             "id": "sem_existing",
-            "document": "Chris likes dark roast coffee",
+            "document": "The operator likes dark roast coffee",
             "metadata": {
                 "review_status": "approved",
                 "importance": 0.50,
@@ -105,7 +105,7 @@ class TestPassiveDedup:
             },
         }
         store = _DedupFakeStore(canned_match=existing, canned_distance=0.05)
-        ok = write_fact(store, "Chris prefers dark roast", source="passive")
+        ok = write_fact(store, "The operator prefers dark roast", source="passive")
         assert ok is True
         assert store.semantic == []  # no new row
         assert len(store.update_calls) == 1
@@ -118,7 +118,7 @@ class TestPassiveDedup:
         # last_mention_text carries the incoming wording so the Memory
         # UI can offer "Update from latest mention" without re-running
         # the LLM.
-        assert updates["last_mention_text"] == "Chris prefers dark roast"
+        assert updates["last_mention_text"] == "The operator prefers dark roast"
         assert updates["original_importance"] == 0.50
 
     def test_distant_fact_writes_new_row(self) -> None:
@@ -133,7 +133,7 @@ class TestPassiveDedup:
         above_threshold = cfg.passive_dedup_threshold + 0.05
         store = _DedupFakeStore(canned_match=existing,
                                  canned_distance=above_threshold)
-        ok = write_fact(store, "Chris likes dark roast coffee", source="passive")
+        ok = write_fact(store, "The operator likes dark roast coffee", source="passive")
         assert ok is True
         assert len(store.semantic) == 1
         assert store.update_calls == []
@@ -142,7 +142,7 @@ class TestPassiveDedup:
         """Importance bump cannot exceed passive_importance_cap (0.95)."""
         existing = {
             "id": "sem_hot",
-            "document": "Chris drinks coffee every morning",
+            "document": "The operator drinks coffee every morning",
             "metadata": {
                 "review_status": "approved",
                 "importance": 0.94,  # one bump away from cap
@@ -151,7 +151,7 @@ class TestPassiveDedup:
             },
         }
         store = _DedupFakeStore(canned_match=existing, canned_distance=0.02)
-        write_fact(store, "Chris drinks coffee every morning", source="passive")
+        write_fact(store, "The operator drinks coffee every morning", source="passive")
         _, updates = store.update_calls[0]
         cfg = MemoryConfig()
         assert updates["importance"] <= cfg.passive_importance_cap + 1e-9
@@ -164,11 +164,11 @@ class TestPassiveDedup:
         the operator can triage them one-by-one."""
         existing = {
             "id": "sem_pending",
-            "document": "Chris likes dark roast coffee",
+            "document": "The operator likes dark roast coffee",
             "metadata": {"review_status": "approved", "importance": 0.50},
         }
         store = _DedupFakeStore(canned_match=existing, canned_distance=0.05)
-        ok = write_fact(store, "Chris prefers dark roast",
+        ok = write_fact(store, "The operator prefers dark roast",
                          source="passive", review_status="pending")
         assert ok is True
         assert len(store.semantic) == 1
@@ -181,11 +181,11 @@ class TestPassiveDedup:
         explicit note is not silently folded into a lookalike."""
         existing = {
             "id": "sem_explicit_hit",
-            "document": "Chris likes dark roast coffee",
+            "document": "The operator likes dark roast coffee",
             "metadata": {"review_status": "approved", "importance": 0.90},
         }
         store = _DedupFakeStore(canned_match=existing, canned_distance=0.05)
-        ok = write_fact(store, "Chris prefers dark roast",
+        ok = write_fact(store, "The operator prefers dark roast",
                          source="explicit", importance=0.9)
         assert ok is True
         assert len(store.semantic) == 1
