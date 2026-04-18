@@ -38,8 +38,11 @@ Source-tagging + per-domain intent allowlist gates sensitive operations
   test, MQTT round-trip CI test, second-factor design for sensitive
   intents. Not started.
 - ✅ **Phase 4** — Neutral model support + conversation persistence +
-  memory review queue. **Backend live in production; Memory tab UI
-  pending.** 157 tests pass. See CHANGES.md Change 9 for details.
+  memory review queue. **Live in production.** 157 tests pass.
+  See CHANGES.md Change 9 for details.
+- ✅ **Phase 5** — Full WebUI restructure + Memory tab +
+  dedup-with-reinforcement + service auto-discovery. **Live in
+  production.** 178 tests pass. See CHANGES.md Change 10 for details.
 
 See `docs/CHANGES.md` Change 8 + Change 9 for full landing details.
 
@@ -109,30 +112,32 @@ the larger model). Possible improvements:
 
 ## Stage 3 Phase 4 follow-ups (post-Change 9)
 
-### WebUI Memory tab + full UI restructure (in planning, Phase 5)
+### WebUI Memory tab + full UI restructure ✅ Shipped in Change 10 (Phase 5)
 
-**Plan approved 2026-04-18; implementation deferred to next session.**
-Plan file: `C:\Users\Administrator\.claude\plans\mellow-purring-kitten.md`
-(see "Stage 3 Phase 5"). Documented as Change 10 (planned) in
-`docs/CHANGES.md`.
-
-Scope expanded beyond just the Memory tab into a full WebUI
-restructure:
-- Configuration becomes a parent menu with sub-items in the left
-  sidebar; System nests inside Configuration; auto-expand when on
-  any Config child page; default page changes to Chat.
-- Service auto-discovery (Ollama models, TTS voices) via Discover
-  button + auto-fetch on URL change.
-- SSL field duplication in Global removed.
-- Memory page redesigned around dedup-with-reinforcement: passive-
-  extracted facts default to approved + bump importance on
-  repetition; configurable per-deployment.
-- UX polish: toast notifications, confirm dialogs, sidebar engine
-  status indicator, distinctive heading font.
-
-Backend Phase D memory endpoints already exist; UI work + a small
-set of new endpoints (discover/*, memory/add, retention/sweep)
-land together.
+Landed across six commits (6984ac2 → docs commit). Highlights:
+- Sidebar restructured; Configuration is a parent with System,
+  Global, Services, Speakers, Audio, Personality, SSL, Memory,
+  Raw YAML nested under it; default page is Chat.
+- Memory page: operator-curated long-term facts list + recent
+  activity stream + optional pending-review panel. Passive facts
+  now default to `review_status="approved"` and reinforce on
+  repetition via ChromaDB cosine-similarity dedup (0.30 threshold,
+  +0.05 importance bump, cap 0.95). `mention_count`,
+  `last_mentioned_at`, `last_mention_text`, `original_importance`
+  fields added.
+- Service auto-discovery: Discover button + URL-blur auto-fetch
+  populates model/voice dropdowns from upstream `/api/tags` and
+  `/v1/voices`. Health dots now route through the new
+  `/api/discover/health` endpoint (always 200, latency in tooltip).
+- SSL field duplication resolved — Global no longer renders
+  `ssl.domain` / `ssl.certbot_dir`; the dedicated SSL page is the
+  single source of truth.
+- UX: stackable toast notifications, confirm dialogs on destructive
+  memory actions, Major Mono Display heading font, live engine
+  status dot in the sidebar brand (polls `/api/status` every 30 s
+  when the tab is visible).
+- Tests: +21 new (9 discover endpoints, 5 memory endpoints,
+  6 memory dedup, 1 review-queue override). 178 total pass.
 
 ### Scheduled daily summarization (low)
 

@@ -697,60 +697,114 @@ remains in `/api/tags` for fallback — operator's call when to
 
 ---
 
-## Change 10 (planned, NOT yet shipped) — WebUI Phase 5
+## Change 10 — WebUI Phase 5: restructure + Memory tab + auto-discovery
 
-**Status:** Plan approved 2026-04-18; design refined for memory
-dedup-with-reinforcement; **implementation deferred to next
-session.**
+**Date:** 2026-04-18
+**Status:** Complete and live in production.
 
-Plan file:
-`C:\Users\Administrator\.claude\plans\mellow-purring-kitten.md`
-(see "Stage 3 Phase 5 — WebUI Restructure + Memory Tab + Auto-discovery").
+**Commits (in order):**
 
-Scope (5 commits planned):
+- `6984ac2` — Commit 1: backend endpoints + SSL FIELD_META cleanup + tests
+- `670e94f` — Commit 2: sidebar restructure + default page → Chat
+- `eeca0ab` — Commit 3: Memory page UI + dedup-with-reinforcement backend
+- `88a19a6` — Commit 4: service auto-discovery UI (Discover button + URL-blur)
+- `3c60aa4` — Commit 5: UX polish (toasts, engine-status, display font)
+- (this commit) — Commit 6: docs
 
-1. **Backend endpoints** — `/api/discover/{ollama,voices,health}`
-   for service auto-discovery; `/api/memory/add` for operator-curated
-   facts; `/api/retention/sweep` for manual sweep trigger; remove
-   `ssl.*` from `FIELD_META` to deduplicate the SSL form.
-2. **Sidebar restructure** — Configuration becomes parent menu
-   with sub-items (System, Global, Services, Speakers, Audio,
-   Personality, SSL, Memory, Raw YAML); auto-expands when active
-   page is a Configuration child; default page changes from TTS
-   Generator to Chat.
-3. **Memory page** — single-pane with Long-term facts + Recent
-   Activity sections (and optional Pending Review when
-   `passive_default_status="pending"`).
-4. **Service auto-discovery** — Discover button + auto-fetch on
-   URL field blur; populates model/voice dropdowns from upstream
-   service APIs; live health badges.
-5. **UX polish** — global toast notifications; confirm dialogs on
-   destructive actions; live engine status in sidebar header;
-   distinctive heading font (Major Mono Display) for Aperture
-   character.
+**Plan file:** `C:\Users\Administrator\.claude\plans\mellow-purring-kitten.md`
 
-Memory model refinement (this morning):
+### What landed
 
-Operator preference revised the Phase D "pending → operator
-promotes" flow into a **dedup-with-reinforcement** model:
+**Sidebar / routing.** Configuration is a hierarchical parent with
+System, Global, Services, Speakers, Audio, Personality, SSL, Memory,
+Raw YAML nested under it. System moved from a flat top-level tab into
+Configuration > System (no content change; just relocation).
+`navigateTo(key)` takes dotted keys (`chat`, `config.global`,
+`config.memory`, etc.); legacy localStorage keys (`tts`, `chat`,
+`control`, `config`) migrate on read. Default page is now Chat.
 
-- New passive facts default to `review_status="approved"`
-  (configurable via `passive_default_status`).
-- Before writing, query ChromaDB for similar facts within
-  `passive_dedup_threshold` (cosine 0.30); if found, increment
-  `mention_count` + bump `importance` by `passive_reinforce_step`
-  (cap `passive_importance_cap = 0.95`) instead of duplicating.
-- New metadata fields: `mention_count`, `last_mentioned_at`,
-  `original_importance`.
-- Wording on bump: keep original; per-fact "Update from latest
-  mention" button on Recent Activity card.
-- Optional `Pending Review` panel still rendered when
-  `passive_default_status="pending"`.
+**Memory page (Configuration > Memory).** Four cards:
+1. Memory configuration — radio toggle for `passive_default_status`
+   (Approved = enters RAG immediately, Pending = manual review).
+   Edits via `PUT /api/config/memory` preserving other fields.
+2. Long-term facts — search + Add form + scrollable list (uses
+   `GET /api/memory/list` with optional `q=...`).
+3. Recent activity — sorts facts by `max(last_mentioned_at,
+   written_at)`; top 10; reinforcement rows show "reinforced
+   importance X → Y, mentions=N" and, when `last_mention_text`
+   differs from the canonical document, offer "Update wording from
+   latest mention" (operator opt-in; never silent).
+4. Pending review — only rendered when
+   `passive_default_status="pending"`; Approve / Edit / Reject on
+   each row.
 
-Plan file has full schema + UI mockup + caveats (canonical
-wording, no time-decay, similarity-threshold sensitivity).
+**Dedup-with-reinforcement.** New `MemoryConfig` fields:
+`passive_default_status` (default `"approved"`),
+`passive_dedup_threshold` (`0.30` cosine distance),
+`passive_base_importance` (`0.5`),
+`passive_reinforce_step` (`0.05`),
+`passive_importance_cap` (`0.95`). `write_fact(source="passive",
+review_status="approved")` queries existing approved rows first and,
+on a match within the threshold, updates in place — bumps importance
+(capped), increments `mention_count`, refreshes `last_mentioned_at`,
+stores incoming text in `last_mention_text`. New metadata on every
+write: `mention_count`, `last_mentioned_at`, `last_mention_text`,
+`original_importance` (audit). `explicit` and `compaction` sources
+never dedup; `pending` landings never dedup either — Phase D review
+flow is preserved for operators who opt into it.
 
-This entry will be replaced with the actual landing details once
-implementation completes.
+**Service auto-discovery.** New GET endpoints:
+`/api/discover/ollama?url=` (proxies `/api/tags`),
+`/api/discover/voices?url=` (proxies `/v1/voices`, accepts both
+top-level list and OpenAI `{"data":[...]}` shapes), and
+`/api/discover/health?url=` (reachability check; always returns HTTP
+200 with `ok: true/false` + `latency_ms`). Wired into Services page:
+each URL has a Discover button + a status pill; URL blur auto-fetches
+(debounced 300 ms); results populate neighbouring model / voice
+dropdowns. Current saved value is always retained as an `<option>`
+so a stale or offline upstream never blanks the config.
+
+**SSL deduplication.** Removed `ssl.domain` and `ssl.certbot_dir`
+from `FIELD_META` — they were being rendered both on Global (via the
+auto-form) and on the dedicated SSL page. SSL page is now the single
+source of truth.
+
+**UX polish.** Stackable toast notifications (auto-dismiss 4 s);
+Major Mono Display heading font via a `--font-display` CSS variable
+(body text stays system-ui); live engine status dot in the sidebar
+brand header (polls `/api/status` every 30 s while the tab is
+visible); confirm dialogs on destructive memory actions; service
+health dots now route through `/api/discover/health` so CORS and
+mixed-scheme issues are gone and latency is exposed as a tooltip.
+
+**New/modified endpoints:**
+
+| Verb   | Path                           | Purpose                              |
+|--------|--------------------------------|--------------------------------------|
+| GET    | `/api/discover/ollama?url=`    | List models from upstream Ollama     |
+| GET    | `/api/discover/voices?url=`    | List voices from upstream Speaches   |
+| GET    | `/api/discover/health?url=`    | Reachability + latency               |
+| POST   | `/api/memory/add`              | Operator-curated long-term fact      |
+| POST   | `/api/retention/sweep`         | Manually trigger RetentionAgent      |
+
+**Tests:** 178 pass (was 157). +21 new:
+`test_discover_endpoints.py` (9),
+`test_memory_endpoints.py` (5),
+`test_memory_dedup.py` (6),
+plus a review-queue override test in `test_memory_review.py`.
+
+### Caveats (by design)
+
+- **Canonical wording:** first write establishes the canonical text.
+  Reinforcement never silently rewrites. Operator can opt in per
+  fact via the Recent Activity button.
+- **No time decay:** frequently-mentioned facts grow to the 0.95 cap
+  and stay there. Acceptable for v1; can add decay if RAG quality
+  drifts.
+- **Similarity threshold sensitivity:** 0.30 is conservative;
+  too-loose values risk merging related-but-distinct facts.
+  Operator-tunable via `MemoryConfig.passive_dedup_threshold`.
+
+---
 
 ---
