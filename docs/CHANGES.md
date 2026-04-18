@@ -659,3 +659,98 @@ Phases A–E added 47 new tests:
    is just a constructor argument away.
 
 ---
+
+## Change 9.1 — Operator-side neutral-model swap (live)
+
+**Date:** 2026-04-18 morning
+**Status:** Complete and verified live.
+**Commits:** none (operational change only — Ollama state + container
+config edit + restart on the docker host).
+
+Phase A code shipped in Change 9 supports running with a neutral base
+model. This change actually executed that swap on the operator's
+hardware:
+
+1. Unloaded `glados:latest` from the AIBox interactive Ollama
+   (`10.0.0.10:11434`) via `POST /api/generate {keep_alive: 0}`.
+2. Loaded `qwen2.5:14b-instruct-q4_K_M` on the same Ollama with
+   `keep_alive: -1` (persistent, year 2318 expiry). VRAM dropped
+   from 11.55 GB (glados:latest) to 10.38 GB (base) — Modelfile
+   SYSTEM/TEMPLATE overhead removed.
+3. Edited `/app/configs/glados_config.yaml` on the docker host:
+   - `Glados.llm_model: "glados:latest"` → `"qwen2.5:14b-instruct-q4_K_M"`
+   - `Glados.autonomy.llm_model: "glados:latest"` → `"qwen2.5:14b-instruct-q4_K_M"`
+   - Backup saved as `glados_config.yaml.bak.20260418_124635`
+4. `docker compose restart glados`; healthy in ~10s.
+
+Verification (live against operator's house):
+
+| Path | Latency | Response |
+|---|---|---|
+| Tier 1 (rewriter on qwen2.5:3b, unchanged) | 0.85 s | *"The chronometer reports seven forty-six AM. A most mundane hour."* |
+| Tier 1/3 (qwen2.5:14b in chat path, NEW) | 0.82 s | *"Thermostat laughter, at 7:46 AM. Quite predictable."* |
+
+Persona intact in both. Container is now sole source of GLaDOS
+personality for all paths. The `glados:latest` Modelfile image
+remains in `/api/tags` for fallback — operator's call when to
+`ollama rm` it.
+
+---
+
+## Change 10 (planned, NOT yet shipped) — WebUI Phase 5
+
+**Status:** Plan approved 2026-04-18; design refined for memory
+dedup-with-reinforcement; **implementation deferred to next
+session.**
+
+Plan file:
+`C:\Users\Administrator\.claude\plans\mellow-purring-kitten.md`
+(see "Stage 3 Phase 5 — WebUI Restructure + Memory Tab + Auto-discovery").
+
+Scope (5 commits planned):
+
+1. **Backend endpoints** — `/api/discover/{ollama,voices,health}`
+   for service auto-discovery; `/api/memory/add` for operator-curated
+   facts; `/api/retention/sweep` for manual sweep trigger; remove
+   `ssl.*` from `FIELD_META` to deduplicate the SSL form.
+2. **Sidebar restructure** — Configuration becomes parent menu
+   with sub-items (System, Global, Services, Speakers, Audio,
+   Personality, SSL, Memory, Raw YAML); auto-expands when active
+   page is a Configuration child; default page changes from TTS
+   Generator to Chat.
+3. **Memory page** — single-pane with Long-term facts + Recent
+   Activity sections (and optional Pending Review when
+   `passive_default_status="pending"`).
+4. **Service auto-discovery** — Discover button + auto-fetch on
+   URL field blur; populates model/voice dropdowns from upstream
+   service APIs; live health badges.
+5. **UX polish** — global toast notifications; confirm dialogs on
+   destructive actions; live engine status in sidebar header;
+   distinctive heading font (Major Mono Display) for Aperture
+   character.
+
+Memory model refinement (this morning):
+
+Operator preference revised the Phase D "pending → operator
+promotes" flow into a **dedup-with-reinforcement** model:
+
+- New passive facts default to `review_status="approved"`
+  (configurable via `passive_default_status`).
+- Before writing, query ChromaDB for similar facts within
+  `passive_dedup_threshold` (cosine 0.30); if found, increment
+  `mention_count` + bump `importance` by `passive_reinforce_step`
+  (cap `passive_importance_cap = 0.95`) instead of duplicating.
+- New metadata fields: `mention_count`, `last_mentioned_at`,
+  `original_importance`.
+- Wording on bump: keep original; per-fact "Update from latest
+  mention" button on Recent Activity card.
+- Optional `Pending Review` panel still rendered when
+  `passive_default_status="pending"`.
+
+Plan file has full schema + UI mockup + caveats (canonical
+wording, no time-decay, similarity-threshold sensitivity).
+
+This entry will be replaced with the actual landing details once
+implementation completes.
+
+---
