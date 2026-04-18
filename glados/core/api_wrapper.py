@@ -36,6 +36,7 @@ from glados.observability import AuditEvent, Origin, audit
 from glados import ha as _ha
 from glados import intent as _intent
 from glados import persona as _persona
+from glados.intent.rules import looks_like_home_command
 
 # Container-aware path resolution
 _GLADOS_ROOT = Path(os.environ.get("GLADOS_ROOT", "/app"))
@@ -1550,14 +1551,25 @@ def _stream_chat_sse(
     except Exception as _mem_exc:
         logger.debug("[{}] Memory command check failed: {}", request_id, _mem_exc)
 
+    # Phase 6 follow-up: chitchat vs home-command routing.
+    # Utterances with no device/activity keyword shouldn't drag the MCP
+    # tool catalog (~10k tokens) or the "you MUST use tools" reinforcement
+    # system message into the prompt — that framing makes the model
+    # default to device-oriented responses for pure conversation ("Say
+    # hello to my friend") and inflates latency from ~3s to ~80s.
+    # When False: take the lightweight chat path (no tools, no tool-hint,
+    # keep the few-shot examples that steer toward textual replies).
+    is_home_command = looks_like_home_command(user_message)
+
     # Build messages from conversation store + add user message
     messages = store.snapshot()
 
-    # When tools are available, strip few-shot user/assistant examples from
-    # the personality preprompt. These examples show text-only responses which
-    # biases the model against generating <tool_call> XML. Keep only the
-    # system message(s) and real conversation history.
-    if glados.mcp_manager:
+    # When tools are available AND we're in home-command mode, strip
+    # few-shot user/assistant examples from the personality preprompt.
+    # These examples show text-only responses which biases the model
+    # against generating <tool_call> XML. For chitchat we KEEP the
+    # few-shots on purpose — they show the desired conversational shape.
+    if glados.mcp_manager and is_home_command:
         _preprompt_n = getattr(store, 'preprompt_count', 0)
         if _preprompt_n > 1:
             _filtered = []
@@ -1656,7 +1668,9 @@ def _stream_chat_sse(
 
     # Reinforce tool use - the personality preprompt few-shot examples show
     # text-only responses which biases the model against calling tools.
-    if glados.mcp_manager:
+    # SKIP for chitchat: the reinforcement message pushes the model toward
+    # device-oriented framing even when there's no device in play.
+    if glados.mcp_manager and is_home_command:
         _tool_hint = {
             "role": "system",
             "content": (
@@ -1666,9 +1680,11 @@ def _stream_chat_sse(
         messages.insert(len(messages) - 1, _tool_hint)
 
     # Build tool definitions - MCP/HA tools only (static tools like do_nothing,
-    # robot_move etc. are for the engine autonomy loop, not WebUI chat)
+    # robot_move etc. are for the engine autonomy loop, not WebUI chat).
+    # Chitchat turns get an empty tool list — nothing to call, nothing to
+    # bloat the prompt with.
     tools: list[dict[str, Any]] = []
-    if glados.mcp_manager:
+    if glados.mcp_manager and is_home_command:
         try:
             tools = glados.mcp_manager.get_tool_definitions()
         except Exception:
@@ -1689,7 +1705,11 @@ def _stream_chat_sse(
     }
     if tools:
         payload["tools"] = tools
-    logger.success("[{}] SSE: {} msgs, {} tools", request_id, len(messages), len(tools))
+    logger.success(
+        "[{}] SSE: {} msgs, {} tools (mode={})",
+        request_id, len(messages), len(tools),
+        "home_command" if is_home_command else "chitchat",
+    )
     body = json.dumps(payload).encode("utf-8")
 
     headers = {
@@ -2567,9 +2587,13 @@ class APIHandler(BaseHTTPRequestHandler):
 
             # Stage 3 Phase 1 Tier 1: try HA's conversation API first.
             # If HA resolves the intent cleanly, stream its speech back
-            # as SSE and skip the 10-20s LLM path entirely. On miss,
-            # fall through to the existing streaming chat.
-            if _try_tier1_fast_path(self, user_message, origin):
+            # as SSE and skip the 10-20s LLM path entirely.
+            # Phase 6 follow-up: skip Tier 1 for utterances that clearly
+            # aren't home commands. HA's conversation API returning a
+            # garbage-speech miss (e.g. "Sorry, I couldn't understand")
+            # sometimes slips through Tier 1's filters and leaks to the
+            # user. Chitchat shouldn't round-trip to HA at all.
+            if looks_like_home_command(user_message) and _try_tier1_fast_path(self, user_message, origin):
                 return
 
             # Chat path goes directly to LLM — no command interceptor.
@@ -2604,10 +2628,12 @@ class APIHandler(BaseHTTPRequestHandler):
         # Stage 3 Phase 1 Tier 1: try HA conversation API for the
         # non-streaming path too (WebUI /api/chat uses stream:false).
         # On hit, synthesize the OpenAI non-streaming response shape
-        # and skip the LLM+tool loop.
-        _nonstream_hit = _try_tier1_nonstreaming(self, user_message, origin)
-        if _nonstream_hit:
-            return
+        # and skip the LLM+tool loop. Phase 6 follow-up: chitchat
+        # bypasses Tier 1 entirely (matches the streaming path).
+        if looks_like_home_command(user_message):
+            _nonstream_hit = _try_tier1_nonstreaming(self, user_message, origin)
+            if _nonstream_hit:
+                return
 
         # --- Command interceptor removed from chat path ---
         # GLaDOS uses HA MCP tools directly. Interceptor remains active only
