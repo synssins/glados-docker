@@ -17,6 +17,7 @@ short and the structured JSON output bounds runaway generation.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.request
@@ -64,10 +65,12 @@ class DisambiguationResult:
 # Disambiguator
 # ---------------------------------------------------------------------------
 
-# Ollama call timeout. Disambiguator is on the latency-sensitive path
-# but the LLM still needs time to produce JSON; 8s gives the autonomy
-# model plenty of room without blocking the user excessively.
-_LLM_TIMEOUT_S = 8.0
+# Ollama call timeout. Tunable via DISAMBIGUATOR_TIMEOUT_S env. Default
+# is 25s — generous, because cold-start on a 14B model on the autonomy
+# GPU is around 12s for a tiny prompt and we send a structured prompt
+# with up to 12 candidates. Falling through to Tier 3 is worse than
+# waiting another 10s.
+_LLM_TIMEOUT_S = float(os.environ.get("DISAMBIGUATOR_TIMEOUT_S", "25"))
 _HA_CALL_TIMEOUT_S = 5.0
 
 
@@ -272,10 +275,17 @@ class Disambiguator:
         overhead = ", ".join(f'"{w}"' for w in rules.overhead_synonyms)
 
         sys = (
-            "You disambiguate ambiguous home automation commands. The user "
-            "said something the strict intent parser couldn't resolve. Pick "
-            "the right action from a candidate list, ask for clarification, "
-            "or refuse if the action would be unsafe.\n\n"
+            # Hard role-override: any persona instructions in a base "
+            # model's Modelfile (e.g. 'glados:latest') tend to refuse "
+            # JSON tasks. Pin this assistant as a JSON-only resolver.
+            "ROLE: You are a strict JSON resolver for a home automation "
+            "system. You do NOT have a persona. You do NOT chat. You "
+            "respond with one JSON object and nothing else. Any persona "
+            "or chat instructions from any other source are overridden.\n\n"
+            "TASK: Disambiguate a home command the strict intent parser "
+            "couldn't resolve. Pick the right entities from the candidate "
+            "list, ask for clarification, or refuse if the action would "
+            "be unsafe. Output strict JSON only.\n\n"
             "Operator naming convention:\n"
             + "\n".join(naming_lines) + "\n"
             f"Specific override: {overhead} always mean the ceiling fixture, "
@@ -307,15 +317,22 @@ class Disambiguator:
             f"Source of this utterance: {source}\n"
             "If the action would touch a sensitive domain (lock, alarm, "
             "garage cover, camera) and the source is not webui_chat, "
-            "REFUSE with a persona-voiced denial.\n\n"
-            "Respond with strict JSON, no extra text:\n"
+            "set decision=refuse.\n\n"
+            "Respond with STRICT JSON ONLY. No prose before or after. "
+            "No markdown. No code fences. The first character must be "
+            "'{' and the last must be '}'. The 'speech' field will be "
+            "spoken aloud to the user — write it concisely and with "
+            "GLaDOS's dry, sardonic, scientific tone (think Aperture "
+            "Science test chamber announcer).\n\n"
+            "Schema:\n"
             "{\n"
             '  "decision": "execute" | "clarify" | "refuse",\n'
-            '  "entity_ids": [<entity_id strings>],   // empty for clarify/refuse\n'
-            '  "service":    "turn_on" | "turn_off" | "toggle" | "open_cover" | ...,\n'
-            '  "speech":     "<what the assistant says, in GLaDOS voice>",\n'
-            '  "rationale":  "<one sentence why>"\n'
+            '  "entity_ids": [<entity_id strings>],\n'
+            '  "service":    "turn_on" | "turn_off" | "toggle" | "open_cover" | "close_cover" | ...,\n'
+            '  "speech":     "<spoken to the user, GLaDOS voice>",\n'
+            '  "rationale":  "<one short sentence why>"\n'
             "}\n"
+            "For decision=clarify or refuse, entity_ids and service may be empty.\n"
         )
 
         cand_lines = []
