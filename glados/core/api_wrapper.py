@@ -1793,15 +1793,16 @@ def _stream_chat_sse(
         request_id, len(messages), len(tools),
         "home_command" if is_home_command else "chitchat",
     )
-    # Temp chitchat trace — kept at INFO so time-prefix / context-bleed
-    # investigations don't require a code change. Logs the first 240
-    # chars of every message sent to Ollama on the chitchat path. Remove
-    # by flipping to DEBUG once the prompt shape is well-understood.
+    # TEMP chitchat prompt trace — loguru is set to SUCCESS-level in
+    # engine.py's logger.add, so WARNING is the lowest level that makes
+    # it to docker logs. Dump every message sent to Ollama on the
+    # chitchat path so we can diagnose context-bleed without another
+    # code push. Strip or flip to DEBUG once we're done diagnosing.
     if not is_home_command:
         for _i, _m in enumerate(messages):
             _role = _m.get("role", "?")
             _c = str(_m.get("content", ""))
-            logger.info("[{}] chitchat-msg[{}] role={} {!r}", request_id, _i, _role, _c[:240])
+            logger.warning("[{}] chitchat-msg[{}] role={} {!r}", request_id, _i, _role, _c[:240])
     body = json.dumps(payload).encode("utf-8")
 
     headers = {
