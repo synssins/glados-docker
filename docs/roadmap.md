@@ -20,21 +20,91 @@ via websocket (fast, device commands). Tier 2: LLM disambiguation with
 entity-cache candidates when Tier 1 misses ("bedroom lights" → clarify
 which of 3). Tier 3: existing full LLM + MCP tools path for complex
 queries. HA state mirrored via WebSocket (`subscribe_entities`), not
-MQTT statestream. MQTT reframed as a peer bus — NodeRed publishes to
-`glados/cmd/*`, subscribes to `glados/events/*`. Source-tagging + per-
-domain intent allowlist gates sensitive operations (locks, alarms,
-garage, cameras) per utterance source.
+MQTT statestream. MQTT (Phase 2, pending) is reframed as a peer bus —
+NodeRed publishes to `glados/cmd/*`, subscribes to `glados/events/*`.
+Source-tagging + per-domain intent allowlist gates sensitive operations
+(locks, alarms, garage, cameras) per utterance source.
 
-**Supersedes:** The original "MQTT + Intent Classifier" plan — replaced
-after adversarial review (security/OWASP, architecture, 2026 best-
-practice research, codebase reality) identified that MQTT statestream
-is the wrong state substrate, a local hassil classifier duplicates
-HA's conversation API without enough upside for this use case, and
-the original single-threshold fuzzy matcher was unsafe for sensitive
-domains.
+**Status (2026-04-17):**
 
-**Status:** Revised plan approved 2026-04-17. Phase 0 (auth, source-
-tagging, audit) starts first.
+- ✅ **Phase 0** — audit logging, source-tagging, JSON-lines store
+  with WebUI viewer endpoint. **Live in production.**
+- ✅ **Phase 1** — HA WS client + EntityCache + ConversationBridge
+  (Tier 1) + LLM Disambiguator with intent allowlist (Tier 2) +
+  Persona Rewriter (GLaDOS voice on Tier 1 hits). **Live in
+  production.** 110 tests pass. Live latencies: Tier 1 ~0.6–1 s,
+  Tier 2 ~5–11 s.
+- ⏳ **Phase 2** — MQTT peer bus (NodeRed/Sonorium). Not started.
+- ⏳ **Phase 3** — labeled test corpus, WS reconnect integration
+  test, MQTT round-trip CI test, second-factor design for sensitive
+  intents. Not started.
+
+See `docs/CHANGES.md` Change 8 for the full landing details
+(17 commits, 8 modules, 110 tests).
+
+---
+
+## Stage 3 follow-ups (post-Phase 1, pre-Phase 2)
+
+Things surfaced by live testing of Tier 1 + Tier 2 that are worth
+fixing but didn't block deploy.
+
+### "Switch" entities pollute "lights" candidate filter (medium)
+
+When the user says "bedroom lights", `domain_filter_for_utterance`
+maps to `["light", "switch"]` (some operators control overhead lights
+via switches). On the operator's house, Sonos exposes `switch.*`
+entities like `Sonos_Master Bedroom Crossfade` and
+`Sonos_Master Bedroom Loudness` that fuzzy-match "bedroom" and end up
+in the Tier 2 clarify list. The LLM then names them as candidates
+even though they have nothing to do with illumination.
+
+Possible fixes:
+- When the user explicitly says "lights" (the noun), restrict
+  candidates to `domain=light` only; only include `switch` when the
+  user says "switch" or no `light` candidates exist
+- Or post-filter switches by friendly_name keyword (skip if name
+  contains 'sonos', 'media', 'crossfade', etc.)
+
+### HA misclassifies state queries as `action_done` (medium)
+
+"Is the kitchen cabinet light on" comes back from HA's conversation
+API as `response_type=action_done` with speech "Turned on the
+lights" — HA's intent matcher treats it as an action. Tier 1 honors
+HA's verdict; the rewriter restyles the wrong text. Fix would need
+local query-vs-action detection (regex for `is the …`, `what is …`,
+`how much …`, etc.) before the HA call so we can either short-circuit
+to a state lookup or warn the LLM.
+
+### Some entities report success without state change (medium)
+
+Discovered during the lights test matrix: 139/198 lights are in
+`unavailable` state but HA's conversation API still accepts service
+calls against them and returns `action_done`. Tier 1 reports success;
+no actual change happens. Fix: post-execute state verification on a
+short delay; if state didn't transition as expected, retry or report.
+
+### Conversation history not propagated (medium)
+
+Each utterance is processed in isolation. After "turn off the whole
+house", a follow-up "All lights" doesn't inherit the verb context.
+Needs `conversation_id` plumbed through WebUI → `/api/chat` proxy →
+api_wrapper → ConversationBridge so HA's own conversation thread
+state is preserved across turns. The bridge already accepts
+`conversation_id`; nothing currently passes it.
+
+### Reduce Tier 2 latency (low)
+
+5–11 s for Tier 2 is well above the original 2–5 s plan target. The
+14B disambiguator is the bottleneck (instruction-following requires
+the larger model). Possible improvements:
+- Smaller fine-tune of the 3B specifically for the disambiguator's
+  JSON schema, retaining the 14B's instruction-following on the
+  important cases
+- Streaming the JSON output and starting the WS call_service as
+  soon as `entity_ids` and `service` are parsed
+- Cache last-N decisions per (utterance, candidate-set) hash for
+  rapid re-asks
 
 ---
 
