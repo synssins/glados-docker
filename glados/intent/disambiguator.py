@@ -340,6 +340,35 @@ class Disambiguator:
             "Bad:  'Which lights do you mean? Multiple groups match.'\n"
             "Good: 'Three candidates qualify: the master bedroom "
             "ceiling, the reading lamp, and the closet light. Specify.'\n\n"
+            "===== SERVICE NAMES — domain → typical service =====\n"
+            "When decision=execute, the 'service' field is the bare HA "
+            "service name for the entity's domain. Use these mappings "
+            "and infer based on user intent:\n"
+            "  light, switch, fan, input_boolean, media_player, automation:\n"
+            "      turn_on / turn_off / toggle\n"
+            "  scene, script:\n"
+            "      turn_on  (activates the scene/script — what the user\n"
+            "      means by 'activate', 'run', 'start', 'set', 'enable')\n"
+            "  cover:\n"
+            "      open_cover / close_cover / stop_cover / toggle\n"
+            "  lock:\n"
+            "      lock / unlock\n"
+            "  climate:\n"
+            "      set_temperature / set_hvac_mode / turn_on / turn_off\n"
+            "  vacuum:\n"
+            "      start / pause / stop / return_to_base\n"
+            "Examples:\n"
+            "  'activate the evening scene' (scene.evening_dim, off)\n"
+            "    → execute, entity_ids=[scene.evening_dim],\n"
+            "      service=turn_on,\n"
+            "      speech='Evening scene engaged. Try not to fall asleep,\n"
+            "             test subject.'\n"
+            "  'run the bedtime script' (script.bedtime)\n"
+            "    → execute, entity_ids=[script.bedtime], service=turn_on\n"
+            "ONLY refuse when (a) the action is on a sensitive domain "
+            "from a non-webui source, OR (b) the request itself is "
+            "harmful. Do NOT refuse just because the verb seems "
+            "unfamiliar — map it to the right HA service.\n\n"
             "Respond with STRICT JSON ONLY. No prose before or after. "
             "No markdown. No code fences. The first character must be "
             "'{' and the last must be '}'.\n"
@@ -347,11 +376,13 @@ class Disambiguator:
             "{\n"
             '  "decision": "execute" | "clarify" | "refuse",\n'
             '  "entity_ids": [<entity_id strings>],\n'
-            '  "service":    "turn_on" | "turn_off" | "toggle" | "open_cover" | "close_cover" | ...,\n'
-            '  "speech":     "<spoken to the user, GLaDOS voice>",\n'
+            '  "service":    "<bare HA service name per the table above>",\n'
+            '  "speech":     "<spoken to the user, GLaDOS voice — '
+                            'REQUIRED for refuse too>",\n'
             '  "rationale":  "<one short sentence why>"\n'
             "}\n"
-            "For decision=clarify or refuse, entity_ids and service may be empty.\n"
+            "For decision=clarify or refuse, entity_ids and service may be empty, "
+            "but speech is REQUIRED and must be in GLaDOS voice.\n"
         )
 
         cand_lines = []
