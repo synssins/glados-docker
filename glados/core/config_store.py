@@ -261,12 +261,59 @@ class PrepromptEntry(BaseModel):
     assistant: str | None = None
 
 
+class ModelOptionsConfig(BaseModel):
+    """Ollama-style model parameters sent in the request `options` dict.
+
+    Stage 3 Phase A: lifted out of hardcoded values in api_wrapper so the
+    operator can tune persona strength without code changes. Critical
+    when running a neutral base model (e.g. qwen2.5:14b-instruct) instead
+    of a Modelfile-tuned `glados:latest` — temperature/top_p directly
+    affect how strongly the container's personality_preprompt steers the
+    model's voice.
+
+    Env-overrides-YAML pattern: `OLLAMA_TEMPERATURE`, `OLLAMA_TOP_P`,
+    `OLLAMA_NUM_CTX`, `OLLAMA_REPEAT_PENALTY` win when set. Operator can
+    leave the YAML as a sensible default and override per-deployment.
+    """
+    temperature: float = 0.7
+    top_p: float = 0.9
+    num_ctx: int = 16384
+    repeat_penalty: float = 1.1
+
+    @model_validator(mode="after")
+    def _env_overrides_yaml(self) -> "ModelOptionsConfig":
+        for env_key, attr, cast in [
+            ("OLLAMA_TEMPERATURE", "temperature", float),
+            ("OLLAMA_TOP_P", "top_p", float),
+            ("OLLAMA_NUM_CTX", "num_ctx", int),
+            ("OLLAMA_REPEAT_PENALTY", "repeat_penalty", float),
+        ]:
+            raw = os.environ.get(env_key, "").strip()
+            if not raw:
+                continue
+            try:
+                setattr(self, attr, cast(raw))
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid {}={!r}", env_key, raw)
+        return self
+
+    def to_ollama_options(self) -> dict[str, Any]:
+        """Build the `options` dict sent in the Ollama POST body."""
+        return {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "num_ctx": self.num_ctx,
+            "repeat_penalty": self.repeat_penalty,
+        }
+
+
 class PersonalityConfig(BaseModel):
     default_tts: TTSParams = TTSParams()
     hexaco: HEXACOPersonality = HEXACOPersonality()
     emotion: EmotionPersonality = EmotionPersonality()
     attitudes: list[AttitudeEntry] = []
     preprompt: list[PrepromptEntry] = []
+    model_options: ModelOptionsConfig = ModelOptionsConfig()
 
 
 class DiscordConfig(BaseModel):
