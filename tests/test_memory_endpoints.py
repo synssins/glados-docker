@@ -92,7 +92,7 @@ def _response(h: Handler) -> tuple[int, dict]:
 class TestMemoryAdd:
     def test_add_happy_path(self) -> None:
         store = _FakeStore()
-        body = json.dumps({"document": "Chris prefers 40% lights",
+        body = json.dumps({"document": "The operator prefers 40% lights",
                            "importance": 0.9}).encode()
         h = _make_handler("/api/memory/add", body, store)
         h._post_memory_add()
