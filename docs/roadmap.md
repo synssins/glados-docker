@@ -25,22 +25,23 @@ NodeRed publishes to `glados/cmd/*`, subscribes to `glados/events/*`.
 Source-tagging + per-domain intent allowlist gates sensitive operations
 (locks, alarms, garage, cameras) per utterance source.
 
-**Status (2026-04-17):**
+**Status (2026-04-18):**
 
 - ✅ **Phase 0** — audit logging, source-tagging, JSON-lines store
   with WebUI viewer endpoint. **Live in production.**
 - ✅ **Phase 1** — HA WS client + EntityCache + ConversationBridge
   (Tier 1) + LLM Disambiguator with intent allowlist (Tier 2) +
   Persona Rewriter (GLaDOS voice on Tier 1 hits). **Live in
-  production.** 110 tests pass. Live latencies: Tier 1 ~0.6–1 s,
-  Tier 2 ~5–11 s.
+  production.** Live latencies: Tier 1 ~0.6–1 s, Tier 2 ~5–11 s.
 - ⏳ **Phase 2** — MQTT peer bus (NodeRed/Sonorium). Not started.
 - ⏳ **Phase 3** — labeled test corpus, WS reconnect integration
   test, MQTT round-trip CI test, second-factor design for sensitive
   intents. Not started.
+- ✅ **Phase 4** — Neutral model support + conversation persistence +
+  memory review queue. **Backend live in production; Memory tab UI
+  pending.** 157 tests pass. See CHANGES.md Change 9 for details.
 
-See `docs/CHANGES.md` Change 8 for the full landing details
-(17 commits, 8 modules, 110 tests).
+See `docs/CHANGES.md` Change 8 + Change 9 for full landing details.
 
 ---
 
@@ -84,14 +85,12 @@ calls against them and returns `action_done`. Tier 1 reports success;
 no actual change happens. Fix: post-execute state verification on a
 short delay; if state didn't transition as expected, retry or report.
 
-### Conversation history not propagated (medium)
+### Conversation history not propagated ✅ Fixed in Change 9 (Phase 4)
 
-Each utterance is processed in isolation. After "turn off the whole
-house", a follow-up "All lights" doesn't inherit the verb context.
-Needs `conversation_id` plumbed through WebUI → `/api/chat` proxy →
-api_wrapper → ConversationBridge so HA's own conversation thread
-state is preserved across turns. The bridge already accepts
-`conversation_id`; nothing currently passes it.
+Tier 1/2 exchanges now persist to `/app/data/conversation.db` with
+HA `conversation_id` captured per turn. The next turn passes the
+prior `conversation_id` back to HA so multi-turn context is
+preserved. Verified via `tests/test_multi_turn.py`.
 
 ### Reduce Tier 2 latency (low)
 
@@ -105,6 +104,43 @@ the larger model). Possible improvements:
   soon as `entity_ids` and `service` are parsed
 - Cache last-N decisions per (utterance, candidate-set) hash for
   rapid re-asks
+
+---
+
+## Stage 3 Phase 4 follow-ups (post-Change 9)
+
+### WebUI Memory tab (medium)
+
+Phase D shipped the backend endpoints (GET /api/memory/list,
+/pending, POST /promote, /demote, /edit, DELETE /<id>). The
+HTML/JS panel that surfaces these to operators — paginated pending
+list, search across approved facts, threshold sliders, batch
+promote/demote — is still pending. Today operators must use curl.
+
+### Scheduled daily summarization (low)
+
+`MemoryConfig.summarization_cron` is still a placeholder. The
+existing `CompactionAgent` triggers on token threshold which covers
+the primary need; a cron-based daily summary is a polish follow-up
+that would put end-of-day rollups into ChromaDB independent of how
+chatty the day was.
+
+### Operator-side model swap not yet executed
+
+Phase A code supports running with a neutral base model
+(`qwen2.5:14b-instruct-q4_K_M` instead of `glados:latest`), but the
+operator's `/app/configs/glados_config.yaml` still references
+`"glados:latest"`. Swap is a one-line edit + container restart +
+`ollama rm glados:latest`. Phase A's tests guarantee the
+ModelOptionsConfig + cfg.personality.model_options pass-through path
+works correctly with whichever model is loaded.
+
+### Per-principal conversation_id (parked)
+
+The SQLite schema already supports it; everything still uses the
+single `"default"` partition. When multi-user WebUI auth or MQTT
+peer-bus integration arrives, switching is just a constructor
+argument away.
 
 ---
 
