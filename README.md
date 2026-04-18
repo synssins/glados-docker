@@ -45,7 +45,12 @@ Responsibilities that live **outside** this container:
 # 1. Configure
 cp .env.example .env
 cp configs/config.example.yaml configs/config.yaml
-# Edit both — point at your Ollama, speaches, and HA instances.
+# Edit both — set HA_TOKEN at minimum. Upstream service URLs default to
+# same-stack hostnames (http://ollama:11434, http://speaches:8800,
+# http://homeassistant.local:8123, etc.); override via env or the WebUI
+# (Configuration → LLM & Services / Integrations) if your services live
+# elsewhere. Phase 6 made the WebUI the primary place to edit URLs —
+# YAML pins are still honoured for backward compatibility.
 
 # 2. (Optional but recommended) install gitleaks pre-commit hook
 pip install pre-commit && pre-commit install
