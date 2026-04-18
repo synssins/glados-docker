@@ -702,14 +702,21 @@ remains in `/api/tags` for fallback — operator's call when to
 **Date:** 2026-04-18
 **Status:** Complete and live in production.
 
-**Commits (in order):**
+**Commits (in order, post-history-rewrite hashes):**
 
-- `6984ac2` — Commit 1: backend endpoints + SSL FIELD_META cleanup + tests
-- `670e94f` — Commit 2: sidebar restructure + default page → Chat
-- `eeca0ab` — Commit 3: Memory page UI + dedup-with-reinforcement backend
-- `88a19a6` — Commit 4: service auto-discovery UI (Discover button + URL-blur)
-- `3c60aa4` — Commit 5: UX polish (toasts, engine-status, display font)
-- (this commit) — Commit 6: docs
+- `9f644cc` — Commit 1: backend endpoints + SSL FIELD_META cleanup + tests
+- `e4fe05f` — Commit 2: sidebar restructure + default page → Chat
+- `4947acb` — Commit 3: Memory page UI + dedup-with-reinforcement backend
+- `b7f0e69` — Commit 4: service auto-discovery UI (Discover button + URL-blur)
+- `c5f4ae0` — Commit 5: UX polish (toasts, engine-status, display font)
+- `0758174` — Commit 6: docs
+
+Note: an author-rewrite pass on 2026-04-18 (mailmap swap of
+`Chris Kliewer <chris@denofsyn.com>` → `synssins <synssins@gmail.com>`
+across all 71 commits) changed every hash on `main`. The hashes above
+are post-rewrite; the earlier SESSION_STATE prompt mentioned pre-rewrite
+hashes (`6984ac2` / `670e94f` / `eeca0ab` / `88a19a6` / `3c60aa4` /
+`2630a34`) that no longer exist on origin.
 
 **Plan file:** `C:\Users\Administrator\.claude\plans\mellow-purring-kitten.md`
 
