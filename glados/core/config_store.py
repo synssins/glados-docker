@@ -334,6 +334,24 @@ class MemoryConfig(BaseModel):
     summarization_threshold_hours: int = 72
     summarization_cron: str = "0 3 * * *"
 
+    # Stage 3 Phase C: conversation retention.
+    # Raw turn-by-turn history lives in the SQLite ConversationDB at
+    # /app/data/conversation.db. Compaction summaries persist longer
+    # in ChromaDB (semantic collection) so long-term context survives
+    # even after the raw transcript is pruned.
+    #
+    # Hard cap: 180 days regardless of operator setting. Six months is
+    # the maximum "we know nothing about you" forgetting window for a
+    # household device. WebUI editor warns + clamps if the operator
+    # tries to set max_days higher than this.
+    conversation_max_days: int = 30
+    conversation_hard_cap_days: int = 180
+    conversation_max_disk_mb: int = 500
+    chromadb_max_disk_mb: int = 2000
+
+    # How often the retention sweeper runs (seconds).
+    retention_sweep_interval_s: int = 3600  # hourly
+
 
 class ObserverEntityRule(BaseModel):
     entity_id: str
