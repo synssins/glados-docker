@@ -48,24 +48,35 @@ def test_global_backing_skips_ssl_paths_network(source: str) -> None:
     # The 'global' backing dispatch in cfgRenderSection must forward the
     # skip list. This applies both when the virtual page is Integrations
     # (section=integrations, backing=global) and when a legacy direct call
-    # uses section=global.
+    # uses section=global. The array is extended over time (auth, audit,
+    # mode_entities added in the System-tab absorption commit); this
+    # test only asserts the ORIGINAL three Commit 1 keys are still there.
     pattern = re.compile(
-        r"backing\s*===\s*'global'.*?\[\s*('ssl'|'paths'|'network')\s*,\s*"
-        r"('ssl'|'paths'|'network')\s*,\s*('ssl'|'paths'|'network')\s*\]",
+        r"backing\s*===\s*'global'\)?\s*\?\s*(\[[^\]]*\])",
         re.DOTALL,
     )
     m = pattern.search(source)
-    assert m, "Global backing must pass skipKeys=['ssl','paths','network'] to cfgBuildForm"
-    assert set(m.groups()) == {"'ssl'", "'paths'", "'network'"}
+    assert m, "Global backing must pass a skipKeys list to cfgBuildForm"
+    arr = m.group(1)
+    for k in ("'ssl'", "'paths'", "'network'"):
+        assert k in arr, f"Commit 1 skipKey {k} missing from global-backing array"
 
 
 def test_non_global_backings_do_not_inherit_skip_list(source: str) -> None:
     # Guard against accidentally skipping keys for other backings. The
-    # ternary must gate on backing === 'global' (may or may not wrap in parens).
-    assert re.search(
-        r"backing\s*===\s*'global'\)?\s*\?\s*\[\s*'ssl'\s*,\s*'paths'\s*,\s*'network'\s*\]",
+    # ternary must gate on backing === 'global' (may or may not wrap in
+    # parens). The skip array is extended over time (Phase 6 Commit 1
+    # added ssl/paths/network; the System-tab absorption added
+    # auth/audit/mode_entities); we only assert the original three are
+    # still present and that the gate is on backing === 'global'.
+    m = re.search(
+        r"backing\s*===\s*'global'\)?\s*\?\s*(\[[^\]]*\])",
         source,
-    ), (
+    )
+    assert m, (
         "skipKeys for cfgBuildForm must be gated on backing === 'global' "
         "so other pages (services/audio/etc.) are unaffected"
     )
+    arr = m.group(1)
+    for k in ("'ssl'", "'paths'", "'network'"):
+        assert k in arr, f"Phase 6 Commit 1 skip key {k} missing from array"
