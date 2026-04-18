@@ -34,6 +34,7 @@ from glados.core.config_store import cfg
 from glados.doorbell.screener import DoorbellScreener
 from glados.observability import AuditEvent, Origin, audit
 from glados import ha as _ha
+from glados import intent as _intent
 
 # Container-aware path resolution
 _GLADOS_ROOT = Path(os.environ.get("GLADOS_ROOT", "/app"))
@@ -1172,12 +1173,58 @@ def _emit_tier1_sse_response(
     handler.wfile.flush()
 
 
+def _try_tier2_disambiguation(
+    user_message: str, origin: str,
+) -> "tuple[bool, str, dict] | None":
+    """Run Tier 2 disambiguator. Returns:
+      - None: disambiguator unavailable / not initialized
+      - (True, speech, audit_extra): handled, caller should emit `speech`
+      - (False, "", audit_extra): fall through to Tier 3 (full LLM)
+
+    `audit_extra` carries the Tier 2 audit fields the caller writes."""
+    disambig = _intent.get_disambiguator()
+    if disambig is None:
+        return None
+    t0 = time.perf_counter()
+    try:
+        r = disambig.run(user_message, source=origin)
+    except Exception as exc:
+        logger.warning("Tier 2 disambiguator crashed: {}", exc)
+        return None
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    extra = {
+        "decision": r.decision,
+        "entity_ids": r.entity_ids,
+        "service": r.service,
+        "rationale": r.rationale[:200],
+        "candidates_shown": len(r.candidates_shown),
+        "speech": (r.speech or "")[:500],
+    }
+    audit(AuditEvent(
+        ts=time.time(), origin=origin, kind="intent", tier=2,
+        utterance=user_message,
+        result=("ok:" + r.decision) if r.handled else f"fall_through:{r.rationale[:60]}",
+        latency_ms=elapsed_ms, extra=extra,
+    ))
+    if r.handled:
+        logger.info("Tier 2 {} ({}ms): {} -> {}", r.decision, elapsed_ms,
+                    user_message[:60], r.speech[:80])
+        return (True, r.speech, extra)
+    return (False, "", extra)
+
+
 def _try_tier1_nonstreaming(
     handler: "APIHandler", user_message: str, origin: str,
 ) -> bool:
     """Non-streaming counterpart to `_try_tier1_fast_path`. Sends a
     normal OpenAI-compatible JSON response on hit. Used by callers
-    like the WebUI's `/api/chat` proxy which posts `stream: false`."""
+    like the WebUI's `/api/chat` proxy which posts `stream: false`.
+
+    Flow:
+      1. Try Tier 1 (HA conversation API).
+      2. On Tier 1 miss with should_disambiguate, try Tier 2.
+      3. If neither handled, return False so caller falls to Tier 3 LLM.
+    """
     bridge = _ha.get_bridge()
     if bridge is None:
         return False
@@ -1196,6 +1243,27 @@ def _try_tier1_nonstreaming(
             result=f"miss:{result.error_code or result.response_type or 'unknown'}",
             latency_ms=elapsed_ms,
         ))
+        # Tier 2 only when HA's classifier said the utterance might be
+        # an intent but the target was ambiguous / no_intent_match. For
+        # other miss reasons (timeout, ha_not_connected, garbage_speech,
+        # unknown error_code) skip Tier 2 — those usually need full LLM.
+        if result.should_disambiguate:
+            t2 = _try_tier2_disambiguation(user_message, origin)
+            if t2 is not None and t2[0]:
+                speech = t2[1] or "Done."
+                request_id = uuid.uuid4().hex[:12]
+                handler._send_json({
+                    "id": f"chatcmpl-{request_id}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "glados",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": speech},
+                        "finish_reason": "stop",
+                    }],
+                })
+                return True
         return False
 
     speech = result.speech or "Action executed."
@@ -1250,8 +1318,7 @@ def _try_tier1_fast_path(
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     if not result.handled:
-        # Tier 2 / Tier 3 will have to handle it. Audit the miss so we
-        # can measure Tier 1 hit-rate from the log later.
+        # Audit the Tier 1 miss so we can measure hit-rate.
         audit(AuditEvent(
             ts=time.time(),
             origin=origin,
@@ -1261,6 +1328,17 @@ def _try_tier1_fast_path(
             result=f"miss:{result.error_code or result.response_type or 'unknown'}",
             latency_ms=elapsed_ms,
         ))
+        # Tier 2 only when HA suggested disambiguation might help.
+        if result.should_disambiguate:
+            t2 = _try_tier2_disambiguation(user_message, origin)
+            if t2 is not None and t2[0]:
+                speech = t2[1] or "Done."
+                request_id = uuid.uuid4().hex[:12]
+                try:
+                    _emit_tier1_sse_response(handler, request_id, speech)
+                    return True
+                except Exception as exc:
+                    logger.warning("Tier 2 SSE write failed: {}", exc)
         return False
 
     # Tier 1 hit — send HA's speech back as the final response. Phase 1
