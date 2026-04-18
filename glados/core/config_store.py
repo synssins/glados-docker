@@ -31,7 +31,7 @@ from typing import Any
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from glados.robots.config import RobotsConfig
 
@@ -43,6 +43,29 @@ from glados.robots.config import RobotsConfig
 def _env(key: str, default: str) -> str:
     """Return env var value or default."""
     return os.environ.get(key, default)
+
+
+# ---------------------------------------------------------------------------
+# Deprecation helpers — Stage 3 Phase 6
+# ---------------------------------------------------------------------------
+# Fields marked `deprecated=True` are scheduled for removal after operators
+# confirm they're unused (see docs/roadmap.md). A one-line loguru WARNING
+# fires at load time if a deprecated field appears in the YAML, so the
+# operator can clean the file up without waiting for an error.
+#
+# Defining the warn at the model level (via `model_validator(mode="after")`)
+# keeps the logic next to the field definitions and avoids touching the
+# loader. Fields set purely from pydantic defaults do NOT warn — only
+# explicit YAML values trigger the message, because `model_fields_set`
+# contains only the keys present in the input dict.
+
+def _warn_deprecated_yaml(model: BaseModel, deprecated_fields: dict[str, str]) -> None:
+    for field, reason in deprecated_fields.items():
+        if field in model.model_fields_set:
+            logger.warning(
+                "Config field '{}.{}' is deprecated and will be removed: {}",
+                type(model).__name__, field, reason,
+            )
 
 
 # Container root — /app in Docker, cwd in dev
@@ -84,16 +107,35 @@ class HomeAssistantGlobal(BaseModel):
 
 
 class NetworkGlobal(BaseModel):
-    serve_host: str = _env("SERVE_HOST", "")
-    serve_port: int = int(_env("SERVE_PORT", "5051"))
+    serve_host: str = Field(default=_env("SERVE_HOST", ""), deprecated=True)
+    serve_port: int = Field(default=int(_env("SERVE_PORT", "5051")), deprecated=True)
+
+    @model_validator(mode="after")
+    def _warn_deprecated(self) -> "NetworkGlobal":
+        _warn_deprecated_yaml(self, {
+            "serve_host": "env-driven (SERVE_HOST); YAML is ignored inside the container",
+            "serve_port": "env-driven (SERVE_PORT); YAML is ignored inside the container",
+        })
+        return self
 
 
 class PathsGlobal(BaseModel):
-    glados_root: str = _GLADOS_ROOT
-    audio_base: str = _GLADOS_AUDIO
-    logs: str = _GLADOS_LOGS
-    data: str = _GLADOS_DATA
-    assets: str = _GLADOS_ASSETS
+    glados_root: str = Field(default=_GLADOS_ROOT, deprecated=True)
+    audio_base: str = Field(default=_GLADOS_AUDIO, deprecated=True)
+    logs: str = Field(default=_GLADOS_LOGS, deprecated=True)
+    data: str = Field(default=_GLADOS_DATA, deprecated=True)
+    assets: str = Field(default=_GLADOS_ASSETS, deprecated=True)
+
+    @model_validator(mode="after")
+    def _warn_deprecated(self) -> "PathsGlobal":
+        _warn_deprecated_yaml(self, {
+            "glados_root": "env-driven (GLADOS_ROOT); YAML is ignored inside the container",
+            "audio_base": "env-driven (GLADOS_AUDIO); YAML is ignored inside the container",
+            "logs": "env-driven (GLADOS_LOGS); YAML is ignored inside the container",
+            "data": "env-driven (GLADOS_DATA); YAML is ignored inside the container",
+            "assets": "env-driven (GLADOS_ASSETS); YAML is ignored inside the container",
+        })
+        return self
 
 
 class SSLGlobal(BaseModel):
@@ -117,8 +159,16 @@ class AuthGlobal(BaseModel):
 class AuditGlobal(BaseModel):
     """Stage 3 Phase 0: JSON-lines audit log for utterances and tool calls."""
     enabled: bool = True
-    path: str = f"{_GLADOS_LOGS}/audit.jsonl"
-    retention_days: int = 30  # Rotation not yet implemented; field reserved.
+    path: str = Field(default=f"{_GLADOS_LOGS}/audit.jsonl", deprecated=True)
+    retention_days: int = Field(default=30, deprecated=True)  # Rotation not implemented.
+
+    @model_validator(mode="after")
+    def _warn_deprecated(self) -> "AuditGlobal":
+        _warn_deprecated_yaml(self, {
+            "path": "env-driven (GLADOS_LOGS); YAML is ignored inside the container",
+            "retention_days": "audit rotation is not implemented; field has no effect",
+        })
+        return self
 
 
 class ModeEntitiesGlobal(BaseModel):
@@ -141,15 +191,30 @@ class TuningGlobal(BaseModel):
     tts_flush_chars: int = 150
     engine_pause_time: float = 0.05
     mode_cache_ttl_s: float = 5.0
-    engine_audio_default: bool = True
+    engine_audio_default: bool = Field(default=True, deprecated=True)
+
+    @model_validator(mode="after")
+    def _warn_deprecated(self) -> "TuningGlobal":
+        _warn_deprecated_yaml(self, {
+            "engine_audio_default": "no code consumers; field has no effect",
+        })
+        return self
 
 
 class WeatherGlobal(BaseModel):
     latitude: float = 0.0
     longitude: float = 0.0
-    temperature_unit: str = "fahrenheit"
-    wind_speed_unit: str = "mph"
+    temperature_unit: str = Field(default="fahrenheit", deprecated=True)
+    wind_speed_unit: str = Field(default="mph", deprecated=True)
     auto_from_ha: bool = True
+
+    @model_validator(mode="after")
+    def _warn_deprecated(self) -> "WeatherGlobal":
+        _warn_deprecated_yaml(self, {
+            "temperature_unit": "display preference, not a backend field; will move to UI state",
+            "wind_speed_unit": "display preference, not a backend field; will move to UI state",
+        })
+        return self
 
 
 class GlobalConfig(BaseModel):
@@ -196,9 +261,17 @@ class ServicesConfig(BaseModel):
     ollama_vision: ServiceEndpoint = ServiceEndpoint(
         url=_env("OLLAMA_VISION_URL", _env("OLLAMA_URL", "http://ollama:11434"))
     )
-    gladys_api: ServiceEndpoint = ServiceEndpoint(
-        url="http://localhost:8020"
+    gladys_api: ServiceEndpoint = Field(
+        default=ServiceEndpoint(url="http://localhost:8020"),
+        deprecated=True,
     )
+
+    @model_validator(mode="after")
+    def _warn_deprecated(self) -> "ServicesConfig":
+        _warn_deprecated_yaml(self, {
+            "gladys_api": "reserved endpoint with no code consumers; will be removed",
+        })
+        return self
 
 
 class SpeakersConfig(BaseModel):
