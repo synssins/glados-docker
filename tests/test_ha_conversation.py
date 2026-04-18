@@ -96,6 +96,39 @@ class TestClassify:
         }))
         assert "SSML" in r.speech
 
+    def test_garbage_speech_action_done_falls_through(self) -> None:
+        """Real failure observed in prod: HA returned response_type=
+        query_answer with speech 'None None' for 'Tell me about my
+        equipment'. Treating that as handled would surface 'None None'
+        as the chat reply. Must fall through to LLM."""
+        for bad in ["None None", "None", "", "  ", "null null", "NONE"]:
+            r = classify(_wrap({
+                "response_type": "query_answer",
+                "speech": _speech(bad),
+            }))
+            assert r.handled is False, f"speech={bad!r} should not be handled"
+            assert r.should_fall_through is True
+            assert r.error_code == "garbage_speech"
+
+    def test_garbage_speech_action_done_also_filtered(self) -> None:
+        r = classify(_wrap({
+            "response_type": "action_done",
+            "speech": _speech("None None"),
+        }))
+        assert r.handled is False
+        assert r.error_code == "garbage_speech"
+
+    def test_real_short_speech_is_NOT_garbage(self) -> None:
+        """Make sure short legitimate replies like '2:22 PM' aren't
+        misclassified as garbage."""
+        for good in ["2:22 PM", "ok", "Turned off the light",
+                     "On", "5 lights", "23 degrees"]:
+            r = classify(_wrap({
+                "response_type": "query_answer",
+                "speech": _speech(good),
+            }))
+            assert r.handled is True, f"speech={good!r} should be handled"
+
     def test_unwrapped_response_also_works(self) -> None:
         """Classify should work on either the full WS frame or just the
         inner `result` payload, for caller convenience."""
