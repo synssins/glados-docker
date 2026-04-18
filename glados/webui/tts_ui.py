@@ -1055,8 +1055,12 @@ class Handler(BaseHTTPRequestHandler):
             self._get_ha_entities()
         elif p == "/api/audio/stats":
             self._get_audio_stats()
+        elif p == "/api/logs/sources":
+            self._get_logs_sources()
+        elif p.startswith("/api/logs/tail"):
+            self._get_logs_tail()
         elif p.startswith("/api/logs"):
-            self._get_logs()
+            self._get_logs()   # legacy host-native path
         elif p == "/api/audit/recent" or p.startswith("/api/audit/recent?"):
             self._get_audit_recent()
         elif p == "/api/memory/list" or p.startswith("/api/memory/list?"):
@@ -2609,6 +2613,97 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json(500, {"error": str(e)})
 
+    # â”€â”€ Logs (Phase 6 follow-up) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #
+    # Configuration > Logs reads from a small whitelisted set of sources:
+    #   • container stdout (via `docker logs glados`)
+    #   • ChromaDB stdout (via `docker logs glados-chromadb`)
+    #   • audit.jsonl file under GLADOS_LOGS
+    #
+    # Endpoints:
+    #   GET /api/logs/sources  â†' [{key,label,desc,type}, ...]
+    #   GET /api/logs/tail?source=<key>&lines=<n>  â†' {lines:[...]}
+
+    _LOG_SOURCES_DOCKER = {
+        "container": "glados",
+        "chromadb":  "glados-chromadb",
+    }
+    _LOG_SOURCES_FILE = {
+        "audit": "audit.jsonl",
+    }
+
+    def _get_logs_sources(self):
+        self._send_json(200, {"sources": [
+            {
+                "key": "container", "type": "docker",
+                "label": "GLaDOS (container stdout)",
+                "desc": "Live Python app output — tier decisions, HA connectivity, errors",
+            },
+            {
+                "key": "audit", "type": "file",
+                "label": "Audit Trail",
+                "desc": "One JSON line per utterance / tool call — origin, tier, latency",
+            },
+            {
+                "key": "chromadb", "type": "docker",
+                "label": "ChromaDB",
+                "desc": "Memory store — useful if semantic search or retention looks off",
+            },
+        ]})
+
+    def _get_logs_tail(self):
+        import subprocess
+        from urllib.parse import urlparse, parse_qs
+        params = parse_qs(urlparse(self.path).query)
+        source = params.get("source", ["container"])[0]
+        try:
+            lines = max(1, min(int(params.get("lines", ["500"])[0]), 5000))
+        except ValueError:
+            lines = 500
+
+        if source in self._LOG_SOURCES_DOCKER:
+            container = self._LOG_SOURCES_DOCKER[source]
+            try:
+                # --timestamps prepends RFC-3339 time. loguru writes to
+                # stderr; we combine both streams so WARNING / ERROR
+                # lines from the app appear alongside any stdout.
+                result = subprocess.run(
+                    ["docker", "logs", "--tail", str(lines), "--timestamps", container],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode != 0:
+                    self._send_json(502, {"error": (result.stderr or "docker logs failed").strip()})
+                    return
+                combined = (result.stdout or "") + (result.stderr or "")
+                log_lines = combined.splitlines()[-lines:]
+                self._send_json(200, {"source": source, "lines": log_lines, "count": len(log_lines)})
+            except subprocess.TimeoutExpired:
+                self._send_json(504, {"error": "docker logs timed out"})
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+            return
+
+        if source in self._LOG_SOURCES_FILE:
+            fname = self._LOG_SOURCES_FILE[source]
+            log_path = Path(os.environ.get("GLADOS_LOGS", "/app/logs")) / fname
+            if not log_path.exists():
+                self._send_json(200, {"source": source, "lines": [], "count": 0,
+                                      "note": f"{fname} does not exist yet"})
+                return
+            try:
+                size = log_path.stat().st_size
+                read_size = min(size, 1 * 1024 * 1024)   # cap at 1 MB
+                with open(log_path, "rb") as f:
+                    f.seek(max(0, size - read_size))
+                    content = f.read().decode("utf-8", errors="replace")
+                log_lines = [line for line in content.splitlines() if line.strip()][-lines:]
+                self._send_json(200, {"source": source, "lines": log_lines, "count": len(log_lines)})
+            except OSError as exc:
+                self._send_json(500, {"error": str(exc)})
+            return
+
+        self._send_json(400, {"error": f"Unknown log source: {source!r}"})
+
     # â”€â”€ File serving â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _serve_ui(self):
@@ -3952,6 +4047,89 @@ a.dl-link:hover { background: var(--orange-dim); color: #fff; }
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
+
+/* â”€â”€ Logs page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+.logs-controls {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.logs-ctrl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.logs-ctrl > span {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.logs-ctrl select {
+  padding: 4px 8px;
+  background: #0d0d0d;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  min-width: 160px;
+}
+.logs-ctrl.logs-auto {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 3px;
+}
+.logs-ctrl.logs-auto > span {
+  text-transform: none;
+  font-size: 0.82rem;
+  color: var(--text);
+  letter-spacing: 0;
+}
+.logs-status {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-left: auto;
+  font-family: var(--font-mono);
+  padding-bottom: 3px;
+}
+.logs-source-desc {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+  padding-left: 4px;
+}
+.logs-viewport {
+  background: #0a0a0a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 620px;
+}
+.logs-body {
+  margin: 0;
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: #ccc;
+  white-space: pre-wrap;
+  word-break: break-all;
+  tab-size: 4;
+}
+.logs-body .log-error   { color: #ff6d6d; }
+.logs-body .log-warn    { color: #ffc15c; }
+.logs-body .log-info    { color: #8ec2ff; }
+.logs-body .log-success { color: #7ed17e; }
+.logs-body .log-dim     { color: #666; }
 .cfg-tab-btn {
   background: #222;
   border: 1px solid #444;
@@ -4335,6 +4513,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
       <a class="nav-item" data-nav-key="config.audio-speakers" onclick="navigateTo('config.audio-speakers')" data-requires-auth="true">Audio &amp; Speakers</a>
       <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')" data-requires-auth="true">Personality</a>
       <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')" data-requires-auth="true">Memory</a>
+      <a class="nav-item" data-nav-key="config.logs" onclick="navigateTo('config.logs')" data-requires-auth="true">Logs</a>
       <a class="nav-item" data-nav-key="config.ssl" onclick="navigateTo('config.ssl')" data-requires-auth="true">SSL</a>
       <a class="nav-item" data-nav-key="config.raw" onclick="navigateTo('config.raw')" data-requires-auth="true">Raw YAML</a>
     </div>
@@ -4739,6 +4918,60 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
     <pre id="trainingLog" class="train-log">Loading...</pre>
   </div>
 
+</div>
+</div>
+
+<!-- ================================================================ -->
+<!-- CONFIGURATION > LOGS (Phase 6 follow-up)                           -->
+<!-- ================================================================ -->
+<div id="tab-config-logs" class="tab-content">
+<div class="container" style="position:relative;">
+  <div id="logsAuthOverlay" class="auth-overlay" style="display:none;">
+    <div class="auth-overlay-icon">&#128274;</div>
+    <div class="auth-overlay-text">Authentication required to view Logs</div>
+    <a href="/login" class="auth-overlay-btn">Sign In</a>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Logs</div>
+    <div class="cfg-section-desc" style="margin-bottom:12px;">
+      Read-only tail of recent log content. Choose a source and how many lines back. Toggle Auto to poll the view every 10 seconds while this tab is open.
+    </div>
+    <div class="logs-controls">
+      <label class="logs-ctrl">
+        <span>Source</span>
+        <select id="logsSource" onchange="logsOnSourceChange()"></select>
+      </label>
+      <label class="logs-ctrl">
+        <span>Lines</span>
+        <select id="logsLines" onchange="logsRefresh()">
+          <option value="100">100</option>
+          <option value="500" selected>500</option>
+          <option value="1000">1000</option>
+          <option value="2000">2000</option>
+          <option value="5000">5000</option>
+        </select>
+      </label>
+      <label class="logs-ctrl">
+        <span>Filter</span>
+        <select id="logsFilter" onchange="logsRerender()">
+          <option value="all" selected>All</option>
+          <option value="warn">Warnings and errors</option>
+          <option value="error">Errors only</option>
+        </select>
+      </label>
+      <button class="btn-small" onclick="logsRefresh()">Refresh</button>
+      <label class="logs-ctrl logs-auto">
+        <input type="checkbox" id="logsAuto" onchange="logsToggleAuto()">
+        <span>Auto-refresh (10 s)</span>
+      </label>
+      <span id="logsStatus" class="logs-status"></span>
+    </div>
+    <div id="logsSourceDesc" class="logs-source-desc"></div>
+    <div class="logs-viewport">
+      <pre id="logsBody" class="logs-body">Select a source and click Refresh.</pre>
+    </div>
+  </div>
 </div>
 </div>
 
@@ -5943,6 +6176,130 @@ function memoryLoadAll() {
   memLoadRecent();
 }
 
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   CONFIGURATION > LOGS (Phase 6 follow-up)
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+
+let _logsRawLines = [];          // latest raw lines from /api/logs/tail
+let _logsSources = [];
+let _logsAutoTimer = null;
+const LOGS_AUTO_INTERVAL_MS = 10000;
+
+// Tab entry: on first visit populate the source list; refresh every time.
+async function logsOnTabActivate() {
+  if (_logsSources.length === 0) {
+    try {
+      const r = await fetch('/api/logs/sources');
+      if (r.status === 401) { logsSetStatus('auth required'); return; }
+      const j = await r.json();
+      _logsSources = j.sources || [];
+      const sel = document.getElementById('logsSource');
+      sel.innerHTML = '';
+      for (const s of _logsSources) {
+        const opt = document.createElement('option');
+        opt.value = s.key; opt.textContent = s.label; sel.appendChild(opt);
+      }
+    } catch (e) {
+      logsSetStatus('failed to list sources: ' + e.message);
+      return;
+    }
+  }
+  logsUpdateSourceDesc();
+  logsRefresh();
+}
+
+function logsOnSourceChange() {
+  logsUpdateSourceDesc();
+  logsRefresh();
+}
+
+function logsUpdateSourceDesc() {
+  const key = document.getElementById('logsSource').value;
+  const s = _logsSources.find(x => x.key === key);
+  document.getElementById('logsSourceDesc').textContent = s ? s.desc : '';
+}
+
+function logsSetStatus(msg) {
+  document.getElementById('logsStatus').textContent = msg || '';
+}
+
+async function logsRefresh() {
+  const source = document.getElementById('logsSource').value;
+  const lines  = document.getElementById('logsLines').value;
+  if (!source) return;
+  logsSetStatus('loading...');
+  try {
+    const r = await fetch('/api/logs/tail?source=' + encodeURIComponent(source) + '&lines=' + lines);
+    if (r.status === 401) { logsSetStatus('auth required'); return; }
+    const j = await r.json();
+    if (!r.ok) {
+      _logsRawLines = [];
+      document.getElementById('logsBody').textContent = 'error: ' + (j.error || r.status);
+      logsSetStatus('error');
+      return;
+    }
+    _logsRawLines = j.lines || [];
+    logsRerender();
+    const when = new Date().toLocaleTimeString();
+    logsSetStatus(`${_logsRawLines.length} line${_logsRawLines.length===1?'':'s'} · refreshed ${when}`);
+    // Pin to bottom after each refresh so new content is visible.
+    const vp = document.querySelector('.logs-viewport');
+    if (vp) vp.scrollTop = vp.scrollHeight;
+  } catch (e) {
+    logsSetStatus('fetch failed: ' + e.message);
+  }
+}
+
+// Classify a line's severity. Works for loguru default format, Python's
+// stdlib logging, and audit JSONL (checks for "level":"ERROR" patterns).
+function _logsSeverity(line) {
+  const s = line || '';
+  if (/\|\s*ERROR\s*\||\bERROR\b|\"level\":\s*\"ERROR\"|Traceback|Exception:|Error:/i.test(s)) return 'error';
+  if (/\|\s*WARN(ING)?\s*\||\bWARN(ING)?\b|\"level\":\s*\"WARNING\"/i.test(s)) return 'warn';
+  if (/\|\s*SUCCESS\s*\||\"level\":\s*\"SUCCESS\"/i.test(s)) return 'success';
+  if (/\|\s*INFO\s*\||\"level\":\s*\"INFO\"/i.test(s)) return 'info';
+  if (/\|\s*DEBUG\s*\||\"level\":\s*\"DEBUG\"/i.test(s)) return 'dim';
+  return null;
+}
+
+function logsRerender() {
+  const filter = document.getElementById('logsFilter').value;
+  const body = document.getElementById('logsBody');
+  if (_logsRawLines.length === 0) {
+    body.textContent = '(no log content yet)';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  let shown = 0;
+  for (const raw of _logsRawLines) {
+    const sev = _logsSeverity(raw);
+    if (filter === 'error' && sev !== 'error') continue;
+    if (filter === 'warn' && sev !== 'error' && sev !== 'warn') continue;
+    const span = document.createElement('span');
+    if (sev) span.className = 'log-' + sev;
+    span.textContent = raw + '\n';
+    frag.appendChild(span);
+    shown++;
+  }
+  body.innerHTML = '';
+  if (shown === 0) {
+    body.textContent = '(filter matches no lines)';
+  } else {
+    body.appendChild(frag);
+  }
+}
+
+function logsToggleAuto() {
+  const on = document.getElementById('logsAuto').checked;
+  if (on && !_logsAutoTimer) {
+    _logsAutoTimer = setInterval(logsRefresh, LOGS_AUTO_INTERVAL_MS);
+    logsRefresh();
+  } else if (!on && _logsAutoTimer) {
+    clearInterval(_logsAutoTimer);
+    _logsAutoTimer = null;
+  }
+}
+
 async function memLoadConfig() {
   try {
     const r = await fetch('/api/config/memory');
@@ -6287,6 +6644,7 @@ async function memSweepRetention() {
 function _panelIdFor(key) {
   if (key === 'config.system') return 'tab-config-system';
   if (key === 'config.memory') return 'tab-config-memory';
+  if (key === 'config.logs')   return 'tab-config-logs';
   if (key && key.indexOf('config.') === 0) return 'tab-config';
   return 'tab-' + key;
 }
@@ -6324,6 +6682,12 @@ let _activeNavKey = 'chat';
 
 function navigateTo(key) {
   key = _migrateLegacyKey(key);
+  // Leaving Logs? Tear down the 10 s polling timer so we don't keep
+  // hitting /api/logs/tail when the operator's on another page.
+  if (_activeNavKey === 'config.logs' && key !== 'config.logs') {
+    const el = document.getElementById('logsAuto');
+    if (el && el.checked) { el.checked = false; logsToggleAuto(); }
+  }
   _activeNavKey = key;
 
   const panelId = _panelIdFor(key);
@@ -6357,6 +6721,8 @@ function navigateTo(key) {
   } else if (key === 'config.memory') {
     // Memory page UI arrives in Phase 5 Commit 3; placeholder for now.
     if (typeof memoryLoadAll === 'function') memoryLoadAll();
+  } else if (key === 'config.logs') {
+    if (typeof logsOnTabActivate === 'function') logsOnTabActivate();
   } else if (key.indexOf('config.') === 0) {
     const section = key.substring('config.'.length);
     _cfgCurrentSection = section;
