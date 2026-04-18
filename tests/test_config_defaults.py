@@ -99,6 +99,24 @@ def test_ha_env_wins_over_yaml_placeholder() -> None:
         assert ha.url == "http://ha.example:8123"
 
 
+def test_autonomy_vision_default_to_interactive_when_env_unset() -> None:
+    # Phase 6 follow-up: Option C — operators can split autonomy/vision
+    # onto a separate Ollama if they want, but the out-of-the-box default
+    # unifies everything on OLLAMA_URL. Structural guard so the fallback
+    # chain doesn't regress; env-evaluation is tested indirectly by the
+    # "defaults_use_docker_service_names" case above (all three resolve
+    # to the same http://ollama:11434 when no env vars are set).
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parent.parent / "glados" / "core" / "config_store.py").read_text(encoding="utf-8")
+    # Autonomy must fall back to OLLAMA_URL (not a hardcoded separate default).
+    assert '_env("OLLAMA_AUTONOMY_URL", _env("OLLAMA_URL"' in src, (
+        "Autonomy URL must fall back to OLLAMA_URL, then the pydantic default"
+    )
+    assert '_env("OLLAMA_VISION_URL", _env("OLLAMA_URL"' in src, (
+        "Vision URL must fall back to OLLAMA_URL, then the pydantic default"
+    )
+
+
 def test_services_yaml_url_still_wins_over_default() -> None:
     # Services do NOT use env-overrides-YAML (unlike HomeAssistantGlobal) —
     # this is intentional per the Phase 6 migration policy: operators with

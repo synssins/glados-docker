@@ -7,9 +7,11 @@
 # Everything else is an EXTERNAL dependency the operator runs separately
 # and points GLaDOS at via env vars:
 #
-#   OLLAMA_URL       — LLM inference (interactive)         default 11434
-#   OLLAMA_AUTONOMY_URL — LLM inference (background tasks) default 11436
-#   OLLAMA_VISION_URL — vision LLM (optional)              default 11435
+#   OLLAMA_URL       — LLM inference (one instance serves everything)
+#   OLLAMA_AUTONOMY_URL — optional; override to split autonomy tasks
+#                         (Tier 2 disambiguator, persona rewriter) onto
+#                         a separate Ollama instance. Defaults to OLLAMA_URL.
+#   OLLAMA_VISION_URL — optional; same pattern for vision queries.
 #   SPEACHES_URL     — STT + TTS                           default 8800
 #   HA_URL + HA_TOKEN — Home Assistant
 #   VISION_URL       — GLaDOS vision service (optional)    default 8016
