@@ -4705,6 +4705,20 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
     </div>
   </div>
 
+  <!-- Maintenance Entities — which HA input_* entities back the toggles above -->
+  <div class="card">
+    <div class="section-title">Maintenance Entities</div>
+    <div class="mode-desc" style="margin-bottom:10px;">
+      Home Assistant entity IDs that control Maintenance Mode and select the
+      speaker used during maintenance. Must exist in your HA setup.
+    </div>
+    <div id="sysMaintForm"></div>
+    <div class="cfg-save-row">
+      <button class="cfg-save-btn" onclick="cfgSaveSystemMaint()">Save Maintenance Entities</button>
+      <span id="cfg-save-result-sys-maint" class="cfg-result"></span>
+    </div>
+  </div>
+
   <div class="card">
     <div class="section-title">Announcement Verbosity</div>
     <div class="mode-desc" style="margin-bottom:12px;">Controls how often GLaDOS adds a sarcastic follow-up comment to announcements. 0% = factual only, 100% = always adds commentary.</div>
@@ -4758,6 +4772,22 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
         <span class="health-dot unknown" id="hd-chromadb"></span>ChromaDB Memory
         <button class="restart-btn" onclick="restartService('chromadb')" title="Restart ChromaDB container">&#10227;</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Authentication & Audit — previously on Integrations; relocated 2026-04-18 -->
+  <div class="card">
+    <div class="section-title">Authentication &amp; Audit</div>
+    <div class="mode-desc" style="margin-bottom:10px;">
+      WebUI sign-in enforcement, session timeout, and the utterance/tool
+      audit trail. The password itself is set via
+      <code>docker exec glados python -m glados.tools.set_password</code> —
+      not shown here.
+    </div>
+    <div id="sysAuthAuditForm"></div>
+    <div class="cfg-save-row">
+      <button class="cfg-save-btn" onclick="cfgSaveSystemAuthAudit()">Save Authentication &amp; Audit</button>
+      <span id="cfg-save-result-sys-authaudit" class="cfg-result"></span>
     </div>
   </div>
 
@@ -5192,13 +5222,13 @@ const FIELD_META = {
   // settings. Phase 5 removed the duplicates; the SSL page is the
   // single source of truth for ssl.*.
   // â”€â”€ Global: Auth â”€â”€ (Phase 6: all advanced — operators rarely touch this after initial setup)
-  'auth.enabled':          { label: 'Authentication Enabled', desc: 'Require login to access System and Config', advanced: true },
+  'auth.enabled':          { label: 'Authentication Enabled', desc: 'Require login to access System and Config' },
   'auth.password_hash':    { label: 'Password Hash', desc: 'Bcrypt hash (use set_password tool to change)', advanced: true, type: 'password' },
   'auth.session_secret':   { label: 'Session Secret', desc: 'Secret key for session tokens', advanced: true, type: 'password' },
-  'auth.session_timeout_hours': { label: 'Session Timeout (hours)', desc: 'How long before a session expires', advanced: true },
+  'auth.session_timeout_hours': { label: 'Session Timeout (hours)', desc: 'How long before a session expires' },
   // â”€â”€ Global: Mode Entities â”€â”€
-  'mode_entities.maintenance_mode':    { label: 'Maintenance Mode Entity', desc: 'HA entity for maintenance mode', advanced: true },
-  'mode_entities.maintenance_speaker': { label: 'Maintenance Speaker Entity', desc: 'HA entity for maintenance speaker selection', advanced: true },
+  'mode_entities.maintenance_mode':    { label: 'Maintenance Mode Entity', desc: 'HA entity for maintenance mode' },
+  'mode_entities.maintenance_speaker': { label: 'Maintenance Speaker Entity', desc: 'HA entity for maintenance speaker selection' },
   'mode_entities.silent_mode':         { label: 'Silent Mode Entity', desc: 'HA entity for silent mode', advanced: true },
   'mode_entities.dnd':                 { label: 'Do Not Disturb Entity', desc: 'HA entity for manual DND toggle', advanced: true },
   // â”€â”€ Global: Silent Hours â”€â”€
@@ -5211,7 +5241,7 @@ const FIELD_META = {
     '12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00','22:00','23:00'] },
   'silent_hours.min_tier': { label: 'Minimum Tier to Play', desc: 'Alerts below this tier are suppressed during silent hours', options: ['AMBIENT','LOW','MEDIUM','HIGH','CRITICAL'] },
   // â”€â”€ Global: Audit â”€â”€ (Phase 6: hidden — deprecated / no WebUI-writable effect)
-  'audit.enabled':                 { label: 'Audit Log Enabled', desc: 'Write utterance/tool audit trail to JSONL', advanced: true },
+  'audit.enabled':                 { label: 'Audit Log Enabled', desc: 'Write utterance/tool audit trail to JSONL' },
   'audit.path':                    { label: 'Audit Log Path', desc: 'env-driven via GLADOS_LOGS', hidden: true },
   'audit.retention_days':          { label: 'Audit Retention (days)', desc: 'rotation not implemented', hidden: true },
   // â”€â”€ Global: Weather â”€â”€ (Phase 6: unit fields hidden — UI preference, not backend)
@@ -5361,10 +5391,13 @@ function cfgRenderSection(section) {
   } else if (section === 'ssl') {
     html += cfgRenderSsl(_cfgData.global && _cfgData.global.ssl ? _cfgData.global.ssl : {});
   } else {
-    // Skip keys that belong to a dedicated page (ssl → SSL tab) or are
-    // env-only (paths, network are driven by GLADOS_ROOT / SERVE_HOST
-    // etc. inside the container, so the YAML-backed form is inert).
-    const skipKeys = (backing === 'global') ? ['ssl', 'paths', 'network'] : null;
+    // Skip keys that belong to a dedicated page (ssl → SSL tab; auth /
+    // audit / mode_entities → System tab) or are env-only (paths, network
+    // are driven by GLADOS_ROOT / SERVE_HOST etc., so the YAML-backed form
+    // is inert inside the container).
+    const skipKeys = (backing === 'global')
+        ? ['ssl', 'paths', 'network', 'auth', 'audit', 'mode_entities']
+        : null;
     html += cfgBuildForm(data, backing, '', skipKeys);
   }
 
@@ -5518,6 +5551,129 @@ async function cfgSaveLLMTimeouts() {
   } catch(e) {
     if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
   }
+}
+
+// Phase 6 follow-up: System tab absorbs auth, audit, and the two
+// maintenance_* mode entities that used to live under Integrations.
+// These forms render into the System tab and save back to the 'global'
+// backing. They use section name 'sysaux' for field IDs so they don't
+// collide with an Integrations page that may still have the full
+// global form rendered in another tab's DOM.
+
+function loadSystemConfigCards() {
+  // _cfgData may not be loaded yet on first visit — fetch if empty.
+  const have = _cfgData && _cfgData.global;
+  const run = () => {
+    _cfgRenderSystemMaintForm();
+    _cfgRenderSystemAuthAuditForm();
+  };
+  if (have) { run(); }
+  else if (typeof cfgLoadAll === 'function') { cfgLoadAll().then(run); }
+}
+
+function _cfgRenderSystemMaintForm() {
+  const me = (_cfgData.global || {}).mode_entities || {};
+  // Only the maintenance pair — silent_mode / dnd belong on Audio & Speakers.
+  const subset = {
+    mode_entities: {
+      maintenance_mode:    me.maintenance_mode    || '',
+      maintenance_speaker: me.maintenance_speaker || '',
+    },
+  };
+  const host = document.getElementById('sysMaintForm');
+  if (!host) return;
+  host.innerHTML = cfgBuildForm(subset, 'sysaux', '', null);
+}
+
+function _cfgRenderSystemAuthAuditForm() {
+  const g = _cfgData.global || {};
+  const subset = {
+    auth:  g.auth  || {},
+    audit: g.audit || {},
+  };
+  const host = document.getElementById('sysAuthAuditForm');
+  if (!host) return;
+  host.innerHTML = cfgBuildForm(subset, 'sysaux', '', null);
+}
+
+// Generic save helper for the System-tab subset forms. Collects every
+// `[id^="cfg-sysaux-"]` input inside `scopeEl`, rebuilds nested paths
+// from `data-path`, deep-merges the result into a copy of _cfgData.global,
+// and PUTs /api/config/global. Scoping to the form element prevents
+// stray inputs from other cards bleeding into the payload.
+async function _cfgSaveSystemSubset(scopeEl, resultElId) {
+  const resultEl = document.getElementById(resultElId);
+  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
+
+  const delta = {};
+  scopeEl.querySelectorAll('[id^="cfg-sysaux-"]').forEach(el => {
+    const path = el.dataset.path;
+    if (!path) return;
+    const type = el.dataset.type;
+    let val;
+    if (type === 'bool') val = el.value === 'true';
+    else if (type === 'number') val = parseFloat(el.value);
+    else if (type === 'array') val = el.value.split(',').map(s => s.trim()).filter(Boolean);
+    else val = el.value;
+
+    const parts = path.split('.');
+    let cur = delta;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!(parts[i] in cur)) cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = val;
+  });
+
+  // Deep-merge delta into a snapshot of the current global config so we
+  // don't clobber sibling fields (silent_hours, tuning, home_assistant, etc.).
+  const next = JSON.parse(JSON.stringify(_cfgData.global || {}));
+  const _merge = (dst, src) => {
+    for (const k of Object.keys(src)) {
+      if (src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) {
+        if (!dst[k] || typeof dst[k] !== 'object') dst[k] = {};
+        _merge(dst[k], src[k]);
+      } else {
+        dst[k] = src[k];
+      }
+    }
+  };
+  _merge(next, delta);
+
+  try {
+    const r = await fetch('/api/config/global', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(next),
+    });
+    // The legacy /api/config/<section> handler uses _send_error for
+    // non-ok paths, which emits plain text rather than JSON. Parse
+    // defensively so our handler doesn't swallow the real error behind
+    // "Unexpected token 'V'".
+    const bodyText = await r.text();
+    let resp = {};
+    try { resp = JSON.parse(bodyText); } catch (_) { resp = { error: bodyText }; }
+    if (r.ok) {
+      _cfgData.global = next;
+      if (resultEl) resultEl.textContent = '';
+      showToast('Saved. Restart services for changes to take effect.', 'success');
+    } else if (resultEl) {
+      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
+      resultEl.className = 'cfg-result err';
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
+  }
+}
+
+async function cfgSaveSystemMaint() {
+  const form = document.getElementById('sysMaintForm');
+  if (form) await _cfgSaveSystemSubset(form, 'cfg-save-result-sys-maint');
+}
+
+async function cfgSaveSystemAuthAudit() {
+  const form = document.getElementById('sysAuthAuditForm');
+  if (form) await _cfgSaveSystemSubset(form, 'cfg-save-result-sys-authaudit');
 }
 
 // Phase 6 merged page: renders Speakers + Audio side-by-side with
@@ -6783,6 +6939,7 @@ function navigateTo(key) {
     loadWeather(); loadGPU(); loadRobots();
     loadVerbositySliders(); loadStartupSpeakers();
     startGPUAutoRefresh(); startWeatherAutoRefresh(); startRobotAutoRefresh();
+    if (typeof loadSystemConfigCards === 'function') loadSystemConfigCards();
   } else if (key === 'config.memory') {
     // Memory page UI arrives in Phase 5 Commit 3; placeholder for now.
     if (typeof memoryLoadAll === 'function') memoryLoadAll();
