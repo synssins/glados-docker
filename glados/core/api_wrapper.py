@@ -1710,6 +1710,12 @@ def _stream_chat_sse(
         request_id, len(messages), len(tools),
         "home_command" if is_home_command else "chitchat",
     )
+    # TEMP DEBUG — chitchat time-prefix investigation (remove after diag)
+    if not is_home_command:
+        for _i, _m in enumerate(messages):
+            _role = _m.get("role", "?")
+            _c = str(_m.get("content", ""))
+            logger.debug("[{}] msg[{}] role={} content={}", request_id, _i, _role, _c[:240])
     body = json.dumps(payload).encode("utf-8")
 
     headers = {
