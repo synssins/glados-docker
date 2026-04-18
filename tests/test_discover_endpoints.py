@@ -121,6 +121,21 @@ class TestDiscoverVoices:
         assert status == 200
         assert payload["count"] == 2
 
+    def test_wrapped_voices_accepted(self) -> None:
+        """GLaDOS Piper / custom TTS shapes wrap the list in
+        {"voices": [...]} — often with string entries, not objects.
+        Regression guard for the 2026-04-18 "unexpected response shape"
+        bug surfaced on the production TTS Engine card."""
+        upstream = {"voices": ["glados", "startrek-computer"]}
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   return_value=_fake_response(upstream)):
+            status, payload = discover_voices("http://192.168.1.75:5050")
+        assert status == 200
+        assert payload["count"] == 2
+        names = [v["name"] for v in payload["voices"]]
+        assert "glados" in names
+        assert "startrek-computer" in names
+
 
 class TestDiscoverHealth:
     def test_reachable_returns_ok_true(self) -> None:
