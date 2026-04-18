@@ -3430,6 +3430,28 @@ body {
 .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.7; }
 .nav-item.active svg { opacity: 1; }
 .nav-item .lock-icon { margin-left: auto; font-size: 0.7rem; opacity: 0.5; }
+/* ── Phase 5: hierarchical nav (Configuration as parent) ── */
+.nav-parent { /* same layout rules as .nav-item; combined via class list */ }
+.nav-parent .nav-caret {
+  margin-left: auto;
+  font-size: 0.7rem;
+  transition: transform 0.2s ease;
+  display: inline-block;
+}
+.nav-parent.open .nav-caret { transform: rotate(90deg); }
+.nav-children {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease;
+  background: rgba(0,0,0,0.15);
+}
+.nav-parent.open + .nav-children { max-height: 800px; }
+.nav-children .nav-item {
+  padding-left: 2.75rem;
+  font-size: 0.82rem;
+  gap: 0.5rem;
+}
+.nav-children .nav-item svg { width: 14px; height: 14px; }
 .sidebar-footer {
   padding: 0.75rem 1rem;
   border-top: 1px solid var(--border);
@@ -4139,22 +4161,30 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 <nav class="sidebar">
   <div class="sidebar-brand">GLaDOS <span>Control</span></div>
   <div class="nav-items">
-    <a class="nav-item active" onclick="switchTab('tts')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-      TTS Generator
-    </a>
-    <a class="nav-item" onclick="switchTab('chat')">
+    <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       Chat
     </a>
-    <a class="nav-item" onclick="switchTab('control')" data-requires-auth="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      System <span class="lock-icon" id="lockControl"></span>
+    <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      TTS Generator
     </a>
-    <a class="nav-item" onclick="switchTab('config')" data-requires-auth="true">
+    <a class="nav-item nav-parent" data-nav-key="config" onclick="navToggleConfig()" data-requires-auth="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
       Configuration <span class="lock-icon" id="lockConfig"></span>
+      <span class="nav-caret">&#9656;</span>
     </a>
+    <div class="nav-children">
+      <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
+      <a class="nav-item" data-nav-key="config.global" onclick="navigateTo('config.global')" data-requires-auth="true">Global</a>
+      <a class="nav-item" data-nav-key="config.services" onclick="navigateTo('config.services')" data-requires-auth="true">Services</a>
+      <a class="nav-item" data-nav-key="config.speakers" onclick="navigateTo('config.speakers')" data-requires-auth="true">Speakers</a>
+      <a class="nav-item" data-nav-key="config.audio" onclick="navigateTo('config.audio')" data-requires-auth="true">Audio</a>
+      <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')" data-requires-auth="true">Personality</a>
+      <a class="nav-item" data-nav-key="config.ssl" onclick="navigateTo('config.ssl')" data-requires-auth="true">SSL</a>
+      <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')" data-requires-auth="true">Memory</a>
+      <a class="nav-item" data-nav-key="config.raw" onclick="navigateTo('config.raw')" data-requires-auth="true">Raw YAML</a>
+    </div>
     <!-- Training removed: piper_train is a host-native tool, not available in container -->
   </div>
   <div class="sidebar-footer">
@@ -4166,10 +4196,10 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 <div class="topbar">
   <div class="topbar-inner">
     <span class="topbar-brand">GLaDOS</span>
-    <a class="nav-item active" onclick="switchTab('tts')">TTS</a>
-    <a class="nav-item" onclick="switchTab('chat')">Chat</a>
-    <a class="nav-item" onclick="switchTab('control')" data-requires-auth="true">System</a>
-    <a class="nav-item" onclick="switchTab('config')" data-requires-auth="true">Config</a>
+    <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')">Chat</a>
+    <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')">TTS</a>
+    <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
+    <a class="nav-item" data-nav-key="config.global" onclick="navigateTo('config.global')" data-requires-auth="true">Config</a>
     <!-- Training removed: not available in container -->
   </div>
 </div>
@@ -4182,7 +4212,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 <!-- TAB 1: TTS Generator                                           -->
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
-<div id="tab-tts" class="tab-content active">
+<div id="tab-tts" class="tab-content">
 <div class="container">
   <div class="card">
     <div class="section-title">Enter text to synthesize</div>
@@ -4219,7 +4249,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 <!-- TAB 2: Chat                                                    -->
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
-<div id="tab-chat" class="tab-content">
+<div id="tab-chat" class="tab-content active">
 <div class="container">
   <div class="card" style="padding:0.75rem;">
     <div class="chat-messages" id="chatMessages">
@@ -4238,7 +4268,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 <!-- TAB 3: System Control                                          -->
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
-<div id="tab-control" class="tab-content">
+<div id="tab-config-system" class="tab-content">
 <div class="container" style="position:relative;">
   <div id="controlAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -4401,16 +4431,9 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   </div>
 
   <div class="card">
-    <div class="section-title">Configuration Manager</div>
-    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
-      <button class="cfg-tab-btn active" onclick="cfgSwitchSection('global',this)">Global</button>
-      <button class="cfg-tab-btn" onclick="cfgSwitchSection('services',this)">Services</button>
-      <button class="cfg-tab-btn" onclick="cfgSwitchSection('speakers',this)">Speakers</button>
-      <button class="cfg-tab-btn" onclick="cfgSwitchSection('audio',this)">Audio</button>
-      <button class="cfg-tab-btn" onclick="cfgSwitchSection('personality',this)">Personality</button>
-      <button class="cfg-tab-btn" onclick="cfgSwitchSection('ssl',this)">SSL</button>
-      <button class="cfg-tab-btn" onclick="cfgSwitchSection('raw',this)">Raw YAML</button>
-    </div>
+    <div class="section-title" id="cfg-section-label">Configuration</div>
+    <!-- In-page tab strip removed in Phase 5; the sidebar Configuration
+         submenu drives which section is rendered into cfg-form-area. -->
 
     <div class="advanced-toggle-row">
       <label>
@@ -5272,47 +5295,114 @@ document.addEventListener('DOMContentLoaded', () => {
    Shared utilities
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-function switchTab(name) {
-  // Auth gating: if not authenticated, block protected tabs
-  if (!_isAuthenticated && (name === 'control' || name === 'config' || name === 'training')) {
-    // Still switch to show the auth overlay
-  }
+// ── Phase 5 navigation ──────────────────────────────────────────
+// Dotted keys drive the whole UI now: "chat", "tts", "config.system",
+// "config.global", ..., "config.memory", "config.raw". The mapping
+// from key → DOM panel lives in _panelIdFor(); Configuration children
+// all render into the single #tab-config host (except System and
+// Memory which have their own HTML).
+
+function _panelIdFor(key) {
+  if (key === 'config.system') return 'tab-config-system';
+  if (key === 'config.memory') return 'tab-config-memory';
+  if (key && key.indexOf('config.') === 0) return 'tab-config';
+  return 'tab-' + key;
+}
+
+// Legacy keys (pre-Phase-5) stored 'tts'/'chat'/'control'/'config'.
+// Translate on read so operators don't see a blank page after upgrade.
+function _migrateLegacyKey(k) {
+  if (k === 'control') return 'config.system';
+  if (k === 'config')  return 'config.global';
+  return k;
+}
+
+function navToggleConfig() {
+  // Clicking the Configuration parent toggles the submenu when it's
+  // expanded but we're NOT on a config.* page. When on a child page,
+  // the submenu is already pinned open (auto-expand) — toggling it
+  // would hide the current page's sibling links, so do nothing.
+  const parent = document.querySelector('.nav-parent[data-nav-key="config"]');
+  if (!parent) return;
+  const onChild = (_activeNavKey || '').indexOf('config.') === 0;
+  if (onChild) return;
+  parent.classList.toggle('open');
+}
+
+let _activeNavKey = 'chat';
+
+function navigateTo(key) {
+  key = _migrateLegacyKey(key);
+  _activeNavKey = key;
+
+  const panelId = _panelIdFor(key);
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
 
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
+  panel.classList.add('active');
 
-  // Highlight correct nav items (sidebar + topbar)
-  document.querySelectorAll('.nav-item').forEach(n => {
-    if (n.getAttribute('onclick') === "switchTab('" + name + "')") {
-      n.classList.add('active');
-    }
+  // Highlight matching nav items in both sidebar and topbar.
+  document.querySelectorAll('.nav-item[data-nav-key="' + key + '"]').forEach(n => {
+    n.classList.add('active');
   });
 
-  try { localStorage.setItem('glados_active_tab', name); } catch(e) {}
+  // Auto-expand Configuration parent iff the active key is a child.
+  const parent = document.querySelector('.nav-parent[data-nav-key="config"]');
+  if (parent) {
+    if (key.indexOf('config.') === 0) parent.classList.add('open');
+    else parent.classList.remove('open');
+  }
+
+  try { localStorage.setItem('glados_active_tab', key); } catch(e) {}
 
   // Tab activation hooks
-  if (name === 'control') { loadModes(); loadSpeakers(); loadHealth(); loadEyeDemo(); loadWeather(); loadGPU(); loadRobots(); loadVerbositySliders(); loadStartupSpeakers(); startGPUAutoRefresh(); startWeatherAutoRefresh(); startRobotAutoRefresh(); }
-  if (name === 'config') { cfgLoadAll().then(() => cfgRenderSection(_cfgCurrentSection === 'raw' ? _cfgCurrentSection : _cfgCurrentSection)); loadAudioStats(); }
-  if (name === 'training') { initTrainingTab(); }
-  if (name === 'chat') {
+  if (key === 'config.system') {
+    loadModes(); loadSpeakers(); loadHealth(); loadEyeDemo();
+    loadWeather(); loadGPU(); loadRobots();
+    loadVerbositySliders(); loadStartupSpeakers();
+    startGPUAutoRefresh(); startWeatherAutoRefresh(); startRobotAutoRefresh();
+  } else if (key === 'config.memory') {
+    // Memory page UI arrives in Phase 5 Commit 3; placeholder for now.
+    if (typeof memoryLoadAll === 'function') memoryLoadAll();
+  } else if (key.indexOf('config.') === 0) {
+    const section = key.substring('config.'.length);
+    _cfgCurrentSection = section;
+    cfgLoadAll().then(() => {
+      if (section === 'raw') cfgLoadRaw().then(() => cfgRenderRaw());
+      else cfgRenderSection(section);
+    });
+    loadAudioStats();
+  } else if (key === 'training') {
+    initTrainingTab();
+  } else if (key === 'chat') {
     const ci = document.getElementById('chatInput');
     if (ci) ci.focus();
-  }
-  if (name === 'tts') {
+  } else if (key === 'tts') {
     const ti = document.getElementById('textInput');
     if (ti) ti.focus();
   }
 }
 
-// Check auth on load, THEN restore saved tab
+// Backward-compat shim for any older inline onclick that still calls
+// switchTab(). Routes through the new key mapping.
+function switchTab(name) { navigateTo(_migrateLegacyKey(name)); }
+
+// Check auth on load, THEN restore saved tab (default: Chat).
 checkAuth().then(() => {
+  let restored = false;
   try {
-    const saved = localStorage.getItem('glados_active_tab');
-    if (saved && document.getElementById('tab-' + saved)) {
-      switchTab(saved);
+    const raw = localStorage.getItem('glados_active_tab');
+    if (raw) {
+      const key = _migrateLegacyKey(raw);
+      if (document.getElementById(_panelIdFor(key))) {
+        navigateTo(key);
+        restored = true;
+      }
     }
   } catch(e) {}
+  if (!restored) navigateTo('chat');
 });
 
 function escHtml(s) {
