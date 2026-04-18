@@ -3356,6 +3356,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GLaDOS Control Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&display=swap" rel="stylesheet">
 <style>
 /* â”€â”€ Variables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 :root {
@@ -3374,6 +3377,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   --red-hover: #e87777;
   --green: #4caf50;
   --blue: #4a9eff;
+  /* Phase 5: distinctive display face for headings + branding.
+     Body text stays system-ui for readability. Swapping this var is
+     all it takes to try a different display font. */
+  --font-display: 'Major Mono Display', 'Consolas', monospace;
   --sidebar-w: 220px;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -3399,13 +3406,27 @@ body {
 }
 .sidebar-brand {
   padding: 1.25rem 1rem;
-  font-size: 1.3rem;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 400;
   color: var(--orange);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
-.sidebar-brand span { color: var(--text-dim); font-weight: 400; font-size: 0.85rem; }
+.sidebar-brand span { color: var(--text-dim); font-weight: 400; font-size: 0.75rem; letter-spacing: 0.02em; }
+/* Engine status dot in the brand header. Polled by pollEngineStatus(). */
+.engine-status-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.engine-status-dot.running { background: var(--green); }
+.engine-status-dot.starting { background: var(--orange); }
+.engine-status-dot.stopping { background: var(--red); }
 .nav-items { flex: 1; padding: 0.5rem 0; }
 .nav-item {
   display: flex;
@@ -3616,7 +3637,14 @@ a.dl-link {
 }
 a.dl-link:hover { background: var(--orange-dim); color: #fff; }
 .empty-msg { text-align: center; color: var(--text-dim); padding: 2rem; font-style: italic; }
-.section-title { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.75rem; color: var(--text); }
+.section-title {
+  font-family: var(--font-display);
+  font-size: 0.92rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.75rem;
+  color: var(--text);
+}
 .char-count { font-size: 0.8rem; color: var(--text-dim); text-align: right; margin-top: 0.25rem; }
 
 /* â”€â”€ Chat Tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -3862,8 +3890,10 @@ a.dl-link:hover { background: var(--orange-dim); color: #fff; }
   border-bottom: 1px solid var(--border);
 }
 .cfg-section-title {
-  font-size: 1.1rem;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
   color: var(--text);
   margin-bottom: 0.25rem;
 }
@@ -4117,21 +4147,28 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 .auth-overlay-btn:hover { background: var(--orange-hover); }
 
 /* â”€â”€ Toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-.toast {
+.toast-stack {
   position: fixed;
   bottom: 1.5rem; right: 1.5rem;
-  padding: 0.75rem 1.25rem;
-  border-radius: 6px;
-  font-size: 0.85rem; font-weight: 500;
+  display: flex; flex-direction: column-reverse; gap: 0.5rem;
   z-index: 9999;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.3s, transform 0.3s;
   pointer-events: none;
+  max-width: min(420px, calc(100vw - 3rem));
 }
-.toast.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.toast {
+  padding: 0.7rem 1.1rem;
+  border-radius: 6px;
+  font-size: 0.84rem; font-weight: 500;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: auto;
+}
+.toast.visible { opacity: 1; transform: translateY(0); }
 .toast.success { background: var(--green); color: #fff; }
-.toast.error { background: var(--red); color: #fff; }
+.toast.error   { background: var(--red);   color: #fff; }
+.toast.info    { background: #2e4262;      color: #e7ecff; }
 
 /* â”€â”€ Responsive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 @media (max-width: 768px) {
@@ -4221,7 +4258,11 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 
 <!-- â”€â”€ Sidebar (desktop) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
 <nav class="sidebar">
-  <div class="sidebar-brand">GLaDOS <span>Control</span></div>
+  <div class="sidebar-brand">
+    <span class="engine-status-dot" id="engineStatusDot" title="Engine status"></span>
+    <span>GLaDOS</span>
+    <span>Control</span>
+  </div>
   <div class="nav-items">
     <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -4654,7 +4695,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 </main>
 
 <!-- Toast -->
-<div id="toast" class="toast"></div>
+<div id="toastStack" class="toast-stack"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script>
@@ -4696,12 +4737,68 @@ function updateAuthUI() {
   if (configOverlay) configOverlay.style.display = _isAuthenticated ? 'none' : 'flex';
 }
 
+// Stackable toast system (Phase 5). Multiple toasts can be on screen
+// simultaneously; each auto-dismisses after 4 s. Fade-in/out via CSS.
 function showToast(msg, type) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast ' + (type || 'success') + ' visible';
-  setTimeout(() => { t.className = 'toast'; }, 3000);
+  const stack = document.getElementById('toastStack');
+  if (!stack) return;  // safety: older fragments that haven't mounted yet
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type || 'success');
+  el.textContent = msg;
+  stack.appendChild(el);
+  // Force reflow so the transition runs from opacity:0.
+  requestAnimationFrame(() => { el.classList.add('visible'); });
+  setTimeout(() => {
+    el.classList.remove('visible');
+    // Remove after transition finishes so stack doesn't grow forever.
+    setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 300);
+  }, 4000);
 }
+
+// Phase 5: engine status in sidebar header. Polls /api/status every 30 s
+// when the page is visible; skips polling when tab is hidden so we don't
+// wake the container unnecessarily.
+let _engineStatusTimer = null;
+async function pollEngineStatus() {
+  const dot = document.getElementById('engineStatusDot');
+  if (!dot) return;
+  try {
+    const r = await fetch('/api/status', { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      const data = await r.json();
+      // /api/status returns {"running": bool, ...}; map to dot state.
+      if (data && data.running) {
+        dot.className = 'engine-status-dot running';
+        dot.title = 'Engine running';
+      } else {
+        dot.className = 'engine-status-dot stopping';
+        dot.title = 'Engine not running';
+      }
+    } else if (r.status === 401 || r.status === 403) {
+      // Unauthenticated — the endpoint is protected; keep the dot neutral.
+      dot.className = 'engine-status-dot';
+      dot.title = 'Sign in to see engine status';
+    } else {
+      dot.className = 'engine-status-dot stopping';
+      dot.title = 'HTTP ' + r.status;
+    }
+  } catch(e) {
+    dot.className = 'engine-status-dot stopping';
+    dot.title = 'Unreachable';
+  }
+}
+function startEngineStatusPoll() {
+  if (_engineStatusTimer) clearInterval(_engineStatusTimer);
+  pollEngineStatus();
+  _engineStatusTimer = setInterval(() => {
+    if (document.hidden) return;
+    pollEngineStatus();
+  }, 30000);
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) pollEngineStatus();
+});
+// Kicked off after first checkAuth() resolves (see Shared utilities block).
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Advanced Mode Toggle
@@ -5980,6 +6077,8 @@ checkAuth().then(() => {
     }
   } catch(e) {}
   if (!restored) navigateTo('chat');
+  // Phase 5: sidebar engine status dot.
+  startEngineStatusPoll();
 });
 
 function escHtml(s) {
