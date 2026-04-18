@@ -74,6 +74,23 @@ _LLM_TIMEOUT_S = float(os.environ.get("DISAMBIGUATOR_TIMEOUT_S", "25"))
 _HA_CALL_TIMEOUT_S = 5.0
 
 
+_UNIVERSAL_QUANTIFIERS: frozenset[str] = frozenset({
+    "all", "every", "everything", "everywhere",
+    "whole", "entire", "total",
+})
+
+
+def _has_universal_quantifier(text: str) -> bool:
+    """Detect 'all X', 'every X', 'whole house', etc. — phrases where
+    the user clearly wants broad action across all matching entities.
+    The disambiguator should execute decisively rather than asking
+    'which one?' for these."""
+    if not text:
+        return False
+    words = {w.strip(".,!?;:'\"").lower() for w in text.split()}
+    return bool(words & _UNIVERSAL_QUANTIFIERS)
+
+
 class Disambiguator:
     """Tier 2 entry point. Stateless; safe to call concurrently."""
 
@@ -99,12 +116,18 @@ class Disambiguator:
         """Drive a single utterance through Tier 2."""
         t0 = time.perf_counter()
 
-        # 1. Pull candidates from the cache.
+        # 1. Pull candidates from the cache. Bump limit when the user
+        # used a universal quantifier — they want broad action and the
+        # default 12 truncates the candidate list well before the LLM
+        # has enough to act on "all lights".
+        is_universal = _has_universal_quantifier(utterance)
         domain_hint = domain_filter_for_utterance(utterance)
+        cand_limit = max(self._rules.candidate_limit, 30) if is_universal \
+                     else self._rules.candidate_limit
         candidates = self._cache.get_candidates(
             utterance,
             domain_filter=domain_hint,
-            limit=self._rules.candidate_limit,
+            limit=cand_limit,
         )
         if not candidates:
             return self._fall_through(
@@ -295,6 +318,24 @@ class Disambiguator:
             "(\"bedroom lights\", \"kitchen lamps\") refers to ALL fixtures "
             "of that type in the area — return every matching entity_id, "
             "not just one.\n\n"
+            "Universal quantifiers (\"all\", \"every\", \"whole house\", "
+            "\"everything\") mean the operator wants the action applied "
+            "broadly. Be DECISIVE, not cautious:\n"
+            "- If a group entity is in the candidates (entity_id ends in "
+            "  '_group', '_lights', '_all', or friendly_name contains "
+            "  'group' / 'all' / 'whole house'), PREFER the group and "
+            "  execute on it alone — the group cascades to its members.\n"
+            "- If no group entity matches, return ALL viable candidate "
+            "  entity_ids of the dominant domain (skip zones, sensors, "
+            "  automations) and execute as a single batched call.\n"
+            "- Do NOT clarify just because multiple candidates exist when "
+            "  the user used a universal quantifier; that defeats the "
+            "  point of saying 'all'.\n\n"
+            "Domain filtering for action commands (turn on/off/toggle):\n"
+            "- IGNORE candidates from non-actuatable domains: zone, "
+            "  sensor, binary_sensor, weather, sun, person, device_tracker, "
+            "  automation, conversation. List them only if they are the "
+            "  ONLY candidates and the user's intent is genuinely a query.\n\n"
         )
         if rules.state_inference and state_fresh:
             sys += (
