@@ -488,3 +488,174 @@ Iterative tightening from live testing against the operator's house.
   response
 
 ---
+
+## Change 9 — Neutral model + conversation persistence + memory review
+
+**Date:** 2026-04-17 → 2026-04-18 (continuous session)
+**Status:** Phases A–E backend complete; WebUI Memory tab UI deferred.
+**Commits:** `cf4aed4` (A), `1bf4cbf` (B), `0a48386` (C), `2d96720` (D+E)
+
+Goal: retire the custom `glados:latest` Modelfile so the container is
+the sole source of GLaDOS persona, AND give the half-built memory
+pipeline real teeth — durable conversation history, multi-turn
+context, operator-tunable retention, and a review queue for auto-
+extracted facts. All five phases of the approved plan landed; UI
+panel for memory review is the only piece still pending.
+
+### Phase A — Neutral-model foundation
+
+- New `ModelOptionsConfig` on `PersonalityConfig` exposing
+  temperature / top_p / num_ctx / repeat_penalty so persona strength
+  can be tuned without code changes when running a base model
+  (qwen2.5:14b-instruct-q4_K_M) instead of a Modelfile-tuned one.
+- env-overrides-YAML pattern: `OLLAMA_TEMPERATURE`,
+  `OLLAMA_TOP_P`, `OLLAMA_NUM_CTX`, `OLLAMA_REPEAT_PENALTY` win
+  when set.
+- `_stream_chat_sse` reads `cfg.personality.model_options` instead
+  of the hardcoded `{"num_ctx": 16384}`.
+- 8 new tests lock the contract.
+- **Operator action**: change `Glados.llm_model` in
+  `/app/configs/glados_config.yaml` from `"glados:latest"` to
+  `"qwen2.5:14b-instruct-q4_K_M"`, restart, then
+  `ollama rm glados:latest`. Phase A code already supports either
+  model — the swap is operator-triggered.
+
+### Phase B — SQLite-backed conversation persistence
+
+- New `glados/core/conversation_db.py`: WAL-mode SQLite at
+  `/app/data/conversation.db`. Schema versioning, indexed columns
+  (`conversation_id`, `idx`, `ts`), per-message metadata (source,
+  principal, tier, ha_conversation_id). Methods: append /
+  append_many / replace_conversation / snapshot / messages_since /
+  latest_ha_conversation_id / prune_before / disk_size_bytes.
+  18 unit tests including concurrent writers + persistence round-trip.
+- `ConversationStore` wrapped over the SQLite layer. Backward-
+  compatible — existing callers passing no `db` get unchanged
+  in-memory behavior. New optional kwargs on append* /
+  replace_all: `source`, `principal`, `tier`, `ha_conversation_id`.
+  New `load_from_db()` for startup hydration.
+- `engine.py` opens the DB at init, hydrates last 200 messages,
+  preserves Change 7 invariant (preprompt set in __init__ +
+  load_from_db appends DB rows AFTER it; never duplicates the
+  preprompt across restarts).
+- `api_wrapper.py`: both Tier 1 paths (streaming + non-streaming)
+  and the Tier 2 hit branches now call `_append_tier_exchange`
+  after emitting. Without this, the engine's ConversationStore had
+  no record of any device-control exchange — every chat-API call
+  started from preprompt only. Fixed.
+- HA `conversation_id` forward-propagation: bridge calls now use
+  `_last_ha_conversation_id()` from the store so HA's own
+  multi-turn context is preserved across utterances.
+- 7 new integration tests including the failure case fix:
+  "turn off the whole house" → "all lights" must not be processed
+  in isolation.
+
+### Phase C — Conversation retention sweeper
+
+- `glados/autonomy/agents/retention_agent.py`: simple background
+  thread (no LLM), runs hourly. Two policies stacked:
+    1. age-based prune of messages older than
+       `conversation_max_days` (default 30, hard-cap 180).
+    2. size-based prune when DB exceeds `conversation_max_disk_mb`
+       (default 500), oldest tier=3 chat first.
+  Tier 1 / Tier 2 device-control rows are PROTECTED from age-based
+  pruning by default — they're the operationally valuable audit
+  trail and persist for the full hard-cap window. If the size cap
+  forces a choice between deleting tier=1 audit and warning, the
+  agent warns instead of silently nuking history.
+- `MemoryConfig` gains `conversation_max_days`,
+  `conversation_hard_cap_days`, `conversation_max_disk_mb`,
+  `chromadb_max_disk_mb`, `retention_sweep_interval_s`.
+  All operator-tunable; the future Memory tab will surface them.
+- 6 new tests cover hard-cap clamping, tier protection, audit-
+  preservation refusal under tight cap, status dict shape.
+
+### Phase D — Passive memory review queue
+
+- `MemoryStore` extended: `list_by_status()`, `get_by_id()`,
+  `update()` for promote/demote/edit operations.
+- `memory_writer.write_fact()` accepts new `review_status`
+  parameter. Auto-derived from `source`:
+    `explicit`/`compaction` → `approved` (RAG-eligible immediately)
+    `passive` → `pending` (held for operator review)
+- `MemoryContext.as_prompt()` over-fetches and client-side filters
+  to `{approved, no-status}`. Pending and rejected facts are
+  excluded from RAG. Legacy facts (pre-Phase D, no status field)
+  are still returned so months of operator-curated memory don't
+  silently disappear after upgrade.
+- New WebUI endpoints (auth-protected):
+    GET    /api/memory/list?limit=N&q=...
+    GET    /api/memory/pending?limit=N
+    POST   /api/memory/<id>/promote
+    POST   /api/memory/<id>/demote
+    POST   /api/memory/<id>/edit       (JSON body: document, importance, review_status)
+    DELETE /api/memory/<id>
+- 8 new tests cover write_fact status assignment, override,
+  pending-excluded-from-RAG, legacy-still-included.
+- WebUI Memory **tab** (HTML/JS) is deferred to a follow-up commit.
+  Endpoints are usable via curl in the meantime.
+
+### Phase E — Episodic TTL enforcement
+
+- `episodic_ttl_hours` was a placeholder MemoryConfig field for a
+  long time. Now actually enforced: every retention sweep deletes
+  ChromaDB episodic entries older than the TTL. Semantic facts
+  intentionally untouched (operator-curated, persist forever).
+- engine.py wires the live MemoryStore into the already-running
+  RetentionAgent after MemoryStore init.
+- Scheduled cron-driven daily summarization is **not** in this
+  change — the existing CompactionAgent already handles
+  token-threshold trigger, which covers the primary need. Daily
+  summary on a clock is a polish follow-up.
+
+### Test coverage
+
+Phases A–E added 47 new tests:
+
+| File | Tests |
+|---|---|
+| tests/test_message_construction.py | 8 |
+| tests/test_conversation_db.py | 18 |
+| tests/test_multi_turn.py | 7 |
+| tests/test_retention.py | 6 |
+| tests/test_memory_review.py | 8 |
+
+**157 tests pass total** (was 110 at end of Change 8).
+
+### New env vars
+
+| Var | Default | Purpose |
+|---|---|---|
+| `OLLAMA_TEMPERATURE` | `0.7` | Persona-strength tuning for neutral models |
+| `OLLAMA_TOP_P` | `0.9` | "" |
+| `OLLAMA_NUM_CTX` | `16384` | Override context window |
+| `OLLAMA_REPEAT_PENALTY` | `1.1` | "" |
+| `GLADOS_DATA` | `/app/data` | Conversation DB lives at `<dir>/conversation.db` |
+| `GLADOS_CONVERSATION_ID` | `default` | Partition key for the conversation DB |
+
+### Verified behaviors
+
+- Container restart → prior turns visible (loaded from
+  conversation.db on hydrate).
+- Tier 1 exchange: persisted with `tier=1`, `source=webui_chat`,
+  `ha_conversation_id=<HA's conv id>`. Subsequent turn passes that
+  conv id back to HA, restoring HA's multi-turn context.
+- `GET /api/memory/list` and `/pending` return JSON with empty
+  rows on fresh deploy (no facts stored yet).
+- New conversation.db file at `/app/data/conversation.db` plus
+  WAL sidecars; permissions correct (uid 1000).
+
+### Known follow-ups
+
+1. **WebUI Memory tab** — endpoints exist; the operator-friendly
+   panel for reviewing/promoting/rejecting pending facts still
+   needs the HTML/JS work. Tracked.
+2. **Scheduled daily summarization** — cron-driven background
+   summarizer parked; the token-threshold compaction agent
+   currently covers the primary need.
+3. **Per-principal conversation_id** — the SQLite schema supports
+   it; everything still uses the single `"default"` partition.
+   When multi-user (or MQTT peer-bus) integration lands, switching
+   is just a constructor argument away.
+
+---
