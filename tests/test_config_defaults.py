@@ -174,3 +174,66 @@ def test_services_gladys_api_deprecated_when_set_via_yaml() -> None:
     with _capture_warnings() as msgs:
         ServicesConfig.model_validate({"gladys_api": {"url": "http://localhost:8020"}})
     assert any("gladys_api" in m for m in msgs), msgs
+
+
+# ── Phase 6 Commit 3: committed example YAML is stripped of deprecated
+# fields and service URL defaults, so fresh installs rely on pydantic
+# defaults + the WebUI for upstream URLs. Regression guard: if someone
+# re-adds a deprecated field to the example, this test fails loudly.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_config_example_yaml_has_no_deprecated_fields() -> None:
+    import yaml
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parent.parent / "configs" / "config.example.yaml"
+    assert example.exists(), f"Missing {example}"
+    data = yaml.safe_load(example.read_text(encoding="utf-8")) or {}
+
+    # Every deprecated field that is scoped to a top-level YAML section.
+    deprecated = {
+        "paths": None,        # whole section
+        "network": None,      # whole section
+        ("audit", "path"): None,
+        ("audit", "retention_days"): None,
+        ("tuning", "engine_audio_default"): None,
+        ("weather", "temperature_unit"): None,
+        ("weather", "wind_speed_unit"): None,
+        ("services", "gladys_api"): None,
+    }
+    violations: list[str] = []
+    for key in deprecated:
+        if isinstance(key, tuple):
+            outer, inner = key
+            if isinstance(data.get(outer), dict) and inner in data[outer]:
+                violations.append(f"{outer}.{inner}")
+        else:
+            if key in data:
+                violations.append(key)
+    assert not violations, (
+        f"config.example.yaml contains deprecated fields: {violations}. "
+        "Remove them — operators relying on the example shouldn't be "
+        "copying deprecated configuration into their config.yaml."
+    )
+
+
+def test_config_example_yaml_has_no_service_url_defaults() -> None:
+    """Commit 3 stripped service URLs from the example; pydantic defaults
+    drive fresh installs. Catch regressions where someone re-pins URLs."""
+    import yaml
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parent.parent / "configs" / "config.example.yaml"
+    data = yaml.safe_load(example.read_text(encoding="utf-8")) or {}
+    services = data.get("services") or {}
+
+    pinned_urls: list[str] = []
+    for svc_name, svc_cfg in services.items():
+        if isinstance(svc_cfg, dict) and "url" in svc_cfg:
+            pinned_urls.append(f"services.{svc_name}.url")
+    assert not pinned_urls, (
+        f"config.example.yaml pins service URLs: {pinned_urls}. "
+        "Post-Phase-6 the example should rely on pydantic same-stack "
+        "defaults; operators customize URLs via env or the WebUI."
+    )
