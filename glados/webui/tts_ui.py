@@ -4005,7 +4005,14 @@ a.dl-link:hover { background: var(--orange-dim); color: #fff; }
 
 /* â”€â”€ Chat Tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .chat-messages {
-  height: 400px; overflow-y: auto;
+  /* Dynamic height: fill available vertical space above the input row.
+     260px budget covers .main-content padding (1.5rem top/bottom),
+     the chat card padding, the input row (~52px), the message's own
+     margin-bottom, and a small safety gap. Clamped to a readable
+     minimum for short viewports. */
+  height: calc(100vh - 260px);
+  min-height: 320px;
+  overflow-y: auto;
   display: flex; flex-direction: column; gap: 0.75rem;
   padding: 0.5rem; margin-bottom: 0.75rem;
   scrollbar-width: thin;

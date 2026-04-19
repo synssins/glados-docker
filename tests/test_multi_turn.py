@@ -259,3 +259,30 @@ class TestLatestAssistantTierExchange:
     def test_returns_none_when_no_db(self) -> None:
         store = ConversationStore()
         assert store.latest_assistant_tier_exchange() is None
+
+    def test_tier_survives_compaction(self, tmp_path: Path) -> None:
+        """Regression: the compaction agent used to stomp every row
+        with source='compaction', tier=None, which broke home-command
+        carry-over because the most-recent assistant row always looked
+        like chitchat after a sweep. Per-row metadata must ride through
+        snapshot() -> replace_all() via underscore-prefixed keys."""
+        db = ConversationDB(tmp_path / "c.db")
+        store = ConversationStore(
+            initial_messages=[_msg("system", "preprompt")], db=db,
+        )
+        store.append_multiple(
+            [_msg("user", "dim the lamp"),
+             _msg("assistant", "Dimmed.")],
+            source="webui_chat", tier=2, ha_conversation_id="ha-1",
+        )
+        # Simulate compaction's rebuild: snapshot -> mutate -> replace_all.
+        current = store.snapshot()
+        # Re-insert as-is (no summarization, just the round trip).
+        store.replace_all(current, source="compaction")
+
+        info = store.latest_assistant_tier_exchange()
+        assert info is not None, "tier metadata was lost through compaction"
+        tier, _ts, ha_conv = info
+        assert tier == 2
+        assert ha_conv == "ha-1"
+        db.close()
