@@ -1,0 +1,52 @@
+# User-level resolution preferences for the CommandResolver.
+# Copy this file to `user_preferences.yaml` and edit as needed.
+# All fields are optional — missing fields fall back to documented defaults.
+#
+# Per-entity data (which light is a lamp vs an overhead) lives in Home
+# Assistant as entity labels, not here. This file is only for the user's
+# subjective preferences and aliases HA doesn't know about.
+
+# Light tier priority — most preferred first. The resolver picks the
+# highest-priority tier present in an area when a command is ambiguous
+# and the area is NOT a task area. Valid values:
+#   lamp  accent  task  overhead  flood  strip
+lighting_tier_priority:
+  - lamp
+  - accent
+  - task
+  - overhead
+  - flood
+  - strip
+
+# Areas where overheads / task lighting are welcome. In these areas the
+# resolver skips the lamp-first preference. Use HA area_ids, not display
+# names.
+task_areas:
+  - kitchen
+  - garage_workbench
+  - office_desk
+  - bathroom_vanity
+  - laundry
+
+# Named aliases for rooms HA doesn't know by the name you speak.
+# Keys are free-form; values must be HA area_ids.
+# Keys are normalized to lowercase / single-spaced at load time so you
+# can use natural capitalization here.
+area_aliases: {}
+# Example:
+#   "cindy's office": cindy_office
+#   "the workshop": garage
+#   "my office": office
+
+# Default color temperature / brightness knobs.
+default_warm_kelvin: 2700
+default_cool_kelvin: 5000
+default_normal_brightness_pct: 60
+
+# Brightness step sizes.
+#   unqualified "brighter"      -> brightness_step_pct
+#   "a little brighter"         -> brightness_step_small_pct
+#   "a lot brighter" / "way…"   -> brightness_step_large_pct
+brightness_step_pct: 25
+brightness_step_small_pct: 10
+brightness_step_large_pct: 50
