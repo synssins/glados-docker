@@ -157,3 +157,80 @@ class TestDiscoverHealth:
         assert status == 200
         assert payload["ok"] is False
         assert payload["status"] is None
+
+    def test_kind_ollama_probes_api_tags(self) -> None:
+        """Ollama has no /health; probing kind=ollama must hit /api/tags
+        and get a 200 back. Regression guard for the 2026-04-19 all-red
+        services-grid bug."""
+        calls = []
+
+        def _capture_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            return _fake_response({"models": []}, status=200)
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_capture_urlopen):
+            status, payload = discover_health(
+                "http://192.168.1.75:11436", kind="ollama",
+            )
+        assert status == 200
+        assert payload["ok"] is True
+        assert any(url.endswith("/api/tags") for url in calls), (
+            f"expected /api/tags to be probed, got {calls!r}"
+        )
+
+    def test_kind_speaches_probes_v1_voices(self) -> None:
+        calls = []
+
+        def _capture_urlopen(req, timeout=None):
+            calls.append(req.full_url)
+            return _fake_response({"voices": []}, status=200)
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_capture_urlopen):
+            status, payload = discover_health(
+                "http://192.168.1.75:5050", kind="speaches",
+            )
+        assert status == 200
+        assert payload["ok"] is True
+        assert any(url.endswith("/v1/voices") for url in calls), (
+            f"expected /v1/voices to be probed, got {calls!r}"
+        )
+
+    def test_unknown_kind_falls_through_probe_paths(self) -> None:
+        """When the caller doesn't supply a kind hint, the probe tries
+        /api/tags first, then /v1/voices, then /health, etc. Simulate
+        an Ollama-like service that answers 404 on /api/tags (odd)
+        and 200 on /v1/voices — the probe should eventually succeed."""
+        def _responses(req, timeout=None):
+            path = req.full_url.rsplit("/", 1)[-1]
+            if "tags" in req.full_url:
+                raise urllib.error.HTTPError(
+                    req.full_url, 404, "Not Found", hdrs=None, fp=None,
+                )
+            return _fake_response({"voices": []}, status=200)
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_responses):
+            status, payload = discover_health("http://host")
+        assert status == 200
+        assert payload["ok"] is True
+
+    def test_connection_refused_short_circuits(self) -> None:
+        """URLError (connection refused / DNS failure) means the service
+        isn't answering at all — don't keep probing additional paths."""
+        calls = []
+
+        def _refuse(req, timeout=None):
+            calls.append(req.full_url)
+            raise urllib.error.URLError("connection refused")
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_refuse):
+            status, payload = discover_health("http://dead-host:11435")
+        assert status == 200
+        assert payload["ok"] is False
+        assert payload["reason"] == "connection refused"
+        assert len(calls) == 1, (
+            f"expected a single probe on connection refused, got {len(calls)}"
+        )

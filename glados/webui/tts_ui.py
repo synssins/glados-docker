@@ -957,28 +957,73 @@ def discover_voices(url: str) -> tuple[int, dict]:
     return 200, {"url": base, "voices": voices, "count": len(voices)}
 
 
-def discover_health(url: str, path: str = "/health") -> tuple[int, dict]:
-    """Reachability check: HTTP GET <url>/health (or custom path).
-    Returns 200 with `ok: true` when upstream returns 2xx, else `ok: false`."""
+def discover_health(url: str, path: str | None = None,
+                    kind: str | None = None) -> tuple[int, dict]:
+    """Reachability check against an upstream service.
+
+    Services use different liveness endpoints:
+      * Ollama exposes ``/api/tags`` — always 200 when up.
+      * speaches (TTS + STT) exposes ``/v1/voices`` — always 200 when up.
+        (It does NOT have ``/health``; probing that returns 404 and would
+        make the dot red even on a healthy server.)
+      * GLaDOS services (api_wrapper, vision) use ``/health``.
+      * HA uses ``/api/`` with a bearer token — not probed here.
+
+    The caller may pass an explicit ``path``; otherwise ``kind`` picks
+    the right one, and if neither is supplied we fall back to
+    ``/api/tags`` then ``/health`` then ``/``. Fallback keeps the probe
+    useful for URLs the caller hasn't classified.
+    """
     try:
         base = _normalize_base_url(url)
     except ValueError as exc:
         return 400, {"error": str(exc)}
-    req = urllib.request.Request(f"{base}{path}")
+
+    # Build an ordered list of probe paths.
+    if path:
+        probe_paths = [path]
+    elif kind == "ollama":
+        probe_paths = ["/api/tags"]
+    elif kind in ("tts", "stt", "speaches"):
+        probe_paths = ["/v1/voices"]
+    elif kind in ("api_wrapper", "vision"):
+        probe_paths = ["/health"]
+    else:
+        # Unknown kind: try Ollama/speaches/generic in order. First 2xx wins.
+        probe_paths = ["/api/tags", "/v1/voices", "/health", "/"]
+
     started = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=_DISCOVERY_TIMEOUT_S) as resp:  # noqa: S310
-            status = resp.status
-            ok = 200 <= status < 300
-    except urllib.error.HTTPError as exc:
-        return 200, {"url": base, "ok": False, "status": exc.code,
-                     "latency_ms": int((time.time() - started) * 1000)}
-    except urllib.error.URLError as exc:
-        return 200, {"url": base, "ok": False, "status": None,
-                     "reason": str(exc.reason),
-                     "latency_ms": int((time.time() - started) * 1000)}
-    return 200, {"url": base, "ok": ok, "status": status,
-                 "latency_ms": int((time.time() - started) * 1000)}
+    last_status: int | None = None
+    last_reason: str | None = None
+    for p in probe_paths:
+        req = urllib.request.Request(f"{base}{p}")
+        try:
+            with urllib.request.urlopen(req, timeout=_DISCOVERY_TIMEOUT_S) as resp:  # noqa: S310
+                status = resp.status
+                if 200 <= status < 300:
+                    return 200, {
+                        "url": base, "ok": True, "status": status,
+                        "path": p,
+                        "latency_ms": int((time.time() - started) * 1000),
+                    }
+                last_status = status
+        except urllib.error.HTTPError as exc:
+            last_status = exc.code
+            # 4xx means the service is answering — try the next probe
+            # path but remember this as the best failure signal.
+            continue
+        except urllib.error.URLError as exc:
+            # Connection refused / DNS failure — no point trying more paths.
+            last_reason = str(exc.reason)
+            break
+
+    payload = {
+        "url": base, "ok": False, "status": last_status,
+        "latency_ms": int((time.time() - started) * 1000),
+    }
+    if last_reason is not None:
+        payload["reason"] = last_reason
+    return 200, payload
 
 
 # ---------------------------------------------------------------------------
@@ -2592,7 +2637,12 @@ class Handler(BaseHTTPRequestHandler):
         elif kind == "voices":
             status, payload = discover_voices(url)
         elif kind == "health":
-            status, payload = discover_health(url)
+            # Optional kind hint so discover_health probes the right
+            # endpoint per service type (Ollama /api/tags, speaches
+            # /v1/voices, etc.). Falls back to a multi-path probe.
+            svc_kind = (params.get("kind", [""])[0] or "").strip() or None
+            path = (params.get("path", [""])[0] or "").strip() or None
+            status, payload = discover_health(url, path=path, kind=svc_kind)
         else:
             self._send_json(404, {"error": f"unknown discovery kind {kind!r}"})
             return
@@ -5907,6 +5957,17 @@ function cfgRenderServices(data) {
   return html;
 }
 
+// Map a service grid key to the probe kind discover_health uses.
+// Ollama endpoints use /api/tags, speaches (TTS + STT) uses /v1/voices,
+// GLaDOS services use /health. Without this hint, every Ollama /
+// speaches dot is false-red because /health returns 404 on them.
+function _svcHealthKind(key) {
+  if (key.indexOf('ollama') === 0) return 'ollama';
+  if (key === 'tts' || key === 'stt') return 'speaches';
+  if (key === 'api_wrapper' || key === 'vision') return key;
+  return null;
+}
+
 async function cfgPingServices(data) {
   for (const key of Object.keys(data)) {
     const dot = document.getElementById('svc-dot-' + key);
@@ -5914,9 +5975,10 @@ async function cfgPingServices(data) {
     const url = (data[key].url || '').replace(/\/$/, '');
     if (!url) { dot.className = 'svc-health-dot err'; continue; }
     try {
-      // Use the new Phase 5 discover/health endpoint — it always returns
-      // 200 with ok:true/false, so we get the latency and status cleanly.
-      const r = await fetch('/api/discover/health?url=' + encodeURIComponent(url),
+      const hint = _svcHealthKind(key);
+      const qs = 'url=' + encodeURIComponent(url)
+               + (hint ? '&kind=' + encodeURIComponent(hint) : '');
+      const r = await fetch('/api/discover/health?' + qs,
                              { signal: AbortSignal.timeout(3500) });
       const d = await r.json();
       dot.className = 'svc-health-dot ' + (d.ok ? 'ok' : 'err');
@@ -5968,7 +6030,10 @@ async function svcDiscover(key) {
     const dot = document.getElementById('svc-dot-' + key);
     if (dot) {
       try {
-        const hr = await fetch('/api/discover/health?url=' + encodeURIComponent(url));
+        const hint = _svcHealthKind(key);
+        const qs = 'url=' + encodeURIComponent(url)
+                 + (hint ? '&kind=' + encodeURIComponent(hint) : '');
+        const hr = await fetch('/api/discover/health?' + qs);
         const hd = await hr.json();
         dot.className = 'svc-health-dot ' + (hd.ok ? 'ok' : 'err');
         if (hd.latency_ms != null) dot.title = hd.latency_ms + ' ms';
