@@ -58,10 +58,14 @@ pip install pre-commit && pre-commit install
 # 3. Make sure Ollama and speaches are running and reachable.
 #    They are NOT in this compose — run them separately.
 
-# 4. (For Stage 3 Phase 1) pull the disambiguator + rewriter models
-#    onto whatever Ollama your container will use as `OLLAMA_AUTONOMY_URL`:
-ollama pull qwen2.5:14b-instruct-q4_K_M   # disambiguator
+# 4. Pull the models the container needs onto your Ollama instance.
+#    A single Ollama instance at OLLAMA_URL can host everything —
+#    chat / Tier 2 disambiguator / rewriter / vision are all unified
+#    by default. Set OLLAMA_AUTONOMY_URL / OLLAMA_VISION_URL only if
+#    you want hardware isolation (see .env.example).
+ollama pull qwen2.5:14b-instruct-q4_K_M   # chat + disambiguator
 ollama pull qwen2.5:3b-instruct-q4_K_M    # persona rewriter
+ollama pull llama3.2-vision:latest        # vision (optional)
 
 # 5. Start GLaDOS + its ChromaDB
 docker compose -f docker/compose.yml up -d
@@ -166,22 +170,30 @@ cloud — as long as the URL in `.env` resolves.
 
 ## Models
 
-The autonomy Ollama (`OLLAMA_AUTONOMY_URL`) needs two models pulled for
-Stage 3 Phase 1 to function fully:
+A single Ollama instance at `OLLAMA_URL` hosts everything by default
+(chat, Tier 2 disambiguator, persona rewriter, vision). Pull all
+three onto it:
 
 | Model | Size | Used by | Tunable via |
 |-------|------|---------|-------------|
-| `qwen2.5:14b-instruct-q4_K_M` | 8.6 GB | Tier 2 disambiguator | `DISAMBIGUATOR_MODEL` env |
-| `qwen2.5:3b-instruct-q4_K_M`  | 1.8 GB | Persona rewriter      | `REWRITER_MODEL` env |
+| `qwen2.5:14b-instruct-q4_K_M` | 8.6 GB | chat + Tier 2 disambiguator | `DISAMBIGUATOR_MODEL` env |
+| `qwen2.5:3b-instruct-q4_K_M`  | 1.8 GB | persona rewriter            | `REWRITER_MODEL` env |
+| `llama3.2-vision:latest`      | 7.8 GB | vision queries (optional)   | —                       |
 
-The interactive Ollama (`OLLAMA_URL`) uses whatever model your existing
-agent is pointed at (the operator's deployment uses a custom `glados:latest`
-Modelfile; any base instruct model works — see "Model Independence" item
-in `docs/roadmap.md`).
+Operators who want hardware isolation (e.g. a dedicated GPU for
+background autonomy) can set `OLLAMA_AUTONOMY_URL` and/or
+`OLLAMA_VISION_URL` to point at separate Ollama instances; unset,
+both fall back to `OLLAMA_URL`.
 
-If neither model is available the container still starts, but Tier 2
-falls through to Tier 3 (slow LLM path) and Tier 1 returns HA's plain
-text without persona rewrite.
+The chat model defaults to whatever `glados.llm_model` is in
+`glados_config.yaml`. A base instruct model (qwen2.5, llama3.1,
+mistral-nemo, etc.) gets the GLaDOS persona injected via the
+container's `personality_preprompt` — no Modelfile needed. See
+"Model Independence" in `docs/roadmap.md` for context.
+
+If none of the models are available the container still starts, but
+Tier 1 / Tier 2 fall through to the slow Tier 3 path and responses
+come back without persona rewrite.
 
 ## Configuration
 
@@ -201,8 +213,11 @@ Selected env vars worth knowing:
 | `HA_URL` | — | HA REST API base |
 | `HA_WS_URL` | derived from HA_URL | HA WebSocket endpoint |
 | `HA_TOKEN` | — | HA long-lived access token (env always wins over YAML) |
-| `OLLAMA_AUTONOMY_URL` | `OLLAMA_URL` | Autonomy/Tier 2/rewriter Ollama |
+| `OLLAMA_URL` | `http://host.docker.internal:11434` | Primary Ollama (chat + autonomy + vision unless split) |
+| `OLLAMA_AUTONOMY_URL` | `OLLAMA_URL` | Optional split — autonomy Ollama (Tier 2 + rewriter) |
+| `OLLAMA_VISION_URL` | `OLLAMA_URL` | Optional split — vision Ollama |
 | `DISAMBIGUATOR_OLLAMA_URL` | `OLLAMA_AUTONOMY_URL` | Tier 2 only override |
+| `GLADOS_DOCKER_GID` | unset | Docker group GID for the Logs page's container/chromadb sources (`getent group docker`) |
 | `DISAMBIGUATOR_MODEL` | `qwen2.5:14b-instruct-q4_K_M` | |
 | `DISAMBIGUATOR_TIMEOUT_S` | `25` | LLM call ceiling |
 | `REWRITER_MODEL` | `qwen2.5:3b-instruct-q4_K_M` | |
