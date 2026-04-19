@@ -984,8 +984,16 @@ def discover_health(url: str, path: str | None = None,
         probe_paths = [path]
     elif kind == "ollama":
         probe_paths = ["/api/tags"]
-    elif kind in ("tts", "stt", "speaches"):
+    elif kind == "tts":
+        # TTS side of speaches exposes /v1/voices.
         probe_paths = ["/v1/voices"]
+    elif kind == "stt":
+        # STT side of speaches exposes /health (and /v1/models) but not
+        # /v1/voices. /health first keeps this cheap.
+        probe_paths = ["/health", "/v1/models"]
+    elif kind == "speaches":
+        # Either half of speaches — try both shapes.
+        probe_paths = ["/v1/voices", "/health"]
     elif kind in ("api_wrapper", "vision"):
         probe_paths = ["/health"]
     else:
@@ -5958,12 +5966,13 @@ function cfgRenderServices(data) {
 }
 
 // Map a service grid key to the probe kind discover_health uses.
-// Ollama endpoints use /api/tags, speaches (TTS + STT) uses /v1/voices,
-// GLaDOS services use /health. Without this hint, every Ollama /
-// speaches dot is false-red because /health returns 404 on them.
+// Ollama endpoints use /api/tags, TTS uses /v1/voices, STT uses
+// /health, GLaDOS-own services use /health. Without this hint,
+// every Ollama / TTS dot is false-red because /health returns 404.
 function _svcHealthKind(key) {
   if (key.indexOf('ollama') === 0) return 'ollama';
-  if (key === 'tts' || key === 'stt') return 'speaches';
+  if (key === 'tts') return 'tts';
+  if (key === 'stt') return 'stt';
   if (key === 'api_wrapper' || key === 'vision') return key;
   return null;
 }
