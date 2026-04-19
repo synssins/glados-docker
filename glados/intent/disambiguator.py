@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import re
 import threading
 import time
 import urllib.request
@@ -104,6 +105,138 @@ def _has_universal_quantifier(text: str) -> bool:
         return False
     words = {w.strip(".,!?;:'\"").lower() for w in text.split()}
     return bool(words & _UNIVERSAL_QUANTIFIERS)
+
+
+# ---------------------------------------------------------------------------
+# Qualifier pre-filter — protects against the LLM substituting a
+# different qualifier when state-based inference would otherwise
+# eliminate the user's explicit target. See
+# `docs/state-query-prompt-research.md` and the commit that landed
+# the desk-lamp fix.
+#
+# The LLM gets a `coverage=X%` hint on each candidate already, but on
+# a 14B CPU/single-GPU model that signal is out-ranked by the state-
+# filter rule some fraction of the time. This server-side pre-filter
+# is a belt around the prompt's suspender: if the user's utterance
+# contains distinctive qualifier words AND any candidate contains
+# all of them, we restrict the candidate list so the LLM physically
+# cannot pick a different qualifier.
+#
+# Name-agnostic — works on whatever the user said vs. whatever is in
+# their friendly_names. Empty-filter fallback preserves today's
+# behavior when the user's qualifier isn't literally in any entity.
+# ---------------------------------------------------------------------------
+
+# Words we DO NOT treat as distinctive qualifiers. These are stop-
+# words, action verbs, direction/quantity modifiers, and the generic
+# head nouns ('light', 'lamp') that the domain filter already covers.
+_QUALIFIER_STOPWORDS: frozenset[str] = frozenset({
+    # Articles / pronouns
+    "a", "an", "the", "this", "that", "these", "those",
+    "it", "its", "them", "their", "one", "any", "some",
+    # Be-verbs / auxiliaries
+    "is", "are", "was", "were", "be", "been", "being",
+    "do", "does", "did", "has", "have", "had", "can", "could",
+    "would", "should", "will", "shall", "may", "might",
+    # Home-control action verbs
+    "turn", "set", "put", "make", "get", "give", "take",
+    "dim", "brighten", "lower", "raise", "flip", "switch",
+    "activate", "deactivate", "toggle", "enable", "disable",
+    "open", "close", "lock", "unlock", "start", "stop",
+    "pause", "resume", "play", "kill", "hit", "shut",
+    # State / direction / intensity modifiers
+    "on", "off", "up", "down", "higher", "bright", "dim",
+    "brighter", "dimmer", "lighter", "darker",
+    "warmer", "cooler", "hotter", "colder",
+    "half", "double", "quarter", "third",
+    "full", "maximum", "max", "min", "minimum",
+    "normal", "default",
+    # Prepositions / conjunctions
+    "in", "at", "to", "from", "by", "of", "for", "with",
+    "and", "or", "but", "if", "then", "than", "as",
+    # Pleasantries / modifiers
+    "please", "just", "only", "still", "really", "very",
+    "too", "quite", "a", "bit", "little", "lot", "much",
+    # Pronouns / self-references
+    "i", "me", "my", "mine", "we", "us", "our",
+    "you", "your", "yours",
+    # Generic head nouns already covered by the domain filter —
+    # keeping them OUT of qualifiers prevents filtering on words
+    # every light entity contains.
+    "light", "lights", "lamp", "lamps",
+    "fan", "fans", "switch", "switches",
+    "scene", "scenes", "cover", "covers",
+    # Time / relative
+    "now", "later", "today", "tonight", "tomorrow",
+    "ago", "second", "seconds", "minute", "minutes",
+    "hour", "hours",
+})
+
+# Extract word-like tokens. Keeps apostrophes ("ResidentB's") but strips
+# other punctuation.
+_WORD_RE = re.compile(r"[a-z']+")
+
+
+def _extract_qualifiers(utterance: str) -> list[str]:
+    """Return the user's distinctive qualifier words from an utterance.
+
+    Returns words like 'desk', 'reading', 'office', 'porch',
+    "ResidentB's". Excludes stopwords, verbs, modifiers, and the generic
+    head nouns that every candidate of a domain would share.
+
+    Length-1 tokens are dropped — they're usually noise ("a", "i").
+    """
+    if not utterance:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for word in _WORD_RE.findall(utterance.lower()):
+        if len(word) < 2:
+            continue
+        if word in _QUALIFIER_STOPWORDS:
+            continue
+        if word in seen:
+            continue
+        seen.add(word)
+        out.append(word)
+    return out
+
+
+def _candidate_search_text(c: CandidateMatch) -> str:
+    """Flatten everything about a candidate that the qualifier filter
+    might match against — friendly_name, entity_id, matched_name, and
+    aliases. Lowercased for case-insensitive containment checks."""
+    parts = [
+        c.matched_name or "",
+        c.entity.friendly_name or "",
+        c.entity.entity_id or "",
+    ]
+    aliases = getattr(c.entity, "aliases", None)
+    if aliases:
+        parts.extend(aliases)
+    return " ".join(parts).lower()
+
+
+def _filter_by_qualifiers(
+    candidates: list[CandidateMatch],
+    qualifiers: list[str],
+) -> list[CandidateMatch]:
+    """Restrict candidates to those containing ALL of the user's
+    distinctive qualifier words.
+
+    Returns an empty list when no candidate contains every qualifier
+    — caller is expected to fall back to the unfiltered list rather
+    than dropping the turn. Name-agnostic: works against whatever
+    the operator's friendly_names happen to be.
+    """
+    if not qualifiers or not candidates:
+        return list(candidates)
+    out: list[CandidateMatch] = []
+    for c in candidates:
+        text = _candidate_search_text(c)
+        if all(q in text for q in qualifiers):
+            out.append(c)
+    return out
 
 
 class Disambiguator:
@@ -207,6 +340,25 @@ class Disambiguator:
                 f"no entities matched query={utterance!r} domains={domain_hint}",
                 t0,
             )
+
+        # 1b. Qualifier pre-filter. If the user used distinctive
+        # qualifier words ("desk lamp", "reading light", "porch") and
+        # at least one candidate contains all of them, restrict the
+        # list to those matches before the LLM sees it. Prevents the
+        # LLM from substituting a different qualifier under state
+        # pressure. Empty-filter result → keep the unfiltered list
+        # (user's qualifier wasn't literally in any entity name).
+        qualifiers = _extract_qualifiers(utterance)
+        if qualifiers:
+            filtered = _filter_by_qualifiers(candidates, qualifiers)
+            if filtered and len(filtered) < len(candidates):
+                logger.debug(
+                    "Tier 2 qualifier filter: {} → {} "
+                    "(qualifiers={}, kept={})",
+                    len(candidates), len(filtered), qualifiers,
+                    [c.entity.entity_id for c in filtered][:8],
+                )
+                candidates = filtered
 
         # 2. State-freshness guard. If any candidate's state is older
         # than the budget, skip state-based filtering this turn — bad
@@ -560,14 +712,38 @@ class Disambiguator:
             "  (plural in an area), or activity match (reading, movie, "
             "  bedtime) overrides the literal-qualifier signal.\n\n"
         )
+        sys += (
+            "===== QUALIFIER AUTHORITY — READ THIS BEFORE STATE FILTERING =====\n"
+            "When the user includes a distinctive qualifier word in "
+            "their utterance (examples: 'desk', 'reading', 'porch', "
+            "'ResidentB's', area names, color names), the candidate you "
+            "pick MUST contain that qualifier in its friendly_name, "
+            "entity_id, or aliases. This rule overrides every other "
+            "selection heuristic, including state-based inference.\n\n"
+            "- 'desk lamp' never refers to a lamp that is not on a desk.\n"
+            "- 'reading light' never refers to a light that is not a reading light.\n"
+            "- 'the porch light' never refers to a light that is not a porch light.\n\n"
+            "If the user's qualifier word matches a candidate that "
+            "state-based inference would otherwise eliminate (for "
+            "example, the desk lamp is currently off and the user "
+            "said 'the desk lamp is too dim'), pick the qualifier-"
+            "matching candidate anyway and reason about its current "
+            "state in your speech or service_data. Do NOT silently "
+            "swap to a different qualifier just because the state "
+            "filter was inconvenient.\n\n"
+            "If NO candidate contains the user's qualifier, ask for "
+            "clarification — do not guess. Asking is always better "
+            "than acting on the wrong device.\n\n"
+        )
         if rules.state_inference and state_fresh:
             sys += (
-                "State-based inference (cache is fresh):\n"
+                "State-based inference (cache is fresh) — applied AFTER qualifier authority:\n"
                 "- For turn_off, only consider candidates currently 'on'.\n"
                 "- For turn_on, only consider candidates currently 'off'.\n"
                 "- If exactly one coherent group remains after state filter, "
                 "  that is the answer — even if no area was named.\n"
-                "- If multiple disjoint groups remain, ASK FOR CLARIFICATION.\n\n"
+                "- If multiple disjoint groups remain, ASK FOR CLARIFICATION.\n"
+                "- Qualifier authority wins over state filter when they conflict.\n\n"
             )
         else:
             sys += (
