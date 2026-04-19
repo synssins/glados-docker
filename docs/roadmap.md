@@ -283,14 +283,172 @@ always red regardless of state. Three stacked bugs:
   `status["running"] = bool(status.get("glados_api"))` so the
   sidebar reflects GLaDOS API reachability.
 
+### Chat-priority gate: autonomy yields on shared Ollama ✅ Shipped in `ad24c20`
+
+Operator report 2026-04-19: single-GPU deployments had autonomy
+ticks competing with user chat for the same Ollama queue, blowing
+Tier 2's 25 s disambiguator budget and forcing slow Tier 3
+fall-through. New `glados.observability.priority` module exposes
+a `chat_in_flight()` context manager; chat-path callers wrap their
+Ollama round-trip and `AutonomyLoop._should_skip` yields when the
+flag is set. Supports the "single GPU is the default" model — and
+operators who want hardware isolation can still set
+`OLLAMA_AUTONOMY_URL` / `OLLAMA_VISION_URL`.
+
+### Services-grid health dots lied on Ollama / speaches ✅ Fixed in `04f1acf` + `f34e963`
+
+`discover_health()` defaulted to probing `/health` on every URL,
+which 404s on Ollama (uses `/api/tags`) and the TTS side of speaches
+(uses `/v1/voices`). Result: five false-red dots on the LLM &
+Services page. Now picks per-service probe paths via an optional
+`kind=` hint (ollama / tts / stt / speaches / api_wrapper /
+vision), with a multi-path fallback when no hint is supplied.
+Connection-refused short-circuits on the first probe.
+
+### Chat-URL drift: LLM & Services save → `glados_config.yaml` ✅ Fixed in `23a4d92`
+
+Phase 6 design gap: the LLM & Services page wrote through pydantic
+ServicesConfig (backing `services.yaml`), but the chat engine reads
+its own `completion_url` and `autonomy.completion_url` fields from
+`glados_config.yaml`. Operators moving their Ollama via the UI
+silently diverged from the engine's actual chat routing — surfacing
+as HTTP 504 on the first chat after a server move. `_put_config_section`
+now mirrors `ollama_interactive.url` and `ollama_autonomy.url` into
+the engine's yaml on save. New `_ollama_chat_url()` helper
+normalises bare bases or partial `/api/...` URLs to the canonical
+`.../api/chat` form.
+
+### Tier 2 timeout 25 s → 45 s ✅ Shipped in `b4f5721`
+
+Priority gate reduced contention but the 14B JSON-constrained
+disambiguator call on a busy GPU genuinely takes 25–35 s. Falling
+through to Tier 3 is strictly worse on the same hardware. Operators
+on faster hardware can override via `DISAMBIGUATOR_TIMEOUT_S` env.
+
 ---
 
 ## Stage 3 Phase 7+ targets (next session)
 
-Listed in the order they should be tackled. Each big enough to
-deserve its own focused session.
+Listed in the order they should be tackled. The two **P0** bugs at
+the top are new as of 2026-04-19; they surfaced while verifying
+unified Ollama on T4 #1 and are the right starting point for the
+next session. Everything below them is still open but lower
+priority than device-control correctness.
 
-### B60 / IPEX-LLM Ollama is genuinely slow (high — blocks single-GPU)
+### P0: Tier 2 never sends `service_data` — brightness / colour / temperature requests silently no-op (high)
+
+Operator report 2026-04-19:
+
+    User: "The office is too dark. Can you adjust the desk lamp up a little bit?"
+    GLaDOS: "Adjusting the office desk monitor lamp to a brighter setting, as requested."
+
+The light didn't change. Audit trail shows Tier 2 executed with:
+
+    service: light.turn_on
+    entity_ids: ["light.office_desk_monitor_lamp"]
+    service_data: (never populated)
+
+The disambiguator's JSON schema only exposes `decision`,
+`entity_ids`, `service`, `speech`, `rationale`. There is no
+`service_data` field for brightness_pct, color_temp_kelvin,
+color_name, transition, etc. Every "dim", "brighter", "set to
+50%", "warmer", "change to blue" request goes through as a bare
+`turn_on` and Home Assistant does whatever the device's default
+is — which reads as "nothing happened" to the operator.
+
+**Scope of fix:**
+
+1. Add `service_data` to the disambiguator's output schema and
+   prompt examples ("dim" → lower brightness_pct vs current;
+   "set to 40%" → brightness_pct=40; "warmer" → color_temp_kelvin
+   toward 2700; "turn it up" → brightness_pct=100 *or* current+25).
+2. Relative adjustments need the current state. The cache already
+   has `EntityState.attributes` available on the candidate list —
+   thread those through to the prompt so the LLM can compute
+   "current + 25".
+3. Pass `service_data` through to `HAClient.call_service` — the
+   method already accepts it as a kwarg, so plumbing is trivial.
+4. Tests: a handful of phrasings (brightness absolute, brightness
+   relative, color by name, color temperature, fan speed).
+5. Audit row should include service_data for debuggability.
+
+File: `glados/intent/disambiguator.py` (prompt + schema + call),
+`glados/ha/ws_client.py` / `glados/ha/conversation.py` (call_service
+passthrough check), `tests/test_disambiguator.py` (new cases).
+
+### P0: Follow-up turns without a device keyword bypass Tier 1 / 2 entirely (high)
+
+Operator report 2026-04-19 (same session):
+
+    (after GLaDOS had just acted on the desk lamp)
+    User: "It's still too dark. Turn it up more."
+    GLaDOS: "Increasing the office desk monitor lamp to maximum illumination.
+             That should suffice."
+
+No `tier=1` or `tier=2` audit row for that utterance. Tier 3
+(chitchat) handled it, hallucinated a status confirmation, and
+never called a tool.
+
+Root cause: `rules.looks_like_home_command()` is keyword-based.
+"Turn it up more" has no device word and no activity phrase →
+returns False → `api_wrapper` skips Tier 1 + Tier 2 per the
+chitchat-fast-path work from Phase 6 Change 12 (commit `df84d07`).
+
+**Options, in order of preference:**
+
+- **Option A (recommended): context carryover.** When the prior
+  assistant turn resolved a home command successfully (Tier 1
+  `ok:*` or Tier 2 `ok:execute`), let the next user turn inherit
+  home-command intent for one turn even if it has no keyword.
+  Implement in `api_wrapper` at the precheck site, not in
+  `looks_like_home_command()` itself — keep the helper pure.
+- **Option B: trust the fresh HA conversation_id.** If HA's
+  prior `conversation_id` is within the cache freshness window
+  (5 s), Tier 1 should fire regardless of keyword matching; HA's
+  own intent engine can handle "it" from context.
+- **Option C (weakest): extend keyword list.** `brighter`,
+  `dimmer`, `warmer`, `cooler`, `louder`, `quieter`, `more`,
+  `less`, `up`, `down`, "turn it". Brittle but cheap.
+
+A + B together is the right call. C should only backstop them.
+
+Tests: add a multi-turn case — first turn "turn on the lights"
+(keyword hit), second turn "a little dimmer" (no keyword) —
+assert tier_2 was consulted on both.
+
+### Validate single-T4 as the supported default single-GPU path (high)
+
+Late 2026-04-19 consolidation work identified T4 #1 as a working
+single-GPU target for the entire GLaDOS stack when vision is
+disabled:
+
+- `qwen2.5:14b-instruct-q4_K_M` (chat + Tier 2 disambiguator) — ~9.0 GB
+- `qwen2.5:3b-instruct-q4_K_M` (persona rewriter) — ~1.9 GB
+- `nomic-embed-text` (ChromaDB) — optional, ~0.3 GB
+- Leaves ~4 GB headroom on a 16 GB T4 for KV cache.
+
+CUDA Ollama is stable (unlike the B60/IPEX stall — see next entry).
+Operator already consolidated services: B60 Ollama stopped, T4 #0
+Ollama orphan killed, T4 #1 keeps 14B + 3B resident. Chat works
+at ~19 s warm via commit `23a4d92`'s glados_config.yaml URL sync.
+
+Next-session work:
+
+1. Run chat + Tier 2 + Tier 1 + autonomy end-to-end against the
+   unified `11436` endpoint for a full evening of live use; log
+   any timeouts or queue-contention issues.
+2. Document T4-single as the **recommended** single-GPU target in
+   README (currently the README says "a single Ollama at
+   OLLAMA_URL hosts everything" but doesn't speak to which GPU).
+3. Decide whether to ship the `.env.example` / compose defaults
+   unchanged (favours the generic `http://ollama:11434` same-stack
+   pattern) or add a commented-out "split onto separate Ollama"
+   hint block.
+4. If single-T4 holds up, the B60/IPEX debug below drops to low
+   priority — only matters for operators who specifically want
+   Arc acceleration.
+
+### B60 / IPEX-LLM Ollama is genuinely slow (medium — relegated if single-T4 works)
 
 Discovered 2026-04-19 while verifying the chat-priority gate
 (commit `ad24c20`). The gate correctly holds autonomy off during
