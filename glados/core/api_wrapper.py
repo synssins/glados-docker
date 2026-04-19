@@ -1116,6 +1116,24 @@ def _get_engine_response_with_retry(
     timeout: float,
     engine_audio: bool = False,
 ) -> tuple[str | None, str]:
+    """Try to get a response, retry once on timeout (handles compaction race).
+
+    Priority-gated — holds the chat-in-flight flag for the whole
+    engine round-trip so the autonomy loop yields this tick.
+    """
+    from glados.observability import chat_in_flight
+    with chat_in_flight():
+        return _get_engine_response_with_retry_impl(
+            glados, text, timeout, engine_audio=engine_audio,
+        )
+
+
+def _get_engine_response_with_retry_impl(
+    glados: Glados,
+    text: str,
+    timeout: float,
+    engine_audio: bool = False,
+) -> tuple[str | None, str]:
     """Try to get a response, retry once on timeout (handles compaction race)."""
     response_text, request_id = _get_engine_response(
         glados, text, timeout, engine_audio=engine_audio,
@@ -1280,6 +1298,17 @@ def _try_tier2_disambiguation(
 def _try_tier1_nonstreaming(
     handler: "APIHandler", user_message: str, origin: str,
 ) -> bool:
+    """Priority-gated wrapper. The real work is in _impl; the gate
+    tells the autonomy loop to yield this tick (see
+    glados.observability.priority)."""
+    from glados.observability import chat_in_flight
+    with chat_in_flight():
+        return _try_tier1_nonstreaming_impl(handler, user_message, origin)
+
+
+def _try_tier1_nonstreaming_impl(
+    handler: "APIHandler", user_message: str, origin: str,
+) -> bool:
     """Non-streaming counterpart to `_try_tier1_fast_path`. Sends a
     normal OpenAI-compatible JSON response on hit. Used by callers
     like the WebUI's `/api/chat` proxy which posts `stream: false`.
@@ -1386,6 +1415,15 @@ def _try_tier1_nonstreaming(
 
 
 def _try_tier1_fast_path(
+    handler: "APIHandler", user_message: str, origin: str,
+) -> bool:
+    """Priority-gated wrapper. See _try_tier1_fast_path_impl for behavior."""
+    from glados.observability import chat_in_flight
+    with chat_in_flight():
+        return _try_tier1_fast_path_impl(handler, user_message, origin)
+
+
+def _try_tier1_fast_path_impl(
     handler: "APIHandler", user_message: str, origin: str,
 ) -> bool:
     """Return True if HA's conversation API handled the request and an
@@ -1616,6 +1654,25 @@ def _sanitize_message_history(
 # ---------------------------------------------------------------------------
 
 def _stream_chat_sse(
+    handler: "APIHandler",
+    glados: Glados,
+    user_message: str,
+    timeout: float = 180.0,
+) -> None:
+    """Stream chat completions as SSE events directly from Ollama.
+
+    Priority-gated so the autonomy loop yields this tick — see
+    `glados.observability.priority`. Single-GPU deployments share one
+    Ollama between chat and autonomy; without the gate, a background
+    tick landing at the same moment as a user chat exhausts Tier 2's
+    disambiguator budget.
+    """
+    from glados.observability import chat_in_flight
+    with chat_in_flight():
+        _stream_chat_sse_impl(handler, glados, user_message, timeout)
+
+
+def _stream_chat_sse_impl(
     handler: "APIHandler",
     glados: Glados,
     user_message: str,
