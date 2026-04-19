@@ -31,6 +31,7 @@ from loguru import logger
 
 from glados.ha import HAClient, get_cache, get_client
 from glados.ha.entity_cache import CandidateMatch, EntityCache, EntityState
+from glados.persona.rewriter import strip_trailing_vocative
 
 from .rules import (
     DisambiguationRules,
@@ -59,6 +60,7 @@ class DisambiguationResult:
     decision: str = ""                  # "execute" | "clarify" | "refuse" | "fall_through"
     entity_ids: list[str] = field(default_factory=list)
     service: str = ""
+    service_data: dict[str, Any] = field(default_factory=dict)
     rationale: str = ""
     candidates_shown: list[dict[str, Any]] = field(default_factory=list)
     latency_ms: int = 0
@@ -190,10 +192,21 @@ class Disambiguator:
 
         action = str(decision.get("decision", "")).lower()
         speech = str(decision.get("speech", "")).strip()
+        # Safety net for prompt drift: the disambiguator system prompt
+        # explicitly tells the LLM not to tack vocatives like "test
+        # subject" onto the end of speech, but 14B instruct models
+        # still do it intermittently. Tier 2 speech never goes through
+        # the persona rewriter (it's already persona-voiced), so we
+        # apply the same deterministic trailing-vocative strip here.
+        speech = strip_trailing_vocative(speech)
         rationale = str(decision.get("rationale", "")).strip()
         entity_ids = [str(e) for e in (decision.get("entity_ids") or [])
                       if isinstance(e, (str,))]
         service = str(decision.get("service", "")).strip()
+        service_data_raw = decision.get("service_data")
+        service_data: dict[str, Any] = (
+            service_data_raw if isinstance(service_data_raw, dict) else {}
+        )
 
         # 5. Branch by decision.
         latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -291,6 +304,7 @@ class Disambiguator:
             ws_resp = self._ha.call_service(
                 domain=target_domain,
                 service=service,
+                service_data=(service_data or None),
                 target={"entity_id": entity_ids},
                 timeout_s=_HA_CALL_TIMEOUT_S,
             )
@@ -312,9 +326,10 @@ class Disambiguator:
                 latency_ms=int((time.perf_counter() - t0) * 1000),
                 tool=f"{target_domain}.{service}",
                 entity_ids=entity_ids,
-                rationale=err,
                 extra={"candidates_shown": candidates_summary,
                        "speech": (speech or "")[:500],
+                       "service_data": dict(service_data),
+                       "rationale": err,
                        "decision": "execute_no_ack"},
             ))
             return DisambiguationResult(
@@ -323,6 +338,7 @@ class Disambiguator:
                 decision="execute_no_ack",
                 entity_ids=entity_ids,
                 service=f"{target_domain}.{service}",
+                service_data=dict(service_data),
                 rationale=err,
                 candidates_shown=candidates_summary,
                 latency_ms=int((time.perf_counter() - t0) * 1000),
@@ -351,6 +367,7 @@ class Disambiguator:
             handled=True, should_fall_through=False,
             speech=speech or "Done.", decision="execute",
             entity_ids=entity_ids, service=f"{target_domain}.{service}",
+            service_data=dict(service_data),
             rationale=rationale,
             candidates_shown=candidates_summary,
             latency_ms=int((time.perf_counter() - t0) * 1000),
@@ -512,6 +529,34 @@ class Disambiguator:
             "      set_temperature / set_hvac_mode / turn_on / turn_off\n"
             "  vacuum:\n"
             "      start / pause / stop / return_to_base\n"
+            "===== SERVICE_DATA — how to quantify the action =====\n"
+            "When the user specifies HOW MUCH (brightness, color, temp, "
+            "volume, fan speed), populate 'service_data' with the right "
+            "parameters. Omit or leave {} when the bare service is enough "
+            "(simple turn_on / turn_off / activate a scene).\n"
+            "Absolute phrasings (\"set to 40%\", \"40 percent\", "
+            "\"to 2700K\", \"to blue\"):\n"
+            "  light.turn_on + 'set to 40%' → {\"brightness_pct\": 40}\n"
+            "  light.turn_on + 'warm white' / 'warmer' → {\"color_temp_kelvin\": 2700}\n"
+            "  light.turn_on + 'cool white' / 'cooler' → {\"color_temp_kelvin\": 5500}\n"
+            "  light.turn_on + 'to blue' → {\"color_name\": \"blue\"}\n"
+            "  fan.turn_on + 'to 30%' → {\"percentage\": 30}\n"
+            "  media_player.volume_set → {\"volume_level\": 0.4}\n"
+            "  climate.set_temperature + 'to 68' → {\"temperature\": 68}\n"
+            "Relative phrasings (\"dim\", \"brighter\", \"up\", \"down\", "
+            "\"a little more\", \"turn it up\") REQUIRE reading the\n"
+            "candidate's current state from the 'attrs=' field and\n"
+            "computing the new value. Typical step is +/-25 on a 0-100\n"
+            "brightness_pct scale, clamped to [1, 100]. Examples:\n"
+            "  current attrs has brightness_pct=30, user says 'brighter'\n"
+            "    → {\"brightness_pct\": 55}\n"
+            "  current attrs has brightness_pct=80, user says 'a bit dimmer'\n"
+            "    → {\"brightness_pct\": 55}\n"
+            "  'turn it all the way up' → {\"brightness_pct\": 100}\n"
+            "  'warmer' from color_temp_kelvin=4500 → ~{\"color_temp_kelvin\": 3000}\n"
+            "Never guess if state is absent or stale — prefer an absolute\n"
+            "value the user mentioned. If neither is possible, omit\n"
+            "service_data (don't fabricate numbers).\n"
             "Examples (showing entity/service mapping ONLY — do NOT copy\n"
             "the example speech; ALWAYS write fresh speech that describes\n"
             "the SPECIFIC entity and action you actually chose):\n"
@@ -535,22 +580,26 @@ class Disambiguator:
             '  "decision": "execute" | "clarify" | "refuse",\n'
             '  "entity_ids": [<entity_id strings>],\n'
             '  "service":    "<bare HA service name per the table above>",\n'
+            '  "service_data": { <optional params, see SERVICE_DATA above> },\n'
             '  "speech":     "<spoken to the user, GLaDOS voice — '
                             'REQUIRED for refuse too>",\n'
             '  "rationale":  "<one short sentence why>"\n'
             "}\n"
-            "For decision=clarify or refuse, entity_ids and service may be empty, "
-            "but speech is REQUIRED and must be in GLaDOS voice.\n"
+            "For decision=clarify or refuse, entity_ids, service, and "
+            "service_data may be empty, but speech is REQUIRED and must "
+            "be in GLaDOS voice.\n"
         )
 
         cand_lines = []
         for c in candidates:
             e = c.entity
+            attrs = _format_relevant_attrs(e) if state_fresh else ""
+            attr_segment = f" | attrs={attrs}" if attrs else ""
             cand_lines.append(
                 f"  - id={e.entity_id} | name={e.friendly_name!r} | "
                 f"domain={e.domain} | device_class={e.device_class or '-'} | "
                 f"state={e.state} | area={e.area_id or '-'} | "
-                f"score={c.score:.0f} | sensitive={c.sensitive}"
+                f"score={c.score:.0f} | sensitive={c.sensitive}{attr_segment}"
             )
         user = (
             f'User said: "{utterance}"\n\n'
@@ -613,6 +662,49 @@ def _safe_parse_json(raw: str) -> dict[str, Any] | None:
             except (json.JSONDecodeError, ValueError):
                 return None
         return None
+
+
+# Attributes worth showing to the LLM for relative-adjustment
+# service_data inference ("brighter", "dimmer", "warmer", …). Full
+# HA attribute dicts are too noisy and too big — filter to the keys
+# a 14B disambiguator actually reasons about.
+_RELEVANT_ATTR_KEYS: tuple[str, ...] = (
+    "brightness",
+    "brightness_pct",
+    "color_temp_kelvin",
+    "color_temp",
+    "rgb_color",
+    "color_name",
+    "percentage",
+    "volume_level",
+    "temperature",
+    "current_temperature",
+    "target_temp_low",
+    "target_temp_high",
+    "hvac_mode",
+)
+
+
+def _format_relevant_attrs(entity: EntityState) -> str:
+    """Render the subset of attributes useful for relative adjustments.
+    Returns '' when nothing relevant is set so the prompt line stays tidy.
+
+    Brightness attr in HA is 0-255; we derive a brightness_pct for the
+    LLM so the prompt-level units line up with what the LLM is asked
+    to emit in service_data."""
+    attrs = entity.attributes or {}
+    parts: list[str] = []
+    # Derive brightness_pct if only raw brightness is present.
+    if "brightness_pct" not in attrs and "brightness" in attrs:
+        try:
+            raw = float(attrs["brightness"])
+            parts.append(f"brightness_pct={int(round(raw * 100 / 255))}")
+        except (TypeError, ValueError):
+            pass
+    for k in _RELEVANT_ATTR_KEYS:
+        if k in attrs and attrs[k] is not None:
+            parts.append(f"{k}={attrs[k]}")
+    return ",".join(parts)
 
 
 def _speech_leaks_entity_ids(

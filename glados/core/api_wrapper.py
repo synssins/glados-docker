@@ -1178,6 +1178,43 @@ def _persona_rewrite(plain: str, utterance: str = "") -> str:
     return result.text or plain
 
 
+# Window after a successful Tier 1/2 turn during which the next user
+# utterance is treated as a home command even if it lacks a device
+# keyword. Two minutes covers a natural follow-up ("still too dark",
+# "a bit more", "warmer please") without holding the inheritance open
+# indefinitely. Tunable via FOLLOWUP_HOME_COMMAND_WINDOW_S env var.
+_FOLLOWUP_HOME_COMMAND_WINDOW_S = float(
+    os.environ.get("FOLLOWUP_HOME_COMMAND_WINDOW_S", "120"),
+)
+
+
+def _should_carry_over_home_command() -> bool:
+    """P0 2026-04-19 (follow-up bypass): when the most-recent assistant
+    turn resolved via Tier 1 or Tier 2, let the next user turn enter
+    the Tier 1/2 pipeline even if `looks_like_home_command` says no.
+
+    This is Option A from the roadmap. `looks_like_home_command` stays
+    pure (keyword-based); the carry-over policy lives here so the
+    keyword helper can still be reused elsewhere without pulling in
+    conversation-store state."""
+    global _engine
+    if _engine is None:
+        return False
+    try:
+        info = _engine._conversation_store.latest_assistant_tier_exchange()
+    except Exception:
+        return False
+    if not info:
+        return False
+    tier, ts, _ha_conv = info
+    if tier not in (1, 2):
+        return False
+    age = time.time() - ts
+    if age < 0 or age > _FOLLOWUP_HOME_COMMAND_WINDOW_S:
+        return False
+    return True
+
+
 def _last_ha_conversation_id() -> "str | None":
     """Look up the most-recent HA conversation_id from the engine's
     conversation store. Returns None when the store is unavailable or
@@ -1278,6 +1315,7 @@ def _try_tier2_disambiguation(
         "decision": r.decision,
         "entity_ids": r.entity_ids,
         "service": r.service,
+        "service_data": dict(r.service_data),
         "rationale": r.rationale[:200],
         "candidates_shown": len(r.candidates_shown),
         "speech": (r.speech or "")[:500],
@@ -1745,7 +1783,10 @@ def _stream_chat_sse_impl(
     # hello to my friend") and inflates latency from ~3s to ~80s.
     # When False: take the lightweight chat path (no tools, no tool-hint,
     # keep the few-shot examples that steer toward textual replies).
-    is_home_command = looks_like_home_command(user_message)
+    is_home_command = (
+        looks_like_home_command(user_message)
+        or _should_carry_over_home_command()
+    )
 
     # Build messages from conversation store + add user message
     messages = store.snapshot()
@@ -2791,7 +2832,9 @@ class APIHandler(BaseHTTPRequestHandler):
             # garbage-speech miss (e.g. "Sorry, I couldn't understand")
             # sometimes slips through Tier 1's filters and leaks to the
             # user. Chitchat shouldn't round-trip to HA at all.
-            if looks_like_home_command(user_message) and _try_tier1_fast_path(self, user_message, origin):
+            if (looks_like_home_command(user_message)
+                    or _should_carry_over_home_command()) \
+                    and _try_tier1_fast_path(self, user_message, origin):
                 return
 
             # Chat path goes directly to LLM — no command interceptor.
@@ -2828,7 +2871,7 @@ class APIHandler(BaseHTTPRequestHandler):
         # On hit, synthesize the OpenAI non-streaming response shape
         # and skip the LLM+tool loop. Phase 6 follow-up: chitchat
         # bypasses Tier 1 entirely (matches the streaming path).
-        if looks_like_home_command(user_message):
+        if looks_like_home_command(user_message) or _should_carry_over_home_command():
             _nonstream_hit = _try_tier1_nonstreaming(self, user_message, origin)
             if _nonstream_hit:
                 return

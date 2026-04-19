@@ -185,7 +185,7 @@ def _clean_output(raw: str) -> str:
     # Strip surrounding quotes.
     if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
         s = s[1:-1]
-    s = _strip_trailing_vocative(s.strip())
+    s = strip_trailing_vocative(s.strip())
     return s.strip()
 
 
@@ -206,7 +206,7 @@ _BANNED_VOCATIVES: tuple[str, ...] = (
 )
 
 
-def _strip_trailing_vocative(text: str) -> str:
+def strip_trailing_vocative(text: str) -> str:
     """Remove a trailing form-of-address like ", test subject." even if
     the LLM ignored the prompt instruction. Operates per-sentence so
     only the END of a sentence is trimmed; references in the middle
