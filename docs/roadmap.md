@@ -290,6 +290,46 @@ always red regardless of state. Three stacked bugs:
 Listed in the order they should be tackled. Each big enough to
 deserve its own focused session.
 
+### B60 / IPEX-LLM Ollama is genuinely slow (high — blocks single-GPU)
+
+Discovered 2026-04-19 while verifying the chat-priority gate
+(commit `ad24c20`). The gate correctly holds autonomy off during
+chat, but the underlying B60 Ollama at `192.168.1.75:11434` is
+returning 50–90s wall times for trivial requests that Ollama's own
+stats say should be near-instant:
+
+    SMALL JSON call ("return {color: red}"): 99s wall
+      total_duration=99s  prompt_eval=0.28s  eval=0.28s
+    NO JSON ("say hello"): 52s wall
+      total_duration=52s  eval=0.0s
+    NO JSON warm: 91s wall
+
+The 99 % of wall time unaccounted for by prefill + generation lives
+somewhere in Ollama's queueing, IPEX runtime dispatch, or Arc
+driver stall. It is NOT the priority gate, not the disambiguator
+prompt size, not the model — `qwen2.5:14b-instruct-q4_K_M` is
+sitting at 16 GB VRAM with `expires=2318...` (effectively
+permanent keep_alive).
+
+Impact: unified-Ollama deployments that would otherwise work fine
+on single-GPU hardware are blocked until this is understood. The
+operator's split config (autonomy → T4 #1 at 11436, vision →
+T4 #0 at 11435, chat → B60 at 11434) is unaffected because T4s
+respond normally.
+
+Debug next session:
+1. Restart the B60 Ollama instance cold and retest. Maybe it's
+   accumulated garbage state.
+2. Check IPEX-LLM release notes / known issues around JSON grammar
+   constraints + Qwen 2.5 14B Q4.
+3. Compare `ollama ps` + resource stats while a request is
+   mid-flight to see if the model is swapped to CPU under the
+   hood.
+4. Try `llama3.1:8b-instruct-q4_K_M` (smaller, no grammar) for
+   a shape-comparable control.
+5. If IPEX is the problem, the fallback is CUDA Ollama on a
+   spare T4 — but that negates the point of Option C.
+
 ### Tier 3 latency is still painful (~45–240s per turn) (medium)
 
 Even after the 2026-04-18 autonomy-noise filter + tool-catalog
