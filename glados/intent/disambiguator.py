@@ -69,12 +69,14 @@ class DisambiguationResult:
 # Disambiguator
 # ---------------------------------------------------------------------------
 
-# Ollama call timeout. Tunable via DISAMBIGUATOR_TIMEOUT_S env. Default
-# is 25s — generous, because cold-start on a 14B model on the autonomy
-# GPU is around 12s for a tiny prompt and we send a structured prompt
-# with up to 12 candidates. Falling through to Tier 3 is worse than
-# waiting another 10s.
-_LLM_TIMEOUT_S = float(os.environ.get("DISAMBIGUATOR_TIMEOUT_S", "25"))
+# Ollama call timeout. Tunable via DISAMBIGUATOR_TIMEOUT_S env.
+# Default is 45s — covers 14B JSON generation on a single-GPU unified
+# deployment (B60 + IPEX: prefill ~10s for ~3000-token prompt,
+# generation ~15-25s for a full JSON response). Falling through to
+# Tier 3 is worse than waiting another 20s here; the priority gate
+# already holds autonomy off while Tier 2 runs. Operators with faster
+# hardware can lower this env var.
+_LLM_TIMEOUT_S = float(os.environ.get("DISAMBIGUATOR_TIMEOUT_S", "45"))
 # call_service ack timeout. 5s was too short — HA can take longer to
 # return the WS confirmation when the target is a group entity that
 # cascades to many members, or under load. The action is usually
