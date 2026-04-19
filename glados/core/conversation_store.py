@@ -24,6 +24,39 @@ if TYPE_CHECKING:
     from .conversation_db import ConversationDB
 
 
+# Underscore-prefixed keys used to carry per-message persistence
+# metadata through snapshot() -> compaction() -> replace_all(). They
+# are filtered out of LLM prompts by the allowlist sanitizers in
+# glados/core/llm_processor.py and dropped from the DB's `extra`
+# column by ConversationDB.append_many.
+_META_TIER = "_tier"
+_META_SOURCE = "_source"
+_META_HA_CONV = "_ha_conversation_id"
+_META_PRINCIPAL = "_principal"
+
+
+def _stamp_row_meta(
+    message: dict[str, Any],
+    *,
+    source: str | None,
+    principal: str | None,
+    tier: int | None,
+    ha_conversation_id: str | None,
+) -> None:
+    """Attach the persistence metadata to the message dict in place.
+    Only writes keys that are not already set AND the incoming value
+    is non-None. This lets a later append() overlay a kwarg without
+    clobbering an already-stamped value on the same dict."""
+    if tier is not None and _META_TIER not in message:
+        message[_META_TIER] = tier
+    if source is not None and _META_SOURCE not in message:
+        message[_META_SOURCE] = source
+    if ha_conversation_id is not None and _META_HA_CONV not in message:
+        message[_META_HA_CONV] = ha_conversation_id
+    if principal is not None and _META_PRINCIPAL not in message:
+        message[_META_PRINCIPAL] = principal
+
+
 class ConversationStore:
     """
     Thread-safe conversation history store.
@@ -134,6 +167,14 @@ class ConversationStore:
         Returns:
             The new length of the conversation history.
         """
+        # Stamp per-message metadata as underscore-prefixed keys so it
+        # survives snapshot() -> compaction -> replace_all() round trip.
+        # Without this, the compaction agent's rebuild loses tier / source
+        # and subsequent carry-over checks see tier=None for every row.
+        # Underscore-prefixed keys are filtered by both the LLM-facing
+        # sanitizers and the DB's `extra` column packer.
+        _stamp_row_meta(message, source=source, principal=principal,
+                        tier=tier, ha_conversation_id=ha_conversation_id)
         with self._lock:
             self._messages.append(message)
             self._version += 1
@@ -167,6 +208,9 @@ class ConversationStore:
         Returns:
             The new length of the conversation history.
         """
+        for _m in messages:
+            _stamp_row_meta(_m, source=source, principal=principal,
+                            tier=tier, ha_conversation_id=ha_conversation_id)
         with self._lock:
             self._messages.extend(messages)
             self._version += 1

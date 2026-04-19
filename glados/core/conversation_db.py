@@ -222,6 +222,21 @@ class ConversationDB:
                     and not k.startswith("_")  # drop internal flags
                 }
                 extra_json = json.dumps(extra) if extra else None
+                # Per-row metadata: kwarg wins (for uniform one-shot
+                # writes like `append_multiple(..., tier=2)`), else fall
+                # back to underscore-stamped keys on the message dict.
+                # This is how compaction preserves per-row tier / source /
+                # ha_conversation_id when it rebuilds the history.
+                row_tier = tier if tier is not None else msg.get("_tier")
+                row_source = source if source is not None else msg.get("_source")
+                row_ha_conv = (
+                    ha_conversation_id if ha_conversation_id is not None
+                    else msg.get("_ha_conversation_id")
+                )
+                row_principal = (
+                    principal if principal is not None
+                    else msg.get("_principal")
+                )
                 cur.execute(
                     "INSERT INTO messages "
                     "(conversation_id, idx, role, content, tool_calls, extra, "
@@ -229,7 +244,8 @@ class ConversationDB:
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (conversation_id, next_idx, role, content_str,
                      tool_calls_json, extra_json,
-                     source, principal, write_ts, tier, ha_conversation_id),
+                     row_source, row_principal, write_ts, row_tier,
+                     row_ha_conv),
                 )
                 ids.append(int(cur.lastrowid))
                 next_idx += 1
@@ -244,19 +260,33 @@ class ConversationDB:
         source: str | None = None,
     ) -> None:
         """Atomically replace every message in `conversation_id` with a
-        new sequence. Used by the compaction agent."""
+        new sequence. Used by the compaction agent.
+
+        The `source` kwarg is used as a DEFAULT for messages that don't
+        carry `_source` stamping (e.g. a freshly-inserted compaction
+        summary row). Messages that were snapshot()ed from the in-
+        memory store retain their original `_source` / `_tier` /
+        `_ha_conversation_id` — without this, compaction would stomp
+        every row with `source="compaction", tier=None`, losing the
+        Tier 1/2 device-control audit trail and breaking home-command
+        carry-over."""
         write_ts = time.time()
         with self._lock, self._conn:
             cur = self._conn.cursor()
             cur.execute("DELETE FROM messages WHERE conversation_id = ?",
                         (conversation_id,))
             cur.close()
-        # Re-insert via append_many so idx restarts at 0.
+        # Re-insert via append_many so idx restarts at 0. Pass source
+        # kwarg as None so per-message `_source` stamps win; any row
+        # without a stamp gets the caller's default stamped now.
         if new_messages:
+            if source is not None:
+                for msg in new_messages:
+                    msg.setdefault("_source", source)
             self.append_many(
                 new_messages,
                 conversation_id=conversation_id,
-                source=source, ts=write_ts,
+                source=None, ts=write_ts,
             )
 
     # ── Reads ────────────────────────────────────────────────
