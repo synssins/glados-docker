@@ -276,26 +276,34 @@ class TestSceneRegression:
         assert "upstairs" in _preprocess_query("dim the upstairs bedroom")
 
 
-class TestQualifierTightFilter:
+class TestSoftCandidateRanking:
     """P0 2026-04-19: 'Turn the desk lamp down by half' produced three
     Tier 2 candidates — Office Desk Monitor Lamp (full match) plus
     two Living Room Arc Lamp entities (partial). The disambiguator
     then asked the user to pick between three unrelated fixtures.
-    When any candidate covers ALL query tokens, filter out the
-    partial ones."""
+
+    Design: qualifier coverage and area match are SOFT ranking
+    bonuses layered on top of raw WRatio. Full-coverage /
+    same-area candidates rank first so the LLM sees them first,
+    but partial matches still appear so synonym / scope / activity
+    overrides can win when appropriate."""
 
     def _cache_with(self, *states: dict) -> EntityCache:
         cache = EntityCache()
         cache.apply_get_states(list(states))
         return cache
 
-    def _state(self, eid: str, name: str, state: str = "on"):
+    def _state(self, eid: str, name: str, state: str = "on",
+               area: str | None = None):
+        attrs: dict = {"friendly_name": name}
+        if area:
+            attrs["area_id"] = area
         return {
             "entity_id": eid, "state": state,
-            "attributes": {"friendly_name": name},
+            "attributes": attrs,
         }
 
-    def test_full_coverage_candidates_win(self) -> None:
+    def test_full_coverage_ranks_above_partial(self) -> None:
         cache = self._cache_with(
             self._state("light.office_desk_monitor_lamp",
                         "Office Desk Monitor Lamp"),
@@ -303,72 +311,97 @@ class TestQualifierTightFilter:
             self._state("light.living_arc_2", "Living Room Arc Lamp 2"),
         )
         results = cache.get_candidates("desk lamp", domain_filter=["light"])
-        ids = [c.entity.entity_id for c in results]
-        assert ids == ["light.office_desk_monitor_lamp"], ids
+        assert results, "no candidates returned"
+        # Full-coverage must rank first...
+        assert results[0].entity.entity_id == "light.office_desk_monitor_lamp"
+        # ...and its coverage is reported as 1.0 for the prompt / audit.
+        assert results[0].coverage == 1.0
+        # ...but partial-coverage arc lamps still appear (soft boost,
+        # not hard filter) so scope / synonym rules can still fire.
+        ids = {c.entity.entity_id for c in results}
+        assert "light.living_arc_1" in ids
+        assert "light.living_arc_2" in ids
 
-    def test_no_full_coverage_is_noop(self) -> None:
-        """When no candidate contains every query token, the filter
-        returns the input list unchanged so the LLM still sees partial
-        matches (needed for scope-broadening rules)."""
-        from glados.ha.entity_cache import (
-            CandidateMatch, EntityState, _apply_qualifier_tight_filter,
+    def test_no_full_coverage_means_no_ranking_change(self) -> None:
+        """When no candidate covers every token the bonuses are
+        uniform-low (or zero) and the raw WRatio ordering dominates."""
+        cache = self._cache_with(
+            self._state("light.a", "Bedroom Alpha Light"),
+            self._state("light.b", "Bedroom Beta Light"),
         )
-        e1 = EntityState(
-            entity_id="light.master_bedroom_ceiling",
-            friendly_name="Master Bedroom Ceiling", domain="light",
-            state="on", state_as_of=time.time(),
-        )
-        e2 = EntityState(
-            entity_id="light.bedroom_reading",
-            friendly_name="Bedroom Reading Lamp", domain="light",
-            state="on", state_as_of=time.time(),
-        )
-        scored = [
-            CandidateMatch(entity=e1, matched_name=e1.friendly_name,
-                           score=80.0, sensitive=False),
-            CandidateMatch(entity=e2, matched_name=e2.friendly_name,
-                           score=78.0, sensitive=False),
-        ]
-        # Query "bedroom lights" — neither entity contains "lights".
-        filtered = _apply_qualifier_tight_filter("bedroom lights", scored)
-        assert len(filtered) == 2
+        # Query "bedroom lights" — plural doesn't match "Light" singular
+        # whole-word, so neither candidate gets full coverage.
+        results = cache.get_candidates("bedroom lights", domain_filter=["light"])
+        assert len(results) == 2
+        for c in results:
+            assert c.coverage < 1.0
 
-    def test_aliases_count_for_coverage(self) -> None:
-        """Aliases in searchable_names also count for token coverage."""
-        from glados.ha.entity_cache import (
-            CandidateMatch, EntityState, _apply_qualifier_tight_filter,
-        )
-        with_alias = EntityState(
-            entity_id="light.utility_fixture",
-            friendly_name="Utility Fixture", domain="light",
-            state="on", state_as_of=time.time(),
+    def test_alias_coverage_beats_non_alias_partial(self) -> None:
+        """Aliases participate in coverage so operators can hint the
+        right match without renaming the friendly name."""
+        from glados.ha.entity_cache import EntityState
+        # Direct-construct entities so we can set aliases (the state
+        # blob doesn't carry them through apply_get_states by default).
+        cache = EntityCache()
+        cache._entities["light.utility"] = EntityState(
+            entity_id="light.utility", friendly_name="Utility Fixture",
+            domain="light", state="on", state_as_of=time.time(),
             aliases=["garage work lamp"],
         )
-        lamp_only = EntityState(
+        cache._entities["light.arc"] = EntityState(
             entity_id="light.arc", friendly_name="Living Room Arc Lamp",
             domain="light", state="on", state_as_of=time.time(),
         )
-        scored = [
-            CandidateMatch(entity=with_alias, matched_name="garage work lamp",
-                           score=90.0, sensitive=False),
-            CandidateMatch(entity=lamp_only, matched_name=lamp_only.friendly_name,
-                           score=85.0, sensitive=False),
-        ]
-        filtered = _apply_qualifier_tight_filter("garage lamp", scored)
-        ids = [c.entity.entity_id for c in filtered]
-        assert ids == ["light.utility_fixture"], ids
+        results = cache.get_candidates("garage lamp", domain_filter=["light"])
+        assert results[0].entity.entity_id == "light.utility"
 
-    def test_single_token_query_not_filtered(self) -> None:
-        """Filter only engages for 2+ tokens; a single-word query
-        keeps the original fuzzy ranking untouched."""
+    def test_source_area_boosts_same_area_candidate(self) -> None:
+        """Voice satellite in a given area: same-area candidate wins
+        over an identically-named fixture elsewhere."""
         cache = self._cache_with(
-            self._state("light.office_desk_monitor_lamp",
-                        "Office Desk Monitor Lamp"),
-            self._state("light.arc", "Living Room Arc Lamp"),
+            self._state("light.living_reading", "Reading Lamp",
+                        area="living_room"),
+            self._state("light.office_reading", "Reading Lamp",
+                        area="office"),
+        )
+        # No area hint -> tie on all signals, raw WRatio decides; both
+        # appear.
+        baseline = cache.get_candidates("reading lamp",
+                                         domain_filter=["light"])
+        assert {c.entity.entity_id for c in baseline} == {
+            "light.living_reading", "light.office_reading",
+        }
+        for c in baseline:
+            assert c.area_match is None, \
+                "area_match should be None when no source_area given"
+
+        # With source_area=living_room, the living-room entity ranks
+        # first and carries area_match=True.
+        ranked = cache.get_candidates(
+            "reading lamp", domain_filter=["light"],
+            source_area="living_room",
+        )
+        assert ranked[0].entity.entity_id == "light.living_reading"
+        assert ranked[0].area_match is True
+        # And the other one now shows area_match=False (for the prompt).
+        other = next(
+            c for c in ranked if c.entity.entity_id == "light.office_reading"
+        )
+        assert other.area_match is False
+
+    def test_single_token_query_has_uniform_coverage(self) -> None:
+        """One-token queries give every above-cutoff candidate the
+        same coverage bonus, so the prior raw-WRatio ranking is
+        preserved."""
+        cache = self._cache_with(
+            self._state("light.a", "Office Desk Monitor Lamp"),
+            self._state("light.b", "Living Room Arc Lamp"),
         )
         results = cache.get_candidates("lamp", domain_filter=["light"])
-        ids = {c.entity.entity_id for c in results}
-        assert {"light.office_desk_monitor_lamp", "light.arc"} <= ids
+        assert len(results) == 2
+        coverages = {round(c.coverage, 2) for c in results}
+        # Both contain "lamp" -> 1/1 = 1.0 coverage for both.
+        assert coverages == {1.0}
 
 
 class TestCutoffs:

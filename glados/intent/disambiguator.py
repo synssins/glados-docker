@@ -127,8 +127,20 @@ class Disambiguator:
 
     # ── Entry point ───────────────────────────────────────────
 
-    def run(self, utterance: str, source: str) -> DisambiguationResult:
-        """Drive a single utterance through Tier 2."""
+    def run(
+        self,
+        utterance: str,
+        source: str,
+        source_area: str | None = None,
+    ) -> DisambiguationResult:
+        """Drive a single utterance through Tier 2.
+
+        `source_area` is an optional HA area_id hint — e.g., the area
+        the requesting voice satellite lives in. When provided, the
+        fuzzy candidate lookup boosts entities in that area so "the
+        reading lamp" said from a living-room satellite reliably
+        resolves to the living-room reading lamp without a clarify
+        round trip."""
         t0 = time.perf_counter()
 
         # 0. Home-command precheck. Without this, a conversational
@@ -154,6 +166,7 @@ class Disambiguator:
             utterance,
             domain_filter=domain_hint,
             limit=cand_limit,
+            source_area=source_area,
         )
         if not candidates:
             return self._fall_through(
@@ -462,6 +475,23 @@ class Disambiguator:
             "  sensor, binary_sensor, weather, sun, person, device_tracker, "
             "  automation, conversation. List them only if they are the "
             "  ONLY candidates and the user's intent is genuinely a query.\n\n"
+            "Candidate ranking signals (in the 'coverage=' and "
+            "'same_area=' fields on each candidate line):\n"
+            "- coverage=100% means the candidate's name contains every "
+            "  qualifier word the user said ('desk lamp' fully covers "
+            "  'Office Desk Monitor Lamp'). PREFER high-coverage "
+            "  candidates when multiple pass the score gate — they are "
+            "  more likely the intended target.\n"
+            "- same_area=yes means the candidate is in the same HA area "
+            "  as the source device (e.g., a voice satellite in the "
+            "  living room). PREFER same-area candidates for phrasings "
+            "  that lack an explicit area ('the reading lamp', 'the "
+            "  light').\n"
+            "- These are RANKING hints, not hard filters. Lower-coverage "
+            "  or different-area candidates may still be correct when a "
+            "  synonym (e.g., 'overhead' ↔ 'ceiling'), scope-broadening "
+            "  (plural in an area), or activity match (reading, movie, "
+            "  bedtime) overrides the literal-qualifier signal.\n\n"
         )
         if rules.state_inference and state_fresh:
             sys += (
@@ -591,15 +621,30 @@ class Disambiguator:
         )
 
         cand_lines = []
+        any_area_hint = any(c.area_match is not None for c in candidates)
         for c in candidates:
             e = c.entity
             attrs = _format_relevant_attrs(e) if state_fresh else ""
             attr_segment = f" | attrs={attrs}" if attrs else ""
+            # Coverage = fraction of query qualifiers that appear
+            # whole-word in the entity's name/aliases. Shown as an
+            # integer percent so a 14B model reads it without arithmetic.
+            coverage_pct = int(round(c.coverage * 100))
+            coverage_segment = f" | coverage={coverage_pct}%"
+            # Area match only shown when the source supplied one, to
+            # keep noise down for chat/API origins that lack location.
+            if any_area_hint:
+                area_segment = (
+                    f" | same_area={'yes' if c.area_match else 'no'}"
+                )
+            else:
+                area_segment = ""
             cand_lines.append(
                 f"  - id={e.entity_id} | name={e.friendly_name!r} | "
                 f"domain={e.domain} | device_class={e.device_class or '-'} | "
                 f"state={e.state} | area={e.area_id or '-'} | "
-                f"score={c.score:.0f} | sensitive={c.sensitive}{attr_segment}"
+                f"score={c.score:.0f} | sensitive={c.sensitive}"
+                f"{coverage_segment}{area_segment}{attr_segment}"
             )
         user = (
             f'User said: "{utterance}"\n\n'
@@ -729,17 +774,21 @@ def _speech_leaks_entity_ids(
 
 
 def _summarize_candidates(candidates: list[CandidateMatch]) -> list[dict[str, Any]]:
-    return [
-        {
+    out: list[dict[str, Any]] = []
+    for c in candidates:
+        row: dict[str, Any] = {
             "id": c.entity.entity_id,
             "name": c.entity.friendly_name,
             "domain": c.entity.domain,
             "state": c.entity.state,
             "score": round(c.score, 1),
+            "coverage": round(c.coverage, 2),
             "sensitive": c.sensitive,
         }
-        for c in candidates
-    ]
+        if c.area_match is not None:
+            row["area_match"] = c.area_match
+        out.append(row)
+    return out
 
 
 # ---------------------------------------------------------------------------
