@@ -7,137 +7,95 @@ keyword → `looks_like_home_command` returned False → api_wrapper
 skipped Tier 1 and Tier 2 → Tier 3 chitchat hallucinated a status
 confirmation without calling a tool.
 
-Fix: `_should_carry_over_home_command` inherits home-command intent
-for one follow-up turn when the most recent assistant message resolved
-via Tier 1 or Tier 2 within the follow-up window.
+Fix spans two layers:
+
+  1. `_should_carry_over_home_command` consults an in-memory
+     recent-action cache so a follow-up turn can inherit home-command
+     intent for the next 5 minutes.
+  2. The recent-action cache also carries the prior turn's
+     `entity_ids` and `service`, which get threaded into the
+     disambiguator so it can act on the implied target even when the
+     current utterance fuzzy-matches nothing.
+
+This file covers layer 1 in isolation; disambiguator-layer coverage
+for the prior-entity injection lives in tests/test_disambiguator.py.
 """
 
 from __future__ import annotations
 
 import time
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from glados.core.conversation_db import ConversationDB
-from glados.core.conversation_store import ConversationStore
-
-
-def _msg(role: str, content: str) -> dict:
-    return {"role": role, "content": content}
-
-
-class _FakeEngine:
-    def __init__(self, store: ConversationStore) -> None:
-        self._conversation_store = store
-
-
-@pytest.fixture
-def store_with_db(tmp_path: Path):
-    db = ConversationDB(tmp_path / "carryover.db")
-    store = ConversationStore(
-        initial_messages=[_msg("system", "preprompt")], db=db,
-    )
-    yield store
-    db.close()
-
 
 class TestShouldCarryOverHomeCommand:
-    def test_no_engine_returns_false(self) -> None:
+    def setup_method(self) -> None:
         from glados.core import api_wrapper
+        with api_wrapper._RECENT_TIER_LOCK:
+            api_wrapper._RECENT_TIER_ACTION.clear()
 
-        with patch.object(api_wrapper, "_engine", None):
-            assert api_wrapper._should_carry_over_home_command() is False
-
-    def test_empty_history_returns_false(self, store_with_db) -> None:
+    def test_empty_cache_returns_false(self) -> None:
         from glados.core import api_wrapper
+        assert api_wrapper._should_carry_over_home_command() is False
 
-        with patch.object(api_wrapper, "_engine", _FakeEngine(store_with_db)):
-            assert api_wrapper._should_carry_over_home_command() is False
-
-    def test_recent_tier2_ok_returns_true(self, store_with_db) -> None:
+    def test_recent_tier2_returns_true(self) -> None:
         from glados.core import api_wrapper
-
-        store_with_db.append_multiple(
-            [_msg("user", "dim the lamp"),
-             _msg("assistant", "Dimmed.")],
-            source="webui_chat", tier=2,
+        api_wrapper._stash_recent_tier_action(
+            "default", tier=2,
+            entity_ids=["light.task_lamp_one"],
+            service="light.turn_on",
         )
-        with patch.object(api_wrapper, "_engine", _FakeEngine(store_with_db)):
-            assert api_wrapper._should_carry_over_home_command() is True
+        assert api_wrapper._should_carry_over_home_command() is True
 
-    def test_recent_tier1_ok_returns_true(self, store_with_db) -> None:
+    def test_recent_tier1_returns_true(self) -> None:
         from glados.core import api_wrapper
-
-        store_with_db.append_multiple(
-            [_msg("user", "turn on the lamp"),
-             _msg("assistant", "Illuminated.")],
-            source="webui_chat", tier=1,
+        api_wrapper._stash_recent_tier_action(
+            "default", tier=1,
+            entity_ids=["light.kitchen"],
+            service="",
         )
-        with patch.object(api_wrapper, "_engine", _FakeEngine(store_with_db)):
-            assert api_wrapper._should_carry_over_home_command() is True
+        assert api_wrapper._should_carry_over_home_command() is True
 
-    def test_recent_tier3_chitchat_returns_false(self, store_with_db) -> None:
+    def test_cleared_cache_returns_false(self) -> None:
+        """Intervening Tier 3 chitchat cancels the lease."""
         from glados.core import api_wrapper
-
-        store_with_db.append_multiple(
-            [_msg("user", "tell me a joke"),
-             _msg("assistant", "No.")],
-            source="webui_chat", tier=3,
+        api_wrapper._stash_recent_tier_action(
+            "default", tier=2, entity_ids=["light.x"],
         )
-        with patch.object(api_wrapper, "_engine", _FakeEngine(store_with_db)):
-            assert api_wrapper._should_carry_over_home_command() is False
+        api_wrapper._clear_recent_tier_action()
+        assert api_wrapper._should_carry_over_home_command() is False
 
-    def test_stale_tier2_beyond_window_returns_false(
-        self, store_with_db, monkeypatch,
-    ) -> None:
+    def test_stale_window_returns_false(self, monkeypatch) -> None:
         from glados.core import api_wrapper
-
-        store_with_db.append_multiple(
-            [_msg("user", "dim the lamp"),
-             _msg("assistant", "Dimmed.")],
-            source="webui_chat", tier=2,
+        api_wrapper._stash_recent_tier_action(
+            "default", tier=2, entity_ids=["light.x"],
         )
-        # Shrink the window so we can assert a stale exchange is rejected
-        # without actually sleeping through 120s in the test suite.
+        # Shrink the window to zero and wait a beat. The cache entry
+        # is older than the budget → returns None/False.
         monkeypatch.setattr(
             api_wrapper, "_FOLLOWUP_HOME_COMMAND_WINDOW_S", 0.01,
         )
         time.sleep(0.02)
-        with patch.object(api_wrapper, "_engine", _FakeEngine(store_with_db)):
-            assert api_wrapper._should_carry_over_home_command() is False
+        assert api_wrapper._should_carry_over_home_command() is False
 
-    def test_tier2_followed_by_tier3_returns_false(self, store_with_db) -> None:
-        """Once a chitchat turn lands in between, the carry-over lease
-        expires — the next follow-up shouldn't silently inherit intent
-        across an unrelated turn."""
+    def test_get_recent_returns_full_record(self) -> None:
         from glados.core import api_wrapper
-
-        store_with_db.append_multiple(
-            [_msg("user", "dim the lamp"),
-             _msg("assistant", "Dimmed.")],
-            source="webui_chat", tier=2,
+        api_wrapper._stash_recent_tier_action(
+            "default", tier=2,
+            entity_ids=["light.a", "light.b"],
+            service="light.turn_on",
+            ha_conversation_id="ha-99",
         )
-        store_with_db.append_multiple(
-            [_msg("user", "joke"),
-             _msg("assistant", "No.")],
-            source="webui_chat", tier=3,
-        )
-        with patch.object(api_wrapper, "_engine", _FakeEngine(store_with_db)):
-            assert api_wrapper._should_carry_over_home_command() is False
+        rec = api_wrapper._get_recent_tier_action()
+        assert rec is not None
+        assert rec.tier == 2
+        assert rec.entity_ids == ["light.a", "light.b"]
+        assert rec.service == "light.turn_on"
+        assert rec.ha_conversation_id == "ha-99"
 
-    def test_exception_from_store_returns_false(self) -> None:
-        """Any exception reading the store must be swallowed so the
-        chitchat path isn't broken by a transient DB issue."""
+    def test_default_window_is_five_minutes(self) -> None:
+        """Default window should be long enough for natural follow-up
+        rhythms (the operator's 'Increase the brightness by ten
+        percent' follow-up was ~4 minutes after the prior turn)."""
         from glados.core import api_wrapper
-
-        class _BrokenStore:
-            def latest_assistant_tier_exchange(self):
-                raise RuntimeError("simulated")
-
-        class _BrokenEngine:
-            _conversation_store = _BrokenStore()
-
-        with patch.object(api_wrapper, "_engine", _BrokenEngine()):
-            assert api_wrapper._should_carry_over_home_command() is False
+        assert api_wrapper._FOLLOWUP_HOME_COMMAND_WINDOW_S >= 300
