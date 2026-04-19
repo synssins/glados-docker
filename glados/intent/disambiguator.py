@@ -422,6 +422,7 @@ class Disambiguator:
             return self._fall_through(
                 "no_home_command_intent",
                 utterance[:120], t0,
+                utterance=utterance, source=source,
             )
 
         # 1. Pull candidates from the cache. Bump limit when the user
@@ -458,6 +459,7 @@ class Disambiguator:
                 "no_candidates",
                 f"no entities matched query={utterance!r} domains={domain_hint}",
                 t0,
+                utterance=utterance, source=source,
             )
 
         # 1b. Qualifier-authoritative cache scan. When the user gave
@@ -506,6 +508,7 @@ class Disambiguator:
             return self._fall_through(
                 "llm_call_failed", str(exc), t0,
                 candidates=_summarize_candidates(candidates),
+                utterance=utterance, source=source,
             )
 
         # 4. Parse the JSON response.
@@ -514,6 +517,7 @@ class Disambiguator:
             return self._fall_through(
                 "llm_bad_json", raw[:200], t0,
                 candidates=_summarize_candidates(candidates),
+                utterance=utterance, source=source,
             )
 
         action = str(decision.get("decision", "")).lower()
@@ -565,6 +569,7 @@ class Disambiguator:
                 "speech_leaked_entity_ids",
                 speech[:200], t0,
                 candidates=candidates_summary,
+                utterance=utterance, source=source,
             )
 
         if action == "clarify":
@@ -589,6 +594,7 @@ class Disambiguator:
             return self._fall_through(
                 "unknown_decision", action, t0,
                 candidates=candidates_summary,
+                utterance=utterance, source=source,
             )
 
         if not parsed_actions:
@@ -596,6 +602,7 @@ class Disambiguator:
                 "execute_missing_fields",
                 f"no actions; raw={raw[:120]!r}",
                 t0, candidates=candidates_summary,
+                utterance=utterance, source=source,
             )
 
         # 6. Validate every chosen entity across every action is
@@ -616,6 +623,7 @@ class Disambiguator:
             return self._fall_through(
                 "unknown_entity", f"ids={bad_ids}", t0,
                 candidates=candidates_summary,
+                utterance=utterance, source=source,
             )
         if denied:
             denial_msg = (speech or
@@ -642,6 +650,7 @@ class Disambiguator:
                     "mixed_domains_in_action",
                     f"entity_ids={eids}", t0,
                     candidates=candidates_summary,
+                    utterance=utterance, source=source,
                 )
             act["_domain"] = first_domain
 
@@ -713,6 +722,7 @@ class Disambiguator:
                 "call_service_failed",
                 "; ".join(per_action_errors)[:400],
                 t0, candidates=candidates_summary,
+                utterance=utterance, source=source,
             )
 
         combined_service = ", ".join(executed_services)
@@ -802,13 +812,39 @@ class Disambiguator:
         detail: str,
         t0: float,
         candidates: list[dict[str, Any]] | None = None,
+        *,
+        utterance: str = "",
+        source: str = "",
     ) -> DisambiguationResult:
+        # Emit an audit row so fall-through turns are visible. Without
+        # this, the audit log shows only the utterance ingress and the
+        # eventual Tier 3 response, with no record of WHY Tier 2 didn't
+        # claim the turn — making live diagnosis impossible.
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        rationale = f"{reason}:{detail}"[:300]
+        try:
+            audit(AuditEvent(
+                ts=time.time(),
+                origin=source or "unknown",
+                kind="intent",
+                tier=2,
+                utterance=utterance[:400] if utterance else None,
+                result=f"fall_through:{reason}",
+                latency_ms=elapsed_ms,
+                extra={
+                    "decision": "fall_through",
+                    "rationale": rationale,
+                    "candidates_shown": candidates or [],
+                },
+            ))
+        except Exception:  # noqa: BLE001 — audit must not break the flow
+            pass
         return DisambiguationResult(
             handled=False, should_fall_through=True,
             speech="", decision="fall_through",
-            rationale=f"{reason}:{detail}"[:300],
+            rationale=rationale,
             candidates_shown=candidates or [],
-            latency_ms=int((time.perf_counter() - t0) * 1000),
+            latency_ms=elapsed_ms,
         )
 
     def _build_prompt(
