@@ -256,6 +256,25 @@ class TestSceneRegression:
         # If stripping leaves nothing, fall back to lowered original.
         assert _preprocess_query("on") == "on"
 
+    def test_query_preprocessor_strips_direction_and_quantity_modifiers(self) -> None:
+        """P0 2026-04-19: 'Turn the desk lamp down by half' produced
+        zero candidates because 'down by half' polluted the fuzzy
+        score against 'Office Desk Monitor Lamp'. Direction / quantity
+        words belong in service_data, not in the entity name match."""
+        from glados.ha.entity_cache import _preprocess_query
+        assert _preprocess_query("turn the desk lamp down by half") == "desk lamp"
+        assert _preprocess_query("make the lamp brighter") == "lamp"
+        assert _preprocess_query("reduce the fan to minimum") == "fan"
+        assert _preprocess_query("can you raise the volume a bit") == "volume"
+
+    def test_query_preprocessor_leaves_multi_word_modifiers_alone(self) -> None:
+        """Whole-word matching: 'downstairs' must NOT be stripped just
+        because 'down' is a stopword."""
+        from glados.ha.entity_cache import _preprocess_query
+        assert "downstairs" in _preprocess_query(
+            "turn on the downstairs hallway light")
+        assert "upstairs" in _preprocess_query("dim the upstairs bedroom")
+
 
 class TestCutoffs:
     def test_sensitive_domain_gets_100_cutoff(self) -> None:
