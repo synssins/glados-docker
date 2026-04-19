@@ -109,6 +109,47 @@ def _preprocess_query(query: str) -> str:
         return query.strip().lower()
     return " ".join(kept).lower()
 
+def _apply_qualifier_tight_filter(
+    query: str,
+    scored: list["CandidateMatch"],
+) -> list["CandidateMatch"]:
+    """When the user's query contains ≥ 2 content tokens and at least
+    one candidate's name contains ALL of those tokens whole-word, keep
+    only the full-coverage candidates. This prevents loose WRatio hits
+    from polluting a disambiguation round.
+
+    Concrete regression the operator filed 2026-04-19: query
+    "desk lamp" produced three fuzzy candidates — "Office Desk Monitor
+    Lamp" (contains both words), plus two "Living Room Arc Lamp"
+    entities (contain only "lamp"). The disambiguator LLM then asked
+    the user to pick between three unrelated fixtures. Under this
+    filter only the Desk Monitor Lamp survives and the action
+    executes.
+
+    Conservative: if NO candidate contains all tokens, the filter is
+    a no-op — the LLM still sees the partial matches and can apply
+    its scope-broadening rules ("bedroom lights" → every bedroom
+    fixture even though no single entity has both words)."""
+    tokens = [t for t in query.split() if t]
+    if len(tokens) < 2 or not scored:
+        return scored
+
+    def _full_coverage(cand: "CandidateMatch") -> bool:
+        # Whole-word match on all of the entity's searchable names so
+        # aliases qualify too. Normalize to lowercase; the preprocessor
+        # already does the query side.
+        words: set[str] = set()
+        for name in cand.entity.searchable_names():
+            for w in name.lower().split():
+                # Strip trailing punctuation from name tokens (friendly
+                # names sometimes include colons or dashes).
+                words.add(w.strip(".,!?;:'\"-_()/"))
+        return all(tok in words for tok in tokens)
+
+    tight = [c for c in scored if _full_coverage(c)]
+    return tight if tight else scored
+
+
 # Sensitive domains: fuzzy match produces wrong-device outcomes with
 # real-world consequences. Require exact friendly_name or alias match
 # (score >= 100). No fuzzy fallback.
@@ -337,6 +378,7 @@ class EntityCache:
                 score=float(score),
                 sensitive=sensitive,
             ))
+        scored = _apply_qualifier_tight_filter(q, scored)
         scored.sort(key=lambda c: c.score, reverse=True)
         return scored[:limit]
 
