@@ -189,80 +189,71 @@ Live SSE streaming was considered but skipped for v1 — the 10 s
 polling timer is simpler and covers the main use case (watching errors
 scroll in while reproducing an issue).
 
-### System-page absorption of auth/audit/mode_entities.maintenance_* (small)
+### System-page absorption of auth/audit/mode_entities.maintenance_* ✅ Shipped in `bdbddda`
 
-Phase 6's Integrations page still renders `auth`, `audit`,
-`mode_entities`, `silent_hours`, and `tuning` groups under the
-"global" backing. Auth is already behind the Advanced toggle per
-operator feedback, but the naming mismatch (these aren't integrations)
-is worth resolving. Move them to a proper System-config form inside
-`tab-config-system`, and then drop those groups from the Integrations
-auto-form via extended `skipKeys`.
+Shipped 2026-04-18. Two new System-tab cards — Maintenance Entities
+(mode_entities.maintenance_mode/.maintenance_speaker) and
+Authentication & Audit (auth.enabled, .session_timeout_hours,
+audit.enabled). Both render via `cfgBuildForm(..., 'sysaux', ...)`
+so field IDs don't collide with Integrations. Integrations
+`skipKeys` extended to `['ssl','paths','network','auth','audit',
+'mode_entities']`. Sensitive auth fields (password_hash,
+session_secret) stay advanced.
 
-### TTS Engine "unexpected response shape" on Discover ✅ Fixed in commit `7768ce4`
+### TTS Engine "unexpected response shape" on Discover ✅ Fixed in `7768ce4`
 
 Shipped with the 2026-04-18 hotfix alongside the Tier 2 conversational
 bleed fix. The `discover_voices` handler now accepts the
 `{"voices": [...]}` shape GLaDOS Piper returns, in addition to the
 pre-existing top-level-list and OpenAI `{"data": [...]}` shapes.
 
-### Tier 3 latency on conversational turns is ~45-80s (medium)
+### Chitchat time-stamp prefix ✅ Fixed in `7c0bf71` + `ccc0c1e`
 
-Even after the 2026-04-18 hotfix that stops loading the MCP tool
-catalog for chitchat (`mode=chitchat, 0 tools` in SSE log), warm
-streaming responses to a 10-15 message context still run 45-60s
-on `qwen2.5:14b-instruct-q4_K_M`. Rough decomposition: Ollama
-model steady-state on the autonomy T4 is ~12 tok/s; the interactive
-Arc B60 instance that hosts `glados:latest` is ~33 tok/s. WebUI chat
-currently uses `cfg.llm_model` which is pointed at the autonomy
-Ollama per the operator's 2026-04-18 model-swap. Candidates:
+Root cause: the engine's autonomy loop writes "Autonomy update.
+Time: ..." turns to the same `conversation.db` the chat path reads
+from. A user saying "Tell me a joke" was shipping 41 messages to
+Ollama, 23 of which were timestamped status pings — the 14B
+picked up the framing and started every reply with "The chronometer
+reports 12:47 PM ...".
 
-- Route WebUI chat to the interactive Ollama endpoint (B60, 33 tok/s)
-  instead of the autonomy endpoint — matches the host-native split
-  of "autonomy = background, interactive = user-facing".
-- Reduce prompt size further: personality preprompt + few-shot
-  examples are 10+ messages; compact them into a single system
-  message for chitchat turns.
-- Investigate Ollama KV-cache reuse across turns — each SSE roundtrip
-  looks like it's re-submitting full history. If ctx_cache=true
-  isn't being set, KV reuse across turns is disabled.
+Fixed via `_sanitize_message_history` in `api_wrapper.py`:
+- Always-on shape repair (tool_calls.arguments coerced to dict,
+  None content normalized to "") — closes a pre-existing bug
+  where a single bad row blocked every subsequent chat with
+  `json: cannot unmarshal string into Go struct field`.
+- Chitchat-path autonomy-noise filter: drops user turns whose
+  content starts with "Autonomy update." / "[summary]",
+  `role: "tool"` messages, and empty-content assistants with a
+  tool_calls payload. Home-command path keeps the full history
+  because MCP reasoning benefits from prior device actions.
 
-### Conversation history pollution (medium)
+Measured effect on prod: chitchat message count 41 → 16. Response
+quality confirmed clean on "What do you think of dogs?" — in-
+character, no time prefix, no home framing.
 
-When a prior turn produces a poor-quality response (e.g. the Tier 2
-`Ambiguity detected:` regression or an earlier home-framed reply to
-chitchat), that reply is stored in `conversation.db` and every
-subsequent turn pulls it back into context. The LLM then mimics the
-bad pattern for dozens of follow-ups. Post-hotfix verification
-required a manual `DELETE FROM messages` to stop the mimicry.
+### Ollama instance unification (Option C) ✅ Shipped in `2c250c9` + prod
 
-Two complementary fixes:
-- **Operator-facing:** add a "Clear conversation" button to the
-  Memory page or the Chat tab. Nukes the `default` partition and
-  re-seeds with the personality preprompt. Read-only in the UI,
-  confirm dialog before executing.
-- **Automated:** compaction agent should drop obvious failure
-  responses at summarization time. Heuristics: responses starting
-  with "Ambiguity detected:", responses whose speech contains HA
-  entity IDs, responses that clearly don't match the utterance.
+Operator asked whether there's a reason autonomy + vision can't
+share the same Ollama instance as chat. Short answer: no — Ollama
+supports multiple loaded models. The split was an artifact of
+pre-unified days when interactive used `glados:latest` and
+autonomy used neutral qwen.
 
-### Chitchat responses prefix every answer with the time (small)
+- `.env.example` + `docker/compose.yml` comment out the split
+  env vars by default; unset → fall back to `OLLAMA_URL`.
+- Code already implemented the fallback chain — no logic change.
+- Prod: removed `OLLAMA_AUTONOMY_URL` / `OLLAMA_VISION_URL` from
+  the compose env list. Autonomy unified immediately via
+  services.yaml. Vision required pulling `llama3.2-vision:latest`
+  onto B60 first; then `services.yaml` `ollama_vision.url` flipped
+  from 11435 → 11434. T4 #0 is now free for other use.
 
-Symptom surfaced 2026-04-18 while verifying the Alan hotfix: on Tier 3
-chitchat, "Tell me a joke about cats" and "What's the fastest animal
-on earth?" both returned responses like "The chronometer reports
-12:47 PM. Fascinating inquiry; did not expect a scientific query at
-this hour." — the clock announcement leads and in some cases the
-model never gets to the actual answer. Expected behavior: mention
-the time only when it's contextually relevant (morning/evening
-greetings, scheduling questions, "what time is it").
+### Chat self-healing for polluted conversation history ✅ Shipped in `69568c2` → `ccc0c1e`
 
-Likely culprits: a system-message nudge that over-weights the current
-time, or a tool call to `get_time` that fires for every turn. Check
-`api_wrapper.py` `_stream_chat_sse` system-message assembly and the
-MCP tool selection logic. Pre-existing behavior — NOT introduced by
-Phase 6; unblocked deployment of the Alan hotfix so filed here
-rather than chasing inline.
+Covered above under "Chitchat time-stamp prefix" — the same
+`_sanitize_message_history` helper does both repair duties. No
+"Clear conversation" button was built; the self-healing approach
+was preferred per operator feedback.
 
 ### Actually delete the deprecated config fields (later)
 
@@ -272,6 +263,101 @@ cycle in production), remove the fields from the pydantic models,
 drop the corresponding `FIELD_META` entries, and simplify the
 warn-validators. No code references them today, so deletion is
 just schema cleanup.
+
+### Service-health paths ✅ Fixed in `7c4f5d6`
+
+System-page was showing TTS Engine and ChromaDB Memory dots red
+while both services were actually healthy, and the sidebar's own
+engine-status dot (the red dot above the Configuration menu) was
+always red regardless of state. Three stacked bugs:
+
+- TTS check used `socket.create_connection(("localhost", 5050))` —
+  hardcoded localhost is wrong. Now probes
+  `<speaches base>/v1/voices`, same endpoint the Services-page
+  Discover button uses.
+- ChromaDB check used `http://localhost:8000/api/v2/heartbeat` —
+  ignored `cfg.memory.chromadb_host` / `chromadb_port`. Now reads
+  from config (`glados-chromadb:8000` in compose).
+- Sidebar `pollEngineStatus()` reads `data.running` but
+  `_get_status` had never populated that key. Added
+  `status["running"] = bool(status.get("glados_api"))` so the
+  sidebar reflects GLaDOS API reachability.
+
+---
+
+## Stage 3 Phase 7+ targets (next session)
+
+Listed in the order they should be tackled. Each big enough to
+deserve its own focused session.
+
+### Tier 3 latency is still painful (~45–240s per turn) (medium)
+
+Even after the 2026-04-18 autonomy-noise filter + tool-catalog
+skip, a cold `Tell me a joke` streams for 60–240s on
+`qwen2.5:14b-instruct-q4_K_M`. Prefix pollution is no longer the
+issue (message count is down to 16 for a fresh chitchat turn);
+this is real LLM time. Profiling needed, not guessing. Candidates
+worth investigating in this order:
+
+1. **Model-loading check.** First-request cold starts are ~3–5
+   minutes because keep_alive didn't persist the new model.
+   Confirm `keep_alive=-1` is actually being honoured on the B60
+   Ollama (check `/api/ps` `expires_at` field) and that chat
+   requests aren't colliding with autonomy-loop prefill.
+2. **Prompt size.** Personality preprompt + few-shots is still
+   ~10 messages even for chitchat. A single compact system
+   message + the user turn should be sufficient for "tell me a
+   joke"-class prompts and would cut prefill by an order of
+   magnitude. Measure token count before/after.
+3. **KV cache reuse.** Each SSE roundtrip re-submits full
+   history. If Ollama's num_ctx / ctx-cache reuse isn't set up,
+   every turn pays the full prefill cost. Instrument
+   `prompt_eval_count` / `prompt_eval_duration` from Ollama's
+   response stats on a few successive turns to see if caching
+   is kicking in.
+4. **Hardware.** B60 via IPEX-LLM. Verify the model is running
+   on the Arc GPU (not spilling to CPU). Per-token latency
+   should sit around 30 ms at steady state; if it's 200 ms,
+   the Arc backend isn't engaged.
+
+Result of this work: a roadmap entry with a number. Right now
+the roadmap says "45–240s" because nobody has measured.
+
+### Stop the autonomy loop from writing to the chat conversation store (medium)
+
+The self-healing filter from `7c0bf71`/`ccc0c1e` drops autonomy
+chatter from chitchat context at read time. The write is still
+happening — `conversation.db` grows and compaction has to sweep
+it. Stopping the write at the source is strictly better than
+filtering at read.
+
+Two approaches worth considering:
+
+- **Separate conversation stores per role.** The engine autonomy
+  loop gets its own `autonomy` conversation_id (already supported
+  by the schema); the chat path reads from `default` only. Zero
+  mixing.
+- **Write-side tagging + read-side partition.** Keep a single
+  store but tag autonomy turns with `source="autonomy"` on write
+  and filter them out in the chat `snapshot()`. Lower lift; loses
+  the DB-disk-space benefit.
+
+Rough code map:
+- Autonomy loop writes happen somewhere under
+  `glados.autonomy.loop` → check how it currently reaches the
+  conversation store. That's the single place to change.
+- Keep `_sanitize_message_history`'s autonomy-noise filter as
+  defense in depth even after the write-side fix; cheap to leave
+  in and catches anything that slips through.
+
+### Dedicated Chat-model routing + "interactive vs autonomy" labels (small)
+
+Related to the above. Once autonomy stops writing to the chat
+store, the Tier 3 chat path still pulls `cfg.llm_model` which
+might be the autonomy model. The WebUI now has an LLM & Services
+page that lets operators pick URLs per service; adding a
+`chat_model` field alongside would let them choose a cheaper /
+faster model for chat without disturbing autonomy.
 
 ---
 
