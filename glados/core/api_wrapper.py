@@ -31,7 +31,9 @@ import yaml
 from loguru import logger
 from glados.core.engine import GladosConfig, Glados
 from glados.core.attitude import roll_attitude, get_tts_params, list_attitudes, load_attitudes, is_loaded as attitudes_loaded
+from glados.core.command_resolver import get_resolver
 from glados.core.config_store import cfg
+from glados.core.source_context import SourceContext
 from glados.doorbell.screener import DoorbellScreener
 from glados.observability import AuditEvent, Origin, audit
 from glados import ha as _ha
@@ -61,12 +63,12 @@ _announce_config_mtime: float = 0.0
 _announce_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Command response system — path from centralized config
+# Legacy ESPHome-direct `/command` endpoint + `commands.yaml` removed
+# in Stage 3 Phase 7. Voice now routes through the same
+# `POST /v1/chat/completions` endpoint as the WebUI; HA forwards voice
+# utterances with area context attached, and the CommandResolver owns
+# resolution end-to-end. See CURRENT_STATE.md §"One door".
 # ---------------------------------------------------------------------------
-COMMANDS_YAML = cfg._configs_dir / "commands.yaml"
-_cmd_config: dict | None = None
-_cmd_config_mtime: float = 0.0
-_cmd_lock = threading.Lock()
 
 # HA entity discovery cache: {"office": {"name": "Office", "lights": [...]}, ...}
 _ha_areas: dict[str, dict] = {}
@@ -309,277 +311,9 @@ def _ha_entity_refresh_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command system: config loading and matching
+# Announcement / doorbell helpers (the command-system handlers that used
+# to live here were removed in Stage 3 Phase 7 — see the banner above)
 # ---------------------------------------------------------------------------
-
-
-def _load_cmd_config() -> dict:
-    """Load commands.yaml, caching until the file changes on disk.
-
-    Settings injected from centralized config store.
-    """
-    global _cmd_config, _cmd_config_mtime
-    try:
-        mtime = COMMANDS_YAML.stat().st_mtime
-    except OSError:
-        raise FileNotFoundError(f"Commands config not found: {COMMANDS_YAML}")
-    if _cmd_config is None or mtime != _cmd_config_mtime:
-        with open(COMMANDS_YAML, "r", encoding="utf-8") as f:
-            _cmd_config = yaml.safe_load(f)
-        _cmd_config_mtime = mtime
-        logger.info("Loaded commands config ({})", COMMANDS_YAML)
-    # Always inject centralized settings
-    _cmd_config["settings"] = _cfg_settings()
-    _cmd_config["settings"]["audio_dir"] = cfg.audio.commands_dir
-    return _cmd_config
-
-
-def match_light_command(text: str, config: dict) -> tuple[str, str, dict] | None:
-    """Match user text against light command patterns.
-
-    Returns (action_key, area_key, area_config) or None if no match.
-    """
-    text_lower = text.lower()
-    lights_config = config.get("commands", {}).get("lights")
-    if not lights_config:
-        return None
-
-    # 1. Must contain a light-related keyword
-    device_keywords = lights_config.get("device_keywords", [])
-    if not any(kw in text_lower for kw in device_keywords):
-        return None
-
-    # 2. Match action (on/off/bright/dim)
-    actions = lights_config.get("actions", {})
-    matched_action = None
-    for action_key, action_cfg in actions.items():
-        if any(kw in text_lower for kw in action_cfg.get("keywords", [])):
-            matched_action = action_key
-            break
-    if matched_action is None:
-        return None
-
-    # 3. Match area (longest alias wins to prevent "bedroom" matching "master bedroom")
-    best_area = None
-    best_alias_len = 0
-    areas = lights_config.get("areas", {})
-    for area_key, area_cfg in areas.items():
-        for alias in area_cfg.get("aliases", []):
-            if alias in text_lower and len(alias) > best_alias_len:
-                best_area = (area_key, area_cfg)
-                best_alias_len = len(alias)
-    if best_area is None:
-        return None
-
-    area_key, area_cfg = best_area
-
-    # 4. Verify this area actually has lights in HA (if cache is populated)
-    with _ha_areas_lock:
-        if _ha_areas and area_cfg["area_id"] in _ha_areas:
-            if not _ha_areas[area_cfg["area_id"]].get("lights"):
-                logger.warning("Command: area {} has no lights in HA", area_cfg["area_id"])
-                return None
-
-    return (matched_action, area_key, area_cfg)
-
-
-def _ha_call_service(domain: str, service: str, area_id: str,
-                     service_data: dict | None = None,
-                     ha_url: str | None = None, ha_token: str | None = None) -> bool:
-    """Call a HA service targeting all entities of `domain` in an area.
-
-    Looks up entity IDs from the _ha_areas cache (e.g. all light.* entities
-    in the 'office' area) and sends them as entity_id list, since the HA
-    REST API does not support area_id targeting directly.
-    """
-    if ha_url is None or ha_token is None:
-        cfg = _load_cmd_config()
-        settings = cfg["settings"]
-        ha_url = ha_url or settings["ha_url"]
-        ha_token = ha_token or settings["ha_token"]
-
-    # Resolve area_id to entity list from cache
-    with _ha_areas_lock:
-        area_data = _ha_areas.get(area_id, {})
-
-    # Map domain to the cache key (light -> lights)
-    cache_key = f"{domain}s" if not domain.endswith("s") else domain
-    entity_ids = area_data.get(cache_key, [])
-    if not entity_ids:
-        logger.warning("Command: no {} entities found for area {}", domain, area_id)
-        return False
-
-    ha_url = ha_url.rstrip("/")
-    url = f"{ha_url}/api/services/{domain}/{service}"
-
-    payload: dict[str, Any] = {
-        "entity_id": entity_ids,
-    }
-    if service_data:
-        payload.update(service_data)
-
-    data = json.dumps(payload).encode()
-    headers = {
-        "Authorization": f"Bearer {ha_token}",
-        "Content-Type": "application/json",
-    }
-    req = Request(url, data=data, headers=headers, method="POST")
-
-    try:
-        with urlopen(req, timeout=10) as resp:
-            logger.info("Command: HA {}.{} area={} ({} entities) -> {}",
-                        domain, service, area_id, len(entity_ids), resp.status)
-            return True
-    except (HTTPError, URLError, OSError) as exc:
-        logger.error("Command: HA service call failed: {}", exc)
-        return False
-
-
-def _find_cmd_base_wav(config: dict, cmd_type: str, area_key: str, action: str) -> Path | None:
-    """Find the base WAV for a command type + area + action."""
-    audio_dir = Path(config["settings"]["audio_dir"])
-    filename = f"{cmd_type}__{area_key}__{action}.wav"
-    path = audio_dir / "bases" / filename
-    return path if path.exists() else None
-
-
-def _pick_cmd_followup_wavs(config: dict, cmd_type: str, area_key: str) -> list[Path]:
-    """Randomly pick follow-up WAVs for a command area."""
-    audio_dir = Path(config["settings"]["audio_dir"])
-    followups_dir = audio_dir / "followups"
-
-    cmd_config = config.get("commands", {}).get(cmd_type, {})
-    area_config = cmd_config.get("areas", {}).get(area_key, {})
-    followups = area_config.get("followups", [])
-    if not followups:
-        return []
-
-    count_range = cmd_config.get("followup_count", [1, 1])
-    min_count = count_range[0]
-    max_count = count_range[1] if len(count_range) > 1 else min_count
-    pick_count = random.randint(min_count, min(max_count, len(followups)))
-
-    available: list[tuple[int, Path]] = []
-    for i in range(1, len(followups) + 1):
-        filename = f"{cmd_type}__{area_key}__followup_{i:02d}.wav"
-        path = followups_dir / filename
-        if path.exists():
-            available.append((i, path))
-
-    if not available:
-        return []
-
-    picked = random.sample(available, min(pick_count, len(available)))
-    return [p for _, p in picked]
-
-
-def handle_command(request_data: dict) -> tuple[dict, int]:
-    """Process a /command request or an intercepted chat message.
-
-    Expected JSON body:
-        {"text": "turn on the office lights", "speakers": [...]}
-
-    Executes the HA service call and plays pre-recorded audio on the area's
-    configured speaker(s). When called from the chat interceptor, the wrapper
-    returns "." as the chat response so the satellite stays quiet while the
-    area's media_player plays the pre-recorded WAV.
-
-    Returns (response_dict, status_code).
-    """
-    text = request_data.get("text", "").strip()
-    if not text:
-        return {"error": "Missing 'text' field"}, 400
-
-    try:
-        config = _load_cmd_config()
-    except FileNotFoundError as e:
-        return {"error": str(e)}, 500
-
-    match = match_light_command(text, config)
-    if match is None:
-        return {"matched": False}, 200
-
-    action, area_key, area_cfg = match
-    area_id = area_cfg["area_id"]
-    settings = config["settings"]
-
-    logger.info("Command matched: action={}, area={}, area_id={}", action, area_key, area_id)
-
-    # Call HA service to actually control the lights
-    action_cfg = config["commands"]["lights"]["actions"][action]
-    ha_domain = action_cfg["ha_domain"]
-    ha_service = action_cfg["ha_service"]
-    ha_service_data = action_cfg.get("ha_service_data")
-    _ha_call_service(ha_domain, ha_service, area_id, ha_service_data,
-                     settings["ha_url"], settings["ha_token"])
-
-    base_text = area_cfg.get("bases", {}).get(action, "Done.")
-
-    # Play pre-recorded audio on the area's speaker(s)
-    base_wav = _find_cmd_base_wav(config, "lights", area_key, action)
-    if not base_wav:
-        logger.warning("Command: no base WAV for lights/{}/{}", area_key, action)
-        return {"matched": False, "reason": "no base WAV"}, 200
-
-    followup_wavs = _pick_cmd_followup_wavs(config, "lights", area_key)
-
-    wav_paths = [base_wav] + followup_wavs
-    silence_ms = settings.get("silence_between_sentences_ms", 400)
-    sample_rate = settings.get("sample_rate", 24000)
-    combined_bytes = _concatenate_wavs(wav_paths, silence_ms, sample_rate)
-
-    serve_dir = Path(cfg.audio.ha_output_dir)
-    serve_dir.mkdir(parents=True, exist_ok=True)
-    _cleanup_old_commands(serve_dir)
-    filename = f"command_{uuid.uuid4().hex}.wav"
-    wav_path = serve_dir / filename
-    wav_path.write_bytes(combined_bytes)
-
-    serve_host = settings["serve_host"]
-    serve_port = settings["serve_port"]
-    media_url = f"http://{serve_host}:{serve_port}/{filename}"
-
-    # Use area-specific speaker if configured, else request override, else defaults
-    speakers = (request_data.get("speakers")
-                or area_cfg.get("speakers")
-                or settings.get("speakers", []))
-    _ha_play_media(config, media_url, speakers)
-
-    # Notify HUB75 display
-    wav_duration_s = _wav_duration_from_bytes(combined_bytes, sample_rate)
-    if _engine is not None:
-        _emit_ha_audio_event(
-            _engine,
-            text=f"[command:{action} {area_key}]",
-            source="command",
-            wav_duration_s=wav_duration_s,
-        )
-
-    logger.success("Command: {} {} -> audio={}, ha={}.{}", action, area_key,
-                   filename, ha_domain, ha_service)
-
-    return {
-        "matched": True,
-        "action": action,
-        "area": area_key,
-        "area_id": area_id,
-        "base_text": base_text,
-        "base_wav": base_wav.name,
-        "followups": [f.name for f in followup_wavs],
-        "media_url": media_url,
-        "ha_service": f"{ha_domain}.{ha_service}",
-    }, 200
-
-
-def _cleanup_old_commands(serve_dir: Path, max_age_s: int = 120) -> None:
-    """Remove old combined command WAVs."""
-    cutoff = time.time() - max_age_s
-    for f in serve_dir.glob("command_*.wav"):
-        try:
-            if f.stat().st_mtime < cutoff:
-                f.unlink()
-        except OSError:
-            pass
 
 
 def _find_base_wav(config: dict, scenario_name: str, entity_id: str | None, state: str | None, entity_name: str | None) -> Path | None:
@@ -1179,108 +913,10 @@ def _persona_rewrite(plain: str, utterance: str = "") -> str:
     return result.text or plain
 
 
-# Window after a successful Tier 1/2 turn during which the next user
-# utterance is treated as a home command even if it lacks a device
-# keyword. Five minutes covers natural follow-up rhythms ("still too
-# dark", "increase the brightness by ten percent", "actually a little
-# warmer") without holding the inheritance open indefinitely. Tunable
-# via FOLLOWUP_HOME_COMMAND_WINDOW_S env var.
-_FOLLOWUP_HOME_COMMAND_WINDOW_S = float(
-    os.environ.get("FOLLOWUP_HOME_COMMAND_WINDOW_S", "300"),
-)
-
-
-@dataclass
-class _RecentTierAction:
-    """Most-recent Tier 1/2 exchange for a conversation. Drives home-
-    command carry-over and prior-entity injection when a follow-up
-    turn lacks a device keyword."""
-    ts: float
-    tier: int
-    entity_ids: list[str]
-    service: str                       # e.g. "light.turn_on" ("" for Tier 1)
-    ha_conversation_id: str | None = None
-
-
-# Keyed by conversation_id; single-conversation deployments use "default".
-# In-memory so it's fast to read on every turn and doesn't depend on
-# DB-row ts semantics (compaction can stamp all rows with the same ts,
-# which would make a pure DB-based window check lie). Lost on container
-# restart — acceptable since carry-over is a short-window feature.
-_RECENT_TIER_ACTION: dict[str, _RecentTierAction] = {}
-_RECENT_TIER_LOCK = threading.Lock()
-
-
-def _stash_recent_tier_action(
-    conv_id: str,
-    *,
-    tier: int,
-    entity_ids: list[str],
-    service: str = "",
-    ha_conversation_id: str | None = None,
-) -> None:
-    """Record a successful Tier 1/2 turn so the next utterance can
-    inherit home-command intent and the specific entity context."""
-    with _RECENT_TIER_LOCK:
-        _RECENT_TIER_ACTION[conv_id] = _RecentTierAction(
-            ts=time.time(), tier=tier,
-            entity_ids=list(entity_ids),
-            service=service,
-            ha_conversation_id=ha_conversation_id,
-        )
-
-
-def _get_recent_tier_action(
-    conv_id: str = "default",
-    *,
-    max_age_s: float | None = None,
-) -> _RecentTierAction | None:
-    """Fetch the cached Tier 1/2 context if it's still within the
-    follow-up window. Returns None if unset or stale."""
-    budget = (
-        max_age_s if max_age_s is not None
-        else _FOLLOWUP_HOME_COMMAND_WINDOW_S
-    )
-    with _RECENT_TIER_LOCK:
-        ra = _RECENT_TIER_ACTION.get(conv_id)
-    if ra is None:
-        return None
-    if time.time() - ra.ts > budget:
-        return None
-    return ra
-
-
-def _clear_recent_tier_action(conv_id: str = "default") -> None:
-    """Drop the cached context. Called when a Tier 3 chitchat turn
-    lands (intervening chitchat cancels the carry-over lease) so
-    subsequent follow-ups don't inherit a stale device context."""
-    with _RECENT_TIER_LOCK:
-        _RECENT_TIER_ACTION.pop(conv_id, None)
-
-
-def _should_carry_over_home_command() -> bool:
-    """P0 2026-04-19 (follow-up bypass): when the most-recent assistant
-    turn resolved via Tier 1 or Tier 2, let the next user turn enter
-    the Tier 1/2 pipeline even if `looks_like_home_command` says no.
-
-    Reads the in-memory recent-action cache rather than the SQLite
-    store so compaction's uniform-ts write behaviour can't refresh the
-    age clock falsely. `looks_like_home_command` stays pure (keyword-
-    based); the carry-over policy lives here."""
-    return _get_recent_tier_action() is not None
-
-
-def _last_ha_conversation_id() -> "str | None":
-    """Look up the most-recent HA conversation_id from the engine's
-    conversation store. Returns None when the store is unavailable or
-    no HA exchange has been recorded yet."""
-    global _engine
-    if _engine is None:
-        return None
-    try:
-        return _engine._conversation_store.latest_ha_conversation_id()
-    except Exception:
-        return None
+# Carry-over state, the `_RecentTierAction` stash, and the
+# `_should_carry_over_home_command` / `_last_ha_conversation_id`
+# helpers have moved to `glados.core.session_memory.SessionMemory`
+# and are driven by the `CommandResolver`. See CURRENT_STATE.md.
 
 
 def _append_tier_exchange(
@@ -1347,353 +983,115 @@ def _emit_tier1_sse_response(
     handler.wfile.flush()
 
 
-def _try_tier2_disambiguation(
-    user_message: str, origin: str,
+def _build_source_context(
+    handler: "APIHandler", origin: str,
+) -> SourceContext:
+    """Build a SourceContext from incoming HTTP headers.
+
+    Reads `X-GLaDOS-Session-Id`, `X-GLaDOS-Area-Id`,
+    `X-GLaDOS-Principal`, and `X-GLaDOS-Satellite-Device-Id`. Origin
+    is passed in pre-validated by the caller. Falls back to a
+    UUID-derived session id when the client doesn't supply one —
+    first-turn semantics for that session, nothing carries over
+    from prior requests.
+    """
+    headers: dict[str, str] = {"X-GLaDOS-Origin": origin}
+    for h in (
+        "X-GLaDOS-Session-Id",
+        "X-GLaDOS-Area-Id",
+        "X-GLaDOS-Principal",
+        "X-GLaDOS-Satellite-Device-Id",
+    ):
+        v = handler.headers.get(h)
+        if v is not None:
+            headers[h] = v
+    return SourceContext.from_headers(headers, default_origin=origin)
+
+
+def _resolve_home_intent(
+    handler: "APIHandler",
+    user_message: str,
+    origin: str,
     *,
-    assume_home_command: bool = False,
-) -> "tuple[bool, str, dict] | None":
-    """Run Tier 2 disambiguator. Returns:
-      - None: disambiguator unavailable / not initialized
-      - (True, speech, audit_extra): handled, caller should emit `speech`
-      - (False, "", audit_extra): fall through to Tier 3 (full LLM)
+    emit: str,
+) -> bool:
+    """Shared body for both streaming and non-streaming Tier 1/2
+    resolution. `emit` is either "sse" or "json" — the only
+    difference between the two callers is how the spoken response
+    leaves the socket.
 
-    `audit_extra` carries the Tier 2 audit fields the caller writes.
+    Returns True when the resolver handled the request and a
+    response was written. False means Tier 3 should take over.
+    """
+    resolver = get_resolver()
+    if resolver is None:
+        # Resolver wasn't wired (HA WS init skipped because HA_TOKEN
+        # was unset, or startup raised). Fall through to Tier 3.
+        return False
 
-    `assume_home_command=True` signals that the home-command precheck
-    has already passed upstream (e.g., via carry-over from a prior
-    Tier 1/2 turn) so the disambiguator should bypass its internal
-    `looks_like_home_command` check. When carry-over is in play the
-    prior turn's entity_ids and service name are pulled from the
-    in-memory recent-action cache and passed to the disambiguator so
-    it can operate on the implied target even when fuzzy matching
-    alone returns zero candidates ('Increase the brightness by ten
-    percent' follow-up after dimming the desk lamp)."""
-    disambig = _intent.get_disambiguator()
-    if disambig is None:
-        return None
-    prior_entity_ids: list[str] = []
-    prior_service = ""
-    if assume_home_command:
-        recent = _get_recent_tier_action()
-        if recent is not None:
-            prior_entity_ids = list(recent.entity_ids)
-            prior_service = recent.service
-    t0 = time.perf_counter()
+    ctx = _build_source_context(handler, origin)
     try:
-        r = disambig.run(
-            user_message, source=origin,
-            assume_home_command=assume_home_command,
-            prior_entity_ids=prior_entity_ids or None,
-            prior_service=prior_service or None,
-        )
+        result = resolver.resolve(user_message, ctx)
     except Exception as exc:
-        logger.warning("Tier 2 disambiguator crashed: {}", exc)
-        return None
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    extra = {
-        "decision": r.decision,
-        "entity_ids": r.entity_ids,
-        "service": r.service,
-        "service_data": dict(r.service_data),
-        "rationale": r.rationale[:200],
-        "candidates_shown": len(r.candidates_shown),
-        "speech": (r.speech or "")[:500],
-    }
-    audit(AuditEvent(
-        ts=time.time(), origin=origin, kind="intent", tier=2,
-        utterance=user_message,
-        result=("ok:" + r.decision) if r.handled else f"fall_through:{r.rationale[:60]}",
-        latency_ms=elapsed_ms, extra=extra,
-    ))
-    if r.handled:
-        logger.info("Tier 2 {} ({}ms): {} -> {}", r.decision, elapsed_ms,
-                    user_message[:60], r.speech[:80])
-        return (True, r.speech, extra)
-    return (False, "", extra)
+        logger.warning("CommandResolver raised: {}", exc)
+        return False
+
+    if not result.handled:
+        return False
+
+    speech = result.spoken_response or "Done."
+    request_id = uuid.uuid4().hex[:12]
+
+    try:
+        if emit == "sse":
+            _emit_tier1_sse_response(handler, request_id, speech)
+        else:
+            handler._send_json({
+                "id": f"chatcmpl-{request_id}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "glados",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": speech},
+                    "finish_reason": "stop",
+                }],
+            })
+    except Exception as exc:
+        logger.warning("Resolver response write failed ({}): {}", emit, exc)
+        return False
+
+    # Persist the exchange into the engine's ConversationStore so
+    # subsequent Tier 3 calls see the full multi-turn history.
+    _append_tier_exchange(
+        user_message, speech, origin=origin,
+        tier=int(result.tier or 2),
+        ha_conversation_id=result.ha_conversation_id,
+    )
+    return True
 
 
 def _try_tier1_nonstreaming(
     handler: "APIHandler", user_message: str, origin: str,
-    *,
-    assume_home_command: bool = False,
 ) -> bool:
-    """Priority-gated wrapper. The real work is in _impl; the gate
-    tells the autonomy loop to yield this tick (see
-    glados.observability.priority)."""
+    """Priority-gated wrapper. The priority gate tells the autonomy
+    loop to yield this tick (see glados.observability.priority)."""
     from glados.observability import chat_in_flight
     with chat_in_flight():
-        return _try_tier1_nonstreaming_impl(
-            handler, user_message, origin,
-            assume_home_command=assume_home_command,
+        return _resolve_home_intent(
+            handler, user_message, origin, emit="json",
         )
-
-
-def _try_tier1_nonstreaming_impl(
-    handler: "APIHandler", user_message: str, origin: str,
-    *,
-    assume_home_command: bool = False,
-) -> bool:
-    """Non-streaming counterpart to `_try_tier1_fast_path`. Sends a
-    normal OpenAI-compatible JSON response on hit. Used by callers
-    like the WebUI's `/api/chat` proxy which posts `stream: false`.
-
-    Flow:
-      1. Try Tier 1 (HA conversation API).
-      2. On Tier 1 miss with should_disambiguate, try Tier 2.
-      3. If neither handled, return False so caller falls to Tier 3 LLM.
-    """
-    bridge = _ha.get_bridge()
-    if bridge is None:
-        return False
-    t0 = time.perf_counter()
-    # Phase B: pass HA's prior conversation_id forward so HA can
-    # maintain its multi-turn context across utterances.
-    prior_conv = _last_ha_conversation_id()
-    try:
-        result = bridge.process(
-            user_message, conversation_id=prior_conv, timeout_s=5.0,
-        )
-    except Exception as exc:
-        logger.debug("Tier 1 bridge call failed (non-stream): {}", exc)
-        return False
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-
-    if not result.handled:
-        audit(AuditEvent(
-            ts=time.time(), origin=origin, kind="intent", tier=1,
-            utterance=user_message,
-            result=f"miss:{result.error_code or result.response_type or 'unknown'}",
-            latency_ms=elapsed_ms,
-        ))
-        # Tier 2 only when HA's classifier said the utterance might be
-        # an intent but the target was ambiguous / no_intent_match. For
-        # other miss reasons (timeout, ha_not_connected, garbage_speech,
-        # unknown error_code) skip Tier 2 — those usually need full LLM.
-        # Tier 2 runs if HA suggested disambiguation OR if upstream
-        # flagged this as a carry-over follow-up. Carry-over means HA
-        # will almost certainly miss (no device noun) but Tier 2 can
-        # still act on the implied prior target.
-        if result.should_disambiguate or assume_home_command:
-            t2 = _try_tier2_disambiguation(
-                user_message, origin,
-                assume_home_command=assume_home_command,
-            )
-            if t2 is not None and t2[0]:
-                speech = t2[1] or "Done."
-                request_id = uuid.uuid4().hex[:12]
-                handler._send_json({
-                    "id": f"chatcmpl-{request_id}",
-                    "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": "glados",
-                    "choices": [{
-                        "index": 0,
-                        "message": {"role": "assistant", "content": speech},
-                        "finish_reason": "stop",
-                    }],
-                })
-                _append_tier_exchange(
-                    user_message, speech, origin=origin, tier=2,
-                    ha_conversation_id=result.conversation_id,
-                )
-                _stash_recent_tier_action(
-                    "default", tier=2,
-                    entity_ids=t2[2].get("entity_ids") or [],
-                    service=str(t2[2].get("service") or ""),
-                    ha_conversation_id=result.conversation_id,
-                )
-                return True
-        return False
-
-    plain_speech = result.speech or "Action executed."
-    speech = _persona_rewrite(plain_speech, utterance=user_message)
-    request_id = uuid.uuid4().hex[:12]
-    payload = {
-        "id": f"chatcmpl-{request_id}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": "glados",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": speech},
-            "finish_reason": "stop",
-        }],
-    }
-    try:
-        handler._send_json(payload)
-    except Exception as exc:
-        logger.warning("Tier 1 non-stream write failed: {}", exc)
-        audit(AuditEvent(
-            ts=time.time(), origin=origin, kind="intent", tier=1,
-            utterance=user_message, result=f"send_failed:{exc}",
-            latency_ms=elapsed_ms,
-        ))
-        return False
-    _append_tier_exchange(
-        user_message, speech, origin=origin, tier=1,
-        ha_conversation_id=result.conversation_id,
-    )
-    # Tier 1 doesn't surface entity_ids directly (HA handles them
-    # internally), but the carry-over lease still applies: if the
-    # next turn is a follow-up the disambiguator should see a non-
-    # empty prior_entity_ids — attempt to recover them from HA's
-    # response targets when present.
-    tier1_entity_ids = list(getattr(result, "entity_ids", None) or [])
-    _stash_recent_tier_action(
-        "default", tier=1,
-        entity_ids=tier1_entity_ids,
-        service="",
-        ha_conversation_id=result.conversation_id,
-    )
-    audit(AuditEvent(
-        ts=time.time(), origin=origin, kind="intent", tier=1,
-        utterance=user_message, result="ok",
-        latency_ms=int((time.perf_counter() - t0) * 1000),
-        extra={
-            "response_type": result.response_type,
-            "speech_plain": plain_speech[:500],
-            "speech": speech[:500],
-            "rewrote": speech != plain_speech,
-            "conversation_id": result.conversation_id,
-        },
-    ))
-    logger.info("Tier 1 hit (non-stream): {} -> {} ({}ms)",
-                user_message[:60], speech[:80],
-                int((time.perf_counter() - t0) * 1000))
-    return True
 
 
 def _try_tier1_fast_path(
     handler: "APIHandler", user_message: str, origin: str,
-    *,
-    assume_home_command: bool = False,
 ) -> bool:
-    """Priority-gated wrapper. See _try_tier1_fast_path_impl for behavior."""
+    """Priority-gated wrapper for the SSE path."""
     from glados.observability import chat_in_flight
     with chat_in_flight():
-        return _try_tier1_fast_path_impl(
-            handler, user_message, origin,
-            assume_home_command=assume_home_command,
+        return _resolve_home_intent(
+            handler, user_message, origin, emit="sse",
         )
-
-
-def _try_tier1_fast_path_impl(
-    handler: "APIHandler", user_message: str, origin: str,
-    *,
-    assume_home_command: bool = False,
-) -> bool:
-    """Return True if HA's conversation API handled the request and an
-    SSE response was sent. Return False if the caller should fall
-    through to the normal LLM streaming path."""
-    bridge = _ha.get_bridge()
-    if bridge is None:
-        return False
-    t0 = time.perf_counter()
-    # Phase B: pass HA's prior conversation_id forward so HA's intent
-    # parser maintains its own multi-turn context (e.g., follow-ups
-    # like "All lights" inherit the verb from the prior "turn off").
-    prior_conv = _last_ha_conversation_id()
-    try:
-        result = bridge.process(
-            user_message, conversation_id=prior_conv, timeout_s=5.0,
-        )
-    except Exception as exc:
-        logger.debug("Tier 1 bridge call failed: {}", exc)
-        return False
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-
-    if not result.handled:
-        # Audit the Tier 1 miss so we can measure hit-rate.
-        audit(AuditEvent(
-            ts=time.time(),
-            origin=origin,
-            kind="intent",
-            tier=1,
-            utterance=user_message,
-            result=f"miss:{result.error_code or result.response_type or 'unknown'}",
-            latency_ms=elapsed_ms,
-        ))
-        # Tier 2 runs if HA suggested disambiguation OR if upstream
-        # flagged this as a carry-over follow-up (prior turn was a
-        # Tier 1/2 ok:execute) — in the latter case HA will almost
-        # always miss because the utterance has no device noun, but
-        # Tier 2 can still act on the implied prior target.
-        if result.should_disambiguate or assume_home_command:
-            t2 = _try_tier2_disambiguation(
-                user_message, origin,
-                assume_home_command=assume_home_command,
-            )
-            if t2 is not None and t2[0]:
-                speech = t2[1] or "Done."
-                request_id = uuid.uuid4().hex[:12]
-                try:
-                    _emit_tier1_sse_response(handler, request_id, speech)
-                    _append_tier_exchange(
-                        user_message, speech, origin=origin, tier=2,
-                        ha_conversation_id=result.conversation_id,
-                    )
-                    _stash_recent_tier_action(
-                        "default", tier=2,
-                        entity_ids=t2[2].get("entity_ids") or [],
-                        service=str(t2[2].get("service") or ""),
-                        ha_conversation_id=result.conversation_id,
-                    )
-                    return True
-                except Exception as exc:
-                    logger.warning("Tier 2 SSE write failed: {}", exc)
-        return False
-
-    # Tier 1 hit — restyle HA's plain confirmation in GLaDOS voice
-    # before emitting. The rewriter is best-effort; on failure the
-    # original HA speech is sent as-is so the user always gets a reply.
-    plain_speech = result.speech or "Action executed."
-    speech = _persona_rewrite(plain_speech, utterance=user_message)
-    request_id = uuid.uuid4().hex[:12]
-    try:
-        _emit_tier1_sse_response(handler, request_id, speech)
-    except Exception as exc:
-        # Wire failure → audit and give up; caller falls through.
-        logger.warning("Tier 1 SSE write failed: {}", exc)
-        audit(AuditEvent(
-            ts=time.time(),
-            origin=origin,
-            kind="intent",
-            tier=1,
-            utterance=user_message,
-            result=f"sse_write_failed:{exc}",
-            latency_ms=elapsed_ms,
-        ))
-        return False
-    _append_tier_exchange(
-        user_message, speech, origin=origin, tier=1,
-        ha_conversation_id=result.conversation_id,
-    )
-    tier1_entity_ids = list(getattr(result, "entity_ids", None) or [])
-    _stash_recent_tier_action(
-        "default", tier=1,
-        entity_ids=tier1_entity_ids,
-        service="",
-        ha_conversation_id=result.conversation_id,
-    )
-    audit(AuditEvent(
-        ts=time.time(),
-        origin=origin,
-        kind="intent",
-        tier=1,
-        utterance=user_message,
-        result="ok",
-        latency_ms=int((time.perf_counter() - t0) * 1000),
-        extra={
-            "response_type": result.response_type,
-            "speech_plain": plain_speech[:500],
-            "speech": speech[:500],
-            "rewrote": speech != plain_speech,
-            "conversation_id": result.conversation_id,
-        },
-    ))
-    logger.info("Tier 1 hit: {} -> {} ({}ms)", user_message[:60],
-                speech[:80], int((time.perf_counter() - t0) * 1000))
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1921,10 +1319,12 @@ def _stream_chat_sse_impl(
     # hello to my friend") and inflates latency from ~3s to ~80s.
     # When False: take the lightweight chat path (no tools, no tool-hint,
     # keep the few-shot examples that steer toward textual replies).
-    is_home_command = (
-        looks_like_home_command(user_message)
-        or _should_carry_over_home_command()
-    )
+    #
+    # Carry-over follow-ups ("brighter" after a Tier 2 hit) are handled
+    # by the CommandResolver upstream; if we've reached this point the
+    # resolver fell through, so keyword detection alone is the right
+    # gate for Tier 3 prompt shape.
+    is_home_command = looks_like_home_command(user_message)
 
     # Build messages from conversation store + add user message
     messages = store.snapshot()
@@ -2468,8 +1868,6 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_chat_completions()
         elif self.path == "/announce":
             self._handle_announce()
-        elif self.path == "/command":
-            self._handle_command()
         elif self.path == "/doorbell/screen":
             self._handle_doorbell_screen()
         elif self.path == "/api/announcement-settings":
@@ -2832,22 +2230,6 @@ class APIHandler(BaseHTTPRequestHandler):
             "last_refresh": _ha_areas_last_refresh,
         })
 
-    def _handle_command(self) -> None:
-        try:
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length)
-            data = json.loads(body)
-        except (json.JSONDecodeError, ValueError) as e:
-            self._send_json(
-                {"error": {"message": f"Invalid JSON: {e}", "type": "invalid_request_error"}},
-                400,
-            )
-            return
-
-        with _cmd_lock:
-            result, status = handle_command(data)
-        self._send_json(result, status)
-
     def _handle_doorbell_screen(self) -> None:
         global _doorbell_screener
 
@@ -2962,30 +2344,16 @@ class APIHandler(BaseHTTPRequestHandler):
                 extra={"streaming": True},
             ))
 
-            # Stage 3 Phase 1 Tier 1: try HA's conversation API first.
-            # If HA resolves the intent cleanly, stream its speech back
-            # as SSE and skip the 10-20s LLM path entirely.
-            # Phase 6 follow-up: skip Tier 1 for utterances that clearly
-            # aren't home commands. HA's conversation API returning a
-            # garbage-speech miss (e.g. "Sorry, I couldn't understand")
-            # sometimes slips through Tier 1's filters and leaks to the
-            # user. Chitchat shouldn't round-trip to HA at all.
-            _is_keyword = looks_like_home_command(user_message)
-            _carry_over = (not _is_keyword) and _should_carry_over_home_command()
-            if (_is_keyword or _carry_over) and _try_tier1_fast_path(
-                self, user_message, origin,
-                assume_home_command=_carry_over,
-            ):
+            # Stage 3 Phase 7: single entry point. CommandResolver
+            # tries HA's conversation API (Tier 1) and the LLM
+            # disambiguator (Tier 2) behind one call, with session
+            # memory + learned-context carry-over handled internally.
+            # On miss → Tier 3 chitchat.
+            if _try_tier1_fast_path(self, user_message, origin):
                 return
-            # Tier 1/2 didn't claim this turn → Tier 3 chitchat owns it.
-            # Cancel the carry-over lease so the next follow-up doesn't
-            # try to inherit device context across a chat turn.
-            if not _is_keyword:
-                _clear_recent_tier_action()
 
-            # Chat path goes directly to LLM — no command interceptor.
-            # GLaDOS uses HA MCP tools to control devices herself. The command
-            # interceptor is for the voice pipeline only (pre-recorded WAV responses).
+            # Chat path goes directly to LLM. GLaDOS uses HA MCP tools
+            # to control devices herself when the resolver falls through.
             _stream_chat_sse(self, _engine, user_message, max(_response_timeout, 180.0))
             return
 
@@ -3012,22 +2380,11 @@ class APIHandler(BaseHTTPRequestHandler):
             extra={"streaming": False},
         ))
 
-        # Stage 3 Phase 1 Tier 1: try HA conversation API for the
-        # non-streaming path too (WebUI /api/chat uses stream:false).
-        # On hit, synthesize the OpenAI non-streaming response shape
-        # and skip the LLM+tool loop. Phase 6 follow-up: chitchat
-        # bypasses Tier 1 entirely (matches the streaming path).
-        _is_keyword = looks_like_home_command(user_message)
-        _carry_over = (not _is_keyword) and _should_carry_over_home_command()
-        if _is_keyword or _carry_over:
-            _nonstream_hit = _try_tier1_nonstreaming(
-                self, user_message, origin,
-                assume_home_command=_carry_over,
-            )
-            if _nonstream_hit:
-                return
-        if not _is_keyword:
-            _clear_recent_tier_action()
+        # Stage 3 Phase 7: CommandResolver handles Tier 1 + Tier 2
+        # + learned-context behind one call for both streaming and
+        # non-streaming paths.
+        if _try_tier1_nonstreaming(self, user_message, origin):
+            return
 
         # --- Command interceptor removed from chat path ---
         # GLaDOS uses HA MCP tools directly. Interceptor remains active only

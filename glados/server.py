@@ -190,6 +190,40 @@ def _init_ha_client() -> None:
         rewriter = PersonaRewriter(ollama_url=ollama_url, model=rewriter_model)
         init_rewriter(rewriter)
         logger.info("Persona rewriter ready; model={}", rewriter_model)
+
+        # CommandResolver — the single entry point for home-control
+        # intents. Sits in front of Tier 1 / Tier 2 and adds short-term
+        # session memory + durable learned-context with HA validation.
+        # See glados/core/command_resolver.py.
+        from pathlib import Path
+
+        from glados.core.command_resolver import (
+            CommandResolver, HAStateValidator, init_resolver,
+        )
+        from glados.core.learned_context import LearnedContextStore
+        from glados.core.session_memory import SessionMemory
+        from glados.core.user_preferences import load_user_preferences
+
+        data_dir = Path(os.environ.get("GLADOS_DATA", "/app/data"))
+        prefs_path = Path(config_dir) / "user_preferences.yaml"
+        preferences = load_user_preferences(prefs_path)
+        session_memory = SessionMemory()
+        learned_store = LearnedContextStore(data_dir / "learned_context.db")
+        state_validator = HAStateValidator(entity_cache=cache)
+        resolver = CommandResolver(
+            bridge=bridge,
+            disambiguator=disambig,
+            rewriter=rewriter,
+            session_memory=session_memory,
+            learned_context=learned_store,
+            preferences=preferences,
+            state_validator=state_validator,
+        )
+        init_resolver(resolver)
+        logger.info(
+            "CommandResolver ready; learned_ctx={} prefs={}",
+            data_dir / "learned_context.db", prefs_path,
+        )
     except Exception as exc:
         logger.warning("HA WS / Tier 2 init failed: {}", exc)
 
