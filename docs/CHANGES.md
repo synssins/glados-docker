@@ -948,4 +948,212 @@ set.
 
 ---
 
+## Change 12 — Stage 3 Phase 6 follow-ups: quality hotfixes + Logs + System + Ollama unification + chat self-healing
+
+**Date:** 2026-04-18 (late)
+**Status:** Complete
+**Commits:** `7768ce4` → `ccc0c1e` (11 code commits + prod-side vision URL flip)
+
+Everything after Change 11 landed. Grouped by narrative rather than
+commit order so the history of each fix stays readable.
+
+### Tier 2 conversational bleed + TTS Discover shape (`7768ce4`)
+
+Operator test on Phase 6 deploy: "Say hello to my little friend....
+His name is Alan." → Tier 2 fuzzy-matched "Alan" across twelve HA
+entities and the LLM produced a clarify response that read raw
+entity IDs verbatim to the user:
+
+    Ambiguity detected: binary_sensor.user_b_tablet_charging,
+    sensor.user_phone_car_name, binary_sensor.outdoor_is_dark,
+    … Specify which Alan you mean.
+
+Two fixes:
+
+- **Home-command precheck** (`rules.looks_like_home_command`). Tier 2
+  skips the LLM call entirely when the utterance has no device /
+  domain keyword and no known activity phrase. Audit rationale:
+  `no_home_command_intent`. Conversational input falls through to
+  Tier 3 untouched.
+- **Defense-in-depth speech-leak guard.** If the LLM's `speech`
+  field ever contains a candidate entity_id verbatim, Tier 2 falls
+  through instead of voicing it. Audit rationale:
+  `speech_leaked_entity_ids`.
+
+Also lands the third upstream voice-list shape for
+`discover_voices`: `{"voices": [...]}` (GLaDOS Piper) alongside the
+existing top-level-list and OpenAI `{"data": [...]}` shapes.
+
+### Tier 3 chitchat fast-path (`df84d07`)
+
+Even after Tier 2 stopped producing entity IDs, Tier 3 was framing
+chitchat as home-control queries ("If 'Alan' refers to a device or
+entity…"). Root cause: `_stream_chat_sse` unconditionally loaded the
+full MCP tool catalog (~9000 tokens) AND injected a "you MUST use
+the provided tools" reinforcement system message, even for
+utterances that carried no home-command signal.
+
+Fix: the `looks_like_home_command` precheck now gates the MCP-tool
+payload, the tool-hint reinforcement message, and the few-shot
+stripping logic in the streaming chat path. Chitchat turns ship with
+zero tools, no reinforcement, and the personality preprompt's
+textual few-shot examples intact (they're the desired reply shape
+for conversation). Tier 1 is gated too so HA's conversation API
+doesn't round-trip for pure chitchat.
+
+### WebUI Logs page (`b7d4e6d`, `b899fa0`, `9cb5a69`)
+
+Closes the follow-up from Change 11 — Phase 6 hid the log / audit
+path fields from the friendly forms, the right replacement is a
+dedicated viewer.
+
+- New Configuration → Logs sidebar entry between Memory and SSL.
+- Backend: `GET /api/logs/sources` (3 hardcoded sources) and `GET
+  /api/logs/tail?source=<k>&lines=<n>`. 5000-line hard cap. Docker
+  sources hit the Engine API over the bind-mounted
+  `/var/run/docker.sock:ro` (the docker CLI isn't installed in the
+  image). File source reads the last 1 MB of
+  `$GLADOS_LOGS/audit.jsonl`.
+- `docker/compose.yml` adds the read-only socket mount + a
+  `group_add` entry keyed off `GLADOS_DOCKER_GID` (the docker
+  group's GID on the host; unset / 0 disables container / chromadb
+  sources, audit still works).
+- Frontend: source dropdown + lines selector + filter (all /
+  warn+error / error-only) + Refresh + 10s Auto-refresh toggle.
+  Color spans for ERROR / WARN / SUCCESS / INFO / DEBUG across
+  loguru pipe-delimited levels AND JSONL `{"level":"..."}` fields.
+  Auto-refresh tears down on nav-away.
+
+Sockets / permissions tuning was done on the production host in
+place: `getent group docker` → `989`, operator compose patched to
+`group_add: ["989"]`, container recreated. Now `groups=0(root),989`
+and all three sources return live data.
+
+Live-streaming SSE tail was considered and skipped for v1; 10s
+polling covers the primary use case.
+
+### System-tab absorption (`bdbddda`)
+
+Last Phase 6 structural follow-up. Integrations had been rendering
+`auth`, `audit`, and `mode_entities` as advanced-hidden groups
+under the global backing — wrong tab. They're now on System.
+
+- Two new cards: "Maintenance Entities"
+  (mode_entities.maintenance_mode / .maintenance_speaker only —
+  silent_mode / dnd stay off this card, they belong on Audio &
+  Speakers) and "Authentication & Audit" (auth.enabled,
+  session_timeout_hours, audit.enabled). Both render into
+  `tab-config-system` via a new `cfgBuildForm(..., 'sysaux', ...)`
+  call so field IDs don't collide with any Integrations form that
+  might be in the DOM simultaneously.
+- `_cfgSaveSystemSubset` helper scopes its input collection to the
+  card host element, deep-merges into a snapshot of
+  `_cfgData.global`, and PUTs `/api/config/global`. Non-JSON error
+  responses (legacy `_send_error` path emits plain text) are
+  handled so failures don't surface as `Unexpected token 'V'`.
+- FIELD_META: `auth.enabled`, `auth.session_timeout_hours`,
+  `audit.enabled`, `mode_entities.maintenance_*` removed from
+  `advanced: true`. They now display by default on System. Sensitive
+  `auth.password_hash` + `auth.session_secret` stay advanced.
+- Integrations `skipKeys` extended from `['ssl','paths','network']`
+  to `['ssl','paths','network','auth','audit','mode_entities']`.
+  Integrations default view is now: home_assistant, silent_hours,
+  weather.
+
+### Ollama unification (Option C) (`2c250c9`, prod-side vision flip)
+
+Operator feedback on the Change 11 roadmap entry ("route WebUI chat
+to interactive B60"): asked whether there's a reason autonomy +
+vision can't share the same Ollama instance with the chat model.
+There isn't — Ollama supports multiple loaded models. The split
+was an artifact of pre-unified days when interactive used
+`glados:latest` and autonomy used a neutral qwen.
+
+Option C — unified by default, split still possible:
+
+- `.env.example` + `docker/compose.yml` scaffolding: comment out
+  `OLLAMA_AUTONOMY_URL` / `OLLAMA_VISION_URL` by default with a
+  note that unsetting either falls back to `OLLAMA_URL`. Operators
+  who want hardware isolation set the env var explicitly.
+- Code already implemented the fallback chain — no logic change.
+- Prod: removed the explicit `OLLAMA_AUTONOMY_URL` /
+  `OLLAMA_VISION_URL` env entries from the deployed compose on
+  10.0.0.50. Autonomy was already effectively unified via the
+  services.yaml URL; vision needed the model pulled onto B60 first
+  (`ollama pull llama3.2-vision:latest` against the interactive
+  instance, ~7.8 GB, lands alongside qwen2.5:14b with comfortable
+  headroom). Then `services.yaml` `ollama_vision.url` flipped from
+  `11435` to `11434`, container restarted, `cfg.service_url
+  ('ollama_vision')` now returns the B60 endpoint. T4 #0 is free
+  for other use.
+
+### Chat self-healing (`69568c2`, `7c0bf71`, `ccc0c1e`)
+
+Diagnosis was driven by operator report of "The chronometer reports
+12:47 PM" leading every chitchat reply. Debug trace showed the chat
+path was sending 41 messages to Ollama; 23 of them were
+`Autonomy update. Time: 2026-04-18T22:29:08 ...` turns written by
+the engine's autonomy loop into the same conversation store the
+chat path reads from. The 14B model picked up the timestamp framing
+and started prefixing every reply with "The chronometer reports".
+
+The user also said "Clear conversation" as a manual button was too
+operator-action-heavy. Self-healing instead.
+
+- `_sanitize_message_history` runs on every chat POST. Always-on
+  shape repairs: `tool_calls.function.arguments` coerced to a dict
+  (JSON-parse strings when possible, else `{}`); assistant turns
+  with `content=None` normalized to `""`. First repair was in
+  response to a real Ollama 400: `json: cannot unmarshal string
+  into Go struct field ChatRequest.messages.tool_calls.function.
+  arguments`. A single bad row had been blocking every chat.
+- Chitchat path (home-command: False) enables an autonomy-noise
+  filter that drops:
+  - user turns whose content starts with `"Autonomy update."` or
+    `"[summary]"`,
+  - `role: "tool"` messages (tool responses from autonomy-loop MCP
+    calls),
+  - `role: "assistant"` turns with empty content AND a `tool_calls`
+    payload (the stub that triggered the tool response).
+- Home-command path keeps the full history — MCP tool reasoning
+  sometimes benefits from seeing prior device actions.
+
+Measured effect on prod: message count for a cold-context chitchat
+dropped from 41 to 16 after the filter. Each request logs its
+repair + drop counts in the WARNING log (`[abc123] sanitized 0
+field(s), dropped 19 autonomy-noise message(s) before Ollama POST`)
+so the pollution rate stays visible without needing a manual
+inspection.
+
+Verified live: "What do you think of dogs?" returned
+
+> "Dogs are a curious species. They bark incessantly and lack the
+> intellectual capacity for higher reasoning. Yet they persist in
+> their loyalty, which is endearing, I suppose — if one considers
+> mindless devotion to be a virtue. In this facility, we have an
+> example of such behavior right underfoot."
+
+In-character, no time prefix, no home framing, references Frito
+naturally. Latency is another story — a separate pre-existing issue
+tracked as a roadmap entry.
+
+### Tests
+
+**317 pass** (was 255 at end of Phase 6 + 62 new across
+Change 12's scope):
+- `test_webui_cfg_form.py` / `test_config_defaults.py` — skipKeys
+  extension + fallback-chain guard
+- `test_discover_endpoints.py` — third voice-list shape
+- `test_disambiguator.py` — home-command precheck + speech-leak
+  guard + 32-case parametrisation
+- `test_webui_logs.py` — 11 structural assertions on the Logs page
+- `test_webui_system_absorption.py` — 17 structural assertions on
+  the System-tab absorption
+
+Health-dot bugs on the System page (TTS Engine + ChromaDB Memory
+showing red while both services are actually healthy) surfaced during
+final verification — tracked separately in roadmap.
+
+---
+
 ---
