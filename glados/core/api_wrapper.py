@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 import wave
+from dataclasses import dataclass
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -1180,12 +1181,81 @@ def _persona_rewrite(plain: str, utterance: str = "") -> str:
 
 # Window after a successful Tier 1/2 turn during which the next user
 # utterance is treated as a home command even if it lacks a device
-# keyword. Two minutes covers a natural follow-up ("still too dark",
-# "a bit more", "warmer please") without holding the inheritance open
-# indefinitely. Tunable via FOLLOWUP_HOME_COMMAND_WINDOW_S env var.
+# keyword. Five minutes covers natural follow-up rhythms ("still too
+# dark", "increase the brightness by ten percent", "actually a little
+# warmer") without holding the inheritance open indefinitely. Tunable
+# via FOLLOWUP_HOME_COMMAND_WINDOW_S env var.
 _FOLLOWUP_HOME_COMMAND_WINDOW_S = float(
-    os.environ.get("FOLLOWUP_HOME_COMMAND_WINDOW_S", "120"),
+    os.environ.get("FOLLOWUP_HOME_COMMAND_WINDOW_S", "300"),
 )
+
+
+@dataclass
+class _RecentTierAction:
+    """Most-recent Tier 1/2 exchange for a conversation. Drives home-
+    command carry-over and prior-entity injection when a follow-up
+    turn lacks a device keyword."""
+    ts: float
+    tier: int
+    entity_ids: list[str]
+    service: str                       # e.g. "light.turn_on" ("" for Tier 1)
+    ha_conversation_id: str | None = None
+
+
+# Keyed by conversation_id; single-conversation deployments use "default".
+# In-memory so it's fast to read on every turn and doesn't depend on
+# DB-row ts semantics (compaction can stamp all rows with the same ts,
+# which would make a pure DB-based window check lie). Lost on container
+# restart — acceptable since carry-over is a short-window feature.
+_RECENT_TIER_ACTION: dict[str, _RecentTierAction] = {}
+_RECENT_TIER_LOCK = threading.Lock()
+
+
+def _stash_recent_tier_action(
+    conv_id: str,
+    *,
+    tier: int,
+    entity_ids: list[str],
+    service: str = "",
+    ha_conversation_id: str | None = None,
+) -> None:
+    """Record a successful Tier 1/2 turn so the next utterance can
+    inherit home-command intent and the specific entity context."""
+    with _RECENT_TIER_LOCK:
+        _RECENT_TIER_ACTION[conv_id] = _RecentTierAction(
+            ts=time.time(), tier=tier,
+            entity_ids=list(entity_ids),
+            service=service,
+            ha_conversation_id=ha_conversation_id,
+        )
+
+
+def _get_recent_tier_action(
+    conv_id: str = "default",
+    *,
+    max_age_s: float | None = None,
+) -> _RecentTierAction | None:
+    """Fetch the cached Tier 1/2 context if it's still within the
+    follow-up window. Returns None if unset or stale."""
+    budget = (
+        max_age_s if max_age_s is not None
+        else _FOLLOWUP_HOME_COMMAND_WINDOW_S
+    )
+    with _RECENT_TIER_LOCK:
+        ra = _RECENT_TIER_ACTION.get(conv_id)
+    if ra is None:
+        return None
+    if time.time() - ra.ts > budget:
+        return None
+    return ra
+
+
+def _clear_recent_tier_action(conv_id: str = "default") -> None:
+    """Drop the cached context. Called when a Tier 3 chitchat turn
+    lands (intervening chitchat cancels the carry-over lease) so
+    subsequent follow-ups don't inherit a stale device context."""
+    with _RECENT_TIER_LOCK:
+        _RECENT_TIER_ACTION.pop(conv_id, None)
 
 
 def _should_carry_over_home_command() -> bool:
@@ -1193,26 +1263,11 @@ def _should_carry_over_home_command() -> bool:
     turn resolved via Tier 1 or Tier 2, let the next user turn enter
     the Tier 1/2 pipeline even if `looks_like_home_command` says no.
 
-    This is Option A from the roadmap. `looks_like_home_command` stays
-    pure (keyword-based); the carry-over policy lives here so the
-    keyword helper can still be reused elsewhere without pulling in
-    conversation-store state."""
-    global _engine
-    if _engine is None:
-        return False
-    try:
-        info = _engine._conversation_store.latest_assistant_tier_exchange()
-    except Exception:
-        return False
-    if not info:
-        return False
-    tier, ts, _ha_conv = info
-    if tier not in (1, 2):
-        return False
-    age = time.time() - ts
-    if age < 0 or age > _FOLLOWUP_HOME_COMMAND_WINDOW_S:
-        return False
-    return True
+    Reads the in-memory recent-action cache rather than the SQLite
+    store so compaction's uniform-ts write behaviour can't refresh the
+    age clock falsely. `looks_like_home_command` stays pure (keyword-
+    based); the carry-over policy lives here."""
+    return _get_recent_tier_action() is not None
 
 
 def _last_ha_conversation_id() -> "str | None":
@@ -1294,19 +1349,43 @@ def _emit_tier1_sse_response(
 
 def _try_tier2_disambiguation(
     user_message: str, origin: str,
+    *,
+    assume_home_command: bool = False,
 ) -> "tuple[bool, str, dict] | None":
     """Run Tier 2 disambiguator. Returns:
       - None: disambiguator unavailable / not initialized
       - (True, speech, audit_extra): handled, caller should emit `speech`
       - (False, "", audit_extra): fall through to Tier 3 (full LLM)
 
-    `audit_extra` carries the Tier 2 audit fields the caller writes."""
+    `audit_extra` carries the Tier 2 audit fields the caller writes.
+
+    `assume_home_command=True` signals that the home-command precheck
+    has already passed upstream (e.g., via carry-over from a prior
+    Tier 1/2 turn) so the disambiguator should bypass its internal
+    `looks_like_home_command` check. When carry-over is in play the
+    prior turn's entity_ids and service name are pulled from the
+    in-memory recent-action cache and passed to the disambiguator so
+    it can operate on the implied target even when fuzzy matching
+    alone returns zero candidates ('Increase the brightness by ten
+    percent' follow-up after dimming the desk lamp)."""
     disambig = _intent.get_disambiguator()
     if disambig is None:
         return None
+    prior_entity_ids: list[str] = []
+    prior_service = ""
+    if assume_home_command:
+        recent = _get_recent_tier_action()
+        if recent is not None:
+            prior_entity_ids = list(recent.entity_ids)
+            prior_service = recent.service
     t0 = time.perf_counter()
     try:
-        r = disambig.run(user_message, source=origin)
+        r = disambig.run(
+            user_message, source=origin,
+            assume_home_command=assume_home_command,
+            prior_entity_ids=prior_entity_ids or None,
+            prior_service=prior_service or None,
+        )
     except Exception as exc:
         logger.warning("Tier 2 disambiguator crashed: {}", exc)
         return None
@@ -1335,17 +1414,24 @@ def _try_tier2_disambiguation(
 
 def _try_tier1_nonstreaming(
     handler: "APIHandler", user_message: str, origin: str,
+    *,
+    assume_home_command: bool = False,
 ) -> bool:
     """Priority-gated wrapper. The real work is in _impl; the gate
     tells the autonomy loop to yield this tick (see
     glados.observability.priority)."""
     from glados.observability import chat_in_flight
     with chat_in_flight():
-        return _try_tier1_nonstreaming_impl(handler, user_message, origin)
+        return _try_tier1_nonstreaming_impl(
+            handler, user_message, origin,
+            assume_home_command=assume_home_command,
+        )
 
 
 def _try_tier1_nonstreaming_impl(
     handler: "APIHandler", user_message: str, origin: str,
+    *,
+    assume_home_command: bool = False,
 ) -> bool:
     """Non-streaming counterpart to `_try_tier1_fast_path`. Sends a
     normal OpenAI-compatible JSON response on hit. Used by callers
@@ -1383,8 +1469,15 @@ def _try_tier1_nonstreaming_impl(
         # an intent but the target was ambiguous / no_intent_match. For
         # other miss reasons (timeout, ha_not_connected, garbage_speech,
         # unknown error_code) skip Tier 2 — those usually need full LLM.
-        if result.should_disambiguate:
-            t2 = _try_tier2_disambiguation(user_message, origin)
+        # Tier 2 runs if HA suggested disambiguation OR if upstream
+        # flagged this as a carry-over follow-up. Carry-over means HA
+        # will almost certainly miss (no device noun) but Tier 2 can
+        # still act on the implied prior target.
+        if result.should_disambiguate or assume_home_command:
+            t2 = _try_tier2_disambiguation(
+                user_message, origin,
+                assume_home_command=assume_home_command,
+            )
             if t2 is not None and t2[0]:
                 speech = t2[1] or "Done."
                 request_id = uuid.uuid4().hex[:12]
@@ -1401,6 +1494,12 @@ def _try_tier1_nonstreaming_impl(
                 })
                 _append_tier_exchange(
                     user_message, speech, origin=origin, tier=2,
+                    ha_conversation_id=result.conversation_id,
+                )
+                _stash_recent_tier_action(
+                    "default", tier=2,
+                    entity_ids=t2[2].get("entity_ids") or [],
+                    service=str(t2[2].get("service") or ""),
                     ha_conversation_id=result.conversation_id,
                 )
                 return True
@@ -1434,6 +1533,18 @@ def _try_tier1_nonstreaming_impl(
         user_message, speech, origin=origin, tier=1,
         ha_conversation_id=result.conversation_id,
     )
+    # Tier 1 doesn't surface entity_ids directly (HA handles them
+    # internally), but the carry-over lease still applies: if the
+    # next turn is a follow-up the disambiguator should see a non-
+    # empty prior_entity_ids — attempt to recover them from HA's
+    # response targets when present.
+    tier1_entity_ids = list(getattr(result, "entity_ids", None) or [])
+    _stash_recent_tier_action(
+        "default", tier=1,
+        entity_ids=tier1_entity_ids,
+        service="",
+        ha_conversation_id=result.conversation_id,
+    )
     audit(AuditEvent(
         ts=time.time(), origin=origin, kind="intent", tier=1,
         utterance=user_message, result="ok",
@@ -1454,15 +1565,22 @@ def _try_tier1_nonstreaming_impl(
 
 def _try_tier1_fast_path(
     handler: "APIHandler", user_message: str, origin: str,
+    *,
+    assume_home_command: bool = False,
 ) -> bool:
     """Priority-gated wrapper. See _try_tier1_fast_path_impl for behavior."""
     from glados.observability import chat_in_flight
     with chat_in_flight():
-        return _try_tier1_fast_path_impl(handler, user_message, origin)
+        return _try_tier1_fast_path_impl(
+            handler, user_message, origin,
+            assume_home_command=assume_home_command,
+        )
 
 
 def _try_tier1_fast_path_impl(
     handler: "APIHandler", user_message: str, origin: str,
+    *,
+    assume_home_command: bool = False,
 ) -> bool:
     """Return True if HA's conversation API handled the request and an
     SSE response was sent. Return False if the caller should fall
@@ -1495,9 +1613,16 @@ def _try_tier1_fast_path_impl(
             result=f"miss:{result.error_code or result.response_type or 'unknown'}",
             latency_ms=elapsed_ms,
         ))
-        # Tier 2 only when HA suggested disambiguation might help.
-        if result.should_disambiguate:
-            t2 = _try_tier2_disambiguation(user_message, origin)
+        # Tier 2 runs if HA suggested disambiguation OR if upstream
+        # flagged this as a carry-over follow-up (prior turn was a
+        # Tier 1/2 ok:execute) — in the latter case HA will almost
+        # always miss because the utterance has no device noun, but
+        # Tier 2 can still act on the implied prior target.
+        if result.should_disambiguate or assume_home_command:
+            t2 = _try_tier2_disambiguation(
+                user_message, origin,
+                assume_home_command=assume_home_command,
+            )
             if t2 is not None and t2[0]:
                 speech = t2[1] or "Done."
                 request_id = uuid.uuid4().hex[:12]
@@ -1505,6 +1630,12 @@ def _try_tier1_fast_path_impl(
                     _emit_tier1_sse_response(handler, request_id, speech)
                     _append_tier_exchange(
                         user_message, speech, origin=origin, tier=2,
+                        ha_conversation_id=result.conversation_id,
+                    )
+                    _stash_recent_tier_action(
+                        "default", tier=2,
+                        entity_ids=t2[2].get("entity_ids") or [],
+                        service=str(t2[2].get("service") or ""),
                         ha_conversation_id=result.conversation_id,
                     )
                     return True
@@ -1535,6 +1666,13 @@ def _try_tier1_fast_path_impl(
         return False
     _append_tier_exchange(
         user_message, speech, origin=origin, tier=1,
+        ha_conversation_id=result.conversation_id,
+    )
+    tier1_entity_ids = list(getattr(result, "entity_ids", None) or [])
+    _stash_recent_tier_action(
+        "default", tier=1,
+        entity_ids=tier1_entity_ids,
+        service="",
         ha_conversation_id=result.conversation_id,
     )
     audit(AuditEvent(
@@ -2832,10 +2970,18 @@ class APIHandler(BaseHTTPRequestHandler):
             # garbage-speech miss (e.g. "Sorry, I couldn't understand")
             # sometimes slips through Tier 1's filters and leaks to the
             # user. Chitchat shouldn't round-trip to HA at all.
-            if (looks_like_home_command(user_message)
-                    or _should_carry_over_home_command()) \
-                    and _try_tier1_fast_path(self, user_message, origin):
+            _is_keyword = looks_like_home_command(user_message)
+            _carry_over = (not _is_keyword) and _should_carry_over_home_command()
+            if (_is_keyword or _carry_over) and _try_tier1_fast_path(
+                self, user_message, origin,
+                assume_home_command=_carry_over,
+            ):
                 return
+            # Tier 1/2 didn't claim this turn → Tier 3 chitchat owns it.
+            # Cancel the carry-over lease so the next follow-up doesn't
+            # try to inherit device context across a chat turn.
+            if not _is_keyword:
+                _clear_recent_tier_action()
 
             # Chat path goes directly to LLM — no command interceptor.
             # GLaDOS uses HA MCP tools to control devices herself. The command
@@ -2871,10 +3017,17 @@ class APIHandler(BaseHTTPRequestHandler):
         # On hit, synthesize the OpenAI non-streaming response shape
         # and skip the LLM+tool loop. Phase 6 follow-up: chitchat
         # bypasses Tier 1 entirely (matches the streaming path).
-        if looks_like_home_command(user_message) or _should_carry_over_home_command():
-            _nonstream_hit = _try_tier1_nonstreaming(self, user_message, origin)
+        _is_keyword = looks_like_home_command(user_message)
+        _carry_over = (not _is_keyword) and _should_carry_over_home_command()
+        if _is_keyword or _carry_over:
+            _nonstream_hit = _try_tier1_nonstreaming(
+                self, user_message, origin,
+                assume_home_command=_carry_over,
+            )
             if _nonstream_hit:
                 return
+        if not _is_keyword:
+            _clear_recent_tier_action()
 
         # --- Command interceptor removed from chat path ---
         # GLaDOS uses HA MCP tools directly. Interceptor remains active only

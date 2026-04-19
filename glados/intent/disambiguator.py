@@ -132,6 +132,9 @@ class Disambiguator:
         utterance: str,
         source: str,
         source_area: str | None = None,
+        assume_home_command: bool = False,
+        prior_entity_ids: list[str] | None = None,
+        prior_service: str | None = None,
     ) -> DisambiguationResult:
         """Drive a single utterance through Tier 2.
 
@@ -140,15 +143,30 @@ class Disambiguator:
         fuzzy candidate lookup boosts entities in that area so "the
         reading lamp" said from a living-room satellite reliably
         resolves to the living-room reading lamp without a clarify
-        round trip."""
+        round trip.
+
+        `assume_home_command` tells the disambiguator the upstream
+        caller has already proven this is a home command (typically
+        via carry-over from a prior Tier 1/2 turn), so it should
+        bypass its own `looks_like_home_command` precheck. Without
+        this, a follow-up like "Increase the brightness by ten
+        percent" — which has no device keyword — is rejected at the
+        precheck before the LLM ever sees the candidates.
+
+        `prior_entity_ids` / `prior_service` carry the exact entity
+        target of the most recent Tier 1/2 exchange. When provided,
+        those entities are injected as synthetic full-coverage
+        candidates so the LLM can act on the implied target even
+        when fuzzy matching on the current utterance finds nothing."""
         t0 = time.perf_counter()
 
         # 0. Home-command precheck. Without this, a conversational
         # utterance like "Say hello to my friend, his name is Alan"
         # gets fuzzy-matched against every entity in the house and
         # the LLM produces an ambiguity response. Tier 3 is the
-        # right place to handle chitchat.
-        if not looks_like_home_command(utterance):
+        # right place to handle chitchat. Carry-over callers that
+        # have already proven home-command intent bypass this gate.
+        if not assume_home_command and not looks_like_home_command(utterance):
             return self._fall_through(
                 "no_home_command_intent",
                 utterance[:120], t0,
@@ -168,6 +186,21 @@ class Disambiguator:
             limit=cand_limit,
             source_area=source_area,
         )
+
+        # Carry-over injection: when the caller told us this is a
+        # follow-up on a specific prior target, surface those entities
+        # as high-ranking candidates even if the fuzzy lookup on the
+        # current utterance missed them. This is what makes
+        # "Increase the brightness by ten percent" act on the desk
+        # lamp that was targeted in the previous turn.
+        if assume_home_command and prior_entity_ids:
+            prior_matches = self._lookup_prior_candidates(prior_entity_ids)
+            # De-dup by entity_id; prior candidates win the slot.
+            keep_ids = {c.entity.entity_id for c in prior_matches}
+            candidates = prior_matches + [
+                c for c in candidates if c.entity.entity_id not in keep_ids
+            ]
+
         if not candidates:
             return self._fall_through(
                 "no_candidates",
@@ -186,6 +219,10 @@ class Disambiguator:
         prompt_messages = self._build_prompt(
             utterance=utterance, source=source,
             candidates=candidates, state_fresh=state_fresh,
+            prior_entity_ids=(
+                list(prior_entity_ids) if assume_home_command else None
+            ),
+            prior_service=(prior_service if assume_home_command else None),
         )
         try:
             raw = self._call_ollama(prompt_messages)
@@ -389,6 +426,34 @@ class Disambiguator:
 
     # ── Helpers ───────────────────────────────────────────────
 
+    def _lookup_prior_candidates(
+        self, entity_ids: list[str],
+    ) -> list[CandidateMatch]:
+        """Build full-coverage CandidateMatch entries for the targets
+        of the most recent Tier 1/2 exchange. Synthesized scores are
+        above the WRatio admission gate so the LLM sees them at the
+        top of the candidate list; coverage is reported as 1.0 because
+        the caller has already proven the intent binding.
+
+        Missing entity_ids are silently skipped — the cache may have
+        been reset, the entity could have been removed, etc."""
+        out: list[CandidateMatch] = []
+        for eid in entity_ids:
+            ent = self._cache.get(eid)
+            if ent is None:
+                continue
+            out.append(CandidateMatch(
+                entity=ent,
+                matched_name=ent.friendly_name or ent.entity_id,
+                # Above the per-domain cutoff by design; the carry-
+                # over signal is what earned the seat, not WRatio.
+                score=100.0,
+                sensitive=(ent.domain in {"lock", "alarm_control_panel", "camera"}),
+                coverage=1.0,
+                area_match=None,
+            ))
+        return out
+
     def _fall_through(
         self,
         reason: str,
@@ -410,6 +475,8 @@ class Disambiguator:
         source: str,
         candidates: list[CandidateMatch],
         state_fresh: bool,
+        prior_entity_ids: list[str] | None = None,
+        prior_service: str | None = None,
     ) -> list[dict[str, str]]:
         """Build the chat-format messages for the autonomy LLM."""
         rules = self._rules
@@ -646,8 +713,21 @@ class Disambiguator:
                 f"score={c.score:.0f} | sensitive={c.sensitive}"
                 f"{coverage_segment}{area_segment}{attr_segment}"
             )
+        followup_segment = ""
+        if prior_entity_ids:
+            id_list = ", ".join(prior_entity_ids)
+            svc = f", service={prior_service}" if prior_service else ""
+            followup_segment = (
+                f"\nFollow-up context: the user's PREVIOUS turn acted on "
+                f"entities [{id_list}]{svc}. The current utterance has "
+                f"NO explicit device noun — it is a refinement of that "
+                f"prior action. PREFER the prior entities (listed first "
+                f"in the candidate list) unless the current utterance "
+                f"clearly names a different target.\n"
+            )
         user = (
-            f'User said: "{utterance}"\n\n'
+            f'User said: "{utterance}"\n'
+            f"{followup_segment}\n"
             "Candidate entities (top fuzzy matches from local cache):\n"
             + "\n".join(cand_lines) + "\n\n"
             "Decide and respond as JSON."

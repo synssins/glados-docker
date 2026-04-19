@@ -630,6 +630,113 @@ class TestServiceData:
         assert r.decision == "clarify"
         assert ", human" not in r.speech.lower()
 
+    def test_assume_home_command_bypasses_precheck(self) -> None:
+        """P0 2026-04-19: 'Increase the brightness by ten percent' as a
+        follow-up after a desk-lamp action has no device keyword; the
+        disambiguator's internal precheck used to reject it before the
+        LLM ever saw the candidates. Carry-over callers pass
+        assume_home_command=True to bypass that gate."""
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.office_desk_monitor_lamp",
+                       "Office Desk Monitor Lamp", state="on",
+                       extra_attrs={"brightness": 76}),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.office_desk_monitor_lamp"],'
+                '"service":"turn_on",'
+                '"service_data":{"brightness_pct":40},'
+                '"speech":"Brighter.","rationale":"follow-up"}'
+            ),
+        )
+        # Without the bypass, this utterance would fall through at
+        # no_home_command_intent.
+        r = disambig.run(
+            "increase the brightness by ten percent",
+            source="webui_chat",
+            assume_home_command=True,
+            prior_entity_ids=["light.office_desk_monitor_lamp"],
+            prior_service="light.turn_on",
+        )
+        assert r.decision == "execute"
+        assert r.entity_ids == ["light.office_desk_monitor_lamp"]
+
+    def test_prior_entities_injected_when_fuzzy_misses(self) -> None:
+        """A follow-up like 'a bit more' has no fuzzy match against
+        any entity name; the prior entity carries through as a synthetic
+        candidate so Tier 2 can still act."""
+        disambig, ha, cache = _make(
+            cache_states=[
+                _state("light.office_desk_monitor_lamp",
+                       "Office Desk Monitor Lamp", state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.office_desk_monitor_lamp"],'
+                '"service":"turn_on",'
+                '"service_data":{"brightness_pct":85},'
+                '"speech":"Brighter.","rationale":"follow-up"}'
+            ),
+            # Force the fuzzy lookup to return nothing so we exercise
+            # the injection path specifically.
+            force_candidates=False,
+        )
+        # Defensive: make sure our test setup actually has fuzzy
+        # returning zero for this utterance.
+        assert cache.get_candidates("a bit more", domain_filter=["light"]) == []
+        r = disambig.run(
+            "a bit more",
+            source="webui_chat",
+            assume_home_command=True,
+            prior_entity_ids=["light.office_desk_monitor_lamp"],
+            prior_service="light.turn_on",
+        )
+        assert r.decision == "execute"
+        assert r.entity_ids == ["light.office_desk_monitor_lamp"]
+        assert r.service_data == {"brightness_pct": 85}
+
+    def test_prior_entities_deduped_with_fuzzy_hits(self) -> None:
+        """If fuzzy also surfaces the prior entity, it should appear
+        once (with the prior-entity synthetic rank) rather than twice."""
+        from glados.ha.entity_cache import CandidateMatch
+
+        disambig, ha, cache = _make(
+            cache_states=[
+                _state("light.office_desk_monitor_lamp",
+                       "Office Desk Monitor Lamp", state="on"),
+                _state("light.arc", "Living Room Arc Lamp", state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.office_desk_monitor_lamp"],'
+                '"service":"turn_on",'
+                '"speech":"Done.","rationale":"x"}'
+            ),
+        )
+        msgs_captured: list[list[dict]] = []
+
+        def _capture(messages):  # type: ignore[override]
+            msgs_captured.append(messages)
+            return (
+                '{"decision":"execute",'
+                '"entity_ids":["light.office_desk_monitor_lamp"],'
+                '"service":"turn_on",'
+                '"speech":"Done.","rationale":"x"}'
+            )
+
+        disambig._call_ollama = _capture  # type: ignore[method-assign]
+        disambig.run(
+            "desk lamp brighter",
+            source="webui_chat",
+            assume_home_command=True,
+            prior_entity_ids=["light.office_desk_monitor_lamp"],
+            prior_service="light.turn_on",
+        )
+        # The prompt should contain each candidate id at most once.
+        user_prompt = msgs_captured[0][-1]["content"]
+        assert user_prompt.count("id=light.office_desk_monitor_lamp") == 1
+
     def test_execute_no_ack_preserves_service_data(self) -> None:
         """A call_service timeout still reports the service_data that
         was requested so audit rows stay truthful."""
