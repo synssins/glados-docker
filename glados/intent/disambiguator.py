@@ -251,10 +251,87 @@ def _entity_search_text(entity: EntityState) -> str:
     ]).lower()
 
 
+def _unwrap_llm_response(decision: dict[str, Any]) -> dict[str, Any]:
+    """Peel off common LLM wrapper shapes that aren't in the schema.
+
+    Observed on live qwen2.5:14b on 2026-04-19:
+      {"response": {"type": "json", "data": {"actions": [...], ...}}}
+    The real payload is nested under response.data. Unwrap it so the
+    parser can see the action list. Never wraps more than once; this
+    is a best-effort normalization for known drift patterns.
+    """
+    if not isinstance(decision, dict):
+        return decision  # type: ignore[return-value]
+    # {"response": {"data": {...}}}
+    resp = decision.get("response")
+    if isinstance(resp, dict):
+        data = resp.get("data")
+        if isinstance(data, dict):
+            return data
+    # {"result": {...}} — another variant seen occasionally
+    result = decision.get("result")
+    if isinstance(result, dict) and (
+        "actions" in result or "decision" in result
+        or ("entity_ids" in result and "service" in result)
+    ):
+        return result
+    return decision
+
+
+def _coerce_entity_ids(a: dict[str, Any]) -> list[str]:
+    """Accept per-action entity references in several shapes.
+
+    LLM drift patterns observed:
+      - entity_ids: ["light.x", "light.y"]   (correct, list)
+      - entity_id:  "light.x"                (singular string)
+      - entity_id:  ["light.x"]              (singular field, list value)
+      - entity:     "light.x"                (typo field name)
+    """
+    raw = a.get("entity_ids")
+    if isinstance(raw, list):
+        return [str(e) for e in raw if isinstance(e, str) and e]
+    if isinstance(raw, str) and raw:
+        return [raw]
+    raw = a.get("entity_id")
+    if isinstance(raw, str) and raw:
+        return [raw]
+    if isinstance(raw, list):
+        return [str(e) for e in raw if isinstance(e, str) and e]
+    raw = a.get("entity")
+    if isinstance(raw, str) and raw:
+        return [raw]
+    return []
+
+
+def _coerce_service(a: dict[str, Any]) -> str:
+    """Accept per-action service in several shapes.
+
+    LLM drift patterns observed:
+      - service: "light.turn_on"     (correct)
+      - action:  "turn_on"           (field renamed)
+      - method:  "turn_on"           (another rename)
+    """
+    for key in ("service", "action", "method"):
+        v = a.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _coerce_service_data(a: dict[str, Any]) -> dict[str, Any]:
+    """Per-action service_data may arrive under its proper name or
+    renamed to `data` / `params` / `parameters`."""
+    for key in ("service_data", "data", "params", "parameters"):
+        v = a.get(key)
+        if isinstance(v, dict):
+            return dict(v)
+    return {}
+
+
 def _parse_actions(decision: dict[str, Any]) -> list[dict[str, Any]]:
     """Normalize the LLM's `execute` output into a list of actions.
 
-    Supports two schemas:
+    Supports two schemas + tolerant variants:
       - SHAPE 1 (legacy single-action): top-level `entity_ids` +
         `service` + `service_data`. Wrapped into a single-element
         list so downstream code only handles one shape.
@@ -262,11 +339,21 @@ def _parse_actions(decision: dict[str, Any]) -> list[dict[str, Any]]:
         service_data?}, ...]`. Kept verbatim, filtered to valid
         entries.
 
-    An entry is valid when it has a non-empty `service` string AND
-    a non-empty `entity_ids` list. Invalid entries are dropped.
-    Returns an empty list when the LLM produced nothing usable —
-    caller treats that as a missing-fields fall-through.
+    Tolerant of common LLM drift:
+      - Response may be wrapped in {"response": {"data": ...}} or
+        {"result": ...} — unwrapped automatically.
+      - Per-action service field may be `action` or `method`
+        instead of `service`.
+      - Per-action entity target may be `entity_id` (str or list)
+        or `entity` instead of `entity_ids`.
+      - service_data may arrive as `data`, `params`, or `parameters`.
+
+    An entry is valid when it has a non-empty service string AND at
+    least one entity id. Invalid entries are dropped. Returns an
+    empty list when the LLM produced nothing usable — caller treats
+    that as a missing-fields fall-through.
     """
+    decision = _unwrap_llm_response(decision)
     out: list[dict[str, Any]] = []
 
     # SHAPE 2 path — preferred when `actions` list is present.
@@ -275,37 +362,38 @@ def _parse_actions(decision: dict[str, Any]) -> list[dict[str, Any]]:
         for a in raw_actions:
             if not isinstance(a, dict):
                 continue
-            svc = str(a.get("service", "")).strip()
+            svc = _coerce_service(a)
             if not svc:
                 continue
-            eids = [
-                str(e) for e in (a.get("entity_ids") or [])
-                if isinstance(e, str) and e
-            ]
+            eids = _coerce_entity_ids(a)
             if not eids:
                 continue
-            sd_raw = a.get("service_data")
-            sd = sd_raw if isinstance(sd_raw, dict) else {}
             out.append({
                 "service": svc,
                 "entity_ids": eids,
-                "service_data": sd,
+                "service_data": _coerce_service_data(a),
             })
+        if out:
+            return out
+        # An `actions` list that contained entries but none parsed is
+        # not a SHAPE 1 candidate — fall through to empty return.
         return out
 
-    # SHAPE 1 fallback — top-level single-action fields.
-    svc = str(decision.get("service", "")).strip()
-    eids = [
-        str(e) for e in (decision.get("entity_ids") or [])
-        if isinstance(e, str) and e
-    ]
-    sd_raw = decision.get("service_data")
-    sd = sd_raw if isinstance(sd_raw, dict) else {}
+    # SHAPE 1 fallback — top-level single-action fields (also with
+    # the same tolerant field names).
+    svc = _coerce_service(decision)
+    eids = _coerce_entity_ids(decision)
+    if not eids:
+        # Try the top-level plural form explicitly (most common
+        # legacy shape).
+        raw = decision.get("entity_ids")
+        if isinstance(raw, list):
+            eids = [str(e) for e in raw if isinstance(e, str) and e]
     if svc and eids:
         out.append({
             "service": svc,
             "entity_ids": eids,
-            "service_data": sd,
+            "service_data": _coerce_service_data(decision),
         })
     return out
 
@@ -520,22 +608,27 @@ class Disambiguator:
                 utterance=utterance, source=source, llm_raw=raw,
             )
 
+        # Unwrap common LLM wrapper shapes before field lookups
+        # ({"response": {"data": {...}}}, {"result": {...}}) so the
+        # rest of this method reads the actual payload.
+        decision = _unwrap_llm_response(decision)
+
         action = str(decision.get("decision", "")).lower()
         # Defensive: when the LLM omits `decision` but includes an
         # `actions` list (or the legacy `entity_ids`+`service` pair),
         # infer `execute`. Live 14B-instruct occasionally drops the
-        # decision key when emitting SHAPE 2 compound output —
-        # observed 2026-04-19 on the "front entryway + kitchen"
-        # compound turn. Inferring is safer than falling through to
-        # Tier 3 chitchat which then speaks as if it acted without
-        # actually firing any tool calls.
+        # decision key when emitting SHAPE 2 compound output.
+        # Inferring is safer than falling through to Tier 3 chitchat
+        # which then speaks as if it acted without actually firing
+        # any tool calls.
         if not action:
             has_actions = (
                 isinstance(decision.get("actions"), list)
                 and decision.get("actions")
             )
             has_legacy = (
-                decision.get("entity_ids") and decision.get("service")
+                (decision.get("entity_ids") or decision.get("entity_id"))
+                and (decision.get("service") or decision.get("action"))
             )
             if has_actions or has_legacy:
                 action = "execute"
@@ -543,7 +636,14 @@ class Disambiguator:
                     "Tier 2 inferred decision=execute from structure "
                     "(raw had no 'decision' field)"
                 )
-        speech = str(decision.get("speech", "")).strip()
+        # Speech field aliases — LLM sometimes emits `message`
+        # instead of `speech`.
+        speech = ""
+        for key in ("speech", "message"):
+            v = decision.get(key)
+            if isinstance(v, str) and v.strip():
+                speech = v.strip()
+                break
         # Safety net for prompt drift: the disambiguator system prompt
         # explicitly tells the LLM not to tack vocatives like "test
         # subject" onto the end of speech, but 14B instruct models
