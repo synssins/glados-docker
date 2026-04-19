@@ -1156,4 +1156,159 @@ final verification — tracked separately in roadmap.
 
 ---
 
+## Change 13 — Post-unification cleanup: priority gate, health-probe fix, chat-URL sync
+
+**Date:** 2026-04-19 (late-night)
+**Status:** Complete
+**Commits:** `ad24c20` → `23a4d92`
+
+Follow-up wave after the operator exercised the unified-Ollama
+default and surfaced four real issues. Each one is a cleanup of a
+Phase-6-era decision that didn't hold up under single-GPU load.
+
+### Autonomy yields to chat on shared Ollama (`ad24c20`)
+
+Operator report 2026-04-19: "Set the desk lamp to 10%" → Tier 1
+miss → Tier 2 **`llm_call_failed: timed out`** at 25 s → Tier 3
+fallback → 167 s to a user-visible "error when trying to call the
+tool" reply. Root cause: single-Ollama deployments have the
+autonomy loop (~every 2 minutes) competing for the same GPU queue
+as user chat. A background tick landing alongside a user's
+disambiguator call consumes the entire 25 s Tier 2 budget.
+
+Cooperative priority instead of hardware split:
+
+- New module `glados.observability.priority` — a process-wide
+  `chat_in_flight()` context manager + `is_chat_in_flight()`
+  predicate. Thread-safe, re-entrant, exception-safe, with a 2 s
+  grace window after the last chat call so a rapid series of user
+  turns doesn't let autonomy wedge in between.
+- Chat-path callers wrap their Ollama round-trip: `_stream_chat_sse`,
+  `_try_tier1_fast_path`, `_try_tier1_nonstreaming`, and
+  `_get_engine_response_with_retry`. The rewriter's inner LLM call
+  nests safely because the context manager is re-entrant.
+- `AutonomyLoop._should_skip` consults the flag and skips the tick
+  when set — same short-circuit pattern the existing
+  `_currently_speaking_event` uses. Debug log line on skip.
+- Operators who still want hardware isolation set
+  `OLLAMA_AUTONOMY_URL` / `OLLAMA_VISION_URL` explicitly — that
+  path is unchanged.
+
+### Tier 2 disambiguator timeout 25 s → 45 s (`b4f5721`)
+
+Priority gate holds autonomy off, but B60 + IPEX generating a JSON-
+constrained 14B response against a ~3000-token candidate-list prompt
+takes 25–35 s when cold. Falling through to Tier 3 is strictly worse
+on the same hardware (60–240 s) and produces an error-surface reply
+when HA MCP can't fuzzy-match the phrasing. Operators on faster
+hardware can lower via `DISAMBIGUATOR_TIMEOUT_S` env var.
+
+### B60 / IPEX-LLM pathology (filed; not fixed)
+
+Discovered during Option C end-to-end validation: B60 Ollama at
+`11434` returns 50–90 s wall times for trivial requests (including a
+one-word "say hello") even though Ollama's own `total_duration` /
+`eval_duration` stats say the work took < 300 ms. The 99 % unaccounted
+time lives somewhere in Ollama's queueing / IPEX runtime dispatch / Arc
+driver. Model is resident (16 GB VRAM, `keep_alive=-1`); not a cold
+start.
+
+Impact: unified-Ollama deployments on B60 don't work. Operator's
+split config (autonomy T4 #1 at `11436`, vision T4 #0 at `11435`,
+chat B60 at `11434`) is unaffected because T4s respond normally.
+Debug work filed in `docs/roadmap.md` as the next-session priority
+for whoever picks up single-GPU validation. A single-T4 deployment
+(everything on `11436`) was also identified as a viable path that
+avoids the B60/IPEX issue entirely.
+
+### Health-probe fixed: per-service liveness paths (`04f1acf`, `f34e963`)
+
+Operator screenshot 2026-04-19 after the Services page swap: five
+red dots (TTS Engine, Ollama Interactive, Ollama Autonomy, Ollama
+Vision, sidebar brand) on services that were actually healthy. Root
+cause: `discover_health()` defaulted to probing `/health` for every
+URL. Ollama has no such route (it uses `/api/tags`); TTS side of
+speaches uses `/v1/voices`; only STT side of speaches and the
+GLaDOS-own services (api_wrapper, vision) actually expose `/health`.
+
+Fix:
+
+- `discover_health(url, path=None, kind=None)` now picks the right
+  probe per service kind:
+  - `kind=ollama` → `/api/tags`
+  - `kind=tts` → `/v1/voices`
+  - `kind=stt` → `/health` then `/v1/models`
+  - `kind=speaches` → `/v1/voices` then `/health`
+  - `kind=api_wrapper` / `vision` → `/health`
+  - no hint → multi-path fallback, first 2xx wins.
+- Connection refused short-circuits on the first attempt (dead
+  hosts fail fast instead of probing four URLs).
+- `/api/discover/health` handler accepts `?kind=` and `?path=`
+  query params. Frontend dot pingers (`cfgPingServices`,
+  `svcDiscover` refresh) map service key → kind via
+  `_svcHealthKind()`.
+
+### Chat-URL sync: LLM & Services page now updates the engine too (`23a4d92`)
+
+Another operator-surfaced gap after the Ollama server move:
+"How do you feel about cats?" → **HTTP 504 Gateway Timeout**. The
+chat engine (`GladosConfig` in `glados_config.yaml`) reads its own
+`completion_url` and `autonomy.completion_url` fields — independent
+of the `services.yaml` URLs the UI owns. So the Ollama Interactive
+URL in the LLM & Services page could be up-to-date while the engine
+itself still pointed at a dead old endpoint.
+
+Fix: `_put_config_section` now mirrors the `ollama_interactive.url`
+and `ollama_autonomy.url` from the services payload into
+`glados_config.yaml`'s `Glados.completion_url` and
+`Glados.autonomy.completion_url` on every services save. New
+`_ollama_chat_url()` helper normalises either a bare base or a
+full chat path to the canonical `.../api/chat` form the engine
+expects — tolerant of trailing slashes and of operators who paste
+a `/api/tags` URL from Discover testing into the URL field.
+
+Verified live on prod: chat at `19.1 s` warm, in-character
+(*"Dogs are more predictable, which makes them less interesting.
+…Frito, for instance, believes he's indispensable. He's not."*),
+follow-up context preserved across "How do you feel about cats?"
+→ "And dogs?".
+
+### Tests
+
+**341 pass** (was 317 + 24 new across this wave):
+- `test_priority_gate.py` (7) — idle / active / nesting / concurrent
+  holders / exception cleanup / grace window / autonomy integration
+- `test_discover_endpoints.py` (+4) — kind=ollama probes /api/tags,
+  kind=speaches probes /v1/voices, unknown kind falls through,
+  connection-refused short-circuits
+- `test_glados_config_url_sync.py` (13) — `_ollama_chat_url` shape
+  coverage + sync dict rewrites + YAML roundtrip that proves
+  unrelated fields survive
+
+### Operator-visible on prod after this wave
+
+- Dots accurate: TTS, STT, Ollama Interactive, Ollama Autonomy,
+  sidebar engine dot all green. Ollama Vision correctly red —
+  port 11435 is legitimately down since the T4#0 Ollama was
+  stopped during consolidation.
+- Chat path: 11436 (T4 #1) for both chat and autonomy; autonomy
+  yields to chat via the priority gate.
+- `glados_config.yaml` chat + autonomy `completion_url` fields
+  synced with `services.yaml` on every LLM & Services save. No
+  more stale dual-source drift.
+
+### Known / filed for next session
+
+- **B60/IPEX pathology** — high priority; blocks single-GPU
+  unified deployment. `docs/roadmap.md` has the full debug
+  checklist.
+- **Single-T4 validation** — T4 #1 already runs 14B + 3B
+  comfortably (10.9 GB / 15.4 GB). Point everything there,
+  verify end-to-end, document as the default single-GPU target.
+- **Stop autonomy-loop writes to chat conversation_id** —
+  still open from Change 12. Auto-filter drops them at read
+  time; write-side partition is the real fix.
+
+---
+
 ---
