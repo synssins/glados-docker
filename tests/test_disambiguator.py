@@ -18,9 +18,11 @@ from glados.intent.disambiguator import (
     _candidate_search_text,
     _extract_qualifiers,
     _filter_by_qualifiers,
+    _find_qualifier_matches,
+    _parse_actions,
     _safe_parse_json,
 )
-from glados.ha.entity_cache import CandidateMatch, EntityState
+from glados.ha.entity_cache import CandidateMatch, EntityCache, EntityState
 from glados.intent.rules import DisambiguationRules, IntentAllowlist
 
 
@@ -343,6 +345,296 @@ class TestQualifierFilterIntegration:
         user_msg = next(m["content"] for m in captured[0] if m["role"] == "user")
         assert "bedroom_ceiling" in user_msg
         assert "kitchen_overhead" in user_msg
+
+
+# ---------------------------------------------------------------------------
+# Qualifier cache scan — the production fix for fuzzy saturation
+# ---------------------------------------------------------------------------
+
+class TestFindQualifierMatches:
+    def _cache_with_desk_and_uplighter_segments(self) -> EntityCache:
+        """Mimics the live failure case: one desk lamp, many same-
+        scoring Uplighter Floor Lamp Segments. Fuzzy matcher would
+        saturate its top-N with the segments and push the desk lamp
+        out of view."""
+        cache = EntityCache()
+        states = [_state("light.task_lamp_one",
+                         "Office Desk Monitor Lamp", state="on",
+                         area="office")]
+        # 15 segments, same structure as the live box
+        for i in range(1, 16):
+            states.append(_state(
+                f"light.uplighter_floor_lamp_segment_{i:03d}",
+                f"Uplighter Floor Lamp Segment {i:03d}",
+                state="unknown", area="office",
+            ))
+        cache.apply_get_states(states)
+        return cache
+
+    def test_all_match_returns_only_qualifier_entities(self) -> None:
+        cache = self._cache_with_desk_and_uplighter_segments()
+        matches = _find_qualifier_matches(cache, ["desk"], ["light"])
+        assert len(matches) == 1
+        assert matches[0].entity.entity_id == "light.task_lamp_one"
+
+    def test_any_match_fallback_covers_multi_area(self) -> None:
+        # No single entity has both "office" and "entryway" — but
+        # each area has entities matching one qualifier. ANY-match
+        # fallback unions the two.
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.office_ceiling", "Office Ceiling",
+                   state="off", area="office"),
+            _state("light.office_lamp", "Office Lamp",
+                   state="off", area="office"),
+            _state("light.front_entryway_ceiling",
+                   "Front Entryway Ceiling", state="off",
+                   area="front_entryway"),
+            _state("light.front_entryway_path",
+                   "Front Entryway Path", state="off",
+                   area="front_entryway"),
+            _state("light.bedroom_lamp", "Bedroom Lamp",
+                   state="off", area="bedroom"),
+        ])
+        matches = _find_qualifier_matches(
+            cache, ["office", "front", "entryway"], ["light"],
+        )
+        kept = {m.entity.entity_id for m in matches}
+        # Office entities matched "office"; entryway entities matched
+        # "front" and "entryway". Bedroom matched none → excluded.
+        assert "light.office_ceiling" in kept
+        assert "light.office_lamp" in kept
+        assert "light.front_entryway_ceiling" in kept
+        assert "light.front_entryway_path" in kept
+        assert "light.bedroom_lamp" not in kept
+
+    def test_no_matches_returns_empty(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.kitchen", "Kitchen", state="on"),
+        ])
+        assert _find_qualifier_matches(cache, ["desk"], ["light"]) == []
+
+    def test_respects_domain_filter(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.office_lamp", "Office Lamp", state="off"),
+            # Non-light domain with "office" in the name
+            {"entity_id": "sensor.office_temperature",
+             "state": "72",
+             "attributes": {"friendly_name": "Office Temperature"}},
+        ])
+        matches = _find_qualifier_matches(cache, ["office"], ["light"])
+        assert len(matches) == 1
+        assert matches[0].entity.entity_id == "light.office_lamp"
+
+    def test_uncapped(self) -> None:
+        # 50 matching entities → all 50 should come back. No top-N
+        # truncation.
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state(f"light.office_seg_{i:03d}", f"Office Seg {i}",
+                   state="off")
+            for i in range(50)
+        ])
+        matches = _find_qualifier_matches(cache, ["office"], ["light"])
+        assert len(matches) == 50
+
+    def test_all_match_preferred_over_any_match(self) -> None:
+        # Cache has entities that match ALL qualifiers AND entities
+        # matching only SOME. Return just the ALL-matches.
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.office_desk", "Office Desk", state="off"),
+            _state("light.office_floor", "Office Floor", state="off"),
+            _state("light.bedroom_desk", "Bedroom Desk", state="off"),
+        ])
+        matches = _find_qualifier_matches(
+            cache, ["office", "desk"], ["light"],
+        )
+        # ALL-match: office+desk present → only office_desk
+        kept = {m.entity.entity_id for m in matches}
+        assert kept == {"light.office_desk"}
+
+
+# ---------------------------------------------------------------------------
+# Action parsing — SHAPE 1 legacy vs SHAPE 2 compound
+# ---------------------------------------------------------------------------
+
+class TestParseActions:
+    def test_legacy_shape_converts_to_single_action(self) -> None:
+        actions = _parse_actions({
+            "decision": "execute",
+            "entity_ids": ["light.office_lamp"],
+            "service": "light.turn_on",
+            "service_data": {"brightness_pct": 60},
+        })
+        assert len(actions) == 1
+        assert actions[0]["service"] == "light.turn_on"
+        assert actions[0]["entity_ids"] == ["light.office_lamp"]
+        assert actions[0]["service_data"] == {"brightness_pct": 60}
+
+    def test_compound_shape_preserved(self) -> None:
+        actions = _parse_actions({
+            "decision": "execute",
+            "actions": [
+                {"service": "light.turn_on",
+                 "entity_ids": ["light.office_lamp"]},
+                {"service": "light.turn_off",
+                 "entity_ids": ["light.living_room_lamp"]},
+            ],
+        })
+        assert len(actions) == 2
+        assert actions[0]["service"] == "light.turn_on"
+        assert actions[1]["service"] == "light.turn_off"
+
+    def test_compound_drops_invalid_entries(self) -> None:
+        actions = _parse_actions({
+            "decision": "execute",
+            "actions": [
+                {"service": "light.turn_on",
+                 "entity_ids": ["light.office_lamp"]},
+                {"service": "", "entity_ids": ["light.x"]},   # no service
+                {"service": "fan.turn_on", "entity_ids": []}, # no entities
+                "not a dict",                                 # wrong type
+            ],
+        })
+        assert len(actions) == 1
+        assert actions[0]["entity_ids"] == ["light.office_lamp"]
+
+    def test_compound_preferred_over_legacy_when_both_present(self) -> None:
+        # If the LLM emits both shapes (unlikely but defensive), the
+        # `actions` list wins. Otherwise we'd double-fire.
+        actions = _parse_actions({
+            "decision": "execute",
+            "entity_ids": ["light.legacy"],
+            "service": "light.turn_on",
+            "actions": [
+                {"service": "fan.turn_on",
+                 "entity_ids": ["fan.main"]},
+            ],
+        })
+        assert len(actions) == 1
+        assert actions[0]["service"] == "fan.turn_on"
+
+    def test_returns_empty_for_unparseable(self) -> None:
+        assert _parse_actions({"decision": "execute"}) == []
+        assert _parse_actions({"decision": "execute",
+                               "actions": []}) == []
+        assert _parse_actions({"decision": "clarify"}) == []
+
+
+# ---------------------------------------------------------------------------
+# Compound execute integration — two different verbs in one utterance
+# ---------------------------------------------------------------------------
+
+class TestCompoundExecute:
+    def test_compound_fires_separate_call_services(self) -> None:
+        # User utterance hits both turn_on (office) and turn_off
+        # (living room). LLM returns SHAPE 2. Each action should
+        # produce its own call_service on the fake HA.
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.office_lamp", "Office Lamp",
+                       state="off", area="office"),
+                _state("light.living_room_lamp", "Living Room Lamp",
+                       state="on", area="living_room"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"actions":['
+                '{"service":"light.turn_on",'
+                '"entity_ids":["light.office_lamp"]},'
+                '{"service":"light.turn_off",'
+                '"entity_ids":["light.living_room_lamp"]}],'
+                '"speech":"Office lit, living room darkened.",'
+                '"rationale":"compound"}'
+            ),
+        )
+        r = disambig.run(
+            "turn on the office lights and turn off the living room lights",
+            source="webui_chat", assume_home_command=True,
+        )
+        assert r.handled is True
+        assert r.decision == "execute"
+        assert set(r.entity_ids) == {"light.office_lamp", "light.living_room_lamp"}
+        # Both HA calls fired, in order, with the right service.
+        assert len(ha.calls) == 2
+        assert ha.calls[0]["service"] == "turn_on"
+        assert ha.calls[0]["target"] == {"entity_id": ["light.office_lamp"]}
+        assert ha.calls[1]["service"] == "turn_off"
+        assert ha.calls[1]["target"] == {"entity_id": ["light.living_room_lamp"]}
+
+    def test_compound_many_actions(self) -> None:
+        # User could mix three verbs across three areas. All should
+        # fire.
+        states = [
+            _state("light.office", "Office", state="off", area="office"),
+            _state("light.bedroom", "Bedroom", state="on", area="bedroom"),
+            _state("light.kitchen", "Kitchen", state="off", area="kitchen"),
+        ]
+        disambig, ha, _ = _make(
+            cache_states=states,
+            llm_response=(
+                '{"decision":"execute","actions":['
+                '{"service":"light.turn_on","entity_ids":["light.office"]},'
+                '{"service":"light.turn_off","entity_ids":["light.bedroom"]},'
+                '{"service":"light.turn_on","entity_ids":["light.kitchen"],'
+                ' "service_data":{"brightness_pct":50}}],'
+                '"speech":"three things","rationale":"three"}'
+            ),
+        )
+        r = disambig.run(
+            "turn on the office lights, turn off the bedroom light, "
+            "set the kitchen light to 50",
+            source="webui_chat", assume_home_command=True,
+        )
+        assert r.handled is True
+        assert len(ha.calls) == 3
+        services = [c["service"] for c in ha.calls]
+        assert services == ["turn_on", "turn_off", "turn_on"]
+        # Brightness_pct plumbed through on the third action
+        assert ha.calls[2]["service_data"] == {"brightness_pct": 50}
+
+    def test_compound_unknown_entity_falls_through(self) -> None:
+        # One action references an entity not in the cache → fall-
+        # through for the whole turn (refuse to partially act on an
+        # uncertain target).
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.office", "Office", state="off"),
+            ],
+            llm_response=(
+                '{"decision":"execute","actions":['
+                '{"service":"light.turn_on","entity_ids":["light.office"]},'
+                '{"service":"light.turn_off",'
+                ' "entity_ids":["light.does_not_exist"]}],'
+                '"speech":"ok"}'
+            ),
+        )
+        r = disambig.run(
+            "turn on the office lights and turn off ghost lights",
+            source="webui_chat", assume_home_command=True,
+        )
+        assert r.should_fall_through is True
+        assert ha.calls == []  # nothing fired — invariant
+
+    def test_legacy_single_action_still_works(self) -> None:
+        # The old schema still produces one action.
+        disambig, ha, _ = _make(
+            cache_states=[_state("light.kitchen", "Kitchen", state="on")],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.kitchen"],'
+                '"service":"turn_off","speech":"Off."}'
+            ),
+        )
+        r = disambig.run(
+            "turn off the kitchen lights", source="webui_chat",
+            assume_home_command=True,
+        )
+        assert r.handled is True
+        assert len(ha.calls) == 1
 
 
 # ---------------------------------------------------------------------------
