@@ -2024,7 +2024,27 @@ class Handler(BaseHTTPRequestHandler):
     # â”€â”€ Service health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _get_status(self):
-        import socket
+        """Aggregate health for the System page dots + sidebar engine dot.
+
+        Returns per-service booleans plus a top-level `running` flag the
+        sidebar's pollEngineStatus() checks. "Engine running" is true
+        when the GLaDOS API container (which hosts this WebUI) reports
+        healthy — that's the canonical "GLaDOS is up" signal.
+
+        Per-service check paths (all use real service URLs, no
+        host-local assumptions):
+          glados_api — GET <GLADOS_API_URL>/health
+          stt        — GET <STT_URL>/health   (speaches STT)
+          vision     — GET <VISION_URL>/health
+          ha         — GET <HA_URL>/api/ (with bearer token)
+          tts        — GET <speaches base>/v1/voices
+                       (speaches has no /health; the voices list is the
+                       authoritative "server is up" signal we use
+                       elsewhere for Discover)
+          chromadb   — GET http://<chromadb_host>:<chromadb_port>/api/v2/heartbeat
+                       (ChromaDB 1.x retired v1; v2 heartbeat is the
+                       stable long-term endpoint)
+        """
         status = {}
         checks = {
             "glados_api": f"{GLADOS_API_URL}/health",
@@ -2042,19 +2062,39 @@ class Handler(BaseHTTPRequestHandler):
                     status[name] = resp.status < 400
             except Exception:
                 status[name] = False
-        # TTS: socket connection test (server returns 404 on GET /)
+
+        # TTS: speaches has no /health; /v1/voices returns 200 whenever
+        # the server is up and is the same signal the Services-page
+        # Discover button relies on. The base URL is derived the same
+        # way _get_voices() does it — strip any trailing /v1/... segment.
         try:
-            with socket.create_connection(("localhost", 5050), timeout=3):
-                status["tts"] = True
+            tts_base = TTS_URL.rsplit("/v1/", 1)[0].rstrip("/")
+            req = urllib.request.Request(f"{tts_base}/v1/voices")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                status["tts"] = resp.status < 400
         except Exception:
             status["tts"] = False
-        # ChromaDB: heartbeat check
+
+        # ChromaDB: use the configured host:port (glados-chromadb:8000
+        # when in compose, overrideable via CHROMADB_HOST / CHROMADB_PORT).
+        # v2 heartbeat only — v1 was retired in ChromaDB 1.x and returns 410.
         try:
-            req = urllib.request.Request("http://localhost:8000/api/v2/heartbeat")
+            ch_host = _cfg.memory.chromadb_host
+            ch_port = _cfg.memory.chromadb_port
+            req = urllib.request.Request(
+                f"http://{ch_host}:{ch_port}/api/v2/heartbeat"
+            )
             with urllib.request.urlopen(req, timeout=3) as resp:
                 status["chromadb"] = resp.status < 400
         except Exception:
             status["chromadb"] = False
+
+        # Sidebar engine dot polls /api/status and reads data.running.
+        # Treat the GLaDOS API being up as "engine running" — the WebUI
+        # itself is hosted in the same container, so if this handler
+        # responded AND the API reports healthy, the engine is alive.
+        status["running"] = bool(status.get("glados_api"))
+
         self._send_json(200, status)
 
     # â”€â”€ Attitudes endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
