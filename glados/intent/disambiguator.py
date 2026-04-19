@@ -239,6 +239,125 @@ def _filter_by_qualifiers(
     return out
 
 
+def _entity_search_text(entity: EntityState) -> str:
+    """Flattened, lowercased text of an entity for qualifier lookup.
+    Matches the same fields `_candidate_search_text` uses so the
+    cache scan and the candidate filter agree."""
+    aliases = getattr(entity, "aliases", None) or []
+    return " ".join([
+        entity.friendly_name or "",
+        entity.entity_id or "",
+        " ".join(aliases),
+    ]).lower()
+
+
+def _parse_actions(decision: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize the LLM's `execute` output into a list of actions.
+
+    Supports two schemas:
+      - SHAPE 1 (legacy single-action): top-level `entity_ids` +
+        `service` + `service_data`. Wrapped into a single-element
+        list so downstream code only handles one shape.
+      - SHAPE 2 (compound): `actions: [{service, entity_ids,
+        service_data?}, ...]`. Kept verbatim, filtered to valid
+        entries.
+
+    An entry is valid when it has a non-empty `service` string AND
+    a non-empty `entity_ids` list. Invalid entries are dropped.
+    Returns an empty list when the LLM produced nothing usable —
+    caller treats that as a missing-fields fall-through.
+    """
+    out: list[dict[str, Any]] = []
+
+    # SHAPE 2 path — preferred when `actions` list is present.
+    raw_actions = decision.get("actions")
+    if isinstance(raw_actions, list) and raw_actions:
+        for a in raw_actions:
+            if not isinstance(a, dict):
+                continue
+            svc = str(a.get("service", "")).strip()
+            if not svc:
+                continue
+            eids = [
+                str(e) for e in (a.get("entity_ids") or [])
+                if isinstance(e, str) and e
+            ]
+            if not eids:
+                continue
+            sd_raw = a.get("service_data")
+            sd = sd_raw if isinstance(sd_raw, dict) else {}
+            out.append({
+                "service": svc,
+                "entity_ids": eids,
+                "service_data": sd,
+            })
+        return out
+
+    # SHAPE 1 fallback — top-level single-action fields.
+    svc = str(decision.get("service", "")).strip()
+    eids = [
+        str(e) for e in (decision.get("entity_ids") or [])
+        if isinstance(e, str) and e
+    ]
+    sd_raw = decision.get("service_data")
+    sd = sd_raw if isinstance(sd_raw, dict) else {}
+    if svc and eids:
+        out.append({
+            "service": svc,
+            "entity_ids": eids,
+            "service_data": sd,
+        })
+    return out
+
+
+def _find_qualifier_matches(
+    cache: EntityCache,
+    qualifiers: list[str],
+    domain_hint: list[str] | None,
+) -> list[CandidateMatch]:
+    """Scan the full entity cache for qualifier-matching entities
+    and return them as synthetic high-score candidates.
+
+    Two-pass strategy:
+      1. **ALL-match**: entities containing every qualifier word.
+         Precise — `desk lamp` finds only actual desk lamps.
+      2. **ANY-match fallback**: if ALL-match is empty, entities
+         containing at least one qualifier. Handles multi-area
+         utterances like `office and front entryway lights` where
+         no single entity contains every qualifier but each area
+         has candidates matching one.
+
+    Returns an **uncapped** list — when the user uses distinctive
+    qualifiers, every matching entity should be visible to the LLM
+    regardless of fuzzy-score saturation. The fuzzy-matcher's
+    candidate_limit was the old bottleneck: a room with many
+    same-named segments (WLED strips, LED banks) could saturate the
+    top-N and push the user's actual target out of view.
+    """
+    if not qualifiers:
+        return []
+    all_matches: list[CandidateMatch] = []
+    any_matches: list[CandidateMatch] = []
+    for entity in cache.snapshot():
+        if domain_hint and entity.domain not in domain_hint:
+            continue
+        text = _entity_search_text(entity)
+        hit_count = sum(1 for q in qualifiers if q in text)
+        if hit_count == 0:
+            continue
+        match = CandidateMatch(
+            entity=entity,
+            matched_name=entity.friendly_name or entity.entity_id,
+            score=100.0 if hit_count == len(qualifiers) else 80.0,
+            sensitive=False,
+        )
+        if hit_count == len(qualifiers):
+            all_matches.append(match)
+        else:
+            any_matches.append(match)
+    return all_matches if all_matches else any_matches
+
+
 class Disambiguator:
     """Tier 2 entry point. Stateless; safe to call concurrently."""
 
@@ -341,24 +460,28 @@ class Disambiguator:
                 t0,
             )
 
-        # 1b. Qualifier pre-filter. If the user used distinctive
-        # qualifier words ("desk lamp", "reading light", "porch") and
-        # at least one candidate contains all of them, restrict the
-        # list to those matches before the LLM sees it. Prevents the
-        # LLM from substituting a different qualifier under state
-        # pressure. Empty-filter result → keep the unfiltered list
-        # (user's qualifier wasn't literally in any entity name).
+        # 1b. Qualifier-authoritative cache scan. When the user gave
+        # distinctive qualifier words ("desk lamp", "office and front
+        # entryway"), the fuzzy matcher's top-N can saturate with
+        # entities sharing a generic head noun (15 "Lamp Segment"
+        # WLED entries all scoring 85.5) and push the real target
+        # out of view before the LLM ever sees it. We bypass the
+        # fuzzy limit: scan the full cache for every entity that
+        # matches, ALL-qualifier first and ANY-qualifier as fallback.
+        # Uncapped — tokens are cheap, wrong targets are not.
         qualifiers = _extract_qualifiers(utterance)
         if qualifiers:
-            filtered = _filter_by_qualifiers(candidates, qualifiers)
-            if filtered and len(filtered) < len(candidates):
+            scan_matches = _find_qualifier_matches(
+                self._cache, qualifiers, domain_hint,
+            )
+            if scan_matches:
                 logger.debug(
-                    "Tier 2 qualifier filter: {} → {} "
-                    "(qualifiers={}, kept={})",
-                    len(candidates), len(filtered), qualifiers,
-                    [c.entity.entity_id for c in filtered][:8],
+                    "Tier 2 qualifier scan: fuzzy={} → scan={} "
+                    "(qualifiers={}, first={})",
+                    len(candidates), len(scan_matches), qualifiers,
+                    [c.entity.entity_id for c in scan_matches][:6],
                 )
-                candidates = filtered
+                candidates = scan_matches
 
         # 2. State-freshness guard. If any candidate's state is older
         # than the budget, skip state-based filtering this turn — bad
@@ -372,7 +495,8 @@ class Disambiguator:
             utterance=utterance, source=source,
             candidates=candidates, state_fresh=state_fresh,
             prior_entity_ids=(
-                list(prior_entity_ids) if assume_home_command else None
+                list(prior_entity_ids)
+                if assume_home_command and prior_entity_ids else None
             ),
             prior_service=(prior_service if assume_home_command else None),
         )
@@ -402,12 +526,23 @@ class Disambiguator:
         # apply the same deterministic trailing-vocative strip here.
         speech = strip_trailing_vocative(speech)
         rationale = str(decision.get("rationale", "")).strip()
-        entity_ids = [str(e) for e in (decision.get("entity_ids") or [])
-                      if isinstance(e, (str,))]
-        service = str(decision.get("service", "")).strip()
-        service_data_raw = decision.get("service_data")
+
+        # Parse actions (SHAPE 2 compound). If the LLM returned an
+        # `actions` list, use it verbatim; otherwise synthesize a
+        # single-element list from the legacy top-level fields so the
+        # downstream execute loop has one shape to handle.
+        parsed_actions = _parse_actions(decision)
+        # Back-compat aggregates for callers / audit that expect the
+        # single-action fields.
+        entity_ids = [
+            eid for a in parsed_actions for eid in a["entity_ids"]
+        ]
+        service = (
+            parsed_actions[0]["service"] if parsed_actions else ""
+        )
         service_data: dict[str, Any] = (
-            service_data_raw if isinstance(service_data_raw, dict) else {}
+            dict(parsed_actions[0]["service_data"])
+            if parsed_actions else {}
         )
 
         # 5. Branch by decision.
@@ -456,23 +591,27 @@ class Disambiguator:
                 candidates=candidates_summary,
             )
 
-        if not entity_ids or not service:
+        if not parsed_actions:
             return self._fall_through(
                 "execute_missing_fields",
-                f"entity_ids={entity_ids} service={service}",
+                f"no actions; raw={raw[:120]!r}",
                 t0, candidates=candidates_summary,
             )
 
-        # 6. Validate every chosen entity is known and allowed.
+        # 6. Validate every chosen entity across every action is
+        # known and allowed.
         bad_ids: list[str] = []
         denied: list[str] = []
-        for eid in entity_ids:
-            ent = self._cache.get(eid)
-            if ent is None:
-                bad_ids.append(eid)
-                continue
-            if not self._allowlist.is_allowed(source, ent.domain, ent.device_class):
-                denied.append(eid)
+        for act in parsed_actions:
+            for eid in act["entity_ids"]:
+                ent = self._cache.get(eid)
+                if ent is None:
+                    bad_ids.append(eid)
+                    continue
+                if not self._allowlist.is_allowed(
+                    source, ent.domain, ent.device_class,
+                ):
+                    denied.append(eid)
         if bad_ids:
             return self._fall_through(
                 "unknown_entity", f"ids={bad_ids}", t0,
@@ -492,84 +631,135 @@ class Disambiguator:
                 llm_raw=raw,
             )
 
-        # 7. Determine target domain (must be uniform; reject mixed).
-        target_domain = self._cache.get(entity_ids[0]).domain
-        if any(self._cache.get(e).domain != target_domain for e in entity_ids[1:]):
+        # 7. Determine + validate target domain per action (must be
+        # uniform within an action; different actions may target
+        # different domains).
+        for act in parsed_actions:
+            eids = act["entity_ids"]
+            first_domain = self._cache.get(eids[0]).domain
+            if any(self._cache.get(e).domain != first_domain for e in eids[1:]):
+                return self._fall_through(
+                    "mixed_domains_in_action",
+                    f"entity_ids={eids}", t0,
+                    candidates=candidates_summary,
+                )
+            act["_domain"] = first_domain
+
+        # 8. Execute every action sequentially. One no-ack or error
+        # shouldn't silently drop the later actions; we record each
+        # outcome and return a combined summary.
+        executed_services: list[str] = []
+        any_no_ack = False
+        per_action_errors: list[str] = []
+        for act in parsed_actions:
+            entity_domain = act["_domain"]
+            svc = act["service"]
+            eids = act["entity_ids"]
+            sd = act["service_data"]
+            # LLM may emit either "turn_on" (legacy, bare service) or
+            # "light.turn_on" (compound, domain.service). Normalize
+            # to `(domain, service_name)` — domain from the service
+            # string when it's dotted, otherwise from the entity.
+            if "." in svc:
+                domain_str, service_name = svc.split(".", 1)
+                target_domain = domain_str.strip() or entity_domain
+                service_name = service_name.strip()
+            else:
+                target_domain = entity_domain
+                service_name = svc
+            try:
+                ws_resp = self._ha.call_service(
+                    domain=target_domain,
+                    service=service_name,
+                    service_data=(sd or None),
+                    target={"entity_id": eids},
+                    timeout_s=_HA_CALL_TIMEOUT_S,
+                )
+            except concurrent.futures.TimeoutError:
+                any_no_ack = True
+                logger.warning(
+                    "Tier 2 call_service no-ack on {}.{} entities={}",
+                    target_domain, service_name, eids,
+                )
+                executed_services.append(f"{target_domain}.{service_name}:no_ack")
+                continue
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}".rstrip(": ")
+                logger.warning(
+                    "Tier 2 call_service raised on {}.{}: {}",
+                    target_domain, service_name, err,
+                )
+                per_action_errors.append(
+                    f"{target_domain}.{service_name}: {err}"
+                )
+                continue
+            if isinstance(ws_resp, dict) and ws_resp.get("success") is False:
+                err = ws_resp.get("error") or {}
+                err_msg = (err.get("message") or err.get("code")
+                           or json.dumps(err)[:120])
+                logger.warning(
+                    "Tier 2 call_service returned error on {}.{}: {}",
+                    target_domain, service_name, err_msg,
+                )
+                per_action_errors.append(
+                    f"{target_domain}.{service_name}: {err_msg}"
+                )
+                continue
+            executed_services.append(f"{target_domain}.{service_name}")
+
+        # If EVERY action errored, treat the whole turn as failed.
+        if per_action_errors and not executed_services:
             return self._fall_through(
-                "mixed_domains",
-                f"entity_ids={entity_ids}", t0,
-                candidates=candidates_summary,
+                "call_service_failed",
+                "; ".join(per_action_errors)[:400],
+                t0, candidates=candidates_summary,
             )
 
-        # 8. Execute via WS call_service.
-        try:
-            ws_resp = self._ha.call_service(
-                domain=target_domain,
-                service=service,
-                service_data=(service_data or None),
-                target={"entity_id": entity_ids},
-                timeout_s=_HA_CALL_TIMEOUT_S,
-            )
-        except concurrent.futures.TimeoutError:
-            # HA didn't ack within the window. The action is usually
-            # already in flight (HA's WS acks acceptance, not
-            # completion) — turning off a group that cascades to many
-            # entities is the common case. We can't promise success,
-            # but we shouldn't claim failure either. Audit clearly,
-            # then optimistically return success speech.
+        combined_service = ", ".join(executed_services)
+        combined_service_data = parsed_actions[0]["service_data"] if len(parsed_actions) == 1 else {
+            a["service"]: a["service_data"]
+            for a in parsed_actions if a["service_data"]
+        }
+        if any_no_ack and not per_action_errors:
             err = (f"no_ack_within_{_HA_CALL_TIMEOUT_S:.0f}s "
                    f"(action likely succeeded; HA group cascades sometimes "
                    f"don't ack in time)")
-            logger.warning("Tier 2 call_service no-ack on {}.{} entities={}",
-                           target_domain, service, entity_ids)
             audit(AuditEvent(
                 ts=time.time(), origin=source, kind="intent", tier=2,
                 utterance=utterance, result="ok:execute_no_ack",
                 latency_ms=int((time.perf_counter() - t0) * 1000),
-                tool=f"{target_domain}.{service}",
+                tool=combined_service,
                 entity_ids=entity_ids,
                 extra={"candidates_shown": candidates_summary,
                        "speech": (speech or "")[:500],
-                       "service_data": dict(service_data),
+                       "service_data": combined_service_data,
                        "rationale": err,
-                       "decision": "execute_no_ack"},
+                       "decision": "execute_no_ack",
+                       "action_count": len(parsed_actions)},
             ))
             return DisambiguationResult(
                 handled=True, should_fall_through=False,
                 speech=speech or "Done.",
                 decision="execute_no_ack",
                 entity_ids=entity_ids,
-                service=f"{target_domain}.{service}",
-                service_data=dict(service_data),
+                service=combined_service,
+                service_data=combined_service_data,
                 rationale=err,
                 candidates_shown=candidates_summary,
                 latency_ms=int((time.perf_counter() - t0) * 1000),
                 llm_raw=raw,
             )
-        except Exception as exc:
-            err = f"{type(exc).__name__}: {exc}".rstrip(": ")
-            logger.warning("Tier 2 call_service raised: {}", err)
-            return self._fall_through(
-                "call_service_failed", err, t0,
-                candidates=candidates_summary,
-            )
-        # HA's WS may return success=false with an error payload instead
-        # of raising. Inspect and treat that as a fall-through too.
-        if isinstance(ws_resp, dict) and ws_resp.get("success") is False:
-            err = ws_resp.get("error") or {}
-            err_msg = (err.get("message") or err.get("code")
-                       or json.dumps(err)[:120])
-            logger.warning("Tier 2 call_service returned error: {}", err_msg)
-            return self._fall_through(
-                "call_service_returned_error", err_msg, t0,
-                candidates=candidates_summary,
-            )
+        # Some succeeded, some errored — still report handled but
+        # include error details in rationale for audit review.
+        if per_action_errors:
+            rationale = rationale + f" [partial: {'; '.join(per_action_errors)[:200]}]"
 
         return DisambiguationResult(
             handled=True, should_fall_through=False,
             speech=speech or "Done.", decision="execute",
-            entity_ids=entity_ids, service=f"{target_domain}.{service}",
-            service_data=dict(service_data),
+            entity_ids=entity_ids,
+            service=combined_service,
+            service_data=combined_service_data,
             rationale=rationale,
             candidates_shown=candidates_summary,
             latency_ms=int((time.perf_counter() - t0) * 1000),
@@ -848,7 +1038,14 @@ class Disambiguator:
             "Respond with STRICT JSON ONLY. No prose before or after. "
             "No markdown. No code fences. The first character must be "
             "'{' and the last must be '}'.\n"
-            "Schema:\n"
+            "\n"
+            "Two schemas supported — pick the one that matches the "
+            "utterance.\n"
+            "\n"
+            "SHAPE 1 — single action. Use when the user expressed ONE "
+            "verb that applies to one or more entities of the same "
+            "domain (e.g. 'turn on the office lights', 'turn on all "
+            "the lights'):\n"
             "{\n"
             '  "decision": "execute" | "clarify" | "refuse",\n'
             '  "entity_ids": [<entity_id strings>],\n'
@@ -858,9 +1055,34 @@ class Disambiguator:
                             'REQUIRED for refuse too>",\n'
             '  "rationale":  "<one short sentence why>"\n'
             "}\n"
-            "For decision=clarify or refuse, entity_ids, service, and "
-            "service_data may be empty, but speech is REQUIRED and must "
-            "be in GLaDOS voice.\n"
+            "\n"
+            "SHAPE 2 — compound action. Use when the user expressed "
+            "MULTIPLE distinct verbs or verb/scope pairs in one "
+            "utterance, e.g. 'turn on the office lights AND turn "
+            "off the living room lights', 'dim the bedroom and set "
+            "the kitchen to 80%'. One `actions` entry per verb; "
+            "each entry has its own service + entity_ids + optional "
+            "service_data. Speech describes all of them together.\n"
+            "{\n"
+            '  "decision": "execute",\n'
+            '  "actions": [\n'
+            '    {"service": "light.turn_on",  "entity_ids": [...], "service_data": {...}},\n'
+            '    {"service": "light.turn_off", "entity_ids": [...], "service_data": {...}}\n'
+            "  ],\n"
+            '  "speech":    "<GLaDOS voice, covers both actions>",\n'
+            '  "rationale": "<one sentence>"\n'
+            "}\n"
+            "\n"
+            "RULES for choosing between shapes:\n"
+            "- One verb across many entities → SHAPE 1 (not an 'action' "
+            "  per entity; one action with many entity_ids).\n"
+            "- Different verbs in one utterance (turn on + turn off, "
+            "  set brightness 1 + set brightness 2, turn off + "
+            "  activate scene) → SHAPE 2 with one element per verb.\n"
+            "- SHAPE 2 may contain 2, 3, or many actions. Do not cap.\n"
+            "- Each SHAPE 2 action must have a non-empty entity_ids.\n"
+            "- For decision=clarify or refuse, entity_ids/service/"
+            "  actions may be empty but speech is REQUIRED.\n"
         )
 
         cand_lines = []
