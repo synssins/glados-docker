@@ -15,8 +15,12 @@ from glados.ha.entity_cache import EntityCache
 from glados.intent.disambiguator import (
     Disambiguator,
     DisambiguationResult,
+    _candidate_search_text,
+    _extract_qualifiers,
+    _filter_by_qualifiers,
     _safe_parse_json,
 )
+from glados.ha.entity_cache import CandidateMatch, EntityState
 from glados.intent.rules import DisambiguationRules, IntentAllowlist
 
 
@@ -104,6 +108,241 @@ class TestParseJson:
 
     def test_array_at_top_returns_none(self) -> None:
         assert _safe_parse_json("[1, 2, 3]") is None
+
+
+# ---------------------------------------------------------------------------
+# Qualifier pre-filter
+# ---------------------------------------------------------------------------
+
+def _cand(entity_id: str, name: str, area: str | None = None) -> CandidateMatch:
+    """Build a CandidateMatch around an EntityState for filter tests."""
+    e = EntityState(
+        entity_id=entity_id,
+        friendly_name=name,
+        domain=entity_id.split(".", 1)[0],
+        state="on",
+        state_as_of=time.time(),
+        area_id=area,
+    )
+    return CandidateMatch(
+        entity=e, matched_name=name, score=100.0, sensitive=False,
+    )
+
+
+class TestExtractQualifiers:
+    def test_picks_distinctive_words(self) -> None:
+        assert _extract_qualifiers("The desk lamp is too dim") == ["desk"]
+
+    def test_strips_stopwords_and_verbs(self) -> None:
+        # "turn", "on", "the" → stopwords. "lights" → generic head
+        # noun. "office" is the distinctive qualifier.
+        assert _extract_qualifiers("Turn on the office lights") == ["office"]
+
+    def test_keeps_multiple_qualifiers_in_order(self) -> None:
+        assert _extract_qualifiers(
+            "Turn on the reading lamp in Cindy's office"
+        ) == ["reading", "cindy's", "office"]
+
+    def test_deduplicates_repeats(self) -> None:
+        # Even if the user repeats a qualifier, it appears once in
+        # the result.
+        assert _extract_qualifiers("office office office lamp") == ["office"]
+
+    def test_drops_length_one_tokens(self) -> None:
+        assert _extract_qualifiers("a lamp") == []
+
+    def test_empty_utterance_empty_list(self) -> None:
+        assert _extract_qualifiers("") == []
+        assert _extract_qualifiers("   ") == []
+
+    def test_all_stopwords_empty_list(self) -> None:
+        # "turn on the lights" is all stopwords + generic head noun.
+        assert _extract_qualifiers("turn on the lights") == []
+
+    def test_preserves_apostrophes(self) -> None:
+        assert "cindy's" in _extract_qualifiers("Cindy's office lamp")
+
+
+class TestFilterByQualifiers:
+    def test_keeps_candidates_containing_all_qualifiers(self) -> None:
+        candidates = [
+            _cand("light.task_lamp_one", "Office Desk Monitor Lamp"),
+            _cand("light.uplighter_floor_lamp", "Uplighter Floor Lamp"),
+            _cand("light.floor_lamp_two", "Living Room Arc Lamp 1"),
+        ]
+        # "desk" qualifier → only the desk monitor lamp survives.
+        filtered = _filter_by_qualifiers(candidates, ["desk"])
+        assert len(filtered) == 1
+        assert filtered[0].entity.entity_id == "light.task_lamp_one"
+
+    def test_requires_all_qualifiers_not_any(self) -> None:
+        candidates = [
+            _cand("light.office_desk_lamp", "Office Desk Lamp"),
+            _cand("light.bedroom_desk_lamp", "Bedroom Desk Lamp"),
+            _cand("light.office_floor_lamp", "Office Floor Lamp"),
+        ]
+        # Both 'office' AND 'desk' must appear in the candidate's
+        # text. Only the office desk lamp survives.
+        filtered = _filter_by_qualifiers(candidates, ["office", "desk"])
+        assert [c.entity.entity_id for c in filtered] == [
+            "light.office_desk_lamp",
+        ]
+
+    def test_empty_qualifiers_returns_unfiltered(self) -> None:
+        candidates = [
+            _cand("light.one", "One"),
+            _cand("light.two", "Two"),
+        ]
+        filtered = _filter_by_qualifiers(candidates, [])
+        assert len(filtered) == 2
+
+    def test_empty_candidates_stays_empty(self) -> None:
+        assert _filter_by_qualifiers([], ["desk"]) == []
+
+    def test_empty_filter_result_returned_verbatim(self) -> None:
+        # Filter returning empty is the caller's signal to fall
+        # back — it's not silently replaced with the input here.
+        # The caller (Disambiguator.run) decides what to do.
+        candidates = [
+            _cand("light.office_lamp", "Office Lamp"),
+        ]
+        filtered = _filter_by_qualifiers(candidates, ["desk"])
+        assert filtered == []
+
+    def test_matches_against_entity_id_too(self) -> None:
+        # Friendly_name doesn't contain 'desk' but entity_id does —
+        # still counts. The user may speak of the device by a
+        # qualifier that's in the entity_id or aliases.
+        candidates = [
+            _cand("light.office_desk_5678", "Plug 5678"),
+            _cand("light.office_floor_1234", "Plug 1234"),
+        ]
+        filtered = _filter_by_qualifiers(candidates, ["desk"])
+        assert len(filtered) == 1
+        assert filtered[0].entity.entity_id == "light.office_desk_5678"
+
+    def test_candidate_search_text_includes_aliases(self) -> None:
+        e = EntityState(
+            entity_id="light.fred_1",
+            friendly_name="Plug 1",
+            domain="light",
+            state="on",
+            state_as_of=time.time(),
+            aliases=["Chris's reading lamp"],
+        )
+        c = CandidateMatch(entity=e, matched_name="Plug 1", score=90.0, sensitive=False)
+        text = _candidate_search_text(c)
+        assert "reading" in text
+        assert "chris's" in text
+
+
+class TestQualifierFilterIntegration:
+    """End-to-end: the pre-filter in Disambiguator.run() restricts
+    the candidate list the LLM sees, so state-based filtering can't
+    cause the LLM to pick a different qualifier."""
+
+    def test_desk_lamp_pins_to_desk_entity_when_others_are_on(self) -> None:
+        # Setup: 'desk lamp' is OFF, other lamps in the same area
+        # are ON. Without the pre-filter, the state-inference rule
+        # would remove the desk lamp from the turn_on pool; the LLM
+        # could then pick the floor lamp as "the brighter option".
+        # With the pre-filter, the LLM only sees desk-matching
+        # candidates.
+        from unittest.mock import MagicMock
+        from glados.ha.entity_cache import EntityCache
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.task_lamp_one",
+                   "Office Desk Monitor Lamp", state="off", area="office"),
+            _state("light.office_uplighter_floor_lamp",
+                   "Office Uplighter Floor Lamp", state="on", area="office"),
+        ])
+        all_matches = [
+            CandidateMatch(entity=e, matched_name=e.friendly_name,
+                           score=100.0, sensitive=False)
+            for e in cache.snapshot()
+        ]
+        cache.get_candidates = lambda *a, **kw: list(all_matches)  # type: ignore[method-assign]
+
+        from glados.intent.disambiguator import Disambiguator
+        from glados.intent.rules import DisambiguationRules, IntentAllowlist
+        ha = _FakeHAClient()
+        d = Disambiguator(
+            ha_client=ha, cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=DisambiguationRules(), allowlist=IntentAllowlist(),
+        )
+
+        # Capture what the disambiguator passes to the LLM.
+        captured_messages: list[list[dict]] = []
+
+        def _fake_ollama(messages):
+            captured_messages.append(list(messages))
+            # LLM decides: execute on the (only) desk candidate
+            return (
+                '{"decision":"execute",'
+                '"entity_ids":["light.task_lamp_one"],'
+                '"service":"turn_on","service_data":{"brightness_pct":80},'
+                '"speech":"Desk lamp, illuminated.",'
+                '"rationale":"qualifier match"}'
+            )
+        d._call_ollama = _fake_ollama  # type: ignore[method-assign]
+
+        result = d.run("The desk lamp is too dim", source="webui_chat")
+        assert result.handled is True
+        assert result.decision == "execute"
+        assert result.entity_ids == ["light.task_lamp_one"]
+        # Crucially, the user-message we sent to the LLM should NOT
+        # include the uplighter as a candidate — it was filtered
+        # out before the prompt was built.
+        user_msg = next(
+            m["content"] for m in captured_messages[0] if m["role"] == "user"
+        )
+        assert "office_desk_monitor_lamp" in user_msg
+        assert "uplighter" not in user_msg.lower()
+
+    def test_filter_falls_back_when_no_candidate_matches_qualifier(self) -> None:
+        # If none of the user's entities contain the qualifier word,
+        # don't drop all candidates — use the unfiltered list so the
+        # LLM can still do its job.
+        from glados.ha.entity_cache import EntityCache
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.room_a_ceiling", "Bedroom Ceiling", state="on", area="bedroom"),
+            _state("light.ceiling_lights", "Kitchen Overhead", state="on", area="kitchen"),
+        ])
+        all_matches = [
+            CandidateMatch(entity=e, matched_name=e.friendly_name,
+                           score=100.0, sensitive=False)
+            for e in cache.snapshot()
+        ]
+        cache.get_candidates = lambda *a, **kw: list(all_matches)  # type: ignore[method-assign]
+
+        from glados.intent.disambiguator import Disambiguator
+        from glados.intent.rules import DisambiguationRules, IntentAllowlist
+        ha = _FakeHAClient()
+        d = Disambiguator(
+            ha_client=ha, cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=DisambiguationRules(), allowlist=IntentAllowlist(),
+        )
+
+        captured: list[list[dict]] = []
+
+        def _fake_ollama(messages):
+            captured.append(list(messages))
+            # LLM clarifies because 'desk' doesn't match either
+            return ('{"decision":"clarify","speech":"I see no desk '
+                    'lamp.","rationale":"no desk lamp found"}')
+        d._call_ollama = _fake_ollama  # type: ignore[method-assign]
+
+        result = d.run("the desk lamp", source="webui_chat")
+        assert result.handled is True
+        # Both candidates should be in the prompt — the filter saw
+        # zero matches for 'desk' and fell back to the full list.
+        user_msg = next(m["content"] for m in captured[0] if m["role"] == "user")
+        assert "bedroom_ceiling" in user_msg
+        assert "kitchen_overhead" in user_msg
 
 
 # ---------------------------------------------------------------------------
