@@ -523,6 +523,82 @@ class TestParseActions:
                                "actions": []}) == []
         assert _parse_actions({"decision": "clarify"}) == []
 
+    def test_unwraps_response_data_wrapper(self) -> None:
+        # LLM drift observed 2026-04-19 on live 14B:
+        # {"response": {"type": "json", "data": {"actions": [...]}}}
+        # The parser should peel the wrapper and find the actions.
+        actions = _parse_actions({
+            "response": {
+                "type": "json",
+                "data": {
+                    "actions": [
+                        {"action": "turn_off",
+                         "entity_id": "light.front_entryway_flood_01"},
+                        {"action": "turn_on",
+                         "entity_id": "light.kitchen_overhead"},
+                    ],
+                    "message": "both done",
+                },
+            },
+        })
+        assert len(actions) == 2
+        assert actions[0]["service"] == "turn_off"
+        assert actions[0]["entity_ids"] == ["light.front_entryway_flood_01"]
+        assert actions[1]["service"] == "turn_on"
+        assert actions[1]["entity_ids"] == ["light.kitchen_overhead"]
+
+    def test_unwraps_result_wrapper(self) -> None:
+        actions = _parse_actions({
+            "result": {
+                "decision": "execute",
+                "entity_ids": ["light.office"],
+                "service": "turn_on",
+            },
+        })
+        assert len(actions) == 1
+        assert actions[0]["entity_ids"] == ["light.office"]
+
+    def test_per_action_field_aliases(self) -> None:
+        # Each action may use `action` instead of `service` and
+        # `entity_id` (singular) instead of `entity_ids` (list).
+        actions = _parse_actions({
+            "decision": "execute",
+            "actions": [
+                # `action` + `entity_id` (str)
+                {"action": "light.turn_on",
+                 "entity_id": "light.one"},
+                # `service` + `entity_id` as list under singular name
+                {"service": "light.turn_off",
+                 "entity_id": ["light.two", "light.three"]},
+                # `method` field alias
+                {"method": "light.turn_on",
+                 "entity_ids": ["light.four"]},
+            ],
+        })
+        assert len(actions) == 3
+        assert actions[0]["service"] == "light.turn_on"
+        assert actions[0]["entity_ids"] == ["light.one"]
+        assert actions[1]["entity_ids"] == ["light.two", "light.three"]
+        assert actions[2]["service"] == "light.turn_on"
+
+    def test_per_action_service_data_aliases(self) -> None:
+        actions = _parse_actions({
+            "actions": [
+                {"service": "light.turn_on",
+                 "entity_ids": ["light.a"],
+                 "data": {"brightness_pct": 50}},
+                {"action": "light.turn_on",
+                 "entity_id": "light.b",
+                 "params": {"brightness_pct": 80}},
+                {"service": "light.turn_on",
+                 "entity_ids": ["light.c"],
+                 "parameters": {"brightness_pct": 30}},
+            ],
+        })
+        assert actions[0]["service_data"] == {"brightness_pct": 50}
+        assert actions[1]["service_data"] == {"brightness_pct": 80}
+        assert actions[2]["service_data"] == {"brightness_pct": 30}
+
 
 # ---------------------------------------------------------------------------
 # Compound execute integration — two different verbs in one utterance
@@ -644,6 +720,48 @@ class TestCompoundExecute:
         assert r.handled is True
         assert r.decision == "execute"
         assert len(ha.calls) == 2
+
+    def test_response_data_wrapper_with_action_aliases(self) -> None:
+        # This is the exact shape captured from live 14B on 2026-04-19.
+        # Before the parser normalization fix, this went unknown_decision
+        # and fell through to Tier 3 which then misfired on a button
+        # indicator entity. With normalization, both actions execute.
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.front_entryway_flood_01",
+                       "Front Entryway Flood 01",
+                       state="on", area="front_entryway"),
+                _state("light.kitchen_overhead",
+                       "Kitchen Overhead",
+                       state="off", area="kitchen"),
+            ],
+            llm_response=(
+                '{"response":{"type":"json","data":{'
+                '"actions":['
+                '{"action":"turn_off",'
+                '"entity_id":"light.front_entryway_flood_01"},'
+                '{"action":"turn_on",'
+                '"entity_id":"light.kitchen_overhead"}'
+                '],"message":"done"}}}'
+            ),
+        )
+        r = disambig.run(
+            "turn off the front entryway lights and turn on the kitchen lights",
+            source="webui_chat", assume_home_command=True,
+        )
+        assert r.handled is True
+        assert r.decision == "execute"
+        assert len(ha.calls) == 2
+        assert ha.calls[0]["service"] == "turn_off"
+        assert ha.calls[0]["target"] == {
+            "entity_id": ["light.front_entryway_flood_01"],
+        }
+        assert ha.calls[1]["service"] == "turn_on"
+        assert ha.calls[1]["target"] == {
+            "entity_id": ["light.kitchen_overhead"],
+        }
+        # Speech comes from `message` field via aliasing
+        assert r.speech == "done"
 
     def test_legacy_missing_decision_but_entity_ids_present_executes(self) -> None:
         # Same defense for the legacy SHAPE 1 variant.
