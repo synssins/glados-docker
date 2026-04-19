@@ -276,6 +276,101 @@ class TestSceneRegression:
         assert "upstairs" in _preprocess_query("dim the upstairs bedroom")
 
 
+class TestQualifierTightFilter:
+    """P0 2026-04-19: 'Turn the desk lamp down by half' produced three
+    Tier 2 candidates — Office Desk Monitor Lamp (full match) plus
+    two Living Room Arc Lamp entities (partial). The disambiguator
+    then asked the user to pick between three unrelated fixtures.
+    When any candidate covers ALL query tokens, filter out the
+    partial ones."""
+
+    def _cache_with(self, *states: dict) -> EntityCache:
+        cache = EntityCache()
+        cache.apply_get_states(list(states))
+        return cache
+
+    def _state(self, eid: str, name: str, state: str = "on"):
+        return {
+            "entity_id": eid, "state": state,
+            "attributes": {"friendly_name": name},
+        }
+
+    def test_full_coverage_candidates_win(self) -> None:
+        cache = self._cache_with(
+            self._state("light.office_desk_monitor_lamp",
+                        "Office Desk Monitor Lamp"),
+            self._state("light.living_arc_1", "Living Room Arc Lamp 1"),
+            self._state("light.living_arc_2", "Living Room Arc Lamp 2"),
+        )
+        results = cache.get_candidates("desk lamp", domain_filter=["light"])
+        ids = [c.entity.entity_id for c in results]
+        assert ids == ["light.office_desk_monitor_lamp"], ids
+
+    def test_no_full_coverage_is_noop(self) -> None:
+        """When no candidate contains every query token, the filter
+        returns the input list unchanged so the LLM still sees partial
+        matches (needed for scope-broadening rules)."""
+        from glados.ha.entity_cache import (
+            CandidateMatch, EntityState, _apply_qualifier_tight_filter,
+        )
+        e1 = EntityState(
+            entity_id="light.master_bedroom_ceiling",
+            friendly_name="Master Bedroom Ceiling", domain="light",
+            state="on", state_as_of=time.time(),
+        )
+        e2 = EntityState(
+            entity_id="light.bedroom_reading",
+            friendly_name="Bedroom Reading Lamp", domain="light",
+            state="on", state_as_of=time.time(),
+        )
+        scored = [
+            CandidateMatch(entity=e1, matched_name=e1.friendly_name,
+                           score=80.0, sensitive=False),
+            CandidateMatch(entity=e2, matched_name=e2.friendly_name,
+                           score=78.0, sensitive=False),
+        ]
+        # Query "bedroom lights" — neither entity contains "lights".
+        filtered = _apply_qualifier_tight_filter("bedroom lights", scored)
+        assert len(filtered) == 2
+
+    def test_aliases_count_for_coverage(self) -> None:
+        """Aliases in searchable_names also count for token coverage."""
+        from glados.ha.entity_cache import (
+            CandidateMatch, EntityState, _apply_qualifier_tight_filter,
+        )
+        with_alias = EntityState(
+            entity_id="light.utility_fixture",
+            friendly_name="Utility Fixture", domain="light",
+            state="on", state_as_of=time.time(),
+            aliases=["garage work lamp"],
+        )
+        lamp_only = EntityState(
+            entity_id="light.arc", friendly_name="Living Room Arc Lamp",
+            domain="light", state="on", state_as_of=time.time(),
+        )
+        scored = [
+            CandidateMatch(entity=with_alias, matched_name="garage work lamp",
+                           score=90.0, sensitive=False),
+            CandidateMatch(entity=lamp_only, matched_name=lamp_only.friendly_name,
+                           score=85.0, sensitive=False),
+        ]
+        filtered = _apply_qualifier_tight_filter("garage lamp", scored)
+        ids = [c.entity.entity_id for c in filtered]
+        assert ids == ["light.utility_fixture"], ids
+
+    def test_single_token_query_not_filtered(self) -> None:
+        """Filter only engages for 2+ tokens; a single-word query
+        keeps the original fuzzy ranking untouched."""
+        cache = self._cache_with(
+            self._state("light.office_desk_monitor_lamp",
+                        "Office Desk Monitor Lamp"),
+            self._state("light.arc", "Living Room Arc Lamp"),
+        )
+        results = cache.get_candidates("lamp", domain_filter=["light"])
+        ids = {c.entity.entity_id for c in results}
+        assert {"light.office_desk_monitor_lamp", "light.arc"} <= ids
+
+
 class TestCutoffs:
     def test_sensitive_domain_gets_100_cutoff(self) -> None:
         e = EntityState(
