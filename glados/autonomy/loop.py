@@ -90,6 +90,18 @@ class AutonomyLoop:
     def _should_skip(self) -> bool:
         if self._currently_speaking_event.is_set():
             return True
+        # Priority gate: when the user is interacting with chat on a
+        # shared Ollama instance, autonomy ticks compete with the
+        # disambiguator / rewriter / streaming chat for the same GPU
+        # queue. Observed 2026-04-19: a concurrent autonomy tick blew
+        # Tier 2's 25 s disambiguator budget and forced a slow Tier 3
+        # fall-through. Yield this tick when chat is active so
+        # single-Ollama deployments stay responsive out of the box.
+        # See glados.observability.priority for the underlying lock.
+        from glados.observability import is_chat_in_flight
+        if is_chat_in_flight():
+            logger.debug("Autonomy tick skipped: chat is in flight.")
+            return True
         if self._config.cooldown_s <= 0:
             return False
         return (time.time() - self._last_prompt_ts) < self._config.cooldown_s
