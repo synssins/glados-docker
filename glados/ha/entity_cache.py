@@ -109,45 +109,42 @@ def _preprocess_query(query: str) -> str:
         return query.strip().lower()
     return " ".join(kept).lower()
 
-def _apply_qualifier_tight_filter(
-    query: str,
-    scored: list["CandidateMatch"],
-) -> list["CandidateMatch"]:
-    """When the user's query contains ≥ 2 content tokens and at least
-    one candidate's name contains ALL of those tokens whole-word, keep
-    only the full-coverage candidates. This prevents loose WRatio hits
-    from polluting a disambiguation round.
+# Soft ranking bonuses applied on top of the raw WRatio score.
+#
+# _COVERAGE_BONUS is the max extra points a candidate can gain from
+# containing all user-query tokens whole-word in its name/aliases.
+# Scaled by coverage ratio so a 2/3 candidate gets 2/3 of the bonus.
+#
+# _AREA_BONUS is added when the candidate's area_id matches the
+# source's area (e.g., a voice satellite in the living room). Flat
+# because area-match is binary.
+#
+# Values are tuned so full-coverage + area-match (15 + 10 = 25) beats
+# a loose WRatio hit (~85) against a full-coverage no-area hit (~88),
+# but does NOT clobber a genuinely higher-scoring match. The cutoff
+# admission check still uses the raw score, so this only rearranges
+# candidates that already earned a seat at the table.
+_COVERAGE_BONUS: float = 15.0
+_AREA_BONUS: float = 10.0
 
-    Concrete regression the operator filed 2026-04-19: query
-    "desk lamp" produced three fuzzy candidates — "Office Desk Monitor
-    Lamp" (contains both words), plus two "Living Room Arc Lamp"
-    entities (contain only "lamp"). The disambiguator LLM then asked
-    the user to pick between three unrelated fixtures. Under this
-    filter only the Desk Monitor Lamp survives and the action
-    executes.
 
-    Conservative: if NO candidate contains all tokens, the filter is
-    a no-op — the LLM still sees the partial matches and can apply
-    its scope-broadening rules ("bedroom lights" → every bedroom
-    fixture even though no single entity has both words)."""
-    tokens = [t for t in query.split() if t]
-    if len(tokens) < 2 or not scored:
-        return scored
+def _name_words(names: list[str]) -> set[str]:
+    """Whole-word token set for the entity's names + aliases."""
+    words: set[str] = set()
+    for name in names:
+        for w in name.lower().split():
+            words.add(w.strip(".,!?;:'\"-_()/"))
+    return words
 
-    def _full_coverage(cand: "CandidateMatch") -> bool:
-        # Whole-word match on all of the entity's searchable names so
-        # aliases qualify too. Normalize to lowercase; the preprocessor
-        # already does the query side.
-        words: set[str] = set()
-        for name in cand.entity.searchable_names():
-            for w in name.lower().split():
-                # Strip trailing punctuation from name tokens (friendly
-                # names sometimes include colons or dashes).
-                words.add(w.strip(".,!?;:'\"-_()/"))
-        return all(tok in words for tok in tokens)
 
-    tight = [c for c in scored if _full_coverage(c)]
-    return tight if tight else scored
+def _coverage_ratio(query_tokens: list[str], name_words: set[str]) -> float:
+    """Fraction of query tokens that appear whole-word in the name set.
+    Returns 0.0 when the query has no tokens so callers can treat the
+    bonus as additive without a division-by-zero guard."""
+    if not query_tokens:
+        return 0.0
+    hits = sum(1 for t in query_tokens if t in name_words)
+    return hits / len(query_tokens)
 
 
 # Sensitive domains: fuzzy match produces wrong-device outcomes with
@@ -217,8 +214,19 @@ class CandidateMatch:
     """One row of fuzzy match output."""
     entity: EntityState
     matched_name: str     # Which of the entity's names matched.
-    score: float          # 0.0 – 100.0
+    score: float          # Raw WRatio score, 0.0 – 100.0
     sensitive: bool       # True if this domain requires exact-match only.
+    # Qualifier coverage: fraction of query tokens (after stopword
+    # strip) that appear whole-word in the entity's friendly_name or
+    # aliases. 1.0 = every user qualifier is present; 0.0 = none.
+    # Exposed to the disambiguator prompt so the LLM can prefer tight
+    # matches when there's no synonym / scope override.
+    coverage: float = 0.0
+    # True iff the candidate's area_id matches the source_area hint
+    # passed to get_candidates (e.g., a voice satellite in the living
+    # room). None when no area hint was provided for this query so the
+    # prompt can omit the signal entirely.
+    area_match: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -332,14 +340,28 @@ class EntityCache:
         query: str,
         domain_filter: list[str] | None = None,
         limit: int = 10,
+        source_area: str | None = None,
     ) -> list[CandidateMatch]:
         """Fuzzy-match the user's query against entity names.
 
-        Per-domain cutoffs are enforced; sensitive domains require an
-        exact match (score >= 100) — no loose matches to locks /
-        alarms / garage doors / cameras.
+        Per-domain cutoffs are enforced on the raw WRatio score;
+        sensitive domains require an exact match (score >= 100) — no
+        loose matches to locks / alarms / garage doors / cameras.
 
-        Returns the top N matches sorted by descending score."""
+        Ranking blends three signals so the disambiguator LLM sees
+        the best-matching candidates first WITHOUT eliminating
+        partial matches (which would preempt synonym / scope-
+        broadening rules in the prompt):
+
+          - Raw WRatio on friendly_name / aliases (admission gate).
+          - Qualifier coverage: how many of the user's query tokens
+            appear whole-word in the entity name. "desk lamp" vs
+            "Office Desk Monitor Lamp" = 2/2 coverage = full bonus.
+          - Area match: when `source_area` is provided (e.g., a voice
+            satellite in the living room), entities in that area
+            outrank identically-named ones elsewhere.
+
+        Returns the top N matches sorted by blended rank."""
         if not query or not query.strip():
             return []
         if not _RAPIDFUZZ_AVAILABLE:
@@ -350,7 +372,8 @@ class EntityCache:
         # Strip command verbs so we match on the entity-identifying part:
         # "activate the evening scene" -> "evening scene".
         q = _preprocess_query(query)
-        scored: list[CandidateMatch] = []
+        query_tokens = [t for t in q.split() if t]
+        scored: list[tuple[float, CandidateMatch]] = []
         for entity in self.snapshot():
             if domain_filter and entity.domain not in domain_filter:
                 continue
@@ -372,15 +395,30 @@ class EntityCache:
             sensitive = cutoff >= 100
             if score < cutoff:
                 continue
-            scored.append(CandidateMatch(
+            # Compute soft-ranking signals on top of the admission score.
+            name_words = _name_words(names)
+            coverage = _coverage_ratio(query_tokens, name_words)
+            area_match: bool | None = None
+            area_bonus = 0.0
+            if source_area is not None:
+                area_match = (entity.area_id == source_area)
+                if area_match:
+                    area_bonus = _AREA_BONUS
+            rank_score = (
+                float(score)
+                + _COVERAGE_BONUS * coverage
+                + area_bonus
+            )
+            scored.append((rank_score, CandidateMatch(
                 entity=entity,
                 matched_name=matched_name,
                 score=float(score),
                 sensitive=sensitive,
-            ))
-        scored = _apply_qualifier_tight_filter(q, scored)
-        scored.sort(key=lambda c: c.score, reverse=True)
-        return scored[:limit]
+                coverage=coverage,
+                area_match=area_match,
+            )))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [cand for _rank, cand in scored[:limit]]
 
     def _exact_match_fallback(
         self,
