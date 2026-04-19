@@ -65,12 +65,34 @@ _DOMAIN_CUTOFFS: dict[str, int] = {
 # Command-verb stopwords stripped from user queries before fuzzy
 # matching. They consume tokens that don't help identify the entity
 # and dilute WRatio scores. Order doesn't matter; matching is on words.
+#
+# Direction / quantity modifiers ("up", "down", "half", "more",
+# "dimmer") belong to the action payload (service_data) rather than
+# the entity name, so stripping them from the fuzzy query prevents
+# them from dragging the score below cutoff. Without this, "turn the
+# desk lamp down by half" produced 0 candidates because "down by
+# half" polluted the WRatio score against "Office Desk Monitor Lamp".
+# Multi-word words like "downstairs" are unaffected — matching is
+# whole-word.
 _QUERY_STOPWORDS: frozenset[str] = frozenset({
+    # Action verbs
     "activate", "deactivate", "trigger", "run", "start", "stop",
     "turn", "switch", "set", "make", "please",
+    "adjust", "change", "increase", "decrease", "raise", "reduce",
+    # Politeness / filler
+    "can", "you", "could", "would",
+    # Determiners / prepositions
     "the", "a", "an", "my", "some",
     "on", "off",            # status verbs — consumed by domain inference instead
-    "to", "for", "in", "of",
+    "to", "for", "in", "of", "by", "at",
+    # Direction / quantity modifiers — belong to service_data, not the
+    # entity name. Listed whole-word so "downstairs", "upstairs",
+    # "highlight", "lowpass" etc. are unaffected.
+    "up", "down", "higher", "lower",
+    "brighter", "dimmer", "warmer", "cooler",
+    "louder", "quieter", "faster", "slower",
+    "more", "less", "bit", "little", "much",
+    "half", "halfway", "fully", "maximum", "minimum", "max", "min",
 })
 
 
