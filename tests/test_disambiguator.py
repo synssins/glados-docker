@@ -20,7 +20,8 @@ from glados.intent.disambiguator import (
 from glados.intent.rules import DisambiguationRules, IntentAllowlist
 
 
-def _state(eid, name, state="on", domain=None, dc=None, area=None):
+def _state(eid, name, state="on", domain=None, dc=None, area=None,
+           extra_attrs=None):
     return {
         "entity_id": eid,
         "state": state,
@@ -28,6 +29,7 @@ def _state(eid, name, state="on", domain=None, dc=None, area=None):
             "friendly_name": name,
             **({"device_class": dc} if dc else {}),
             **({"area_id": area} if area else {}),
+            **(extra_attrs or {}),
         },
     }
 
@@ -398,3 +400,258 @@ class TestHomeCommandHelper:
     def test_home_commands_return_true(self, utterance: str) -> None:
         from glados.intent.rules import looks_like_home_command
         assert looks_like_home_command(utterance) is True
+
+
+class TestServiceData:
+    """P0 2026-04-19 — Tier 2 must forward service_data (brightness,
+    colour, temperature, volume, fan speed) through to HA. Without this,
+    'dim the lamp', 'set to 40 percent', 'warmer' all resolve to bare
+    turn_on calls and the device silently ignores the parameter."""
+
+    def test_absolute_brightness_passes_through(self) -> None:
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state(
+                    "light.desk_lamp", "Desk Lamp", state="on",
+                    extra_attrs={"brightness": 128},
+                ),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.desk_lamp"],'
+                '"service":"turn_on",'
+                '"service_data":{"brightness_pct":40},'
+                '"speech":"Desk lamp to forty percent.","rationale":"absolute"}'
+            ),
+        )
+        r = disambig.run("set the desk lamp to 40 percent", source="webui_chat")
+        assert r.decision == "execute"
+        assert r.service_data == {"brightness_pct": 40}
+        assert ha.calls == [{
+            "domain": "light", "service": "turn_on",
+            "target": {"entity_id": ["light.desk_lamp"]},
+            "service_data": {"brightness_pct": 40},
+        }]
+
+    def test_relative_adjustment_reads_current_state(self) -> None:
+        """The prompt exposes current brightness via attrs=; the LLM
+        is responsible for computing current+25. We verify that
+        whatever service_data it returns is threaded through."""
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state(
+                    "light.desk_lamp", "Desk Lamp", state="on",
+                    extra_attrs={"brightness": 76},  # ~30%
+                ),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.desk_lamp"],'
+                '"service":"turn_on",'
+                '"service_data":{"brightness_pct":55},'
+                '"speech":"Brighter. Marginally.","rationale":"relative"}'
+            ),
+        )
+        r = disambig.run("turn up the desk lamp", source="webui_chat")
+        assert r.service_data == {"brightness_pct": 55}
+        assert ha.calls[0]["service_data"] == {"brightness_pct": 55}
+
+    def test_color_temperature_passes_through(self) -> None:
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state(
+                    "light.desk_lamp", "Desk Lamp", state="on",
+                    extra_attrs={"color_temp_kelvin": 4500},
+                ),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.desk_lamp"],'
+                '"service":"turn_on",'
+                '"service_data":{"color_temp_kelvin":2700},'
+                '"speech":"Warmer light.","rationale":"warmer"}'
+            ),
+        )
+        r = disambig.run("make the desk lamp warmer", source="webui_chat")
+        assert r.service_data == {"color_temp_kelvin": 2700}
+        assert ha.calls[0]["service_data"] == {"color_temp_kelvin": 2700}
+
+    def test_color_name_passes_through(self) -> None:
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.strip", "Strip Light", state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.strip"],'
+                '"service":"turn_on",'
+                '"service_data":{"color_name":"blue"},'
+                '"speech":"Blue.","rationale":"color by name"}'
+            ),
+        )
+        r = disambig.run("change the strip light to blue", source="webui_chat")
+        assert r.service_data == {"color_name": "blue"}
+        assert ha.calls[0]["service_data"] == {"color_name": "blue"}
+
+    def test_fan_percentage_passes_through(self) -> None:
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state(
+                    "fan.living", "Living Room Fan", state="on",
+                    extra_attrs={"percentage": 50},
+                ),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["fan.living"],'
+                '"service":"turn_on",'
+                '"service_data":{"percentage":30},'
+                '"speech":"Thirty percent.","rationale":"lower"}'
+            ),
+        )
+        r = disambig.run("slow down the fan", source="webui_chat")
+        assert r.service_data == {"percentage": 30}
+        assert ha.calls[0]["service_data"] == {"percentage": 30}
+
+    def test_omitted_service_data_sends_none(self) -> None:
+        """Bare turn_off must continue to pass service_data=None so HA
+        doesn't get an empty-but-present payload."""
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.kitchen", "Kitchen", state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.kitchen"],'
+                '"service":"turn_off",'
+                '"speech":"Off.","rationale":"bare"}'
+            ),
+        )
+        r = disambig.run("turn off the kitchen lights", source="webui_chat")
+        assert r.decision == "execute"
+        assert r.service_data == {}
+        assert ha.calls[0]["service_data"] is None
+
+    def test_prompt_exposes_relevant_attributes(self) -> None:
+        """State-fresh candidate lines must include brightness / color
+        temp / fan percentage so the LLM can compute relative deltas."""
+        from glados.ha.entity_cache import CandidateMatch, EntityCache
+
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state(
+                "light.desk_lamp", "Desk Lamp", state="on",
+                extra_attrs={"brightness": 76, "color_temp_kelvin": 3500},
+            ),
+        ])
+        entity = cache.snapshot()[0]
+        match = CandidateMatch(
+            entity=entity, matched_name=entity.friendly_name,
+            score=100.0, sensitive=False,
+        )
+        disambig = Disambiguator(
+            ha_client=_FakeHAClient(), cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=DisambiguationRules(), allowlist=IntentAllowlist(),
+        )
+        msgs = disambig._build_prompt(
+            utterance="turn it up",
+            source="webui_chat",
+            candidates=[match],
+            state_fresh=True,
+        )
+        user_prompt = msgs[-1]["content"]
+        assert "brightness_pct=30" in user_prompt  # derived from 76/255
+        assert "color_temp_kelvin=3500" in user_prompt
+
+    def test_prompt_omits_attributes_when_state_is_stale(self) -> None:
+        from glados.ha.entity_cache import CandidateMatch, EntityCache
+
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state(
+                "light.desk_lamp", "Desk Lamp", state="on",
+                extra_attrs={"brightness": 76},
+            ),
+        ])
+        entity = cache.snapshot()[0]
+        match = CandidateMatch(
+            entity=entity, matched_name=entity.friendly_name,
+            score=100.0, sensitive=False,
+        )
+        disambig = Disambiguator(
+            ha_client=_FakeHAClient(), cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=DisambiguationRules(), allowlist=IntentAllowlist(),
+        )
+        msgs = disambig._build_prompt(
+            utterance="turn it up",
+            source="webui_chat",
+            candidates=[match],
+            state_fresh=False,
+        )
+        user_prompt = msgs[-1]["content"]
+        assert "attrs=" not in user_prompt
+
+    def test_trailing_vocative_is_stripped_from_tier2_speech(self) -> None:
+        """Tier 2 speech never goes through the rewriter's persona restyle
+        (it's already persona-voiced from the disambiguator prompt). The
+        trailing-vocative safety net has to run here too, otherwise 'test
+        subject' leaks when the LLM ignores the explicit instruction."""
+        disambig, ha, _ = _make(
+            cache_states=[_state("light.desk_lamp", "Desk Lamp", state="on")],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.desk_lamp"],'
+                '"service":"turn_on",'
+                '"service_data":{"brightness_pct":70},'
+                '"speech":"The desk lamp has been adjusted to your '
+                'satisfaction, test subject.","rationale":"x"}'
+            ),
+        )
+        r = disambig.run("turn the desk lamp up a bit", source="webui_chat")
+        assert r.decision == "execute"
+        assert "test subject" not in r.speech.lower()
+        assert r.speech.endswith(".")
+
+    def test_clarify_vocative_is_stripped(self) -> None:
+        disambig, _, _ = _make(
+            cache_states=[
+                _state("light.a", "Master Bedroom", state="on"),
+                _state("light.b", "Guest Bedroom", state="on"),
+            ],
+            llm_response=(
+                '{"decision":"clarify",'
+                '"speech":"Two bedrooms qualify. Specify, human.",'
+                '"rationale":"x"}'
+            ),
+        )
+        r = disambig.run("turn off the bedroom lights", source="webui_chat")
+        assert r.decision == "clarify"
+        assert ", human" not in r.speech.lower()
+
+    def test_execute_no_ack_preserves_service_data(self) -> None:
+        """A call_service timeout still reports the service_data that
+        was requested so audit rows stay truthful."""
+        import concurrent.futures
+
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.desk_lamp", "Desk Lamp", state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.desk_lamp"],'
+                '"service":"turn_on",'
+                '"service_data":{"brightness_pct":60},'
+                '"speech":"Done.","rationale":"x"}'
+            ),
+        )
+
+        def _timeout(**kwargs):
+            raise concurrent.futures.TimeoutError("no ack")
+
+        ha.call_service = _timeout  # type: ignore[method-assign]
+        r = disambig.run("set the desk lamp to 60%", source="webui_chat")
+        assert r.decision == "execute_no_ack"
+        assert r.service_data == {"brightness_pct": 60}

@@ -334,6 +334,36 @@ class ConversationDB:
             cur.close()
         return row[0] if row else None
 
+    def latest_assistant_tier_exchange(
+        self, *, conversation_id: str = "default",
+    ) -> tuple[int, float, str | None] | None:
+        """Return (tier, ts, ha_conversation_id) for the MOST RECENT
+        assistant row, but only when its tier is 1 or 2. If the most
+        recent assistant turn was Tier 3 chitchat (or any other tier),
+        return None — home-command carry-over should not jump over an
+        unrelated intervening turn.
+
+        Used by the api_wrapper to carry home-command intent forward
+        one turn when the user follows up without a device keyword
+        (P0 2026-04-19: 'turn it up more' after a successful Tier 1/2
+        act on the desk lamp)."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT tier, ts, ha_conversation_id FROM messages "
+                "WHERE conversation_id = ? AND role = 'assistant' "
+                "ORDER BY idx DESC LIMIT 1",
+                (conversation_id,),
+            )
+            row = cur.fetchone()
+            cur.close()
+        if row is None or row[0] is None:
+            return None
+        tier = int(row[0])
+        if tier not in (1, 2):
+            return None
+        return tier, float(row[1]), (row[2] if row[2] else None)
+
     def count(self, *, conversation_id: str = "default") -> int:
         with self._lock:
             cur = self._conn.cursor()
