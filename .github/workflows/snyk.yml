@@ -1,13 +1,13 @@
 name: Snyk Security Scan
 
+# Paused 2026-04-19: Snyk monthly scan budget is tight. Automatic
+# push/PR/weekly triggers are disabled; run the scan manually on
+# milestone commits via the Actions tab (Run workflow) or:
+#   gh workflow run snyk.yml --ref main
+# Re-enable the `push` / `pull_request` / `schedule` blocks when the
+# budget refreshes if continuous scanning is desired again.
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main]
-  schedule:
-    # Weekly scan every Monday at 06:00 UTC
-    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 # Both scans report to Snyk org b905c516-c213-433b-973a-9d26adf03871.
 # SNYK_TOKEN is a Snyk auth token stored as a GitHub Actions secret. We

@@ -41,8 +41,10 @@ new — all exist today. Verified against api_reference.md and api_wrapper.py.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/announce` | Pre-generated announcement playback via HA |
-| POST | `/command` | ESPHome voice command → pre-recorded WAV |
 | POST | `/doorbell/screen` | Doorbell camera frame display trigger |
+<!-- `/command` removed Stage 3 Phase 7 — voice now rides the
+     OpenAI-compatible `/v1/chat/completions` endpoint via HA. -->
+
 | GET | `/entities` | Cached HA entity list |
 | GET | `/api/attitudes` | Attitude directive pool |
 | GET/POST | `/api/announcement-settings` | Per-scenario verbosity config |
