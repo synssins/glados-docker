@@ -886,6 +886,24 @@ def _normalize_base_url(url: str) -> str:
     return url
 
 
+def _ollama_chat_url(base_or_chat_url: str) -> str:
+    """Given either a bare Ollama base (`http://host:port`) or the full
+    chat endpoint (`http://host:port/api/chat`), return the `/api/chat`
+    form the engine's GladosConfig.completion_url expects. Tolerant of
+    trailing slashes and of operators who paste either variant into the
+    LLM & Services URL field."""
+    url = (base_or_chat_url or "").strip().rstrip("/")
+    if not url:
+        return url
+    if url.endswith("/api/chat"):
+        return url
+    # Strip any other trailing /api/... path the operator might have set
+    # (e.g. /api/tags from testing), then append the canonical suffix.
+    if "/api/" in url:
+        url = url.rsplit("/api/", 1)[0]
+    return url + "/api/chat"
+
+
 def discover_ollama(url: str) -> tuple[int, dict]:
     """GET <url>/api/tags and return model list."""
     try:
@@ -3236,7 +3254,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, result)
 
     def _put_config_section(self, section: str):
-        """Update a config section from JSON body."""
+        """Update a config section from JSON body.
+
+        When the services section is saved, also mirror the Ollama
+        interactive / autonomy URLs into glados_config.yaml. The engine
+        uses its own `completion_url` / `autonomy.completion_url` fields
+        from that separate YAML, so an operator editing URLs on the
+        LLM & Services page wouldn't otherwise affect chat routing.
+        """
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode("utf-8") if length else "{}"
@@ -3246,11 +3271,79 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             _cfg.update_section(section, data)
+            if section == "services":
+                self._sync_glados_config_urls(data)
             self._send_json(200, {"ok": True, "section": section})
         except KeyError as e:
             self._send_error(404, str(e))
         except Exception as e:
             self._send_error(400, f"Validation error: {e}")
+
+    def _sync_glados_config_urls(self, services_payload: dict) -> None:
+        """Mirror ollama_interactive.url and ollama_autonomy.url from the
+        services payload into glados_config.yaml's chat + autonomy
+        `completion_url` fields.
+
+        Background: the engine (glados.core.engine.GladosConfig) reads
+        `completion_url` from glados_config.yaml, independently of the
+        services.yaml that pydantic ServicesConfig owns. Pre-this-fix,
+        operators editing Ollama URLs on the LLM & Services page
+        silently diverged from the engine's chat routing — and a dead
+        old URL in glados_config.yaml would surface as a 504 gateway
+        timeout on the first chat turn after an Ollama server move.
+        """
+        interactive_url = ((services_payload.get("ollama_interactive") or {}).get("url") or "").strip()
+        autonomy_url = ((services_payload.get("ollama_autonomy") or {}).get("url") or "").strip()
+        if not interactive_url and not autonomy_url:
+            return
+
+        config_path = Path(os.environ.get(
+            "GLADOS_CONFIG",
+            "/app/configs/glados_config.yaml",
+        ))
+        if not config_path.exists():
+            logger.debug("glados_config.yaml not present at {}; skip URL sync", config_path)
+            return
+
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("glados_config URL sync: failed to read {}: {}", config_path, exc)
+            return
+
+        glados_block = raw.get("Glados") if isinstance(raw.get("Glados"), dict) else None
+        if glados_block is None:
+            logger.debug("glados_config has no Glados block; skip sync")
+            return
+
+        changed = False
+        if interactive_url:
+            new_chat = _ollama_chat_url(interactive_url)
+            if glados_block.get("completion_url") != new_chat:
+                glados_block["completion_url"] = new_chat
+                changed = True
+        if autonomy_url:
+            auton = glados_block.get("autonomy") if isinstance(glados_block.get("autonomy"), dict) else None
+            if auton is not None:
+                new_auton = _ollama_chat_url(autonomy_url)
+                if auton.get("completion_url") != new_auton:
+                    auton["completion_url"] = new_auton
+                    changed = True
+
+        if not changed:
+            return
+        try:
+            config_path.write_text(
+                yaml.safe_dump(raw, sort_keys=False),
+                encoding="utf-8",
+            )
+            logger.info(
+                "glados_config URL sync: chat={} autonomy={}",
+                glados_block.get("completion_url"),
+                (glados_block.get("autonomy") or {}).get("completion_url"),
+            )
+        except OSError as exc:
+            logger.warning("glados_config URL sync: write failed: {}", exc)
 
     def _put_config_raw(self):
         """Update a single config file from raw YAML text."""
