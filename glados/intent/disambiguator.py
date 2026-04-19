@@ -517,10 +517,32 @@ class Disambiguator:
             return self._fall_through(
                 "llm_bad_json", raw[:200], t0,
                 candidates=_summarize_candidates(candidates),
-                utterance=utterance, source=source,
+                utterance=utterance, source=source, llm_raw=raw,
             )
 
         action = str(decision.get("decision", "")).lower()
+        # Defensive: when the LLM omits `decision` but includes an
+        # `actions` list (or the legacy `entity_ids`+`service` pair),
+        # infer `execute`. Live 14B-instruct occasionally drops the
+        # decision key when emitting SHAPE 2 compound output —
+        # observed 2026-04-19 on the "front entryway + kitchen"
+        # compound turn. Inferring is safer than falling through to
+        # Tier 3 chitchat which then speaks as if it acted without
+        # actually firing any tool calls.
+        if not action:
+            has_actions = (
+                isinstance(decision.get("actions"), list)
+                and decision.get("actions")
+            )
+            has_legacy = (
+                decision.get("entity_ids") and decision.get("service")
+            )
+            if has_actions or has_legacy:
+                action = "execute"
+                logger.debug(
+                    "Tier 2 inferred decision=execute from structure "
+                    "(raw had no 'decision' field)"
+                )
         speech = str(decision.get("speech", "")).strip()
         # Safety net for prompt drift: the disambiguator system prompt
         # explicitly tells the LLM not to tack vocatives like "test
@@ -569,7 +591,7 @@ class Disambiguator:
                 "speech_leaked_entity_ids",
                 speech[:200], t0,
                 candidates=candidates_summary,
-                utterance=utterance, source=source,
+                utterance=utterance, source=source, llm_raw=raw,
             )
 
         if action == "clarify":
@@ -594,7 +616,7 @@ class Disambiguator:
             return self._fall_through(
                 "unknown_decision", action, t0,
                 candidates=candidates_summary,
-                utterance=utterance, source=source,
+                utterance=utterance, source=source, llm_raw=raw,
             )
 
         if not parsed_actions:
@@ -602,7 +624,7 @@ class Disambiguator:
                 "execute_missing_fields",
                 f"no actions; raw={raw[:120]!r}",
                 t0, candidates=candidates_summary,
-                utterance=utterance, source=source,
+                utterance=utterance, source=source, llm_raw=raw,
             )
 
         # 6. Validate every chosen entity across every action is
@@ -815,6 +837,7 @@ class Disambiguator:
         *,
         utterance: str = "",
         source: str = "",
+        llm_raw: str = "",
     ) -> DisambiguationResult:
         # Emit an audit row so fall-through turns are visible. Without
         # this, the audit log shows only the utterance ingress and the
@@ -835,6 +858,11 @@ class Disambiguator:
                     "decision": "fall_through",
                     "rationale": rationale,
                     "candidates_shown": candidates or [],
+                    # Truncated raw LLM response for forensic diagnosis
+                    # of prompt-adherence failures (e.g., missing
+                    # "decision" field). Only populated when the
+                    # fall-through happened AFTER the LLM returned.
+                    "llm_raw": llm_raw[:800] if llm_raw else "",
                 },
             ))
         except Exception:  # noqa: BLE001 — audit must not break the flow
@@ -845,6 +873,7 @@ class Disambiguator:
             rationale=rationale,
             candidates_shown=candidates or [],
             latency_ms=elapsed_ms,
+            llm_raw=llm_raw,
         )
 
     def _build_prompt(
