@@ -274,6 +274,24 @@ class ConversationStore:
 
     # ── Helpers ────────────────────────────────────────────────
 
+    def latest_assistant_tier_exchange(
+        self,
+    ) -> tuple[int, float, str | None] | None:
+        """Return (tier, ts, ha_conversation_id) for the most-recent
+        assistant row whose tier is 1 or 2. Returns None when no DB is
+        wired or no such row exists. Callers use this to carry
+        home-command intent forward across a follow-up turn that has
+        no device keyword."""
+        if self._db is None:
+            return None
+        try:
+            return self._db.latest_assistant_tier_exchange(
+                conversation_id=self._conversation_id,
+            )
+        except Exception as exc:
+            logger.debug("latest_assistant_tier_exchange query failed: {}", exc)
+            return None
+
     def latest_ha_conversation_id(self) -> str | None:
         """Return the most-recent HA conversation_id seen, so callers
         can pass it forward to maintain HA's conversation thread.

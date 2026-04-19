@@ -187,3 +187,75 @@ class TestBackwardCompat:
         store.append(_msg("user", "hi"))
         store.append_multiple([_msg("user", "a"), _msg("assistant", "b")])
         assert len(store) == 3
+
+
+class TestLatestAssistantTierExchange:
+    """P0 2026-04-19 — api_wrapper uses this to carry home-command
+    intent forward when the user follows up with no device keyword
+    ('turn it up more' after a successful Tier 1/2 on the desk lamp)."""
+
+    def test_returns_tier_ts_conv_id_for_latest_tier_exchange(
+        self, tmp_path: Path,
+    ) -> None:
+        db = ConversationDB(tmp_path / "c.db")
+        store = ConversationStore(
+            initial_messages=[_msg("system", "preprompt")], db=db,
+        )
+        store.append_multiple(
+            [_msg("user", "dim the lamp"),
+             _msg("assistant", "Dimmed.")],
+            source="webui_chat", tier=2, ha_conversation_id="ha-42",
+        )
+        info = store.latest_assistant_tier_exchange()
+        assert info is not None
+        tier, ts, ha_conv = info
+        assert tier == 2
+        assert ts > 0
+        assert ha_conv == "ha-42"
+        db.close()
+
+    def test_returns_none_when_only_tier3_assistant(
+        self, tmp_path: Path,
+    ) -> None:
+        db = ConversationDB(tmp_path / "c.db")
+        store = ConversationStore(
+            initial_messages=[_msg("system", "preprompt")], db=db,
+        )
+        store.append_multiple(
+            [_msg("user", "tell me a joke"),
+             _msg("assistant", "No.")],
+            source="webui_chat", tier=3,
+        )
+        assert store.latest_assistant_tier_exchange() is None
+        db.close()
+
+    def test_returns_most_recent_when_mixed_history(
+        self, tmp_path: Path,
+    ) -> None:
+        db = ConversationDB(tmp_path / "c.db")
+        store = ConversationStore(
+            initial_messages=[_msg("system", "preprompt")], db=db,
+        )
+        store.append_multiple(
+            [_msg("user", "lock the door"),
+             _msg("assistant", "Locked.")],
+            source="webui_chat", tier=1,
+        )
+        store.append_multiple(
+            [_msg("user", "joke"),
+             _msg("assistant", "No.")],
+            source="webui_chat", tier=3,
+        )
+        store.append_multiple(
+            [_msg("user", "dim lamp"),
+             _msg("assistant", "Dimmed.")],
+            source="webui_chat", tier=2,
+        )
+        info = store.latest_assistant_tier_exchange()
+        assert info is not None
+        assert info[0] == 2
+        db.close()
+
+    def test_returns_none_when_no_db(self) -> None:
+        store = ConversationStore()
+        assert store.latest_assistant_tier_exchange() is None
