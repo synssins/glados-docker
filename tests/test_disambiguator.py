@@ -619,6 +619,49 @@ class TestCompoundExecute:
         assert r.should_fall_through is True
         assert ha.calls == []  # nothing fired — invariant
 
+    def test_actions_without_decision_field_inferred_as_execute(self) -> None:
+        # Observed 2026-04-19 on live 14B: the LLM returned
+        # {"actions": [...], "speech": "..."} without the
+        # `decision` key at all. Defensive inference treats that
+        # as execute rather than falling through to Tier 3 where
+        # the chat LLM acknowledges but doesn't actually fire.
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.office", "Office", state="off", area="office"),
+                _state("light.kitchen", "Kitchen", state="off", area="kitchen"),
+            ],
+            llm_response=(
+                '{"actions":['
+                '{"service":"light.turn_on","entity_ids":["light.office"]},'
+                '{"service":"light.turn_off","entity_ids":["light.kitchen"]}'
+                '],"speech":"both done"}'
+            ),
+        )
+        r = disambig.run(
+            "turn on the office lights and turn off the kitchen lights",
+            source="webui_chat", assume_home_command=True,
+        )
+        assert r.handled is True
+        assert r.decision == "execute"
+        assert len(ha.calls) == 2
+
+    def test_legacy_missing_decision_but_entity_ids_present_executes(self) -> None:
+        # Same defense for the legacy SHAPE 1 variant.
+        disambig, ha, _ = _make(
+            cache_states=[_state("light.kitchen", "Kitchen", state="on")],
+            llm_response=(
+                '{"entity_ids":["light.kitchen"],"service":"turn_off",'
+                '"speech":"off"}'
+            ),
+        )
+        r = disambig.run(
+            "turn off the kitchen lights", source="webui_chat",
+            assume_home_command=True,
+        )
+        assert r.handled is True
+        assert r.decision == "execute"
+        assert len(ha.calls) == 1
+
     def test_legacy_single_action_still_works(self) -> None:
         # The old schema still produces one action.
         disambig, ha, _ = _make(
