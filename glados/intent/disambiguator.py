@@ -628,7 +628,39 @@ class Disambiguator:
         # rest of this method reads the actual payload.
         decision = _unwrap_llm_response(decision)
 
-        action = str(decision.get("decision", "")).lower()
+        action = str(decision.get("decision", "")).lower().strip()
+        # Phase 8.0.2 — tolerant enum normalization. qwen3:8b (and
+        # other small models) emit plausible-but-off-enum values
+        # despite the prompt hammering the three canonical choices.
+        # Seen in production: "acknowledge", "accept", "proceed",
+        # "act", "confirm", "do". Accept these as execute rather
+        # than falling through to Tier 3, which would redo the work
+        # the model already successfully reasoned about.
+        _DECISION_SYNONYMS = {
+            "execute": {
+                "acknowledge", "accept", "proceed", "act", "action",
+                "confirm", "do", "apply", "run", "go", "yes", "ok",
+                "okay", "perform", "set", "command", "execute_action",
+                "executeaction", "executed",
+            },
+            "clarify": {
+                "ask", "question", "specify", "unclear", "ambiguous",
+                "need_more_info", "prompt_user",
+            },
+            "refuse": {
+                "deny", "reject", "decline", "forbid", "disallow",
+                "no", "block",
+            },
+        }
+        if action and action not in {"execute", "clarify", "refuse"}:
+            for canonical, synonyms in _DECISION_SYNONYMS.items():
+                if action in synonyms:
+                    logger.debug(
+                        "Tier 2 decision normalized: {!r} -> {!r}",
+                        action, canonical,
+                    )
+                    action = canonical
+                    break
         # Defensive: when the LLM omits `decision` but includes an
         # `actions` list (or the legacy `entity_ids`+`service` pair),
         # infer `execute`. Live 14B-instruct occasionally drops the
