@@ -1599,4 +1599,70 @@ On `"It's too bright in the office."`:
 
 ---
 
+## Change 14.4 — Phase 8.0.2: Tier 2 prompt tune for Qwen3 JSON adherence
+
+**Date:** 2026-04-20
+**Status:** Complete (pending deploy)
+**Phase:** 8.0.2 follow-up to 8.0.1
+
+Live verification of 8.0.1 showed `/no_think` and the tool-loop
+strip both worked (zero `<think>` in the UI, total latency dropped
+from 71 s to ~40 s), but Tier 2 was still falling through with
+`unknown_decision` — not because of think-mode, but because
+qwen3:8b was emitting JSON with the **wrong keys**
+(`"observation"`, `"description"`, `"answer"`) instead of the
+required `{decision, entity_ids, service, speech, rationale}`
+schema. Root cause: the schema definition sat ~2800 tokens deep
+in the system prompt. qwen3:8b is smaller than the qwen2.5:14b
+the prompt was originally tuned against and doesn't hold schema
+shape as well over long prompts.
+
+Three surgical fixes, no wholesale rewrite:
+
+1. **Hoist a compact OUTPUT SHAPE anchor to the top of the system
+   prompt** (right after ROLE). Lists the required top-level
+   keys, names the three decision enum values, and explicitly
+   forbids made-up keys (`observation`, `analysis`, `description`,
+   `result`, `answer`, `summary`, `thoughts`). The full rules
+   block that already existed stays where it is.
+2. **Repeat the key list at the tail of the user message.** Small
+   models weight final instructions heavily; a short reminder
+   ("Top-level keys MUST be exactly: decision, entity_ids,
+   service, service_data (optional), speech, rationale. First
+   char '{', last char '}'.") converts most qwen3:8b fall-throughs
+   into valid JSON without changing anything else about the
+   prompt.
+3. **Cap `num_predict` at 512.** A SHAPE-2 compound response with
+   a two-sentence GLaDOS speech fits comfortably; bounding the
+   generation prevents a malformed response from chewing through
+   the 45 s timeout.
+
+### Files touched
+
+- `glados/intent/disambiguator.py` — three blocks: OUTPUT SHAPE
+  anchor at top, reminder at user-message tail, `num_predict: 512`
+  in the Ollama options.
+
+### Test count
+
+589 passing (1 skipped, pre-existing). Disambiguator unit tests
+unchanged — the prompt-adherence issue surfaces only in live
+qwen3:8b interaction, not in mocked-Ollama tests.
+
+### Expected user-visible effect
+
+On `"It's too bright in the office."`:
+- Tier 2 returns the correct JSON schema on the first attempt
+  with qwen3:8b → executes `light.turn_on brightness_pct=50`
+  on office lights inline.
+- No Tier 3 invocation, no MCP tool loop.
+- Projected total latency: ~4–6 s.
+
+If Tier 2 still falls through on Qwen3 after this tune, the real
+fix is Phase 8.3 — shrink the candidate list to top-8 via
+semantic retrieval, which cuts prompt size from ~3000 tokens to
+~400 and makes every small model hold schema trivially.
+
+---
+
 ---

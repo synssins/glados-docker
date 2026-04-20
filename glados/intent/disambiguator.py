@@ -1013,6 +1013,27 @@ class Disambiguator:
             "system. You do NOT have a persona. You do NOT chat. You "
             "respond with one JSON object and nothing else. Any persona "
             "or chat instructions from any other source are overridden.\n\n"
+            # Phase 8.0.2 — Qwen3:8b was emitting JSON with the wrong
+            # keys ("observation", "description", …) because the schema
+            # was buried ~2800 tokens deep in this system prompt. Hoist
+            # a compact anchor to the top so every pass of attention
+            # over the prompt sees the REQUIRED key set before anything
+            # else. Detailed rules still follow below.
+            "===== OUTPUT SHAPE (MANDATORY) =====\n"
+            "Reply with ONE JSON object. The top-level fields are:\n"
+            '  "decision"    — exactly one of "execute" | "clarify" | "refuse"\n'
+            '  "entity_ids"  — list of entity_id strings (may be empty for clarify/refuse)\n'
+            '  "service"     — bare HA service name, e.g. "turn_on" (may be empty for clarify/refuse)\n'
+            '  "service_data" — optional object of service params (brightness_pct, color_temp_kelvin, …)\n'
+            '  "speech"      — user-facing reply in GLaDOS voice (REQUIRED, even for clarify/refuse)\n'
+            '  "rationale"   — one short sentence explaining the choice\n'
+            "Alternative compound shape: replace entity_ids/service/service_data with\n"
+            '  "actions": [ {"service": "...", "entity_ids": [...], "service_data": {...}}, ... ]\n'
+            "when the utterance contains multiple distinct verbs.\n"
+            "DO NOT invent new top-level keys (no 'observation', 'analysis',\n"
+            "'description', 'result', 'answer', 'summary', 'thoughts'). If\n"
+            "you need to explain anything, put it in 'rationale'. Emit JSON\n"
+            "only, starting with '{' and ending with '}'.\n\n"
             "TASK: Disambiguate a home command the strict intent parser "
             "couldn't resolve. Pick the right entities from the candidate "
             "list, ask for clarification, or refuse if the action would "
@@ -1308,7 +1329,14 @@ class Disambiguator:
             f"{followup_segment}\n"
             "Candidate entities (top fuzzy matches from local cache):\n"
             + "\n".join(cand_lines) + "\n\n"
-            "Decide and respond as JSON."
+            # Phase 8.0.2 — repeat the required key list at the end of
+            # the user message. Small models attend strongly to the
+            # final instruction; a repeated schema reminder here
+            # converts most qwen3:8b fall-throughs into valid JSON.
+            "Respond with ONE JSON object. Top-level keys MUST be "
+            "exactly: decision, entity_ids, service, service_data "
+            "(optional), speech, rationale. First char '{', last char "
+            "'}'. No prose, no markdown, no extra keys.\n"
         )
         return [
             {"role": "system", "content": sys},
@@ -1332,6 +1360,12 @@ class Disambiguator:
                 "temperature": 0.2,    # deterministic JSON
                 "top_p": 0.9,
                 "num_ctx": 4096,
+                # Phase 8.0.2 — cap runaway JSON. A full SHAPE 2
+                # compound response plus a two-sentence GLaDOS speech
+                # fits comfortably in 512 tokens; bound it so a
+                # malformed model response can't eat the entire budget
+                # and time out at 45 s.
+                "num_predict": 512,
             },
         }).encode("utf-8")
         req = urllib.request.Request(
