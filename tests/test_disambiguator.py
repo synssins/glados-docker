@@ -930,6 +930,184 @@ class TestExecute:
         assert not ha.calls
 
 
+# ──────────────────────────────────────────────────────────────
+# Phase 8.3.4 — SemanticIndex integration (fallback + preference)
+# ──────────────────────────────────────────────────────────────
+
+class _StubSemanticIndex:
+    """Drop-in replacement for SemanticIndex that returns a canned
+    hit list. Used to verify the disambiguator wiring without
+    loading the real BGE-small model."""
+
+    def __init__(self, hits_by_query=None, ready=True, raises=False):
+        from glados.ha.semantic_index import SemanticHit
+        self._hits = hits_by_query or {}
+        self._ready = ready
+        self._raises = raises
+        self.SemanticHit = SemanticHit
+        self.calls: list[str] = []
+
+    def is_ready(self) -> bool:
+        return self._ready
+
+    def retrieve_for_planner(self, query, *, k=8, domain_filter=None):
+        self.calls.append(query)
+        if self._raises:
+            raise RuntimeError("simulated retriever explosion")
+        return self._hits.get(query, [])
+
+
+class TestSemanticIndexIntegration:
+    def test_uses_semantic_index_when_ready(self) -> None:
+        """When the SemanticIndex is present and returns hits, the
+        disambiguator builds its candidate list from semantic hits
+        rather than calling cache.get_candidates."""
+        from glados.ha.semantic_index import SemanticHit
+
+        # Cache still must contain the entity the semantic hit
+        # refers to — the adapter looks it up for state/attrs.
+        cache_states = [
+            _state("light.task_lamp_one", "Office Desk Monitor Lamp"),
+            _state("light.room_a_strip_seg_1", "Bedroom Strip Seg 1"),
+        ]
+        semantic = _StubSemanticIndex(hits_by_query={
+            "turn on the desk lamp": [
+                SemanticHit(
+                    entity_id="light.task_lamp_one",
+                    score=0.88,
+                    document="Office Desk Monitor Lamp",
+                    device_id="dev_desk",
+                ),
+            ],
+        })
+
+        cache = EntityCache()
+        cache.apply_get_states(cache_states)
+        disambig = Disambiguator(
+            ha_client=_FakeHAClient(), cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=DisambiguationRules(),
+            semantic_index=semantic,
+        )
+        disambig._call_ollama = MagicMock(return_value=(
+            '{"decision":"execute",'
+            '"entity_ids":["light.task_lamp_one"],'
+            '"service":"turn_on","speech":"ok","rationale":"semantic"}'
+        ))
+
+        captured: list[list[dict]] = []
+        orig = disambig._call_ollama
+        def _capture(msgs):
+            captured.append(list(msgs))
+            return orig(msgs)
+        disambig._call_ollama = _capture  # type: ignore[method-assign]
+
+        r = disambig.run("turn on the desk lamp", source="webui_chat")
+        assert r.decision == "execute"
+        assert r.entity_ids == ["light.task_lamp_one"]
+        assert semantic.calls == ["turn on the desk lamp"]
+        # Candidate list sent to the LLM includes the semantic hit.
+        user_msg = next(
+            m["content"] for m in captured[0] if m["role"] == "user"
+        )
+        assert "office_desk_monitor_lamp" in user_msg
+
+    def test_falls_back_to_fuzzy_when_index_not_ready(self) -> None:
+        """Background index build hasn't finished → disambiguator
+        must use the fuzzy cache path and still resolve the turn."""
+        semantic = _StubSemanticIndex(ready=False)
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.kitchen_ceiling", "Kitchen Ceiling",
+                       state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.kitchen_ceiling"],'
+                '"service":"turn_off","speech":"ok","rationale":"fuzzy"}'
+            ),
+        )
+        disambig._semantic_index = semantic
+        r = disambig.run("turn off the kitchen lights", source="webui_chat")
+        assert r.decision == "execute"
+        # Not ready → semantic retrieve never invoked.
+        assert semantic.calls == []
+        assert ha.calls
+
+    def test_falls_back_when_semantic_returns_no_hits(self) -> None:
+        """Index is ready but BGE produced no usable hits — legit
+        fallback, fuzzy must still produce candidates."""
+        semantic = _StubSemanticIndex(hits_by_query={})
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.kitchen_ceiling", "Kitchen Ceiling",
+                       state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.kitchen_ceiling"],'
+                '"service":"turn_off","speech":"ok","rationale":"fallback"}'
+            ),
+        )
+        disambig._semantic_index = semantic
+        r = disambig.run("turn off the kitchen lights", source="webui_chat")
+        # Semantic was tried and returned empty → fuzzy fallback.
+        assert semantic.calls == ["turn off the kitchen lights"]
+        assert r.decision == "execute"
+
+    def test_semantic_exception_falls_back_gracefully(self) -> None:
+        """If the retriever itself raises, the disambiguator logs
+        and degrades to fuzzy — never crashes the request."""
+        semantic = _StubSemanticIndex(raises=True)
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.x", "X", state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.x"],'
+                '"service":"turn_off","speech":"ok","rationale":"fallback"}'
+            ),
+        )
+        disambig._semantic_index = semantic
+        r = disambig.run("turn off the x lights", source="webui_chat")
+        assert r.handled is True
+        assert r.decision == "execute"
+
+    def test_semantic_hits_drop_missing_cache_entries(self) -> None:
+        """If the semantic index references an entity that's been
+        removed from the live cache between build and retrieve, the
+        adapter silently skips it (HA cache wins on freshness).
+        When the only hit is missing, we fall back to fuzzy."""
+        from glados.ha.semantic_index import SemanticHit
+        semantic = _StubSemanticIndex(hits_by_query={
+            "desk lamp": [
+                SemanticHit(
+                    entity_id="light.ghost_removed",
+                    score=0.9, document="Ghost Removed",
+                    device_id="dev_ghost",
+                ),
+            ],
+        })
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.kitchen_ceiling", "Kitchen Ceiling",
+                       state="on"),
+            ],
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.kitchen_ceiling"],'
+                '"service":"turn_off","speech":"ok","rationale":"fb"}'
+            ),
+        )
+        disambig._semantic_index = semantic
+        r = disambig.run("desk lamp", source="webui_chat")
+        # Semantic was tried, the single hit was dropped (not in
+        # cache), then fuzzy ran.
+        assert semantic.calls == ["desk lamp"]
+        assert r.decision == "execute"
+
+
 # ---------------------------------------------------------------------------
 # Clarify / refuse paths
 # ---------------------------------------------------------------------------
