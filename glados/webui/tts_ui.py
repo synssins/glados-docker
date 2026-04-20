@@ -7526,6 +7526,13 @@ function renderChat() {
     }
 
     // --- assistant message ---
+    // Clear any leftover "Thinking..." placeholder span that was
+    // rendered earlier when chatWaiting was true. Without this, the
+    // spinner keeps spinning next to the real content because my
+    // incremental reconciler reuses the same <div> slot.
+    const stale = msgEl.querySelector('.thinking');
+    if (stale) stale.remove();
+
     let labelEl = msgEl.querySelector('.msg-label');
     if (!labelEl) {
       labelEl = document.createElement('div');
