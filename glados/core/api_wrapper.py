@@ -86,12 +86,23 @@ _engine_reload_lock = threading.RLock()
 
 
 def reload_engine() -> bool:
-    """Hot-swap the engine using the current on-disk config.
+    """Swap the engine using the current on-disk config.
 
-    Creates a fresh `Glados` from `_engine_config_path` + `_engine_overrides`,
-    atomically promotes it to the module-level `_engine`, then signals the
-    previous instance's shutdown on a short grace period so any in-flight
-    request holding the old reference can finish. Returns True on success.
+    The sequence has to be "stop-old-first, then-start-new" because the
+    engine's HomeAssistantAudioIO binds a TCP port (default 5051) and two
+    instances in the same process can't co-hold it (EADDRINUSE). A brief
+    503-serving window during the swap is acceptable for a config save:
+    both `/v1/chat/completions` and `/health` already handle `_engine is
+    None` gracefully ("starting" / "initializing").
+
+    Order:
+      1. Clear the module-level `_engine` so new requests 503 immediately
+         rather than racing on the half-alive old engine.
+      2. Signal the old engine's shutdown_event and close its audio_io
+         file server (releases the TCP port).
+      3. Build a fresh Glados from the YAML. This takes a few seconds
+         (HA WS reconnect, MCP handshake, cache warmup).
+      4. Promote it to `_engine`. Next request picks it up.
     """
     global _engine
     if _engine_config_path is None:
@@ -99,19 +110,28 @@ def reload_engine() -> bool:
         return False
     with _engine_reload_lock:
         previous = _engine
+        _engine = None
+        if previous is not None:
+            logger.info("Engine reload: retiring previous instance")
+            try:
+                previous.shutdown_event.set()
+            except Exception as exc:
+                logger.debug("Engine reload: shutdown_event.set raised: {}", exc)
+            audio_io = getattr(previous, "audio_io", None)
+            close = getattr(audio_io, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:
+                    logger.warning("Engine reload: audio_io.close raised: {}", exc)
+            # Short settle window for daemon threads to finish their
+            # current iteration and the socket to be released by the
+            # kernel. Empirically 1 s is plenty.
+            time.sleep(1.0)
         logger.info("Engine reload: building new instance from {}", _engine_config_path)
         new_engine = _create_engine(_engine_config_path, _engine_overrides)
         _engine = new_engine
-        logger.info("Engine reload: new instance live; scheduling previous shutdown")
-    if previous is not None:
-        def _retire_old() -> None:
-            time.sleep(3.0)  # grace for in-flight requests holding the old ref
-            try:
-                previous.shutdown_event.set()
-                logger.info("Engine reload: previous instance signalled shutdown")
-            except Exception as exc:
-                logger.warning("Engine reload: previous-instance shutdown raised: {}", exc)
-        threading.Thread(target=_retire_old, daemon=True, name="engine-retire").start()
+        logger.info("Engine reload: new instance live")
     return True
 
 # ---------------------------------------------------------------------------
