@@ -661,14 +661,15 @@ class Disambiguator:
                     )
                     action = canonical
                     break
-        # Defensive: when the LLM omits `decision` but includes an
-        # `actions` list (or the legacy `entity_ids`+`service` pair),
-        # infer `execute`. Live 14B-instruct occasionally drops the
-        # decision key when emitting SHAPE 2 compound output.
-        # Inferring is safer than falling through to Tier 3 chitchat
-        # which then speaks as if it acted without actually firing
-        # any tool calls.
-        if not action:
+        # Phase 8.0.2 — structure-based inference when decision is
+        # missing OR unrecognized. qwen3:8b has been observed emitting
+        # decision="no_action" alongside service="light.turn_on" and
+        # speech="Turning on the overhead lights." — the decision
+        # field is internally inconsistent with the rest of the JSON.
+        # Falling through to Tier 3 in that case is wasteful; the
+        # model already disambiguated, just mis-labelled it. Trust
+        # the actionable payload over the enum.
+        if action not in {"execute", "clarify", "refuse"}:
             has_actions = (
                 isinstance(decision.get("actions"), list)
                 and decision.get("actions")
@@ -678,11 +679,12 @@ class Disambiguator:
                 and (decision.get("service") or decision.get("action"))
             )
             if has_actions or has_legacy:
-                action = "execute"
                 logger.debug(
                     "Tier 2 inferred decision=execute from structure "
-                    "(raw had no 'decision' field)"
+                    "(raw decision was {!r})",
+                    action or "missing",
                 )
+                action = "execute"
         # Speech field aliases — LLM sometimes emits `message`
         # instead of `speech`.
         speech = ""

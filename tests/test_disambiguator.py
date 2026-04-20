@@ -890,15 +890,37 @@ class TestExecute:
         assert r.decision == "clarify"
         assert not ha.calls  # clarify never fires HA
 
-    def test_unknown_enum_still_falls_through(self) -> None:
-        """Genuinely unknown values must not silently be treated as
-        execute — safer to fall through to Tier 3 than act on garbage."""
+    def test_unknown_enum_with_actionable_payload_infers_execute(self) -> None:
+        """qwen3:8b has been observed emitting self-inconsistent JSON:
+        decision='no_action' while service='light.turn_on' and
+        speech='Turning on the lights.' The payload is fully actionable;
+        the enum is just off. Trust the structure and execute rather
+        than waste Tier 3 on a redundant disambiguation."""
+        disambig, ha, _ = _make(
+            cache_states=[_state("light.office", "Office Light", state="off")],
+            llm_response=(
+                '{"decision":"no_action",'
+                '"entity_ids":["light.office"],'
+                '"service":"turn_on",'
+                '"speech":"Turning on the overhead lights.",'
+                '"rationale":"qwen3 inconsistent enum"}'
+            ),
+        )
+        r = disambig.run("turn on the office light", source="webui_chat")
+        assert r.decision == "execute"
+        assert r.entity_ids == ["light.office"]
+        assert ha.calls and ha.calls[0]["service"] == "turn_on"
+
+    def test_unknown_enum_without_payload_still_falls_through(self) -> None:
+        """When the decision is gibberish AND there's no actionable
+        structure (empty entity_ids, empty service), fall through to
+        Tier 3. No silent execution on garbage."""
         disambig, ha, _ = _make(
             cache_states=[_state("light.x", "X")],
             llm_response=(
                 '{"decision":"zorfblarg",'
-                '"entity_ids":["light.x"],'
-                '"service":"turn_on",'
+                '"entity_ids":[],'
+                '"service":"",'
                 '"speech":"?","rationale":"gibberish"}'
             ),
         )
