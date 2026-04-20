@@ -97,6 +97,11 @@ async def llm_decide(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
+    # Phase 8.0.1 — strict JSON decisions with Qwen3 fail when the
+    # model prepends <think>…</think> because `response_format:
+    # json_object` then sees the think block, not the JSON. Suppress.
+    from glados.core.llm_directives import apply_model_family_directives
+    messages = apply_model_family_directives(messages, config.model)
 
     data = {
         "model": config.model,

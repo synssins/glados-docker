@@ -1493,4 +1493,110 @@ measurement deferred to the next operator session.
 
 ---
 
+## Change 14.3 — Phase 8.0.1: Qwen3 /no_think + tool-loop strip fix
+
+**Date:** 2026-04-20
+**Status:** Complete (pending deploy)
+**Phase:** 8.0.1 hotfix (surfaced during Phase 8.2 live test)
+
+Operator reported a 71 s reply to *"It's too bright in the office."*
+The office lights **did** dim by half (correct action), but the
+assistant message in the UI was 757 tokens of `<think>…</think>`
+with no final answer. Root-cause investigation pulled the audit
+trail and identified two unrelated bugs that compounded:
+
+1. **Qwen3 defaults to think-mode.** Every outbound Ollama call
+   from the container (Tier 2 disambiguator, persona rewriter,
+   Tier 3 agentic chat, autonomy subagents, doorbell screener)
+   was sending prompts with no `/no_think` directive. Qwen3
+   responded with multi-hundred-token reasoning preludes,
+   invalidating strict-JSON prompts (`fall_through:unknown_decision`
+   in Tier 2) and burning the output budget on tool-continuation
+   turns (no final answer in Tier 3).
+2. **Tier 3 tool-loop bypassed the stream think filter.**
+   [`api_wrapper.py:1898`](glados/core/api_wrapper.py:1898) was
+   emitting tool-response continuation chunks raw — without the
+   `_filter_think_chunk` that the first-round loop uses — so any
+   `<think>…</think>` the model produced after a tool call flowed
+   straight into the SSE stream, the UI, and the persisted
+   assistant message.
+
+### Directive injection (primary fix)
+
+New module `glados/core/llm_directives.py`:
+
+- `is_qwen3_family(model)` — substring regex match on the model
+  name (`qwen\s*3`, case-insensitive). Tags like `qwen3:8b`,
+  `Qwen3-30B-A3B`, and `qwen 3 turbo` all match; `qwen2.5:14b`
+  and `llama3:8b` do not.
+- `apply_model_family_directives(messages, model)` — returns a
+  new messages list with `/no_think\n` prepended to the first
+  system message's content. Injects a system message at the front
+  if none is present. Idempotent. Non-Qwen3 models unchanged.
+  Non-string content (multimodal parts) left alone.
+
+Wired at every Ollama POST site:
+
+- `glados/intent/disambiguator.py::_call_ollama` — Tier 2 JSON
+  prompt. Without the directive this path produced narrative
+  prose; with it, clean JSON.
+- `glados/persona/rewriter.py::rewrite` — Tier 1 HA-speech
+  rewrite. `num_predict=200` was being consumed by the think
+  prefix; the one-liner now arrives.
+- `glados/core/api_wrapper.py::_stream_chat_sse_impl` — Tier 3
+  streaming + MCP tool loop. The injected system message rides
+  through all tool rounds on the same `messages` list.
+- `glados/autonomy/llm_client.py::llm_call` — shared helper used
+  by observer agent, emotion agent, memory classifier.
+- `glados/core/llm_decision.py::llm_decide` — async schema-
+  constrained decisions.
+- `glados/doorbell/screener.py::_evaluate` — visitor screener.
+
+### Tool-loop `<think>` filter fix (secondary)
+
+[`api_wrapper.py`](glados/core/api_wrapper.py) tool-loop
+continuation now runs the received `_content2` through the same
+`_filter_think_chunk` as the first round uses. Previously the
+first round stripped think blocks correctly, but the moment the
+model produced a tool call and the loop continued, any subsequent
+think content bypassed the filter entirely.
+
+### Defensive strip on persistence
+
+Streaming save path at
+[`api_wrapper.py`](glados/core/api_wrapper.py) now runs the
+joined `full_response` through `_strip_thinking` before the
+`store.append({"role": "assistant", …})` write. Even if a new
+think-emitting path lands in the future and slips past both
+`/no_think` and `_filter_think_chunk`, the conversation_store
+copy stays clean — subsequent `cfgLoadAll()` UI fetches never
+render stale think tags from history.
+
+### Files touched
+
+- `glados/core/llm_directives.py` — NEW (~70 LOC).
+- `glados/intent/disambiguator.py` — +3 LOC at `_call_ollama`.
+- `glados/persona/rewriter.py` — +3 LOC at `rewrite`.
+- `glados/core/api_wrapper.py` — +3 LOC directive injection,
+  +8 LOC tool-loop `_filter_think_chunk`, +5 LOC belt strip.
+- `glados/autonomy/llm_client.py` — +3 LOC.
+- `glados/core/llm_decision.py` — +3 LOC.
+- `glados/doorbell/screener.py` — +3 LOC.
+- `tests/test_llm_directives.py` — NEW (12 tests).
+
+### Test count
+
+581 passing (1 skipped, pre-existing). +12 directive tests.
+
+### Expected user-visible effect
+
+On `"It's too bright in the office."`:
+- Tier 2 returns valid JSON on the first attempt → executes the
+  dim inline → no Tier 3 invocation.
+- Projected total: ~3–5 s vs the 71 s observed pre-fix.
+- No `<think>` tags in the UI or TTS regardless of which tier
+  resolves the turn.
+
+---
+
 ---

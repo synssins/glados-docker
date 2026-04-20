@@ -52,6 +52,14 @@ def llm_call(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+    # Phase 8.0.1 — suppress Qwen3 thinking mode for every subagent
+    # call that flows through this helper (observer, emotion agent,
+    # memory classifier, doorbell screener when it routes through
+    # here, etc.). Wall-clock win is especially large on the JSON
+    # response_format path where the think prefix invalidates the
+    # schema-constrained output and forces a retry.
+    from glados.core.llm_directives import apply_model_family_directives
+    messages = apply_model_family_directives(messages, config.model)
 
     data = {
         "model": config.model,
