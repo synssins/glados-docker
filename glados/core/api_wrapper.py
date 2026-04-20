@@ -1573,6 +1573,18 @@ def _stream_chat_sse_impl(
             tools = glados.mcp_manager.get_tool_definitions()
         except Exception:
             pass
+    # Phase 8.3.4b — append the in-process built-in tools
+    # (search_entities, get_entity_details). Always available when
+    # we're on the home-command path, regardless of whether any
+    # remote MCP server is configured. Gives the Tier 3 planner a
+    # direct hook into the semantic retriever without having to
+    # ship a separate MCP server.
+    if is_home_command:
+        try:
+            from glados.core.builtin_tools import get_builtin_tool_definitions
+            tools = list(tools) + get_builtin_tool_definitions()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("builtin tool registration skipped: {}", exc)
 
     # Build request payload
     # Stage 3 Phase A: model_options come from PersonalityConfig.model_options
@@ -1863,7 +1875,17 @@ def _stream_chat_sse_impl(
                     _tool_args = _resolve_entity_name(_tool_args)
                 logger.info("[{}] Streaming tool call: {} {} (round {})", request_id, _tool_name, _tool_args, _tool_round)
                 try:
-                    if _tool_name.startswith("mcp."):
+                    # Phase 8.3.4b — route the built-in
+                    # search_entities / get_entity_details calls to
+                    # the in-process implementations BEFORE MCP. No
+                    # network hop; the tools read the live semantic
+                    # index + entity cache.
+                    from glados.core.builtin_tools import (
+                        invoke_builtin_tool, is_builtin_tool,
+                    )
+                    if is_builtin_tool(_tool_name):
+                        _result = invoke_builtin_tool(_tool_name, _tool_args)
+                    elif _tool_name.startswith("mcp."):
                         _result = glados.mcp_manager.call_tool(_tool_name, _tool_args, timeout=30)
                     else:
                         _result = "error: only MCP tools supported in streaming chat"
