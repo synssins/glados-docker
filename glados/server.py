@@ -152,16 +152,13 @@ def _init_ha_client() -> None:
             or os.environ.get("OLLAMA_AUTONOMY_URL", "").strip()
             or cfg.service_url("ollama_autonomy")
         )
-        # Disambiguator default: qwen2.5 14B. This task has a long,
-        # complex prompt (rules, candidate list, schema, examples) and
-        # weak instruction-following produces vague clarifications
-        # like "Multiple groups match." The 14B follows the explicit
-        # "name the candidates" rule reliably. ~5s per call once warm.
-        # The smaller 3B model worked for JSON shape but ignored the
-        # complex naming and persona instructions.
-        disambig_model = os.environ.get(
-            "DISAMBIGUATOR_MODEL", "qwen2.5:14b-instruct-q4_K_M"
-        )
+        # Model source of truth: the Ollama Autonomy row on the LLM &
+        # Services page (services.yaml.ollama_autonomy.model). Hot-reload
+        # picks up changes. Env var DISAMBIGUATOR_MODEL is kept as an
+        # explicit override for operators who want the disambiguator on
+        # a different model than everything else.
+        disambig_model = os.environ.get("DISAMBIGUATOR_MODEL", "").strip() \
+            or cfg.service_model("ollama_autonomy", fallback="qwen3:8b")
         # Operator's disambiguation rules YAML, optional.
         config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
         rules = load_rules_from_yaml(
@@ -180,13 +177,12 @@ def _init_ha_client() -> None:
         # light." -> GLaDOS-voiced restyling). Same Ollama as the
         # disambiguator; smaller models work well here since the input
         # is short and the output is constrained to one or two sentences.
-        # Rewriter uses the 3B by default — it's a simple style task
-        # (input ≤500 chars, output ≤2 sentences) that the small model
-        # handles in <1s with high quality. Don't fall back to the
-        # disambiguator's 14B; that defeats the latency win on Tier 1.
-        rewriter_model = os.environ.get(
-            "REWRITER_MODEL", "qwen2.5:3b-instruct-q4_K_M",
-        )
+        # Rewriter defaults to the same autonomy model as the
+        # disambiguator. Env var REWRITER_MODEL is kept as an explicit
+        # override for operators who want to pin the rewriter to a
+        # small/fast model independent of the chat / autonomy choice.
+        rewriter_model = os.environ.get("REWRITER_MODEL", "").strip() \
+            or cfg.service_model("ollama_autonomy", fallback="qwen3:8b")
         rewriter = PersonaRewriter(ollama_url=ollama_url, model=rewriter_model)
         init_rewriter(rewriter)
         logger.info("Persona rewriter ready; model={}", rewriter_model)
