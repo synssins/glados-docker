@@ -524,10 +524,31 @@ def _get_session_cookie(handler: BaseHTTPRequestHandler) -> dict | None:
 
 
 def _is_authenticated(handler: BaseHTTPRequestHandler) -> bool:
-    """Check if the request is authenticated (or auth is disabled)."""
-    if not _AUTH_ENABLED or not _AUTH_PASSWORD_HASH:
+    """Check if the request is authenticated.
+
+    Prior behavior treated "auth enabled but no password hash set"
+    as auto-authenticated — intended as a bootstrap convenience
+    but functionally an open door: if the hash was wiped or never
+    initialised, every request passed. Now fail-closed: when auth
+    is enabled and no hash exists, deny and let the operator run
+    `docker exec -it glados python -m glados.tools.set_password`
+    to configure one. Auth can still be fully disabled via
+    `auth.enabled=false` in global.yaml for development.
+    """
+    if not _AUTH_ENABLED:
         return True
+    if not _AUTH_PASSWORD_HASH:
+        # No password configured; refuse. The login page surfaces
+        # the setup instruction so the admin isn't stranded.
+        return False
     return _get_session_cookie(handler) is not None
+
+
+def _auth_password_configured() -> bool:
+    """True when a password hash is set. Login page uses this to
+    show a setup hint instead of the normal form when the admin
+    hasn't run set_password yet."""
+    return bool(_AUTH_PASSWORD_HASH)
 
 
 # â”€â”€ Login page HTML â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1136,8 +1157,28 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _serve_login(self):
-        """Serve the login page HTML."""
-        body = LOGIN_PAGE.encode()
+        """Serve the login page HTML. When no password is configured
+        (fresh deploy or wiped hash), inject a setup instruction so
+        the admin isn't stranded at a form that will never succeed."""
+        html = LOGIN_PAGE
+        if not _auth_password_configured():
+            banner = (
+                '<div style="background:#3a1a1a;border:1px solid #a33;'
+                'color:#fcc;padding:12px;border-radius:6px;margin:0 0 '
+                '16px 0;font-size:0.88rem;line-height:1.4;">'
+                '<strong>Password not configured.</strong><br>'
+                'Run this on the container host to set one '
+                'before logging in:<br>'
+                '<code style="display:block;background:#222;padding:'
+                '8px;margin-top:6px;border-radius:4px;color:#fc6;">'
+                'docker exec -it glados python -m glados.tools.set_password'
+                '</code></div>'
+            )
+            # Inject just after the opening <form> so the banner
+            # sits above the password input. LOGIN_PAGE contains
+            # exactly one <form> tag.
+            html = html.replace("<form", banner + "<form", 1)
+        body = html.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
