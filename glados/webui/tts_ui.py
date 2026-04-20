@@ -466,19 +466,31 @@ def _verify_session(token: str) -> dict | None:
         payload = json.loads(payload_str)
     except (json.JSONDecodeError, ValueError):
         return None
-    # Check expiry
-    if payload.get("exp", 0) < time.time():
+    # Expiry check. Operator-requested behavior (2026-04-20): once
+    # logged in, sessions never time out — the admin browser stays
+    # authenticated until the operator explicitly logs out or the
+    # session_secret rotates. Legacy tokens with a real `exp` still
+    # expire at that timestamp; new tokens carry exp=0 as the
+    # "never expires" sentinel.
+    exp = payload.get("exp", 0)
+    if exp and exp < time.time():
         return None
     return payload
 
 
 def _create_session(remember: bool = False) -> str:
-    """Create a signed session token."""
-    ttl = _SESSION_LONG_S if remember else _SESSION_SHORT_S
+    """Create a signed session token.
+
+    Operator-requested (2026-04-20): sessions never expire. Both
+    the "remember me" long session and the short session now carry
+    exp=0 (sentinel: never expires). The `remember` argument is
+    retained for backwards-compatible call sites but no longer
+    changes behavior; the cookie Max-Age uses the long window so
+    the browser keeps it across restarts."""
     payload = json.dumps({
         "sub": "admin",
         "iat": int(time.time()),
-        "exp": int(time.time()) + ttl,
+        "exp": 0,  # 0 = never expires (sentinel honored by _verify_session)
         "jti": secrets.token_hex(8),
     })
     return _sign_session(payload)
@@ -1217,10 +1229,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(401, {"ok": False, "error": "Invalid password"})
             return
 
-        # Success â€” create session
+        # Success — create session
         _clear_fails(client_ip)
         token = _create_session(remember=remember)
-        max_age = _SESSION_LONG_S if remember else _SESSION_SHORT_S
+        # Operator-requested 2026-04-20: sessions never expire. Use
+        # the long cookie Max-Age unconditionally so the browser
+        # keeps the cookie across restarts; the signed token itself
+        # carries exp=0 so the server never treats it as expired.
+        max_age = _SESSION_LONG_S
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
