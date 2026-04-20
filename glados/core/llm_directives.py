@@ -20,6 +20,32 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# Post-response stripper. `format: json` on Ollama already removes the
+# think tags (the JSON schema constraint kicks in after the tags close),
+# but plain-format callers — the persona rewriter and most autonomy
+# subagents — receive the raw `<think>\n\n</think>\n\n<answer>` shape
+# when /no_think is active. Downstream JSON parsers choke on the empty
+# think wrapper, so strip it before handing off.
+_THINKING_BLOCK_RE = re.compile(
+    r"<(think|thinking|reasoning)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_STRAY_THINK_TAG_RE = re.compile(
+    r"</?(?:think|thinking|reasoning)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def strip_thinking_response(text: str) -> str:
+    """Remove `<think>…</think>` blocks and any stray unmatched tags
+    from a non-streaming LLM response. Safe on arbitrary text —
+    returns the input trimmed when no tags are present."""
+    if not text:
+        return text
+    text = _THINKING_BLOCK_RE.sub("", text)
+    text = _STRAY_THINK_TAG_RE.sub("", text)
+    return text.strip()
+
 # Families whose outputs benefit from /no_think. Matched case-insensitively
 # against the model name. Kept as substring-search rather than regex so
 # tags like "qwen3:8b-instruct-q4_k_m" and "qwen3-30b-a3b" both trigger.
@@ -89,4 +115,5 @@ def apply_model_family_directives(
 __all__ = [
     "apply_model_family_directives",
     "is_qwen3_family",
+    "strip_thinking_response",
 ]

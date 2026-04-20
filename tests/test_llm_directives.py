@@ -5,6 +5,7 @@ from __future__ import annotations
 from glados.core.llm_directives import (
     apply_model_family_directives,
     is_qwen3_family,
+    strip_thinking_response,
 )
 
 
@@ -109,3 +110,41 @@ class TestApplyDirectives:
         ]
         out = apply_model_family_directives(msgs, "qwen3:8b")
         assert out[0]["content"] == msgs[0]["content"]
+
+
+class TestStripThinkingResponse:
+    def test_strips_empty_think_wrapper(self) -> None:
+        # Qwen3 + /no_think on plain-format produces this exact shape.
+        raw = "<think>\n\n</think>\n\nBlue."
+        assert strip_thinking_response(raw) == "Blue."
+
+    def test_strips_populated_think_block(self) -> None:
+        raw = "<think>Okay let me reason.</think>\nThe answer is 42."
+        assert strip_thinking_response(raw) == "The answer is 42."
+
+    def test_strips_multiline_think(self) -> None:
+        raw = "<think>\nline one\nline two\n</think>\nresult"
+        assert strip_thinking_response(raw) == "result"
+
+    def test_strips_stray_unclosed_tag(self) -> None:
+        raw = "<think>\ndangling"
+        # Unclosed tag — keep the remainder, remove the stray tag.
+        assert strip_thinking_response(raw) == "dangling"
+
+    def test_handles_variant_tag_names(self) -> None:
+        raw = "<thinking>x</thinking>y"
+        assert strip_thinking_response(raw) == "y"
+        raw2 = "<reasoning>z</reasoning>ok"
+        assert strip_thinking_response(raw2) == "ok"
+
+    def test_no_tags_returns_trimmed(self) -> None:
+        assert strip_thinking_response("  hello  ") == "hello"
+
+    def test_empty_and_none(self) -> None:
+        assert strip_thinking_response("") == ""
+        assert strip_thinking_response(None) is None  # type: ignore[arg-type]
+
+    def test_json_body_preserved(self) -> None:
+        raw = '<think>\n\n</think>\n\n{"decision": "execute", "entity_ids": ["light.x"]}'
+        out = strip_thinking_response(raw)
+        assert out == '{"decision": "execute", "entity_ids": ["light.x"]}'

@@ -124,6 +124,10 @@ async def llm_decide(
         content = _extract_content(result)
         if not content:
             raise LLMDecisionError("Empty response from LLM")
+        # Phase 8.0.1 — strip Qwen3's <think>…</think> wrapper so
+        # Pydantic's JSON validator sees just the JSON body.
+        from glados.core.llm_directives import strip_thinking_response
+        content = strip_thinking_response(content)
 
         # Parse and validate with Pydantic
         return schema.model_validate_json(content)
