@@ -46,6 +46,77 @@ def strip_thinking_response(text: str) -> str:
     text = _STRAY_THINK_TAG_RE.sub("", text)
     return text.strip()
 
+
+# ---------------------------------------------------------------------------
+# Closing-boilerplate stripper (Phase 8.3 / operator bug, 2026-04-20)
+#
+# Qwen3:8b on the GLaDOS preprompt started appending a stock
+# sign-off to every turn — "I do not require further confirmation",
+# "No further confirmation required", "Your compliance has been
+# logged", etc. It misreads the preprompt rule "never offer follow-
+# up" as permission to announce that it does not require follow-up.
+# These strings are low-information and grate on re-hearings, so
+# strip them at the output boundary on every LLM response path.
+# ---------------------------------------------------------------------------
+
+# Each entry is a regex that matches a trailing boilerplate phrase.
+# Anchored with `\s*$` so they only fire when the phrase ENDS the
+# response; mid-text occurrences stay. Terminal punctuation
+# optional. Case-insensitive.
+_CLOSING_BOILERPLATE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE) for p in (
+        # "You may observe that I do not require further confirmation."
+        r"(?:\s|^)you\s+may\s+(?:observe|note)\s+that\s+"
+        r"i\s+do\s+not\s+require\s+(?:further|additional)?\s*"
+        r"(?:confirmation|acknowledgement|input|approval)[.!?]?\s*$",
+        # "I do not require further confirmation."
+        r"(?:\s|^)i\s+(?:do\s+not|don'?t)\s+require\s+"
+        r"(?:further|additional|any|more)?\s*"
+        r"(?:confirmation|acknowledgement|input|approval|"
+        r"feedback|response|validation)[.!?]?\s*$",
+        # "No further confirmation required / needed / is necessary."
+        r"(?:\s|^)no\s+(?:further|additional|more)?\s*"
+        r"(?:confirmation|acknowledgement|input|approval|"
+        r"feedback|response|validation)\s+"
+        r"(?:required|needed|is\s+necessary|necessary)[.!?]?\s*$",
+        # "Your compliance has been logged / noted / recorded."
+        r"(?:\s|^)your\s+compliance\s+has\s+been\s+"
+        r"(?:logged|noted|recorded|documented)[.!?]?\s*$",
+        # "The enrichment center thanks you / acknowledges you."
+        r"(?:\s|^)the\s+(?:enrichment\s+center|aperture\s+science)\s+"
+        r"(?:thanks|acknowledges|appreciates)\s+you[.!?]?\s*$",
+        # "No additional action is required."
+        r"(?:\s|^)no\s+(?:additional|further)\s+action\s+"
+        r"(?:is\s+)?required[.!?]?\s*$",
+        # "This concludes the current interaction."
+        r"(?:\s|^)this\s+concludes\s+the\s+(?:current\s+)?"
+        r"(?:interaction|exchange|session)[.!?]?\s*$",
+    )
+)
+
+
+def strip_closing_boilerplate(text: str) -> str:
+    """Strip Qwen3's sign-off tics from the end of an LLM response.
+    Runs the pattern set repeatedly until no more matches fire — a
+    single generation can append multiple closers in a row. Leaves
+    mid-text mentions alone; only trailing occurrences get cut."""
+    if not text:
+        return text
+    s = text.rstrip()
+    # Apply repeatedly so "Compliance logged. No further confirmation
+    # required." peels both closers off.
+    while True:
+        before = s
+        for pat in _CLOSING_BOILERPLATE_PATTERNS:
+            s = pat.sub("", s).rstrip()
+        if s == before:
+            break
+    # If the strip removed the terminal punctuation mid-sentence,
+    # restore one so the remainder reads cleanly.
+    if s and s[-1] not in ".!?\"'":
+        s = s.rstrip(",;: \t") + "."
+    return s
+
 # Families whose outputs benefit from /no_think. Matched case-insensitively
 # against the model name. Kept as substring-search rather than regex so
 # tags like "qwen3:8b-instruct-q4_k_m" and "qwen3-30b-a3b" both trigger.
@@ -115,5 +186,6 @@ def apply_model_family_directives(
 __all__ = [
     "apply_model_family_directives",
     "is_qwen3_family",
+    "strip_closing_boilerplate",
     "strip_thinking_response",
 ]

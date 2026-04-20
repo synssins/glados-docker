@@ -1441,6 +1441,28 @@ def _stream_chat_sse_impl(
                 _filtered.append(_m)
             messages = _filtered
 
+    # Phase 8.3 — chitchat-path guard. On the is_home_command=False
+    # branch no tool was called, so the model must NOT narrate device
+    # actions, temperatures, or environmental status. Qwen3:8b was
+    # hallucinating full "the lights have been dimmed" responses to
+    # "Hey you" without any tool invocation. Inject a terse system
+    # message just before the user turn so it's the most recent
+    # instruction the model sees — matches the emotion-directive
+    # placement below so both ride together.
+    if not is_home_command:
+        _chitchat_guard = (
+            "No tools ran this turn. DO NOT claim any device, light, "
+            "thermostat, speaker, scene, or sensor was changed or "
+            "queried. DO NOT invent temperatures, brightness levels, "
+            "room states, or system status. Respond to the user's "
+            "actual words only, in one to two sentences. Never end "
+            "with a status report about yourself (e.g. \"I do not "
+            "require further confirmation\", \"No further "
+            "confirmation required\", \"Your compliance has been "
+            "logged\") — end with the substantive reply and stop."
+        )
+        messages.append({"role": "system", "content": _chitchat_guard})
+
     messages.append({"role": "user", "content": user_message})
 
     # Roll an attitude directive for this turn (adds variety to responses)
@@ -1982,6 +2004,13 @@ def _stream_chat_sse_impl(
         # response truncated mid-think on token cap) would otherwise
         # end up in the UI's next history fetch.
         response_text = _strip_thinking(response_text)
+        # Phase 8.3 operator bug — strip Qwen3's trailing sign-off
+        # tics ("I do not require further confirmation", etc.) from
+        # both the stored message and the next persisted history
+        # fetch. Preprompt rule is layer 2; this is the post-strip
+        # backstop.
+        from glados.core.llm_directives import strip_closing_boilerplate
+        response_text = strip_closing_boilerplate(response_text)
         if response_text:
             store.append({"role": "user", "content": user_message})
             store.append({"role": "assistant", "content": response_text})
@@ -2671,7 +2700,13 @@ class APIHandler(BaseHTTPRequestHandler):
         # speakers sentence-by-sentence.  Return "." so the HA voice pipeline's
         # TTS renders near-silence on the satellite (same pattern as command
         # interceptor).
-        reply_text = "." if engine_audio else _strip_thinking(response_text)
+        if engine_audio:
+            reply_text = "."
+        else:
+            from glados.core.llm_directives import strip_closing_boilerplate
+            reply_text = strip_closing_boilerplate(
+                _strip_thinking(response_text)
+            )
 
         self._send_json({
             "id": f"chatcmpl-{request_id}",

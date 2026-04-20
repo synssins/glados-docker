@@ -5,6 +5,7 @@ from __future__ import annotations
 from glados.core.llm_directives import (
     apply_model_family_directives,
     is_qwen3_family,
+    strip_closing_boilerplate,
     strip_thinking_response,
 )
 
@@ -148,3 +149,70 @@ class TestStripThinkingResponse:
         raw = '<think>\n\n</think>\n\n{"decision": "execute", "entity_ids": ["light.x"]}'
         out = strip_thinking_response(raw)
         assert out == '{"decision": "execute", "entity_ids": ["light.x"]}'
+
+
+class TestStripClosingBoilerplate:
+    def test_removes_you_may_observe_phrase(self) -> None:
+        raw = (
+            "The overhead lights are dimmed to 30%. "
+            "You may observe that I do not require further confirmation."
+        )
+        out = strip_closing_boilerplate(raw)
+        assert "require further confirmation" not in out.lower()
+        assert out.startswith("The overhead lights are dimmed to 30%.")
+
+    def test_removes_bare_i_do_not_require(self) -> None:
+        raw = "Kitchen, extinguished. I do not require further confirmation."
+        out = strip_closing_boilerplate(raw)
+        assert out == "Kitchen, extinguished."
+
+    def test_removes_no_further_confirmation_required(self) -> None:
+        raw = "Bedroom lights at 50%. No further confirmation required."
+        out = strip_closing_boilerplate(raw)
+        assert out == "Bedroom lights at 50%."
+
+    def test_removes_compliance_logged(self) -> None:
+        raw = "Done. Your compliance has been logged."
+        out = strip_closing_boilerplate(raw)
+        assert out == "Done."
+
+    def test_removes_stacked_closers(self) -> None:
+        raw = (
+            "Office is dim. Your compliance has been logged. "
+            "No additional action is required."
+        )
+        out = strip_closing_boilerplate(raw)
+        assert "compliance" not in out.lower()
+        assert "action is required" not in out.lower()
+        assert out.startswith("Office is dim.")
+
+    def test_mid_text_reference_kept(self) -> None:
+        """Only trailing boilerplate gets stripped; mid-prose references stay."""
+        raw = (
+            "I do not require further confirmation for routine tasks, "
+            "but this one I'll highlight."
+        )
+        out = strip_closing_boilerplate(raw)
+        # Mid-text "I do not require…" stays because it isn't the
+        # terminal phrase.
+        assert "further confirmation for routine" in out
+        assert "highlight" in out
+
+    def test_no_boilerplate_untouched(self) -> None:
+        clean = "Turning on the lamp. Mind the dust."
+        assert strip_closing_boilerplate(clean) == clean
+
+    def test_empty_safe(self) -> None:
+        assert strip_closing_boilerplate("") == ""
+        assert strip_closing_boilerplate(None) is None  # type: ignore[arg-type]
+
+    def test_case_insensitive(self) -> None:
+        raw = "Ok. I DO NOT REQUIRE FURTHER CONFIRMATION"
+        out = strip_closing_boilerplate(raw)
+        assert "confirmation" not in out.lower()
+
+    def test_aperture_science_closer_stripped(self) -> None:
+        raw = "Dim, as requested. The Enrichment Center thanks you."
+        out = strip_closing_boilerplate(raw)
+        assert "thanks you" not in out.lower()
+        assert "enrichment center" not in out.lower()
