@@ -38,3 +38,27 @@ candidate_limit: 12
 # Free-form text appended to the system prompt. Use for site-specific
 # quirks — e.g. "the office lights are unreliable, prefer the desk lamp".
 extra_guidance: ""
+
+# Phase 8.1 — Candidate scoring controls (WebUI: Integrations → Home
+# Assistant → "Disambiguation rules" card).
+#
+# Opposing-token pairs: if the utterance contains one side of a pair
+# and a candidate's entity name contains the other, the candidate's
+# rank score is penalized by 50 points. Prevents "upstairs lights"
+# from picking a downstairs fixture just because it scored well on
+# the other tokens. Leave empty to use the shipped defaults
+# (upstairs↔downstairs, lower↔upper, front↔back, inside↔outside,
+# indoor↔outdoor, master↔guest, left↔right, top↔bottom,
+# primary↔secondary, north↔south, east↔west). An explicit empty list
+# here disables the penalty entirely.
+opposing_token_pairs: []
+  # - [upstairs, downstairs]
+  # - [kids, master]            # add house-specific pairs here
+
+# Twin dedup: Zooz / Inovelli dimmers expose both `light.foo` and
+# `switch.foo` for a single physical relay. When both show up as
+# candidates for the same device_id, keep the `light.*` side (only
+# domain that honors brightness_pct). Inovelli fan/light edge case
+# where `light.*` has `supported_color_modes=['onoff']` is handled
+# automatically — the switch wins there.
+twin_dedup: true

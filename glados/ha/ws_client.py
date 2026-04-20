@@ -311,6 +311,20 @@ class HAClient:
             raise RuntimeError(f"get_states failed: {resp!r}")
         loaded = self._cache.apply_get_states(resp.get("result") or [])
         logger.info("HA WS initial get_states loaded {} entities", loaded)
+        # Phase 8.1: follow up with the entity_registry so each entity
+        # carries its device_id. Required for light/switch twin dedup
+        # in the candidate scorer — `get_states` does not expose
+        # device_id. Failure is logged and ignored: dedup degrades to
+        # a no-op without a registry, which is the pre-8.1 behaviour.
+        try:
+            reg = await self.acall({"type": "config/entity_registry/list"})
+            if reg.get("success"):
+                updated = self._cache.apply_entity_registry(reg.get("result") or [])
+                logger.info("HA WS entity_registry applied; device_id on {} entities", updated)
+            else:
+                logger.warning("HA WS entity_registry/list returned failure: {}", reg)
+        except Exception as exc:
+            logger.warning("HA WS entity_registry/list raised: {}", exc)
 
     async def _dispatch_incoming(self, raw: str | bytes) -> None:
         try:

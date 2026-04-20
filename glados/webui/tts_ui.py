@@ -1277,6 +1277,8 @@ class Handler(BaseHTTPRequestHandler):
             section = p.split("/api/config/", 1)[1]
             if section == "raw":
                 self._get_config_raw()
+            elif section == "disambiguation":
+                self._get_disambiguation_rules()
             else:
                 self._get_config_section(section)
         elif p == "/api/hub75/test/ping":
@@ -1423,6 +1425,8 @@ class Handler(BaseHTTPRequestHandler):
             section = self.path.split("/api/config/", 1)[1]
             if section == "raw":
                 self._put_config_raw()
+            elif section == "disambiguation":
+                self._put_disambiguation_rules()
             else:
                 self._put_config_section(section)
         else:
@@ -3466,6 +3470,107 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "message": "Config reloaded"})
         except Exception as e:
             self._send_error(500, f"Reload failed: {e}")
+
+    # ── Disambiguation rules (Phase 8.1) ───────────────────────────
+    #
+    # Rules live in configs/disambiguation.yaml, loaded once at startup
+    # by server.py and held on the singleton Disambiguator. The WebUI's
+    # Integrations → Home Assistant page exposes a "Disambiguation
+    # rules" card for the operator to toggle twin dedup and edit the
+    # opposing-token list. A save here writes the YAML and then POSTs
+    # api_wrapper's /api/reload-disambiguation-rules so the live
+    # disambiguator picks up the new rules without a container restart.
+
+    def _disambiguation_yaml_path(self) -> Path:
+        config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
+        return Path(config_dir) / "disambiguation.yaml"
+
+    def _get_disambiguation_rules(self) -> None:
+        """Return the current disambiguation rules as JSON. Reads the
+        on-disk YAML so the WebUI always shows the authoritative state
+        — the running disambiguator's in-memory copy matches after any
+        save + reload."""
+        from glados.intent.rules import load_rules_from_yaml, rules_to_dict
+        try:
+            rules = load_rules_from_yaml(self._disambiguation_yaml_path())
+            self._send_json(200, rules_to_dict(rules))
+        except Exception as exc:
+            self._send_error(500, f"Failed to load rules: {exc}")
+
+    def _put_disambiguation_rules(self) -> None:
+        """Save disambiguation rules from JSON body.
+
+        Only the two Phase 8.1 fields (twin_dedup, opposing_token_pairs)
+        are writable from the WebUI today; the legacy naming_convention
+        / overhead_synonyms / etc. are preserved from disk so an operator
+        editing via the card doesn't silently wipe hand-tuned YAML."""
+        from glados.intent.rules import (
+            load_rules_from_yaml, save_rules_to_yaml,
+        )
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_error(400, f"Invalid JSON: {exc}")
+            return
+
+        try:
+            path = self._disambiguation_yaml_path()
+            rules = load_rules_from_yaml(path)
+            if "twin_dedup" in data:
+                rules.twin_dedup = bool(data["twin_dedup"])
+            if "opposing_token_pairs" in data:
+                pairs_raw = data.get("opposing_token_pairs") or []
+                if not isinstance(pairs_raw, list):
+                    self._send_error(400, "opposing_token_pairs must be a list")
+                    return
+                cleaned: list[list[str]] = []
+                seen: set[tuple[str, str]] = set()
+                for pair in pairs_raw:
+                    if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                        continue
+                    a = str(pair[0]).strip()
+                    b = str(pair[1]).strip()
+                    if not a or not b or a.lower() == b.lower():
+                        continue
+                    key = tuple(sorted([a.lower(), b.lower()]))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    cleaned.append([a, b])
+                rules.opposing_token_pairs = cleaned
+            save_rules_to_yaml(path, rules)
+            applied = self._reload_disambiguator_rules()
+            self._send_json(200, {
+                "ok": True,
+                "applied": applied,
+                "twin_dedup": rules.twin_dedup,
+                "opposing_token_pairs": rules.opposing_token_pairs,
+            })
+        except Exception as exc:
+            self._send_error(500, f"Failed to save rules: {exc}")
+
+    def _reload_disambiguator_rules(self) -> bool:
+        """Cross-process reload trigger. tts_ui (8052) POSTs the
+        api_wrapper (8015) endpoint that holds the live Disambiguator
+        singleton. Returns True on success, False on failure (logged).
+        """
+        try:
+            req = urllib.request.Request(
+                _svc_api_wrapper() + "/api/reload-disambiguation-rules",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read() or b"{}")
+                return bool(body.get("ok"))
+        except Exception as exc:
+            logger.warning(
+                "Disambiguation rules reload RPC failed: {}", exc,
+            )
+            return False
 
     # â”€â”€ HUB75 test endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -5707,7 +5812,20 @@ function cfgRenderSection(section) {
 // so operators know the page exists for future growth without requiring
 // real configuration yet.
 function _cfgRenderIntegrationsExtras() {
-  return ''
+  let html = '';
+  // Phase 8.1 — Disambiguation rules card. Loaded lazily so the card
+  // paints a placeholder immediately; the GET resolves and
+  // _disambPopulate() replaces the body once rules arrive.
+  html += ''
+    + '<div class="card" id="cfg-disambiguation-card" style="margin-top:14px;">'
+    +   '<div class="cfg-subsection-title">Disambiguation rules</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Controls how Tier&nbsp;2 picks entities when the utterance is ambiguous. '
+    +     'Rules apply against Home&nbsp;Assistant&rsquo;s live entity cache; no entity data is stored here.'
+    +   '</div>'
+    +   '<div id="cfg-disamb-body">Loading rules&hellip;</div>'
+    + '</div>';
+  html += ''
     + '<div class="cfg-placeholder-card">'
     +   '<div class="cfg-placeholder-title">MQTT <span class="cfg-placeholder-tag">Coming soon</span></div>'
     +   '<div class="cfg-placeholder-desc">'
@@ -5722,6 +5840,118 @@ function _cfgRenderIntegrationsExtras() {
     +     'track it in <code>docs/roadmap.md</code>.'
     +   '</div>'
     + '</div>';
+  // Defer fetch until the DOM exists. setTimeout(0) punts to the next
+  // tick — by then cfg-form-area has been painted.
+  setTimeout(_cfgLoadDisambiguation, 0);
+  return html;
+}
+
+// Phase 8.1 — Disambiguation rules card population and save.
+
+async function _cfgLoadDisambiguation() {
+  const body = document.getElementById('cfg-disamb-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/config/disambiguation');
+    if (!r.ok) {
+      body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Failed to load rules (' + r.status + ').</div>';
+      return;
+    }
+    const data = await r.json();
+    _disambPopulate(data);
+  } catch (e) {
+    body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error loading rules: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function _disambPopulate(data) {
+  const body = document.getElementById('cfg-disamb-body');
+  if (!body) return;
+  const dedup = (data.twin_dedup === false) ? false : true;
+  const pairs = Array.isArray(data.opposing_token_pairs) ? data.opposing_token_pairs : [];
+  let html = '';
+  html += '<div class="cfg-field" style="display:flex;align-items:center;gap:10px;">'
+    +   '<input type="checkbox" id="cfg-disamb-twin-dedup"' + (dedup ? ' checked' : '') + ' style="width:auto;">'
+    +   '<label class="cfg-field-label" for="cfg-disamb-twin-dedup" style="margin:0;">'
+    +     'Collapse light/switch twins by device_id'
+    +   '</label>'
+    + '</div>'
+    + '<div class="cfg-field-desc" style="margin:-6px 0 14px 28px;">'
+    +   'When both <code>light.foo</code> and <code>switch.foo</code> represent the same physical relay, '
+    +   'keep the light side (the only domain that honours <code>brightness_pct</code>). The switch still wins '
+    +   'automatically when the light has no dim capability (Inovelli fan/light edge case).'
+    + '</div>';
+  html += '<div class="cfg-field-label" style="margin-top:6px;">Opposing-token pairs</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    +   'If an utterance contains one side of a pair and a candidate&rsquo;s entity name contains the other, '
+    +   'the candidate loses 50 rank points. Leave empty to use the shipped defaults '
+    +   '(<code>upstairs/downstairs</code>, <code>lower/upper</code>, <code>front/back</code>, '
+    +   '<code>inside/outside</code>, <code>indoor/outdoor</code>, <code>master/guest</code>, '
+    +   '<code>left/right</code>, <code>top/bottom</code>, <code>primary/secondary</code>, '
+    +   '<code>north/south</code>, <code>east/west</code>).'
+    + '</div>';
+  html += '<div id="cfg-disamb-pairs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;"></div>';
+  html += '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddPair()">+ Add pair</button>';
+  html += '<div class="cfg-save-row" style="margin-top:14px;">'
+    + '<button class="cfg-save-btn" onclick="cfgSaveDisambiguation()">Save Disambiguation rules</button>'
+    + '<span id="cfg-save-result-disamb" class="cfg-result"></span>'
+    + '</div>';
+  body.innerHTML = html;
+  const rows = document.getElementById('cfg-disamb-pairs');
+  pairs.forEach(p => _disambRenderPairRow(rows, p[0] || '', p[1] || ''));
+}
+
+function _disambRenderPairRow(host, a, b) {
+  const row = document.createElement('div');
+  row.className = 'cfg-disamb-pair-row';
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.innerHTML = ''
+    + '<input type="text" class="cfg-disamb-pair-a" value="' + escAttr(a) + '" placeholder="e.g. upstairs" style="flex:1;">'
+    + '<span style="opacity:0.6;">&harr;</span>'
+    + '<input type="text" class="cfg-disamb-pair-b" value="' + escAttr(b) + '" placeholder="e.g. downstairs" style="flex:1;">'
+    + '<button type="button" title="Remove pair" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+  const del = row.querySelector('button');
+  if (del) del.addEventListener('click', () => row.remove());
+  host.appendChild(row);
+}
+
+function _disambAddPair() {
+  const host = document.getElementById('cfg-disamb-pairs');
+  if (host) _disambRenderPairRow(host, '', '');
+}
+
+async function cfgSaveDisambiguation() {
+  const resultEl = document.getElementById('cfg-save-result-disamb');
+  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
+  const twinEl = document.getElementById('cfg-disamb-twin-dedup');
+  const twin = twinEl ? !!twinEl.checked : true;
+  const pairs = [];
+  document.querySelectorAll('#cfg-disamb-pairs .cfg-disamb-pair-row').forEach(row => {
+    const a = (row.querySelector('.cfg-disamb-pair-a') || {}).value || '';
+    const b = (row.querySelector('.cfg-disamb-pair-b') || {}).value || '';
+    if (a.trim() && b.trim()) pairs.push([a.trim(), b.trim()]);
+  });
+  try {
+    const r = await fetch('/api/config/disambiguation', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({twin_dedup: twin, opposing_token_pairs: pairs}),
+    });
+    const resp = await r.json();
+    if (r.ok) {
+      if (resultEl) resultEl.textContent = '';
+      if (resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Changes saved.', 'success');
+      }
+    } else if (resultEl) {
+      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
+      resultEl.className = 'cfg-result err';
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
+  }
 }
 
 // Phase 6: cross-section cards under LLM & Services so operators can tune

@@ -149,6 +149,13 @@ class DisambiguationRules:
     max_state_age_seconds: float = 5.0
     candidate_limit: int = 12
     extra_guidance: str = ""  # Free-form text appended to system prompt
+    # Phase 8.1 — candidate scoring controls surfaced on the WebUI's
+    # Integrations → Home Assistant page. Empty `opposing_token_pairs`
+    # means the scorer falls back to the shipped defaults (11 pairs);
+    # an explicit empty list in the YAML disables the penalty entirely.
+    # See glados.ha.entity_cache._DEFAULT_OPPOSING_TOKENS.
+    opposing_token_pairs: list[list[str]] = field(default_factory=list)
+    twin_dedup: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -254,4 +261,48 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
         rules.candidate_limit = int(raw["candidate_limit"])
     if isinstance(raw.get("extra_guidance"), str):
         rules.extra_guidance = raw["extra_guidance"]
+    otp = raw.get("opposing_token_pairs")
+    if isinstance(otp, list):
+        cleaned: list[list[str]] = []
+        for pair in otp:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                a = str(pair[0]).strip()
+                b = str(pair[1]).strip()
+                if a and b and a.lower() != b.lower():
+                    cleaned.append([a, b])
+        rules.opposing_token_pairs = cleaned
+    if isinstance(raw.get("twin_dedup"), bool):
+        rules.twin_dedup = bool(raw["twin_dedup"])
     return rules
+
+
+# Phase 8.1: YAML round-trip helpers for the WebUI save path. The
+# operator edits these rules on the Disambiguation rules card; we
+# serialise the dataclass back to the same shape the loader accepts.
+
+def rules_to_dict(rules: DisambiguationRules) -> dict[str, Any]:
+    """Serialise a DisambiguationRules to a plain dict for YAML output."""
+    return {
+        "naming_convention": dict(rules.naming_convention),
+        "overhead_synonyms": list(rules.overhead_synonyms),
+        "state_inference": bool(rules.state_inference),
+        "max_state_age_seconds": float(rules.max_state_age_seconds),
+        "candidate_limit": int(rules.candidate_limit),
+        "extra_guidance": str(rules.extra_guidance or ""),
+        "opposing_token_pairs": [list(p) for p in rules.opposing_token_pairs],
+        "twin_dedup": bool(rules.twin_dedup),
+    }
+
+
+def save_rules_to_yaml(path: str | Path, rules: DisambiguationRules) -> None:
+    """Write disambiguation rules to disk. Writes to a sibling `.tmp`
+    first, then renames — the disambiguator may be reading the file on
+    another thread."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(
+        yaml.safe_dump(rules_to_dict(rules), sort_keys=False),
+        encoding="utf-8",
+    )
+    tmp.replace(p)

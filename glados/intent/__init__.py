@@ -22,6 +22,8 @@ from .rules import (
     IntentAllowlist,
     domain_filter_for_utterance,
     load_rules_from_yaml,
+    rules_to_dict,
+    save_rules_to_yaml,
 )
 
 __all__ = [
@@ -33,4 +35,6 @@ __all__ = [
     "get_disambiguator",
     "init_disambiguator",
     "load_rules_from_yaml",
+    "rules_to_dict",
+    "save_rules_to_yaml",
 ]
