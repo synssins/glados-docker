@@ -41,15 +41,34 @@ import yaml
 from glados.core.config_store import cfg as _cfg
 from glados.observability import AuditEvent, Origin, audit
 
-TTS_URL = _cfg.service_url("tts") + "/v1/audio/speech"
-GLADOS_API_URL = _cfg.service_url("api_wrapper")
-OLLAMA_CHAT_HOST = "localhost"
-OLLAMA_CHAT_PORT = int(_cfg.service_url("ollama_interactive").rsplit(":", 1)[-1])
-OLLAMA_CHAT_MODEL = "glados"       # Qwen 2.5 14B with GLaDOS personality
-STT_URL = _cfg.service_url("stt")
-VISION_URL = _cfg.service_url("vision")
-OLLAMA_URL = _cfg.service_url("ollama_interactive") + "/api/generate"
-OLLAMA_MODEL = "glados:latest"
+# Service URLs and models are read live via these helpers so that a
+# config save (LLM & Services page, etc.) takes effect without any
+# process restart. Do NOT replace with module-level constants — those
+# freeze at import time and leave the UI silently calling a stale
+# backend after the operator moves a service or swaps a model.
+
+def _svc_tts_speech() -> str:
+    return _cfg.service_url("tts") + "/v1/audio/speech"
+
+def _svc_tts_base() -> str:
+    return _cfg.service_url("tts")
+
+def _svc_api_wrapper() -> str:
+    return _cfg.service_url("api_wrapper")
+
+def _svc_stt() -> str:
+    return _cfg.service_url("stt")
+
+def _svc_vision() -> str:
+    return _cfg.service_url("vision")
+
+def _svc_ollama_generate() -> str:
+    return _cfg.service_url("ollama_interactive") + "/api/generate"
+
+def _svc_ollama_model() -> str:
+    # Read the operator-selected model from services.yaml; fall back to
+    # qwen3:8b (the current Phase 8.0 default) if unset.
+    return (_cfg.services.ollama_interactive.model or "qwen3:8b").strip()
 
 OUTPUT_DIR = Path(_cfg.audio.tts_ui_output_dir)
 CHAT_AUDIO_DIR = Path(_cfg.audio.chat_audio_dir)
@@ -787,12 +806,12 @@ def _ai_filename(text: str, timeout: float = 3.0) -> str | None:
         f"summarizing this text: '{text[:200]}'. Reply with ONLY the filename, nothing else."
     )
     body = json.dumps({
-        "model": OLLAMA_MODEL,
+        "model": _svc_ollama_model(),
         "prompt": prompt,
         "stream": False,
     }).encode()
     req = urllib.request.Request(
-        OLLAMA_URL,
+        _svc_ollama_generate(),
         data=body,
         headers={"Content-Type": "application/json"},
     )
@@ -1426,7 +1445,7 @@ class Handler(BaseHTTPRequestHandler):
             if val is not None:
                 tts_payload[param] = float(val)
         tts_body = json.dumps(tts_payload).encode()
-        tts_req = urllib.request.Request(TTS_URL, data=tts_body,
+        tts_req = urllib.request.Request(_svc_tts_speech(), data=tts_body,
                                          headers={"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(tts_req, timeout=60) as tts_resp:
@@ -1484,7 +1503,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # 1. Get GLaDOS response
         chat_req = urllib.request.Request(
-            f"{GLADOS_API_URL}/v1/chat/completions",
+            f"{_svc_api_wrapper()}/v1/chat/completions",
             data=chat_payload,
             headers={
                 "Content-Type": "application/json",
@@ -1507,7 +1526,7 @@ class Handler(BaseHTTPRequestHandler):
                 "voice": "glados",
                 "response_format": "wav",
             }).encode()
-            tts_req = urllib.request.Request(TTS_URL, data=tts_body,
+            tts_req = urllib.request.Request(_svc_tts_speech(), data=tts_body,
                                              headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(tts_req, timeout=60) as tts_resp:
                 audio_data = tts_resp.read()
@@ -1653,7 +1672,7 @@ class Handler(BaseHTTPRequestHandler):
                             tts_payload[param] = tts_params[param]
                 tts_body = json.dumps(tts_payload).encode()
                 tts_req = urllib.request.Request(
-                    TTS_URL, data=tts_body,
+                    _svc_tts_speech(), data=tts_body,
                     headers={"Content-Type": "application/json"},
                 )
                 with urllib.request.urlopen(tts_req, timeout=120) as tts_resp:
@@ -1925,7 +1944,7 @@ class Handler(BaseHTTPRequestHandler):
         multipart_body, multipart_ct = _build_multipart(audio_bytes, content_type)
 
         stt_req = urllib.request.Request(
-            f"{STT_URL}/v1/audio/transcriptions",
+            f"{_svc_stt()}/v1/audio/transcriptions",
             data=multipart_body,
             headers={"Content-Type": multipart_ct},
         )
@@ -2004,7 +2023,7 @@ class Handler(BaseHTTPRequestHandler):
         """Proxy GET to glados-api /api/announcement-settings."""
         try:
             req = urllib.request.Request(
-                f"{GLADOS_API_URL}/api/announcement-settings",
+                f"{_svc_api_wrapper()}/api/announcement-settings",
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
@@ -2024,7 +2043,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             req = urllib.request.Request(
-                f"{GLADOS_API_URL}/api/announcement-settings",
+                f"{_svc_api_wrapper()}/api/announcement-settings",
                 data=body,
                 headers={"Content-Type": "application/json"},
                 method="POST",
@@ -2039,7 +2058,7 @@ class Handler(BaseHTTPRequestHandler):
         """Proxy GET to glados-api /api/startup-speakers."""
         try:
             req = urllib.request.Request(
-                f"{GLADOS_API_URL}/api/startup-speakers",
+                f"{_svc_api_wrapper()}/api/startup-speakers",
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
@@ -2058,7 +2077,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             req = urllib.request.Request(
-                f"{GLADOS_API_URL}/api/startup-speakers",
+                f"{_svc_api_wrapper()}/api/startup-speakers",
                 data=body,
                 headers={"Content-Type": "application/json"},
                 method="POST",
@@ -2125,9 +2144,9 @@ class Handler(BaseHTTPRequestHandler):
 
         Per-service check paths (all use real service URLs, no
         host-local assumptions):
-          glados_api — GET <GLADOS_API_URL>/health
-          stt        — GET <STT_URL>/health   (speaches STT)
-          vision     — GET <VISION_URL>/health
+          glados_api — GET <_svc_api_wrapper()>/health
+          stt        — GET <_svc_stt()>/health   (speaches STT)
+          vision     — GET <_svc_vision()>/health
           ha         — GET <HA_URL>/api/ (with bearer token)
           tts        — GET <speaches base>/v1/voices
                        (speaches has no /health; the voices list is the
@@ -2139,9 +2158,9 @@ class Handler(BaseHTTPRequestHandler):
         """
         status = {}
         checks = {
-            "glados_api": f"{GLADOS_API_URL}/health",
-            "stt": f"{STT_URL}/health",
-            "vision": f"{VISION_URL}/health",
+            "glados_api": f"{_svc_api_wrapper()}/health",
+            "stt": f"{_svc_stt()}/health",
+            "vision": f"{_svc_vision()}/health",
             "ha": f"{HA_URL}/api/",
         }
         for name, url in checks.items():
@@ -2160,7 +2179,7 @@ class Handler(BaseHTTPRequestHandler):
         # Discover button relies on. The base URL is derived the same
         # way _get_voices() does it — strip any trailing /v1/... segment.
         try:
-            tts_base = TTS_URL.rsplit("/v1/", 1)[0].rstrip("/")
+            tts_base = _svc_tts_base().rsplit("/v1/", 1)[0].rstrip("/")
             req = urllib.request.Request(f"{tts_base}/v1/voices")
             with urllib.request.urlopen(req, timeout=3) as resp:
                 status["tts"] = resp.status < 400
@@ -2194,7 +2213,7 @@ class Handler(BaseHTTPRequestHandler):
     def _get_attitudes(self):
         """Proxy attitude list from the API wrapper."""
         try:
-            req = urllib.request.Request(f"{GLADOS_API_URL}/api/attitudes")
+            req = urllib.request.Request(f"{_svc_api_wrapper()}/api/attitudes")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
             self._send_json(200, data)
@@ -2207,7 +2226,7 @@ class Handler(BaseHTTPRequestHandler):
     def _get_voices(self):
         """Proxy available voices list from the TTS service."""
         try:
-            req = urllib.request.Request(f"{TTS_URL.rsplit('/v1/', 1)[0]}/v1/voices")
+            req = urllib.request.Request(f"{_svc_tts_base().rsplit('/v1/', 1)[0]}/v1/voices")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
             self._send_json(200, data)
@@ -3306,21 +3325,30 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(400, f"Validation error: {e}")
 
     def _sync_glados_config_urls(self, services_payload: dict) -> None:
-        """Mirror ollama_interactive.url and ollama_autonomy.url from the
-        services payload into glados_config.yaml's chat + autonomy
-        `completion_url` fields.
+        """Mirror LLM URLs *and* model names from the services payload
+        into glados_config.yaml's chat + autonomy fields.
 
         Background: the engine (glados.core.engine.GladosConfig) reads
-        `completion_url` from glados_config.yaml, independently of the
-        services.yaml that pydantic ServicesConfig owns. Pre-this-fix,
-        operators editing Ollama URLs on the LLM & Services page
-        silently diverged from the engine's chat routing — and a dead
-        old URL in glados_config.yaml would surface as a 504 gateway
-        timeout on the first chat turn after an Ollama server move.
+        `completion_url` and `llm_model` from glados_config.yaml,
+        independently of the services.yaml that pydantic ServicesConfig
+        owns. When operators edit Ollama URL or Model dropdowns on the
+        LLM & Services page, the *engine* keeps using whatever was in
+        glados_config.yaml until we mirror the change here. Symptoms
+        were 504s on URL mismatch and 404s on model-name mismatch.
+
+        Fields synced:
+          services.ollama_interactive.url   -> Glados.completion_url
+          services.ollama_interactive.model -> Glados.llm_model
+          services.ollama_autonomy.url      -> Glados.autonomy.completion_url
+          services.ollama_autonomy.model    -> Glados.autonomy.llm_model
         """
-        interactive_url = ((services_payload.get("ollama_interactive") or {}).get("url") or "").strip()
-        autonomy_url = ((services_payload.get("ollama_autonomy") or {}).get("url") or "").strip()
-        if not interactive_url and not autonomy_url:
+        interactive = services_payload.get("ollama_interactive") or {}
+        autonomy = services_payload.get("ollama_autonomy") or {}
+        interactive_url = (interactive.get("url") or "").strip()
+        interactive_model = (interactive.get("model") or "").strip()
+        autonomy_url = (autonomy.get("url") or "").strip()
+        autonomy_model = (autonomy.get("model") or "").strip()
+        if not any([interactive_url, interactive_model, autonomy_url, autonomy_model]):
             return
 
         config_path = Path(os.environ.get(
@@ -3328,13 +3356,13 @@ class Handler(BaseHTTPRequestHandler):
             "/app/configs/glados_config.yaml",
         ))
         if not config_path.exists():
-            logger.debug("glados_config.yaml not present at {}; skip URL sync", config_path)
+            logger.debug("glados_config.yaml not present at {}; skip LLM sync", config_path)
             return
 
         try:
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError) as exc:
-            logger.warning("glados_config URL sync: failed to read {}: {}", config_path, exc)
+            logger.warning("glados_config LLM sync: failed to read {}: {}", config_path, exc)
             return
 
         glados_block = raw.get("Glados") if isinstance(raw.get("Glados"), dict) else None
@@ -3348,12 +3376,20 @@ class Handler(BaseHTTPRequestHandler):
             if glados_block.get("completion_url") != new_chat:
                 glados_block["completion_url"] = new_chat
                 changed = True
-        if autonomy_url:
-            auton = glados_block.get("autonomy") if isinstance(glados_block.get("autonomy"), dict) else None
-            if auton is not None:
+        if interactive_model:
+            if glados_block.get("llm_model") != interactive_model:
+                glados_block["llm_model"] = interactive_model
+                changed = True
+        auton = glados_block.get("autonomy") if isinstance(glados_block.get("autonomy"), dict) else None
+        if auton is not None:
+            if autonomy_url:
                 new_auton = _ollama_chat_url(autonomy_url)
                 if auton.get("completion_url") != new_auton:
                     auton["completion_url"] = new_auton
+                    changed = True
+            if autonomy_model:
+                if auton.get("llm_model") != autonomy_model:
+                    auton["llm_model"] = autonomy_model
                     changed = True
 
         if not changed:
@@ -3363,13 +3399,16 @@ class Handler(BaseHTTPRequestHandler):
                 yaml.safe_dump(raw, sort_keys=False),
                 encoding="utf-8",
             )
+            _auton = glados_block.get("autonomy") or {}
             logger.info(
-                "glados_config URL sync: chat={} autonomy={}",
+                "glados_config LLM sync: chat={} ({}); autonomy={} ({})",
                 glados_block.get("completion_url"),
-                (glados_block.get("autonomy") or {}).get("completion_url"),
+                glados_block.get("llm_model"),
+                _auton.get("completion_url"),
+                _auton.get("llm_model"),
             )
         except OSError as exc:
-            logger.warning("glados_config URL sync: write failed: {}", exc)
+            logger.warning("glados_config LLM sync: write failed: {}", exc)
 
     def _put_config_raw(self):
         """Update a single config file from raw YAML text."""
