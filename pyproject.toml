@@ -24,10 +24,14 @@ dependencies = [
     "websockets>=13.0",
     # Audio processing (no hardware audio — HA handles playback)
     "soundfile>=0.13.0",
-    # ONNX inference — CPU only. Used by glados/ASR/ for speech recognition.
+    # ONNX inference — CPU only. Used by glados/ASR/ for speech recognition
+    # AND Phase 8.3 semantic entity retrieval (BGE-small-en-v1.5).
     # TTS no longer runs locally; it is delegated to speaches over HTTP.
     # STT will follow in a later change, at which point this can be removed.
     "onnxruntime>=1.16.0",
+    # Phase 8.3 — tokenizer for BGE-small. Pure-Rust Hugging Face
+    # tokenizers, no PyTorch/transformers dependency chain.
+    "tokenizers>=0.20.0",
     # Vision
     "opencv-python-headless>=4.12.0",
     "Pillow>=10.0.0",
