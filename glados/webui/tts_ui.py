@@ -7484,69 +7484,172 @@ let chatStreaming = false;
 // element in the message DOM. No separate background player.
 
 function renderChat() {
+  // Incremental renderer. The previous version rewrote innerHTML on
+  // every content chunk during streaming, which destroyed the <audio>
+  // element and its playback state each time — the visible controls
+  // kept appearing to reset to 0:00 while TTS audio played from a
+  // detached (doomed) element. Here we reconcile the DOM against
+  // chatHistory: existing <audio> elements are preserved across
+  // re-renders so the operator's play/pause/volume/seek interactions
+  // stick to a single persistent element.
   const el = document.getElementById('chatMessages');
   if (chatHistory.length === 0) {
     el.innerHTML = '<div class="empty-msg">Send a message to start talking with GLaDOS.</div>';
     return;
   }
-  let html = '';
+  // Clear empty-state div if it exists
+  const empty = el.querySelector('.empty-msg');
+  if (empty) empty.remove();
+
+  // Reconcile message-div count
+  const want = chatHistory.length + (chatWaiting ? 1 : 0);
+  while (el.children.length > want) {
+    el.removeChild(el.lastChild);
+  }
+  while (el.children.length < want) {
+    const div = document.createElement('div');
+    div.className = 'chat-msg';
+    el.appendChild(div);
+  }
+
   for (let i = 0; i < chatHistory.length; i++) {
     const msg = chatHistory[i];
     const isLast = (i === chatHistory.length - 1);
+    const msgEl = el.children[i];
+    msgEl.className = 'chat-msg ' + msg.role;
+
     if (msg.role === 'user') {
-      html += '<div class="chat-msg user">' + escHtml(msg.content) + '</div>';
-    } else {
-      html += '<div class="chat-msg assistant">'
-        + '<div class="msg-label">GLaDOS</div>'
-        + escHtml(msg.content);
-      if (isLast && chatStreaming) {
-        html += '<span class="stream-cursor">|</span>';
+      if (msgEl.textContent !== msg.content) {
+        msgEl.textContent = msg.content;
       }
-      if (msg.audio_url) {
-        html += '<audio controls src="' + escAttr(msg.audio_url) + '"></audio>';
+      continue;
+    }
+
+    // --- assistant message ---
+    let labelEl = msgEl.querySelector('.msg-label');
+    if (!labelEl) {
+      labelEl = document.createElement('div');
+      labelEl.className = 'msg-label';
+      labelEl.textContent = 'GLaDOS';
+      msgEl.appendChild(labelEl);
+    }
+
+    let textEl = msgEl.querySelector('.content-text');
+    if (!textEl) {
+      textEl = document.createElement('span');
+      textEl.className = 'content-text';
+      // Insert after label
+      msgEl.appendChild(textEl);
+    }
+    if (textEl.textContent !== (msg.content || '')) {
+      textEl.textContent = msg.content || '';
+    }
+
+    let cursor = msgEl.querySelector('.stream-cursor');
+    if (isLast && chatStreaming) {
+      if (!cursor) {
+        cursor = document.createElement('span');
+        cursor.className = 'stream-cursor';
+        cursor.textContent = '|';
+        msgEl.appendChild(cursor);
       }
-      if (msg.timing) {
-        const t = msg.timing;
-        html += '<div class="chat-metrics">';
-        if (t.prompt_tokens || t.completion_tokens) {
-          html += '<span>' + (t.prompt_tokens||0) + '->' + (t.completion_tokens||0) + ' tok</span>';
+    } else if (cursor) {
+      cursor.remove();
+    }
+
+    // Audio: create ONCE, swap src in place if the URL changes (e.g.
+    // streaming -> static replay). Never destroy the element — that's
+    // what caused the regression.
+    let audioEl = msgEl.querySelector('audio');
+    if (msg.audio_url) {
+      if (!audioEl) {
+        audioEl = document.createElement('audio');
+        audioEl.controls = true;
+        audioEl.preload = 'auto';
+        audioEl.src = msg.audio_url;
+        msgEl.appendChild(audioEl);
+        audioEl.play().catch(function() {});
+      } else {
+        const currentSrc = audioEl.getAttribute('src') || '';
+        if (currentSrc !== msg.audio_url) {
+          // URL swap (streaming URL -> static replay). Preserve
+          // playback position and resume-if-was-playing.
+          const pos = audioEl.currentTime || 0;
+          const wasPlaying = !audioEl.paused && !audioEl.ended;
+          audioEl.src = msg.audio_url;
+          audioEl.addEventListener('loadedmetadata', function _once() {
+            audioEl.removeEventListener('loadedmetadata', _once);
+            try { audioEl.currentTime = pos; } catch (_) {}
+            if (wasPlaying) audioEl.play().catch(function() {});
+          }, {once: true});
+          audioEl.load();
         }
-        if (t.tokens_per_second) {
-          html += '<span>' + t.tokens_per_second + ' tok/s</span>';
-        }
-        if (t.time_to_first_token_ms != null) {
-          html += '<span>TTFT ' + (t.time_to_first_token_ms/1000).toFixed(1) + 's</span>';
-        }
-        if (t.generation_time_ms) {
-          html += '<span>LLM ' + (t.generation_time_ms/1000).toFixed(1) + 's</span>';
-        }
-        if (t.tts_time_ms) {
-          html += '<span>TTS ' + (t.tts_time_ms/1000).toFixed(1) + 's</span>';
-        }
-        if (t.total_time_ms) {
-          html += '<span>Total ' + (t.total_time_ms/1000).toFixed(1) + 's</span>';
-        }
-        if (t.emotion) {
-          const pct = t.emotion_intensity != null ? ' ' + (t.emotion_intensity * 100).toFixed(0) + '%' : '';
-          const p = t.pad_p != null ? (t.pad_p >= 0 ? '+' : '') + t.pad_p.toFixed(2) : '?';
-          const a = t.pad_a != null ? (t.pad_a >= 0 ? '+' : '') + t.pad_a.toFixed(2) : '?';
-          const d = t.pad_d != null ? (t.pad_d >= 0 ? '+' : '') + t.pad_d.toFixed(2) : '?';
-          const lock = t.emotion_locked_h ? ' [locked ' + t.emotion_locked_h.toFixed(1) + 'h]' : '';
-          const tip = 'Pleasure:' + p + ' Arousal:' + a + ' Dominance:' + d
-            + (t.emotion_locked_h ? ' | Cooldown: ' + t.emotion_locked_h.toFixed(1) + 'h remaining' : '');
-          html += '<span class="emotion-metric" title="' + tip + '">'
-            + '\u26A1 ' + t.emotion + pct + lock + '</span>';
-        }
-        html += '</div>';
       }
-      html += '</div>';
+    } else if (audioEl) {
+      audioEl.remove();
+    }
+
+    // Metrics: rebuild contents of the metrics div only when timing changes
+    const wantMetrics = !!msg.timing;
+    let metricsEl = msgEl.querySelector('.chat-metrics');
+    if (wantMetrics) {
+      if (!metricsEl) {
+        metricsEl = document.createElement('div');
+        metricsEl.className = 'chat-metrics';
+        msgEl.appendChild(metricsEl);
+      }
+      const t = msg.timing;
+      // Only rebuild if content changed — cheap to rebuild though, so
+      // keep the logic straightforward.
+      const parts = [];
+      if (t.prompt_tokens || t.completion_tokens) {
+        parts.push('<span>' + (t.prompt_tokens||0) + '->' + (t.completion_tokens||0) + ' tok</span>');
+      }
+      if (t.tokens_per_second) {
+        parts.push('<span>' + t.tokens_per_second + ' tok/s</span>');
+      }
+      if (t.time_to_first_token_ms != null) {
+        parts.push('<span>TTFT ' + (t.time_to_first_token_ms/1000).toFixed(1) + 's</span>');
+      }
+      if (t.generation_time_ms) {
+        parts.push('<span>LLM ' + (t.generation_time_ms/1000).toFixed(1) + 's</span>');
+      }
+      if (t.tts_time_ms) {
+        parts.push('<span>TTS ' + (t.tts_time_ms/1000).toFixed(1) + 's</span>');
+      }
+      if (t.total_time_ms) {
+        parts.push('<span>Total ' + (t.total_time_ms/1000).toFixed(1) + 's</span>');
+      }
+      if (t.emotion) {
+        const pct = t.emotion_intensity != null ? ' ' + (t.emotion_intensity * 100).toFixed(0) + '%' : '';
+        const p = t.pad_p != null ? (t.pad_p >= 0 ? '+' : '') + t.pad_p.toFixed(2) : '?';
+        const a = t.pad_a != null ? (t.pad_a >= 0 ? '+' : '') + t.pad_a.toFixed(2) : '?';
+        const d = t.pad_d != null ? (t.pad_d >= 0 ? '+' : '') + t.pad_d.toFixed(2) : '?';
+        const lock = t.emotion_locked_h ? ' [locked ' + t.emotion_locked_h.toFixed(1) + 'h]' : '';
+        const tip = 'Pleasure:' + p + ' Arousal:' + a + ' Dominance:' + d
+          + (t.emotion_locked_h ? ' | Cooldown: ' + t.emotion_locked_h.toFixed(1) + 'h remaining' : '');
+        parts.push('<span class="emotion-metric" title="' + escAttr(tip) + '">'
+          + '\u26A1 ' + escHtml(t.emotion) + pct + escHtml(lock) + '</span>');
+      }
+      const newHtml = parts.join('');
+      if (metricsEl.innerHTML !== newHtml) {
+        metricsEl.innerHTML = newHtml;
+      }
+    } else if (metricsEl) {
+      metricsEl.remove();
     }
   }
+
+  // "Thinking..." placeholder slot
   if (chatWaiting) {
-    html += '<div class="chat-msg assistant"><div class="msg-label">GLaDOS</div>'
-      + '<span class="thinking"><span class="spinner"></span> Thinking...</span></div>';
+    const thinkEl = el.children[chatHistory.length];
+    if (thinkEl) {
+      thinkEl.className = 'chat-msg assistant';
+      thinkEl.innerHTML = '<div class="msg-label">GLaDOS</div>'
+        + '<span class="thinking"><span class="spinner"></span> Thinking...</span>';
+    }
   }
-  el.innerHTML = html;
+
   el.scrollTop = el.scrollHeight;
 }
 
@@ -7650,50 +7753,24 @@ async function chatSendStreaming(text, history) {
         }
 
         if (chunk.audio_url !== undefined) {
-          // Streaming audio URL from the server. Render the visible
-          // <audio controls> element on the chat message and auto-play
-          // from there — the SAME element handles initial playback and
-          // all subsequent operator controls (play/pause, volume, mute,
-          // seek). This replaces the prior invisible `new Audio()` +
-          // hand-off dance, which caused double-playback because the
-          // invisible element kept playing while the visible one was
-          // operated on.
+          // Streaming audio URL. renderChat() is the single source of
+          // DOM truth — on first mount it creates the <audio controls>
+          // element, wires .play(), and never destroys it on later
+          // content-chunk re-renders. No invisible background player,
+          // no handoff, no restart-at-0:00 regression.
           if (chunk.audio_url) {
             chatHistory[streamIdx].audio_url = chunk.audio_url;
             renderChat();
-            requestAnimationFrame(function() {
-              var els = document.querySelectorAll('.chat-msg audio');
-              var el = els[els.length - 1];
-              if (el) el.play().catch(function() {});
-            });
           }
           continue;
         }
 
         if (chunk.audio_replay_url !== undefined) {
-          // Server has finalized the static WAV. Swap the element's src
-          // to the static URL (which supports Range/seek) while
-          // preserving playback position so the user doesn't hear a
-          // restart. If the streaming URL is already the source and
-          // audio is playing, do the swap mid-stream.
-          var prevUrl = chatHistory[streamIdx].audio_url;
-          var nextUrl = chunk.audio_replay_url;
-          chatHistory[streamIdx].audio_url = nextUrl;
-          if (prevUrl !== nextUrl) {
-            var els = document.querySelectorAll('.chat-msg audio');
-            var el = els[els.length - 1];
-            if (el) {
-              var pos = el.currentTime || 0;
-              var wasPlaying = !el.paused && !el.ended;
-              el.src = nextUrl;
-              el.addEventListener('loadedmetadata', function _once() {
-                el.removeEventListener('loadedmetadata', _once);
-                try { el.currentTime = pos; } catch(_) {}
-                if (wasPlaying) el.play().catch(function() {});
-              }, {once: true});
-              el.load();
-            }
-          }
+          // Static finalized WAV. renderChat() detects the src change
+          // and swaps it in place on the existing element while
+          // preserving currentTime + resuming if it was playing.
+          chatHistory[streamIdx].audio_url = chunk.audio_replay_url;
+          renderChat();
           continue;
         }
 
