@@ -3694,10 +3694,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_error(self, code: int, msg: str):
-        self.send_response(code)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(msg.encode())
+        self._send_json(code, {"ok": False, "error": msg})
 
 
 
