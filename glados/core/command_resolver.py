@@ -371,12 +371,30 @@ class CommandResolver:
         """Assemble prior-context to hand to the disambiguator.
 
         Source preference:
-          1. Session's most recent turn, if within the carry-over window.
+          1. Session's most recent turn, if within the carry-over window
+             AND the current utterance looks anaphoric (no distinctive
+             qualifier words of its own).
           2. Learned-context lookup, if no session turn AND no source
              area on the request, AND the HA state validator approves.
+
+        Phase 8.3 fix (2026-04-20): prior behavior blindly attached
+        the previous turn's entity_ids whenever the session had a
+        recent turn. "Bedroom strip segment 3" said right after
+        "turn on the desk lamp" inherited `light.task_lamp_one`
+        as prior context and the disambiguator read "segment 3" as a
+        brightness modifier on the wrong entity. Carry-over is now
+        gated on the current utterance being genuinely anaphoric —
+        utterances that name their own target skip it and go through
+        the retriever normally.
         """
         last = self._session.last_turn(ctx.session_id)
         if last is not None and self._within_window(last):
+            # Carry-over is for utterances with no device noun of
+            # their own ("brighter", "turn it up"). If the current
+            # utterance has distinctive qualifier words, it is
+            # naming its own target and we skip carry-over.
+            if not self._looks_anaphoric(utterance):
+                return None
             return _Carryover(
                 entity_ids=list(last.entities_affected),
                 service=last.service,
@@ -411,6 +429,23 @@ class CommandResolver:
 
     def _within_window(self, turn: Turn) -> bool:
         return (self._now() - turn.timestamp) <= self._carryover_window_s
+
+    def _looks_anaphoric(self, utterance: str) -> bool:
+        """True when the utterance has no distinctive qualifier words
+        of its own — a pure refinement that needs prior context to
+        resolve ("brighter", "turn it up", "increase by ten percent").
+
+        Utterances with their own qualifier tokens (e.g. "bedroom
+        strip segment 3") name a new target and must NOT inherit
+        the previous turn's entity_ids — that was the source of the
+        Gate 3 failure where "segment 3" got read as a brightness
+        value on the desk lamp from the prior turn.
+        """
+        # Imported here (not at module top) to avoid bootstrapping
+        # disambiguator module state before the resolver loads.
+        from glados.intent.disambiguator import _extract_qualifiers
+        quals = _extract_qualifiers(utterance)
+        return not quals
 
     def _validate_learned(self, row: LearnedRow) -> bool:
         return self._validator.validates(
