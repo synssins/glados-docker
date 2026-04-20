@@ -5776,7 +5776,11 @@ async function cfgSaveModelOptions() {
     if (r.ok) {
       _cfgData.personality = next;
       if (resultEl) resultEl.textContent = '';
-      showToast('Model options saved. Restart for changes to take effect.', 'success');
+      if (resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Changes saved.', 'success');
+      }
     } else if (resultEl) {
       resultEl.textContent = resp.error || ('Error (' + r.status + ')');
       resultEl.className = 'cfg-result err';
@@ -5807,7 +5811,11 @@ async function cfgSaveLLMTimeouts() {
     if (r.ok) {
       _cfgData.global = next;
       if (resultEl) resultEl.textContent = '';
-      showToast('LLM timeouts saved. Restart for changes to take effect.', 'success');
+      if (resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Changes saved.', 'success');
+      }
     } else if (resultEl) {
       resultEl.textContent = resp.error || ('Error (' + r.status + ')');
       resultEl.className = 'cfg-result err';
@@ -5923,7 +5931,7 @@ async function _cfgSaveSystemSubset(scopeEl, resultElId) {
       if (resp.applied === false) {
         showToast('Saved, but live apply failed. Check container logs.', 'warn');
       } else {
-        showToast('Saved and applied.', 'success');
+        showToast('Changes saved.', 'success');
       }
     } else if (resultEl) {
       resultEl.textContent = resp.error || ('Error (' + r.status + ')');
@@ -6580,7 +6588,7 @@ async function cfgSaveSection(section, resultElId) {
       if (resp.applied === false) {
         showToast('Saved, but live apply failed. Check container logs.', 'warn');
       } else {
-        showToast('Saved and applied.', 'success');
+        showToast('Changes saved.', 'success');
       }
     } else if (resultEl) {
       resultEl.textContent = resp.error || ('Error (' + r.status + ')');
@@ -6640,7 +6648,7 @@ async function cfgSaveRaw() {
       if (resp && resp.applied === false) {
         showToast('Saved, but live apply failed. Check container logs.', 'warn');
       } else {
-        showToast('Saved and applied.', 'success');
+        showToast('Changes saved.', 'success');
       }
       _cfgRaw[_cfgCurrentRawFile] = content;
       await cfgLoadAll();
