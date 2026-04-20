@@ -837,6 +837,76 @@ class TestExecute:
         assert r.entity_ids == ids
         assert ha.calls[0]["target"]["entity_id"] == ids
 
+    def test_enum_synonym_acknowledge_treated_as_execute(self) -> None:
+        """Phase 8.0.2 — qwen3:8b emits 'decision: acknowledge' instead
+        of 'execute'. Tolerant mapping must convert it so the action
+        still fires rather than falling through to Tier 3."""
+        disambig, ha, _ = _make(
+            cache_states=[_state("light.office", "Office Light", state="on")],
+            llm_response=(
+                '{"decision":"acknowledge",'
+                '"entity_ids":["light.office"],'
+                '"service":"turn_off",'
+                '"speech":"Office, extinguished.",'
+                '"rationale":"qwen3 enum drift"}'
+            ),
+        )
+        r = disambig.run("turn off the office light", source="webui_chat")
+        assert r.handled is True
+        assert r.decision == "execute"
+        assert r.entity_ids == ["light.office"]
+        assert ha.calls and ha.calls[0]["service"] == "turn_off"
+
+    def test_enum_synonym_proceed_maps_to_execute(self) -> None:
+        disambig, ha, _ = _make(
+            cache_states=[_state("light.kitchen", "Kitchen Light", state="off")],
+            llm_response=(
+                '{"decision":"proceed",'
+                '"entity_ids":["light.kitchen"],'
+                '"service":"turn_on",'
+                '"speech":"Kitchen engaged.",'
+                '"rationale":"enum drift variant"}'
+            ),
+        )
+        r = disambig.run("turn on the kitchen light", source="webui_chat")
+        assert r.decision == "execute"
+        assert ha.calls
+
+    def test_enum_synonym_ask_maps_to_clarify(self) -> None:
+        disambig, ha, _ = _make(
+            cache_states=[
+                _state("light.bed_a", "Bedroom A"),
+                _state("light.bed_b", "Bedroom B"),
+            ],
+            llm_response=(
+                '{"decision":"ask",'
+                '"entity_ids":[],'
+                '"service":"",'
+                '"speech":"Which bedroom light?",'
+                '"rationale":"needs specification"}'
+            ),
+        )
+        r = disambig.run("which bedroom light", source="webui_chat")
+        assert r.decision == "clarify"
+        assert not ha.calls  # clarify never fires HA
+
+    def test_unknown_enum_still_falls_through(self) -> None:
+        """Genuinely unknown values must not silently be treated as
+        execute — safer to fall through to Tier 3 than act on garbage."""
+        disambig, ha, _ = _make(
+            cache_states=[_state("light.x", "X")],
+            llm_response=(
+                '{"decision":"zorfblarg",'
+                '"entity_ids":["light.x"],'
+                '"service":"turn_on",'
+                '"speech":"?","rationale":"gibberish"}'
+            ),
+        )
+        r = disambig.run("turn on x", source="webui_chat")
+        assert r.handled is False
+        assert r.should_fall_through is True
+        assert not ha.calls
+
 
 # ---------------------------------------------------------------------------
 # Clarify / refuse paths
