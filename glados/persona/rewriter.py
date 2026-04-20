@@ -109,8 +109,14 @@ class PersonaRewriter:
         # <think>…</think> tags around the actual response on plain-
         # format calls (confirmed against Ollama). Strip before the
         # existing _clean_output vocative-strip pass.
-        from glados.core.llm_directives import strip_thinking_response
+        from glados.core.llm_directives import (
+            strip_closing_boilerplate, strip_thinking_response,
+        )
         out = strip_thinking_response(out)
+        # Phase 8.3 operator bug — drop "I do not require further
+        # confirmation" and related sign-off tics from the rewriter
+        # output. Defence in depth with the preprompt-side rule.
+        out = strip_closing_boilerplate(out)
         out = _clean_output(out)
         if not out:
             return RewriteResult(
