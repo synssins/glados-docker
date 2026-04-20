@@ -172,6 +172,7 @@ def _search_entities(args: dict[str, Any]) -> str:
     idx = getattr(disambig, "_semantic_index", None) if disambig else None
     rules = getattr(disambig, "_rules", None) if disambig else None
     extras = tuple(getattr(rules, "extra_segment_tokens", []) or ())
+    ignore_seg = bool(getattr(rules, "ignore_segments", True))
 
     if idx is not None and idx.is_ready():
         try:
@@ -180,6 +181,7 @@ def _search_entities(args: dict[str, Any]) -> str:
                 k=top_k,
                 domain_filter=domain_filter,
                 segment_tokens=DEFAULT_SEGMENT_TOKENS + extras,
+                ignore_segments=ignore_seg,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -202,7 +204,11 @@ def _search_entities(args: dict[str, Any]) -> str:
             "query": query,
         })
     fuzzy = cache.get_candidates(
-        query, domain_filter=domain_filter, limit=top_k,
+        query,
+        domain_filter=domain_filter,
+        limit=top_k,
+        ignore_segments=ignore_seg,
+        segment_tokens=DEFAULT_SEGMENT_TOKENS + extras,
     )
     results = []
     for c in fuzzy:

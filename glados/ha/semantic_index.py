@@ -101,20 +101,28 @@ PER_DEVICE_CAP: int = 2
 
 
 def _compile_segment_regex(tokens: tuple[str, ...]) -> re.Pattern[str]:
-    """Build a regex that matches any of `tokens` as a whole word,
-    optionally followed by digits (e.g. `seg3`, `segment 12`,
-    `zone_4`). Trailing `_<digits>` anywhere in a name also counts
-    as a segment indicator — Gledopto entity_ids sometimes arrive
-    as `light.room_a_strip_1` with no literal `seg` anywhere."""
+    """Build a regex that matches any of `tokens` followed by a
+    NUMBER (e.g. `seg3`, `segment 12`, `zone_4`, `strip 1`). A
+    trailing `_<digits>` anywhere in a name also counts — Gledopto
+    entity_ids sometimes arrive as `light.room_a_strip_1`.
+
+    Segment-ness requires digits. "bedroom strip" on its own is
+    the master entity (the one the operator addresses) and must
+    NOT match; "bedroom strip 1" IS a segment and matches.
+    Revised 2026-04-20 after a test caught the master-matching
+    bug where `light.room_a_strip` was misclassified as a
+    segment because "strip" is also a token."""
     if not tokens:
         # No tokens means the filter falls back to the `_<digits>`
         # suffix detector only.
         return re.compile(r"_(\d+)\b", re.IGNORECASE)
     escaped = "|".join(re.escape(t) for t in tokens if t)
-    # Token followed by optional separator + digits, OR _<digits>
-    # anywhere as a suffix marker.
+    # Token followed by one or more digits (optionally with
+    # separator), OR _<digits> anywhere as a suffix marker. The
+    # `\d+` (not `\d*`) is the important change — the bare token
+    # without a number is the master entity.
     return re.compile(
-        rf"\b(?:{escaped})[\s_-]*\d*\b|_(?:\d+)\b",
+        rf"\b(?:{escaped})[\s_-]*\d+\b|_\d+\b",
         re.IGNORECASE,
     )
 
@@ -254,17 +262,25 @@ def apply_device_diversity(
     segment_tokens: tuple[str, ...] = DEFAULT_SEGMENT_TOKENS,
     per_device_cap: int = PER_DEVICE_CAP,
     cache: Any = None,
+    ignore_segments: bool = True,
 ) -> list["SemanticHit"]:
-    """Filter a raw cosine-ranked hit list to enforce the four
-    operator-named gates from the plan:
+    """Filter a raw cosine-ranked hit list to enforce the operator
+    contract:
 
+      0. (Default) When `ignore_segments=True`, any entity whose
+         name or id matches the segment pattern is dropped entirely
+         BEFORE collapse. Operators who only ever address whole
+         lamps or scenes get a cleaner top-K; per-segment devices
+         fall out of view unless accessed via a scene.
       1. No device_id appears more than `per_device_cap` times in
          the final top-K UNLESS the utterance explicitly pins one
          of its siblings (segment qualifier like "strip 3").
       2. For a same-device group with no pin, keep one
          representative per `_pick_representative`.
       3. Pinned entities bypass the per-device cap — operator
-         intent (naming a segment) always wins.
+         intent (naming a segment) always wins. Disabled when
+         `ignore_segments=True` because pins by definition address
+         segments.
       4. Hits without a device_id pass through unchanged; dedup
          requires a registry id to join on.
 
@@ -274,7 +290,23 @@ def apply_device_diversity(
     if not hits:
         return []
     pattern = _compile_segment_regex(segment_tokens)
-    pinned_ids = _utterance_pin_candidates(utterance, hits, pattern)
+    # Phase 8.3 follow-up — segments are implementation detail in
+    # most deployments. Drop them up front so the downstream
+    # collapse never wastes effort on entities the operator would
+    # never address. When False, fall through to the original
+    # pin + collapse behaviour.
+    if ignore_segments:
+        hits = [
+            h for h in hits
+            if not _entity_is_segment(
+                h.entity_id, h.document or "", pattern,
+            )
+        ]
+        if not hits:
+            return []
+        pinned_ids: set[str] = set()
+    else:
+        pinned_ids = _utterance_pin_candidates(utterance, hits, pattern)
 
     # Group hits by device_id; track per-device kept count.
     by_device: dict[str, list[SemanticHit]] = {}
@@ -850,6 +882,7 @@ class SemanticIndex:
         domain_filter: list[str] | None = None,
         raw_pool: int = 30,
         segment_tokens: tuple[str, ...] = DEFAULT_SEGMENT_TOKENS,
+        ignore_segments: bool = True,
     ) -> list[SemanticHit]:
         """Phase 8.3.3 — retrieve with the device-diversity gate
         applied. This is the method the disambiguator should call;
@@ -858,7 +891,12 @@ class SemanticIndex:
 
         The raw pool (`raw_pool=30`) is intentionally larger than
         `k` so the diversity filter has room to drop sibling
-        segments without leaving top-K short."""
+        segments without leaving top-K short.
+
+        `ignore_segments` defaults to True per operator request:
+        entities matching the segment-token pattern are dropped
+        entirely, since operators control whole lamps or scenes
+        rather than individual segments."""
         raw = self.retrieve(
             query, k=max(raw_pool, k),
             domain_filter=domain_filter,
@@ -869,6 +907,7 @@ class SemanticIndex:
             top_k=k,
             segment_tokens=segment_tokens,
             cache=self._cache,
+            ignore_segments=ignore_segments,
         )
 
 

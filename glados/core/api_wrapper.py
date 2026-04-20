@@ -1450,16 +1450,17 @@ def _stream_chat_sse_impl(
     # instruction the model sees — matches the emotion-directive
     # placement below so both ride together.
     if not is_home_command:
+        # No sample phrases listed here on purpose — enumerating
+        # banned wording seeds the model and makes it more likely
+        # to reach for exactly those phrasings. The rules are
+        # described by behaviour, not by example text.
         _chitchat_guard = (
-            "No tools ran this turn. DO NOT claim any device, light, "
+            "No tools ran this turn. Do not claim any device, "
             "thermostat, speaker, scene, or sensor was changed or "
-            "queried. DO NOT invent temperatures, brightness levels, "
-            "room states, or system status. Respond to the user's "
-            "actual words only, in one to two sentences. Never end "
-            "with a status report about yourself (e.g. \"I do not "
-            "require further confirmation\", \"No further "
-            "confirmation required\", \"Your compliance has been "
-            "logged\") — end with the substantive reply and stop."
+            "queried. Do not invent sensor readings, brightness "
+            "levels, room states, or system status. Respond to the "
+            "user's actual words in one to two sentences, then "
+            "stop. Do not append a self-status or sign-off line."
         )
         messages.append({"role": "system", "content": _chitchat_guard})
 
@@ -2252,12 +2253,18 @@ class APIHandler(BaseHTTPRequestHandler):
             extras = tuple(
                 getattr(rules, "extra_segment_tokens", []) or ()
             )
+            # Honor the operator's ignore_segments toggle so the
+            # test input mirrors production behavior exactly.
+            ignore_seg = bool(
+                getattr(rules, "ignore_segments", True)
+            )
             filtered = apply_device_diversity(
                 raw,
                 utterance=query,
                 top_k=k,
                 segment_tokens=DEFAULT_SEGMENT_TOKENS + extras,
                 cache=idx._cache,
+                ignore_segments=ignore_seg,
             )
             def _serialize(h: Any, *, dropped: bool = False) -> dict[str, Any]:
                 return {

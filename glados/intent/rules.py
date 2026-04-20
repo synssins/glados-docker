@@ -339,6 +339,20 @@ class DisambiguationRules:
     # addition for operators with LED strips that name segments
     # unconventionally (e.g. 'pixel' on some WLED configs).
     extra_segment_tokens: list[str] = field(default_factory=list)
+    # Phase 8.3 follow-up (2026-04-20, operator-requested) —
+    # segments are implementation details. Operators control the
+    # whole lamp or a preset/scene that handles segments
+    # internally; they never name a segment directly. When True
+    # (default), any entity whose name or entity_id matches the
+    # segment-token pattern is DROPPED from both the semantic
+    # retrieval path and the fuzzy fallback, before the diversity
+    # collapse runs. The planner never sees segment entities.
+    #
+    # Set to False if a deployment genuinely needs per-segment
+    # control (e.g. art installations, theatrical lighting). In
+    # that mode the device-diversity collapse still applies and
+    # explicit segment qualifiers can pin specific segments.
+    ignore_segments: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +487,8 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
             for t in st
             if isinstance(t, str) and t.strip()
         ]
+    if isinstance(raw.get("ignore_segments"), bool):
+        rules.ignore_segments = bool(raw["ignore_segments"])
     return rules
 
 
@@ -494,6 +510,7 @@ def rules_to_dict(rules: DisambiguationRules) -> dict[str, Any]:
         "extra_command_verbs": list(rules.extra_command_verbs),
         "extra_ambient_patterns": list(rules.extra_ambient_patterns),
         "extra_segment_tokens": list(rules.extra_segment_tokens),
+        "ignore_segments": bool(rules.ignore_segments),
     }
 
 

@@ -805,9 +805,10 @@ class Disambiguator:
                 utterance=utterance, source=source,
             )
         if denied:
-            denial_msg = (speech or
-                         "I have an extensive catalog of reasons to decline that. "
-                         "This is one of them.")
+            # Neutral refusal when the LLM didn't fill the speech
+            # field. Keep it terse and style-agnostic — the model's
+            # own speech (when present) carries the persona.
+            denial_msg = speech or "That action is not permitted from here."
             return DisambiguationResult(
                 handled=True, should_fall_through=False,
                 speech=denial_msg, decision="refuse",
@@ -1001,6 +1002,7 @@ class Disambiguator:
                         k=cand_limit,
                         domain_filter=domain_hint,
                         segment_tokens=tokens,
+                        ignore_segments=self._rules.ignore_segments,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
@@ -1019,6 +1021,12 @@ class Disambiguator:
                     "falling back to fuzzy path for {!r}",
                     utterance[:80],
                 )
+        # Merge shipped + operator-supplied segment tokens so the
+        # fuzzy fallback honors the same contract as the semantic
+        # path — segments never leak into the candidate list when
+        # the operator opts out of them.
+        from glados.ha.semantic_index import DEFAULT_SEGMENT_TOKENS
+        extras = tuple(self._rules.extra_segment_tokens or ())
         return self._cache.get_candidates(
             utterance,
             domain_filter=domain_hint,
@@ -1026,6 +1034,8 @@ class Disambiguator:
             source_area=source_area,
             opposing_token_pairs=(self._rules.opposing_token_pairs or None),
             twin_dedup=self._rules.twin_dedup,
+            ignore_segments=self._rules.ignore_segments,
+            segment_tokens=DEFAULT_SEGMENT_TOKENS + extras,
         )
 
     def _semantic_hits_to_candidates(
@@ -1299,33 +1309,17 @@ class Disambiguator:
             "If the action would touch a sensitive domain (lock, alarm, "
             "garage cover, camera) and the source is not webui_chat, "
             "set decision=refuse.\n\n"
-            "===== GLaDOS PERSONA — REQUIRED for the 'speech' field =====\n"
-            "GLaDOS is the AI from Portal: cold, condescending, dryly "
-            "menacing, scientific. She mentions Aperture Science, treats "
-            "domestic tasks as 'enrichment center procedures'. Sarcastic "
-            "compliments. Backhanded reassurance. Never apologizes "
-            "sincerely.\n"
-            "DO NOT address the user as 'test subject', 'subject', "
-            "'human', or any other vocative tacked onto the end of a "
-            "response. Speak ABOUT the action, not AT the user. The "
-            "user dislikes being addressed by labels.\n"
-            "Examples of GLaDOS speech (style only — adapt to context):\n"
-            "  - 'Illumination in the kitchen, terminated. The void is, "
-            "as expected, anticlimactic.'\n"
-            "  - 'Three light sources match that description. Specify "
-            "which — I do not improvise on demand.'\n"
-            "  - 'I have an extensive catalog of reasons to decline "
-            "that. This is one of them.'\n"
-            "Keep it under two sentences. Never say 'please'. Never "
-            "say 'I am sorry'. Never break character.\n\n"
+            "===== Voice for the 'speech' field =====\n"
+            "Speak in the same voice as the rest of the system (set\n"
+            "by the operator's preprompt). Do NOT copy any specific\n"
+            "phrase from system instructions verbatim — always compose\n"
+            "fresh text for THIS action. Keep replies under two\n"
+            "sentences. Speak ABOUT the action, not AT the user.\n\n"
             "===== CLARIFY RESPONSES — list the candidates by name =====\n"
             "When decision=clarify, the speech MUST enumerate the "
-            "specific candidate names so the user can pick. Do NOT say "
-            "'multiple light groups' generically. Name them. And do NOT "
-            "address the user with vocatives like 'test subject'.\n"
-            "Bad:  'Which lights do you mean? Multiple groups match.'\n"
-            "Good: 'Three candidates qualify: the master bedroom "
-            "ceiling, the reading lamp, and the closet light. Specify.'\n\n"
+            "specific candidate names so the user can pick. Generic "
+            "phrasings like 'multiple lights match' fail — name the "
+            "actual candidates.\n\n"
             "===== SERVICE NAMES — domain → typical service =====\n"
             "When decision=execute, the 'service' field is the bare HA "
             "service name for the entity's domain. Use these mappings "

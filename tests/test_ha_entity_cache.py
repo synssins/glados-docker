@@ -307,8 +307,11 @@ class TestSoftCandidateRanking:
         cache = self._cache_with(
             self._state("light.task_lamp_one",
                         "Office Desk Monitor Lamp"),
-            self._state("light.living_arc_1", "Living Room Arc Lamp 1"),
-            self._state("light.living_arc_2", "Living Room Arc Lamp 2"),
+            # Avoid numeric suffixes — default ignore_segments would
+            # otherwise flag these as segments via the `_<digits>`
+            # detector and drop them before ranking could be compared.
+            self._state("light.living_arc_left", "Living Room Arc Lamp Left"),
+            self._state("light.living_arc_right", "Living Room Arc Lamp Right"),
         )
         results = cache.get_candidates("desk lamp", domain_filter=["light"])
         assert results, "no candidates returned"
@@ -319,8 +322,8 @@ class TestSoftCandidateRanking:
         # ...but partial-coverage arc lamps still appear (soft boost,
         # not hard filter) so scope / synonym rules can still fire.
         ids = {c.entity.entity_id for c in results}
-        assert "light.living_arc_1" in ids
-        assert "light.living_arc_2" in ids
+        assert "light.living_arc_left" in ids
+        assert "light.living_arc_right" in ids
 
     def test_no_full_coverage_means_no_ranking_change(self) -> None:
         """When no candidate covers every token the bonuses are

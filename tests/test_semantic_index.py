@@ -485,11 +485,14 @@ class TestDeviceDiversityOperatorGates:
         assert bedroom_count <= 1
 
     # ── Gate 3: segment-qualified queries still return the segment ──
+    # NOTE (2026-04-20 operator decision): segments are dropped by
+    # default via ignore_segments=True; these tests pass
+    # ignore_segments=False explicitly to exercise the opt-in path
+    # where an operator genuinely needs per-segment control.
 
     def test_gate_3_segment_qualifier_preserves_specific_segment(self) -> None:
-        """`search_entities("bedroom strip seg 3 red")` must still
-        return `light.room_a_strip_seg_3` in top-3. Segment-qualified
-        queries bypass the collapse rule."""
+        """With ignore_segments=False, segment-qualified queries
+        pin the matching segment."""
         hits = [
             *[
                 _hit(
@@ -503,13 +506,12 @@ class TestDeviceDiversityOperatorGates:
         ]
         out = apply_device_diversity(
             hits, "bedroom strip seg 3 red", top_k=3,
+            ignore_segments=False,
         )
         ids = [h.entity_id for h in out]
         assert "light.room_a_strip_seg_3" in ids[:3]
 
     def test_gate_3_variant_qualifier_wording(self) -> None:
-        """'segment 3' must pin the same as 'seg 3'. Different
-        wording, same intent."""
         hits = [
             _hit(
                 f"light.room_a_strip_seg_{i}",
@@ -521,6 +523,7 @@ class TestDeviceDiversityOperatorGates:
         ]
         out = apply_device_diversity(
             hits, "bedroom strip segment 3 red", top_k=3,
+            ignore_segments=False,
         )
         ids = [h.entity_id for h in out]
         assert "light.room_a_strip_seg_3" in ids
@@ -529,13 +532,14 @@ class TestDeviceDiversityOperatorGates:
 
     def test_gate_4_per_device_cap_enforced(self) -> None:
         """No device_id may appear more than PER_DEVICE_CAP (=2)
-        times in the output when no segment qualifier is present."""
+        times in the output. Uses non-segment names so the cap
+        logic exercises even with ignore_segments default-on."""
         hits = [
             _hit(
-                f"light.big_device_zone_{i}",
+                f"light.big_device_bulb_{i}",
                 score=0.9 - 0.01 * i,
                 device_id="big_device",
-                document=f"Big Device Zone {i}",
+                document=f"Big Device Bulb {i}",
             )
             for i in range(20)
         ]
@@ -547,10 +551,8 @@ class TestDeviceDiversityOperatorGates:
         assert all(c <= PER_DEVICE_CAP for c in counts.values())
 
     def test_gate_4_cap_relaxed_when_segment_named(self) -> None:
-        """When the utterance explicitly names a segment on a
-        device, pinned siblings bypass the cap. Other siblings
-        still get collapsed — we're not unlimited, just honoring
-        the explicit pin."""
+        """With ignore_segments=False, a named segment bypasses the
+        cap while non-pinned siblings still get collapsed."""
         hits = [
             _hit(
                 f"light.strip_seg_{i}",
@@ -560,12 +562,11 @@ class TestDeviceDiversityOperatorGates:
             )
             for i in range(1, 8)
         ]
-        out = apply_device_diversity(hits, "strip seg 3", top_k=8)
+        out = apply_device_diversity(
+            hits, "strip seg 3", top_k=8, ignore_segments=False,
+        )
         ids = [h.entity_id for h in out]
-        # The pinned entity is present even though the cap would
-        # otherwise block multiple same-device hits.
         assert "light.strip_seg_3" in ids
-        # Non-pinned siblings get dropped (pin won the group).
         non_pinned = [
             i for i in ids
             if i.startswith("light.strip_seg_") and i != "light.strip_seg_3"
@@ -601,8 +602,9 @@ class TestDeviceDiversityRepresentativePicker:
         assert ids == ["light.ceiling_lights"]
 
     def test_natural_sort_order_on_pure_segment_group(self) -> None:
-        """When every sibling is a segment and no pin exists, pick
-        the first by natural sort (so Seg 2 beats Seg 10)."""
+        """With ignore_segments=False, when every sibling is a
+        segment and no pin exists, the representative picker uses
+        natural sort (so Seg 2 beats Seg 10)."""
         hits = [
             _hit("light.strip_seg_10", score=0.9,
                  device_id="dev", document="Strip Seg 10"),
@@ -611,8 +613,74 @@ class TestDeviceDiversityRepresentativePicker:
             _hit("light.strip_seg_1", score=0.9,
                  device_id="dev", document="Strip Seg 1"),
         ]
-        out = apply_device_diversity(hits, "strip", top_k=3)
+        out = apply_device_diversity(
+            hits, "strip", top_k=3, ignore_segments=False,
+        )
         assert out[0].entity_id == "light.strip_seg_1"
+
+
+class TestIgnoreSegmentsDefault:
+    """Phase 8.3 follow-up: by operator request, segment entities
+    are dropped entirely by default. These tests pin the contract."""
+
+    def test_ignore_segments_drops_all_segment_entities(self) -> None:
+        hits = [
+            _hit(f"light.room_a_strip_seg_{i}",
+                 score=0.9, device_id="dev_strip",
+                 document=f"Bedroom Strip Seg {i}")
+            for i in range(1, 6)
+        ]
+        hits.append(_hit(
+            "light.task_lamp_one", score=0.85,
+            device_id="dev_desk",
+            document="Office Desk Monitor Lamp",
+        ))
+        out = apply_device_diversity(hits, "desk lamp", top_k=5)
+        ids = [h.entity_id for h in out]
+        assert ids == ["light.task_lamp_one"]
+        assert not any("strip_seg" in i for i in ids)
+
+    def test_ignore_segments_false_restores_pin_behavior(self) -> None:
+        """When disabled, the old segment-pin path kicks back in so
+        operators with per-segment use cases aren't stranded."""
+        hits = [
+            _hit(f"light.strip_seg_{i}",
+                 score=0.9, device_id="dev_strip",
+                 document=f"Strip Seg {i}")
+            for i in range(1, 5)
+        ]
+        out = apply_device_diversity(
+            hits, "strip seg 3", top_k=5, ignore_segments=False,
+        )
+        ids = [h.entity_id for h in out]
+        assert "light.strip_seg_3" in ids
+
+    def test_ignore_segments_leaves_master_entity(self) -> None:
+        """When a device has both a master and segments, the master
+        survives and the segments are dropped."""
+        hits = [
+            _hit("light.room_a_strip_seg_1", score=0.90,
+                 device_id="gle", document="Bedroom Strip Seg 1"),
+            _hit("light.room_a_strip_seg_2", score=0.89,
+                 device_id="gle", document="Bedroom Strip Seg 2"),
+            _hit("light.room_a_strip", score=0.85,
+                 device_id="gle", document="Bedroom Strip"),
+        ]
+        out = apply_device_diversity(hits, "bedroom strip", top_k=5)
+        ids = [h.entity_id for h in out]
+        assert ids == ["light.room_a_strip"]
+
+    def test_ignore_segments_empty_when_only_segments(self) -> None:
+        """A device that exposes only segments becomes invisible.
+        Operators access it via a scene instead."""
+        hits = [
+            _hit(f"light.back_patio_string_2_segment_{i:03d}",
+                 score=0.8, device_id="patio",
+                 document=f"Back Patio String 2 Segment {i:03d}")
+            for i in range(1, 5)
+        ]
+        out = apply_device_diversity(hits, "back patio", top_k=5)
+        assert out == []
 
 
 class TestDeviceDiversityEdgeCases:
@@ -636,33 +704,37 @@ class TestDeviceDiversityEdgeCases:
         assert expected.issubset(set(DEFAULT_SEGMENT_TOKENS))
 
     def test_custom_token_list_can_restrict_detection(self) -> None:
-        """An operator narrowing the segment list to only 'zone'
-        should leave 'seg' patterns unfiltered."""
+        """With ignore_segments=False AND a restricted token list,
+        the diversity filter falls back to the `_<digits>` suffix
+        detector for same-device collapse. Representative picker
+        natural-sorts the survivors."""
         hits = [
             _hit(f"light.strip_seg_{i}", score=0.9,
                  device_id="dev", document=f"Strip Seg {i}")
             for i in range(1, 4)
         ]
-        # With only "zone" as a segment token, strip_seg_N entries
-        # are no longer detected as segments → the representative
-        # picker can't prefer one based on the "non-segment wins"
-        # rule. The natural-sort tiebreaker takes over.
         out = apply_device_diversity(
-            hits, "strip", top_k=3, segment_tokens=("zone",),
+            hits, "strip", top_k=3,
+            segment_tokens=("zone",),
+            ignore_segments=False,
         )
         assert len(out) == 1
         assert out[0].entity_id == "light.strip_seg_1"
 
     def test_top_k_truncation_after_filter(self) -> None:
+        # Use non-numeric suffixes so neither the token regex nor
+        # the `_<digits>` fallback flags these as segments.
+        suffixes = ["alpha", "bravo", "charlie", "delta", "echo",
+                    "foxtrot", "golf", "hotel", "india", "juliet"]
         hits = [
-            _hit(f"light.room_{i}", score=0.9 - 0.01 * i,
-                 device_id=f"dev_{i}", document=f"Room {i} Light")
-            for i in range(10)
+            _hit(f"light.room_{s}", score=0.9 - 0.01 * i,
+                 device_id=f"dev_{s}", document=f"Room {s} Light")
+            for i, s in enumerate(suffixes)
         ]
         out = apply_device_diversity(hits, "room", top_k=3)
         assert len(out) == 3
         # Sorted by original rank.
-        assert out[0].entity_id == "light.room_0"
+        assert out[0].entity_id == "light.room_alpha"
 
     def test_ranking_order_preserved_for_survivors(self) -> None:
         """Survivors retain the ranker's ordering."""

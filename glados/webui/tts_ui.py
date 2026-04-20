@@ -3665,6 +3665,8 @@ class Handler(BaseHTTPRequestHandler):
                     seen_tokens.add(ts)
                     cleaned_tokens.append(ts)
                 rules.extra_segment_tokens = cleaned_tokens
+            if "ignore_segments" in data:
+                rules.ignore_segments = bool(data["ignore_segments"])
             save_rules_to_yaml(path, rules)
             applied = self._reload_disambiguator_rules()
             self._send_json(200, {
@@ -3675,6 +3677,7 @@ class Handler(BaseHTTPRequestHandler):
                 "extra_command_verbs": rules.extra_command_verbs,
                 "extra_ambient_patterns": rules.extra_ambient_patterns,
                 "extra_segment_tokens": rules.extra_segment_tokens,
+                "ignore_segments": rules.ignore_segments,
             })
         except Exception as exc:
             self._send_error(500, f"Failed to save rules: {exc}")
@@ -6079,6 +6082,7 @@ function _disambPopulate(data) {
   const body = document.getElementById('cfg-disamb-body');
   if (!body) return;
   const dedup = (data.twin_dedup === false) ? false : true;
+  const ignoreSeg = (data.ignore_segments === false) ? false : true;
   const pairs = Array.isArray(data.opposing_token_pairs) ? data.opposing_token_pairs : [];
   let html = '';
   html += '<div class="cfg-field" style="display:flex;align-items:center;gap:10px;">'
@@ -6091,6 +6095,20 @@ function _disambPopulate(data) {
     +   'When both <code>light.foo</code> and <code>switch.foo</code> represent the same physical relay, '
     +   'keep the light side (the only domain that honours <code>brightness_pct</code>). The switch still wins '
     +   'automatically when the light has no dim capability (Inovelli fan/light edge case).'
+    + '</div>';
+  // Phase 8.3 follow-up — operator-requested: drop segment
+  // entities entirely from candidate lists. Most deployments
+  // never address segments directly; the planner never sees them.
+  html += '<div class="cfg-field" style="display:flex;align-items:center;gap:10px;">'
+    +   '<input type="checkbox" id="cfg-disamb-ignore-segments"' + (ignoreSeg ? ' checked' : '') + ' style="width:auto;">'
+    +   '<label class="cfg-field-label" for="cfg-disamb-ignore-segments" style="margin:0;">'
+    +     'Ignore segment entities (master lamp / scene only)'
+    +   '</label>'
+    + '</div>'
+    + '<div class="cfg-field-desc" style="margin:-6px 0 14px 28px;">'
+    +   'Drops any entity whose name or id matches the segment-token pattern before candidate resolution runs. '
+    +   'Operators control the whole lamp or a preset scene; per-segment control is rare. Disable if your house '
+    +   'genuinely needs per-segment control (theatrical lighting, etc.).'
     + '</div>';
   html += '<div class="cfg-field-label" style="margin-top:6px;">Opposing-token pairs</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
@@ -6300,6 +6318,8 @@ async function cfgSaveDisambiguation() {
   if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
   const twinEl = document.getElementById('cfg-disamb-twin-dedup');
   const twin = twinEl ? !!twinEl.checked : true;
+  const ignoreSegEl = document.getElementById('cfg-disamb-ignore-segments');
+  const ignoreSegments = ignoreSegEl ? !!ignoreSegEl.checked : true;
   const pairs = [];
   document.querySelectorAll('#cfg-disamb-pairs .cfg-disamb-pair-row').forEach(row => {
     const a = (row.querySelector('.cfg-disamb-pair-a') || {}).value || '';
@@ -6317,6 +6337,7 @@ async function cfgSaveDisambiguation() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         twin_dedup: twin,
+        ignore_segments: ignoreSegments,
         opposing_token_pairs: pairs,
         extra_segment_tokens: tokens,
       }),
