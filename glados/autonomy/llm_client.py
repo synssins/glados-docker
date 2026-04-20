@@ -81,12 +81,19 @@ def llm_call(
         result = response.json()
 
         # Handle OpenAI-style response
+        # Phase 8.0.1 — strip Qwen3's empty <think>…</think> wrapper
+        # that plain-format calls emit when /no_think is active.
+        # Downstream JSON parsers (emotion agent, memory classifier)
+        # were failing on the raw content.
+        from glados.core.llm_directives import strip_thinking_response
         if "choices" in result and result["choices"]:
-            return result["choices"][0]["message"]["content"]
+            content = result["choices"][0]["message"]["content"]
+            return strip_thinking_response(content) if content else content
 
         # Handle Ollama-style response
         if "message" in result:
-            return result["message"].get("content")
+            content = result["message"].get("content")
+            return strip_thinking_response(content) if content else content
 
         logger.warning("LLM call: unexpected response format")
         return None

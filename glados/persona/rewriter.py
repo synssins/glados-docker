@@ -105,6 +105,12 @@ class PersonaRewriter:
             )
 
         out = (data.get("message") or {}).get("content", "") or ""
+        # Phase 8.0.1 — Qwen3 with /no_think still emits empty
+        # <think>…</think> tags around the actual response on plain-
+        # format calls (confirmed against Ollama). Strip before the
+        # existing _clean_output vocative-strip pass.
+        from glados.core.llm_directives import strip_thinking_response
+        out = strip_thinking_response(out)
         out = _clean_output(out)
         if not out:
             return RewriteResult(
