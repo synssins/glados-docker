@@ -321,3 +321,22 @@ class HomeAssistantAudioIO:
 
     def get_sample_queue(self) -> queue.Queue[tuple[NDArray[np.float32], bool]]:
         return self._sample_queue
+
+    def close(self) -> None:
+        """Shut down the built-in file server so the TCP port (default 5051)
+        is released. Required before a second HomeAssistantAudioIO instance
+        can bind in the same process (engine hot-reload flow)."""
+        httpd = getattr(self, "_httpd", None)
+        thread = getattr(self, "_server_thread", None)
+        if httpd is not None:
+            try:
+                httpd.shutdown()
+            except Exception as exc:  # pragma: no cover — diagnostic only
+                logger.debug("HA audio_io httpd.shutdown raised: {}", exc)
+            try:
+                httpd.server_close()
+            except Exception as exc:
+                logger.debug("HA audio_io httpd.server_close raised: {}", exc)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3.0)
+        logger.info("HA audio_io file server on :{} closed", self.serve_port)
