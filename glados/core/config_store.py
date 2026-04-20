@@ -451,9 +451,11 @@ class ObserverEntityRule(BaseModel):
 class ObserverConfig(BaseModel):
     enabled: bool = True
     entity_whitelist: list[ObserverEntityRule] = []
-    judgment_model: str = "qwen2.5:14b-instruct-q4_K_M"
-    judgment_ollama_url: str = _env("OLLAMA_AUTONOMY_URL",
-                                    _env("OLLAMA_URL", "http://ollama:11434"))
+    # Empty default → consumers resolve via cfg.service_model("ollama_autonomy").
+    # "Nothing hardcoded" principle: operator's LLM & Services page selection
+    # is the single source of truth for every LLM consumer.
+    judgment_model: str = ""
+    judgment_ollama_url: str = ""
     alert_cooldown_s: int = 300
     nightly_summary_hour: int = 3
 
@@ -656,6 +658,29 @@ class GladosConfigStore:
         if ep is None:
             raise KeyError(f"Unknown service: {name!r}")
         return ep.url.rstrip("/")
+
+    def service_model(self, name: str, *, fallback: str | None = None) -> str:
+        """Return the operator-selected model for the named service
+        endpoint (LLM & Services WebUI page). Falls back to the
+        `fallback` argument (typically another service's model) then to
+        an empty string.
+
+        Single source of truth for "what model should this LLM-consuming
+        code path call?" — lets hot-reloads propagate model swaps to
+        every consumer (disambiguator, rewriter, chat, autonomy, judgment,
+        doorbell screener, etc.) without any hard-coded defaults.
+        """
+        self._ensure_loaded()
+        ep: ServiceEndpoint | None = getattr(self._services, name, None)
+        if ep is not None:
+            model = (ep.model or "").strip()
+            if model:
+                return model
+        if fallback:
+            fb = fallback.strip()
+            if fb:
+                return fb
+        return ""
 
     @property
     def services(self) -> ServicesConfig:

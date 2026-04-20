@@ -38,10 +38,15 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm_decide")
 
 @dataclass
 class LLMConfig:
-    """Configuration for LLM API calls."""
+    """Configuration for LLM API calls.
+
+    `model` is required (no default). Callers resolve it from
+    cfg.service_model(...) or an equivalent operator-facing setting —
+    the container does not hard-code model names anywhere.
+    """
     url: str
+    model: str
     api_key: str | None = None
-    model: str = "gpt-4o-mini"
     timeout: float = 30.0
 
     @property

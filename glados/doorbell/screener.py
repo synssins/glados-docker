@@ -535,10 +535,21 @@ class DoorbellScreener:
         """Call LLM to evaluate visitor response and decide next action."""
         from glados.core.config_store import cfg as store_cfg
 
+        # Doorbell screener LLM picks up whatever model the operator
+        # selected on the LLM & Services page (Ollama Autonomy slot).
+        # Legacy `llm.port` / `llm.model` overrides in the screener's
+        # own yaml are still honored for operators pinning a different
+        # endpoint, but there is no hard-coded fallback: if nothing is
+        # configured, the service_model helper returns "" and the
+        # request fails loud.
         llm_cfg = self._config.get("llm", {})
-        llm_port = llm_cfg.get("port", 11434)
-        model = llm_cfg.get("model", "glados")
-        ollama_url = f"http://localhost:{llm_port}"
+        llm_port = llm_cfg.get("port")
+        explicit_model = (llm_cfg.get("model") or "").strip()
+        model = explicit_model or store_cfg.service_model("ollama_autonomy")
+        if llm_port:
+            ollama_url = f"http://localhost:{llm_port}"
+        else:
+            ollama_url = store_cfg.service_url("ollama_autonomy")
 
         # Build conversation history for context
         history_section = ""
