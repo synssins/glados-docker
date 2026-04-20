@@ -465,6 +465,19 @@ class Disambiguator:
         self._rules = rules or DisambiguationRules()
         self._allowlist = allowlist or IntentAllowlist()
 
+    # ── Rule management ──────────────────────────────────────
+
+    @property
+    def rules(self) -> DisambiguationRules:
+        """Current in-memory rules. Read-only snapshot; callers should
+        treat the returned object as immutable."""
+        return self._rules
+
+    def replace_rules(self, new_rules: DisambiguationRules) -> None:
+        """Hot-swap the rules instance. Atomic reference assignment; no
+        lock needed because rules is read, not mutated, by `run()`."""
+        self._rules = new_rules
+
     # ── Entry point ───────────────────────────────────────────
 
     def run(
@@ -526,6 +539,8 @@ class Disambiguator:
             domain_filter=domain_hint,
             limit=cand_limit,
             source_area=source_area,
+            opposing_token_pairs=(self._rules.opposing_token_pairs or None),
+            twin_dedup=self._rules.twin_dedup,
         )
 
         # Carry-over injection: when the caller told us this is a

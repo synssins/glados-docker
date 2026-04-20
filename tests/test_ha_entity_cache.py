@@ -433,3 +433,222 @@ class TestCutoffs:
             state="off", state_as_of=time.time(),
         )
         assert _cutoff_for(e) == 75
+
+
+# ──────────────────────────────────────────────────────────────
+# Phase 8.1 — device_id, twin dedup, opposing-token penalty
+# ──────────────────────────────────────────────────────────────
+
+def _state_with_modes(entity_id: str, friendly_name: str, *,
+                      supported_color_modes: list[str] | None = None,
+                      area_id: str | None = None) -> dict:
+    """Build a state dict carrying `supported_color_modes` on a light."""
+    attrs: dict = {"friendly_name": friendly_name}
+    if supported_color_modes is not None:
+        attrs["supported_color_modes"] = supported_color_modes
+    if area_id:
+        attrs["area_id"] = area_id
+    return {"entity_id": entity_id, "state": "off", "attributes": attrs}
+
+
+class TestEntityRegistryApply:
+    def test_apply_entity_registry_sets_device_id(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([_state("light.x", "X"), _state("switch.x", "X")])
+        assert cache.get("light.x").device_id is None
+        updated = cache.apply_entity_registry([
+            {"entity_id": "light.x", "device_id": "dev1"},
+            {"entity_id": "switch.x", "device_id": "dev1"},
+        ])
+        assert updated == 2
+        assert cache.get("light.x").device_id == "dev1"
+        assert cache.get("switch.x").device_id == "dev1"
+
+    def test_registry_apply_skips_unknown_entities(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([_state("light.x", "X")])
+        updated = cache.apply_entity_registry([
+            {"entity_id": "light.ghost", "device_id": "dev-ghost"},
+        ])
+        assert updated == 0
+
+    def test_state_changed_preserves_device_id(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([_state("light.x", "X", state="off")])
+        cache.apply_entity_registry([
+            {"entity_id": "light.x", "device_id": "dev1"},
+        ])
+        cache.apply_state_changed({
+            "entity_id": "light.x",
+            "new_state": _state("light.x", "X", state="on"),
+        })
+        # state_changed events carry no device_id — the prior value
+        # must survive the refresh so dedup keeps working.
+        assert cache.get("light.x").device_id == "dev1"
+        assert cache.get("light.x").state == "on"
+
+    def test_get_states_resync_preserves_device_id(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([_state("light.x", "X")])
+        cache.apply_entity_registry([
+            {"entity_id": "light.x", "device_id": "dev1"},
+        ])
+        # Full resync (reconnect path) rebuilds the state dict but
+        # entity_registry apply that follows it can race; we must carry
+        # forward device_id on the rebuild itself.
+        cache.apply_get_states([_state("light.x", "X")])
+        assert cache.get("light.x").device_id == "dev1"
+
+
+class TestTwinDedup:
+    def test_light_switch_twin_collapses_to_light(self) -> None:
+        """Zooz-style dimmer: both entities share device_id, light has
+        brightness capability. Dedup should keep light, drop switch."""
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state_with_modes(
+                "light.ceiling_lights", "Kitchen Overhead",
+                supported_color_modes=["brightness"],
+            ),
+            _state("switch.ceiling_lights", "Kitchen Overhead"),
+        ])
+        cache.apply_entity_registry([
+            {"entity_id": "light.ceiling_lights", "device_id": "zooz-1"},
+            {"entity_id": "switch.ceiling_lights", "device_id": "zooz-1"},
+        ])
+        results = cache.get_candidates("kitchen overhead")
+        ids = [c.entity.entity_id for c in results]
+        assert "light.ceiling_lights" in ids
+        assert "switch.ceiling_lights" not in ids
+
+    def test_inovelli_fan_light_keeps_switch(self) -> None:
+        """Inovelli fan/light edge case: `light.*` is a decorative LED
+        indicator (`supported_color_modes=['onoff']`) and `switch.*` is
+        the canonical fan control. Dedup keeps the switch."""
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state_with_modes(
+                "light.bedroom_fan", "Bedroom Fan",
+                supported_color_modes=["onoff"],
+            ),
+            _state("switch.bedroom_fan", "Bedroom Fan"),
+        ])
+        cache.apply_entity_registry([
+            {"entity_id": "light.bedroom_fan", "device_id": "ino-1"},
+            {"entity_id": "switch.bedroom_fan", "device_id": "ino-1"},
+        ])
+        results = cache.get_candidates("bedroom fan")
+        ids = [c.entity.entity_id for c in results]
+        assert "switch.bedroom_fan" in ids
+        assert "light.bedroom_fan" not in ids
+
+    def test_dedup_off_keeps_both_twins(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state_with_modes(
+                "light.ceiling_lights", "Kitchen Overhead",
+                supported_color_modes=["brightness"],
+            ),
+            _state("switch.ceiling_lights", "Kitchen Overhead"),
+        ])
+        cache.apply_entity_registry([
+            {"entity_id": "light.ceiling_lights", "device_id": "zooz-1"},
+            {"entity_id": "switch.ceiling_lights", "device_id": "zooz-1"},
+        ])
+        results = cache.get_candidates("kitchen overhead", twin_dedup=False)
+        ids = [c.entity.entity_id for c in results]
+        assert "light.ceiling_lights" in ids
+        assert "switch.ceiling_lights" in ids
+
+    def test_no_device_id_means_no_dedup(self) -> None:
+        """Without device_ids from the registry, two similarly-named
+        entities cannot be proven to be twins. Both survive."""
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state_with_modes(
+                "light.ceiling_lights", "Kitchen Overhead",
+                supported_color_modes=["brightness"],
+            ),
+            _state("switch.ceiling_lights", "Kitchen Overhead"),
+        ])
+        results = cache.get_candidates("kitchen overhead")
+        ids = {c.entity.entity_id for c in results}
+        assert "light.ceiling_lights" in ids
+        assert "switch.ceiling_lights" in ids
+
+    def test_candidate_match_carries_device_id(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([_state("light.a", "Alpha")])
+        cache.apply_entity_registry([
+            {"entity_id": "light.a", "device_id": "dev-a"},
+        ])
+        results = cache.get_candidates("alpha")
+        assert results and results[0].device_id == "dev-a"
+
+
+class TestOpposingTokenPenalty:
+    def test_upstairs_downstairs_penalty_flips_ranking(self) -> None:
+        """Fuzzy could score 'downstairs hallway' higher for the query
+        'upstairs hallway light' by character overlap. The opposing-
+        token penalty should push downstairs below upstairs even if
+        both clear the cutoff."""
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.upstairs_hallway", "Upstairs Hallway Light"),
+            _state("light.downstairs_hallway", "Downstairs Hallway Light"),
+        ])
+        results = cache.get_candidates("upstairs hallway light")
+        ids = [c.entity.entity_id for c in results]
+        # Upstairs must rank above downstairs even if both appear.
+        assert ids and ids[0] == "light.upstairs_hallway"
+        if "light.downstairs_hallway" in ids:
+            assert ids.index("light.upstairs_hallway") < ids.index("light.downstairs_hallway")
+
+    def test_custom_pairs_override_defaults(self) -> None:
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.kids_room", "Kids Room"),
+            _state("light.master_room", "Master Room"),
+        ])
+        # With a custom pair [kids, master], a "kids room" query should
+        # penalize the master variant. Default 11-pair list also
+        # includes master↔guest, but kids↔master is house-specific.
+        results = cache.get_candidates(
+            "kids room",
+            opposing_token_pairs=[["kids", "master"]],
+        )
+        ids = [c.entity.entity_id for c in results]
+        assert ids and ids[0] == "light.kids_room"
+
+    def test_empty_list_disables_penalty(self) -> None:
+        """Passing an explicit empty list disables all penalties —
+        operator opt-out. Distinct from None, which uses defaults."""
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.upstairs_hallway", "Upstairs Hallway Light"),
+            _state("light.downstairs_hallway", "Downstairs Hallway Light"),
+        ])
+        with_defaults = cache.get_candidates("upstairs hallway light")
+        without_penalty = cache.get_candidates(
+            "upstairs hallway light",
+            opposing_token_pairs=[],
+        )
+        # With penalty disabled, the downstairs score is closer to
+        # upstairs (no -50). At minimum, both are present in the
+        # no-penalty result.
+        ids_no_penalty = {c.entity.entity_id for c in without_penalty}
+        assert "light.upstairs_hallway" in ids_no_penalty
+        assert "light.downstairs_hallway" in ids_no_penalty
+        # Penalty version ranks upstairs ahead regardless.
+        assert with_defaults[0].entity.entity_id == "light.upstairs_hallway"
+
+    def test_penalty_ignored_when_both_sides_in_name(self) -> None:
+        """A query that mentions 'upstairs' shouldn't penalize an
+        entity whose name has no opposing token, only entities whose
+        names have the opposite side."""
+        cache = EntityCache()
+        cache.apply_get_states([
+            _state("light.upstairs_landing", "Upstairs Landing"),
+        ])
+        results = cache.get_candidates("upstairs landing")
+        assert results and results[0].score >= 75

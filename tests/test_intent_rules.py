@@ -134,3 +134,48 @@ extra_guidance: "be terse"
         p.write_text(":::not:valid:::", encoding="utf-8")
         rules = load_rules_from_yaml(p)
         assert rules.state_inference is True  # defaulted
+
+
+class TestPhase81RulesFields:
+    def test_defaults_empty_opposing_pairs_dedup_on(self) -> None:
+        rules = DisambiguationRules()
+        assert rules.opposing_token_pairs == []
+        assert rules.twin_dedup is True
+
+    def test_load_opposing_token_pairs(self, tmp_path: Path) -> None:
+        p = tmp_path / "rules.yaml"
+        p.write_text("""
+opposing_token_pairs:
+  - [upstairs, downstairs]
+  - [kids, master]
+twin_dedup: false
+""", encoding="utf-8")
+        rules = load_rules_from_yaml(p)
+        assert rules.opposing_token_pairs == [
+            ["upstairs", "downstairs"],
+            ["kids", "master"],
+        ]
+        assert rules.twin_dedup is False
+
+    def test_malformed_pairs_are_dropped(self, tmp_path: Path) -> None:
+        p = tmp_path / "rules.yaml"
+        p.write_text("""
+opposing_token_pairs:
+  - [valid, pair]
+  - [onlyone]
+  - [a, a]
+  - not_a_list
+""", encoding="utf-8")
+        rules = load_rules_from_yaml(p)
+        assert rules.opposing_token_pairs == [["valid", "pair"]]
+
+    def test_roundtrip_save_load(self, tmp_path: Path) -> None:
+        from glados.intent.rules import save_rules_to_yaml
+        rules = DisambiguationRules()
+        rules.opposing_token_pairs = [["left", "right"]]
+        rules.twin_dedup = False
+        p = tmp_path / "out.yaml"
+        save_rules_to_yaml(p, rules)
+        loaded = load_rules_from_yaml(p)
+        assert loaded.opposing_token_pairs == [["left", "right"]]
+        assert loaded.twin_dedup is False

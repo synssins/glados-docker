@@ -127,6 +127,32 @@ def _preprocess_query(query: str) -> str:
 _COVERAGE_BONUS: float = 15.0
 _AREA_BONUS: float = 10.0
 
+# Phase 8.1: opposing-token penalty. When the utterance contains one
+# side of a pair and the candidate's name contains the other, apply a
+# flat negative to the rank score. -50 is enough to drop a candidate
+# below a full-coverage alternative without nuking it entirely — a
+# synonym override in the prompt can still outrank the penalty if the
+# operator's rules call for it.
+_OPPOSING_TOKEN_PENALTY: float = 50.0
+
+# Default opposing-token pairs. Shipped as defaults so the system works
+# out of the box; operators add house-specific pairs via the
+# Disambiguation rules WebUI card. Pairs are symmetric — order within
+# a pair doesn't matter; matching is whole-word case-insensitive.
+_DEFAULT_OPPOSING_TOKENS: tuple[tuple[str, str], ...] = (
+    ("upstairs", "downstairs"),
+    ("lower", "upper"),
+    ("front", "back"),
+    ("inside", "outside"),
+    ("indoor", "outdoor"),
+    ("master", "guest"),
+    ("left", "right"),
+    ("top", "bottom"),
+    ("primary", "secondary"),
+    ("north", "south"),
+    ("east", "west"),
+)
+
 
 def _name_words(names: list[str]) -> set[str]:
     """Whole-word token set for the entity's names + aliases."""
@@ -145,6 +171,114 @@ def _coverage_ratio(query_tokens: list[str], name_words: set[str]) -> float:
         return 0.0
     hits = sum(1 for t in query_tokens if t in name_words)
     return hits / len(query_tokens)
+
+
+def _utterance_words(query: str) -> set[str]:
+    """Whole-word token set of the raw utterance, used for the opposing-
+    token check. Stopword-stripping isn't applied here — "upstairs" isn't
+    a stopword, and the direction tokens we care about are all real
+    content words the user typed."""
+    if not query:
+        return set()
+    words: set[str] = set()
+    for w in query.lower().split():
+        words.add(w.strip(".,!?;:'\"-_()/"))
+    words.discard("")
+    return words
+
+
+def _normalise_opposing_pairs(
+    pairs: list[tuple[str, str]] | list[list[str]] | None,
+) -> tuple[tuple[str, str], ...]:
+    """Return a tuple of lowercase (a, b) pairs. None means "use the
+    shipped defaults"; an explicit empty list disables the penalty."""
+    if pairs is None:
+        return _DEFAULT_OPPOSING_TOKENS
+    out: list[tuple[str, str]] = []
+    for p in pairs:
+        if not p or len(p) < 2:
+            continue
+        a = str(p[0]).strip().lower()
+        b = str(p[1]).strip().lower()
+        if a and b and a != b:
+            out.append((a, b))
+    return tuple(out)
+
+
+def _opposing_token_hit(
+    utterance_words: set[str],
+    name_words: set[str],
+    pairs: tuple[tuple[str, str], ...],
+) -> bool:
+    """True when the utterance contains one side of a pair and the
+    candidate name contains the other. Direction-symmetric — either
+    order qualifies."""
+    if not pairs or not utterance_words or not name_words:
+        return False
+    for a, b in pairs:
+        if a in utterance_words and b in name_words:
+            return True
+        if b in utterance_words and a in name_words:
+            return True
+    return False
+
+
+def _light_has_dim_capability(entity: EntityState) -> bool:
+    """True when the entity is a light that actually supports dimming /
+    colour — i.e. `supported_color_modes` lists something richer than
+    just `onoff`. Inovelli fan/light controllers expose a decorative LED
+    indicator as a `light.*` with `supported_color_modes=['onoff']`; we
+    want the `switch.*` side to win the twin-dedup in that case because
+    the switch is the real control."""
+    if entity.domain != "light":
+        return False
+    modes = entity.attributes.get("supported_color_modes") or []
+    if not isinstance(modes, (list, tuple, set)):
+        return False
+    for m in modes:
+        if str(m).lower() != "onoff":
+            return True
+    return False
+
+
+def _dedup_light_switch_twins(
+    candidates: list[CandidateMatch],
+) -> list[CandidateMatch]:
+    """Collapse `light.*` / `switch.*` twins that share a device_id.
+
+    Rule: keep the light unless its `supported_color_modes` lacks any
+    real dim capability (i.e. the light side is a decorative LED
+    indicator), in which case keep the switch. Candidates without a
+    device_id are never merged — they come from the same entity_id at
+    most once by construction, and we have no way to prove they're
+    twins without a registry id to join on."""
+    # Group candidates by device_id; only device_id-keyed groups where
+    # both light.* and switch.* appear are candidates for merging.
+    by_device: dict[str, list[CandidateMatch]] = {}
+    for c in candidates:
+        did = c.device_id
+        if not did:
+            continue
+        by_device.setdefault(did, []).append(c)
+
+    drop_entity_ids: set[str] = set()
+    for group in by_device.values():
+        if len(group) < 2:
+            continue
+        lights = [c for c in group if c.entity.domain == "light"]
+        switches = [c for c in group if c.entity.domain == "switch"]
+        if not lights or not switches:
+            continue
+        # Pick the "keeper" side. Prefer light when it has real dim
+        # capability; otherwise the switch is the canonical control.
+        any_dim_light = any(_light_has_dim_capability(c.entity) for c in lights)
+        losers = switches if any_dim_light else lights
+        for c in losers:
+            drop_entity_ids.add(c.entity.entity_id)
+
+    if not drop_entity_ids:
+        return candidates
+    return [c for c in candidates if c.entity.entity_id not in drop_entity_ids]
 
 
 # Sensitive domains: fuzzy match produces wrong-device outcomes with
@@ -189,6 +323,12 @@ class EntityState:
     area_id: str | None = None
     aliases: list[str] = field(default_factory=list)
     attributes: dict[str, Any] = field(default_factory=dict)
+    # Phase 8.1: populated from HA's entity_registry (separate WS call
+    # from get_states; see EntityCache.apply_entity_registry). Used to
+    # collapse light/switch twins that share a single physical device.
+    # None until the registry sync lands — new entities added via
+    # state_changed default to None and backfill on the next resync.
+    device_id: str | None = None
 
     def searchable_names(self) -> list[str]:
         """Names to use for fuzzy matching.
@@ -227,6 +367,10 @@ class CandidateMatch:
     # room). None when no area hint was provided for this query so the
     # prompt can omit the signal entirely.
     area_match: bool | None = None
+    # Phase 8.1: HA device_id for the entity. Populated via the
+    # entity_registry sync. Primarily used internally by the twin-
+    # dedup pass but exposed on CandidateMatch for observability.
+    device_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -282,9 +426,42 @@ class EntityCache:
             if e is not None:
                 rebuilt[e.entity_id] = e
         with self._lock:
+            # Preserve device_id across the rebuild — state_changed
+            # events carry no device_id, and the entity_registry apply
+            # that will backfill them runs *after* this call in the
+            # startup sequence. Without this carry-over, a state_changed
+            # landing between the two applies would null out a good id.
+            for eid, prior in self._entities.items():
+                new_ent = rebuilt.get(eid)
+                if new_ent is not None and prior.device_id and not new_ent.device_id:
+                    new_ent.device_id = prior.device_id
             self._entities = rebuilt
             self._last_full_sync_at = ts
         return len(rebuilt)
+
+    def apply_entity_registry(self, entries: list[dict[str, Any]]) -> int:
+        """Annotate existing entities with their device_id from HA's
+        `config/entity_registry/list` response.
+
+        Each entry shape: `{entity_id, device_id, platform, ...}`. Only
+        device_id is consumed. Returns the count of entities actually
+        updated. Safe to call repeatedly; missing entities are skipped
+        silently (state_changed may not have reached us yet)."""
+        updated = 0
+        with self._lock:
+            for entry in entries:
+                eid = entry.get("entity_id")
+                if not eid:
+                    continue
+                ent = self._entities.get(eid)
+                if ent is None:
+                    continue
+                did = entry.get("device_id")
+                did = str(did) if did else None
+                if ent.device_id != did:
+                    ent.device_id = did
+                    updated += 1
+        return updated
 
     def apply_state_changed(self, event_data: dict[str, Any]) -> None:
         """Apply a single `state_changed` event. Tolerates missing fields."""
@@ -300,6 +477,12 @@ class EntityCache:
         if e is None:
             return
         with self._lock:
+            prior = self._entities.get(e.entity_id)
+            if prior is not None and prior.device_id and not e.device_id:
+                # state_changed carries no device_id — preserve it from
+                # the last registry sync so dedup keeps working across
+                # state refreshes.
+                e.device_id = prior.device_id
             self._entities[e.entity_id] = e
 
     # ── Readers ──────────────────────────────────────────────
@@ -341,6 +524,8 @@ class EntityCache:
         domain_filter: list[str] | None = None,
         limit: int = 10,
         source_area: str | None = None,
+        opposing_token_pairs: list[tuple[str, str]] | list[list[str]] | None = None,
+        twin_dedup: bool = True,
     ) -> list[CandidateMatch]:
         """Fuzzy-match the user's query against entity names.
 
@@ -373,6 +558,13 @@ class EntityCache:
         # "activate the evening scene" -> "evening scene".
         q = _preprocess_query(query)
         query_tokens = [t for t in q.split() if t]
+        # Phase 8.1: resolve the opposing-token set used for scoring.
+        # Normalise to whole-word lowercase pairs; None means "use shipped
+        # defaults"; an empty list means "disable the penalty".
+        opposing = _normalise_opposing_pairs(opposing_token_pairs)
+        # Detect which side(s) of any pair the user's utterance mentions;
+        # the penalty then fires against candidates carrying the opposite.
+        utterance_words = _utterance_words(query)
         scored: list[tuple[float, CandidateMatch]] = []
         for entity in self.snapshot():
             if domain_filter and entity.domain not in domain_filter:
@@ -404,10 +596,19 @@ class EntityCache:
                 area_match = (entity.area_id == source_area)
                 if area_match:
                     area_bonus = _AREA_BONUS
+            # Phase 8.1: opposing-token penalty. "upstairs lights"
+            # shouldn't pick a downstairs fixture just because it's a
+            # good fuzzy hit on the rest of the tokens.
+            opposing_penalty = (
+                _OPPOSING_TOKEN_PENALTY
+                if _opposing_token_hit(utterance_words, name_words, opposing)
+                else 0.0
+            )
             rank_score = (
                 float(score)
                 + _COVERAGE_BONUS * coverage
                 + area_bonus
+                - opposing_penalty
             )
             scored.append((rank_score, CandidateMatch(
                 entity=entity,
@@ -416,9 +617,18 @@ class EntityCache:
                 sensitive=sensitive,
                 coverage=coverage,
                 area_match=area_match,
+                device_id=entity.device_id,
             )))
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [cand for _rank, cand in scored[:limit]]
+        ranked = [cand for _rank, cand in scored]
+        # Phase 8.1: twin dedup. Zooz / Inovelli dimmers expose both
+        # `light.foo` and `switch.foo` for one physical relay. Keep the
+        # light (the only side that honors brightness_pct), unless the
+        # light reports no real dim capability — in which case the
+        # switch is the canonical control (Inovelli fan/light pattern).
+        if twin_dedup:
+            ranked = _dedup_light_switch_twins(ranked)
+        return ranked[:limit]
 
     def _exact_match_fallback(
         self,
@@ -438,6 +648,7 @@ class EntityCache:
                         matched_name=name,
                         score=100.0,
                         sensitive=_cutoff_for(entity) >= 100,
+                        device_id=entity.device_id,
                     ))
                     break
         return out[:limit]

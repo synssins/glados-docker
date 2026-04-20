@@ -2045,8 +2045,43 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_set_force_emotion()
         elif self.path == "/api/reload-engine":
             self._handle_reload_engine()
+        elif self.path == "/api/reload-disambiguation-rules":
+            self._handle_reload_disambiguation_rules()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
+
+    def _handle_reload_disambiguation_rules(self) -> None:
+        """Re-read disambiguation.yaml and hot-swap the live rules on
+        the singleton Disambiguator. Called by the WebUI process after
+        a save on the Disambiguation rules card. No engine rebuild — the
+        rules are read-only-at-request-time state on the disambiguator.
+        """
+        try:
+            import os
+
+            from glados.intent import get_disambiguator, load_rules_from_yaml
+            disambig = get_disambiguator()
+            if disambig is None:
+                self._send_json(
+                    {"ok": False, "error": "disambiguator not initialised"},
+                    503,
+                )
+                return
+            config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
+            new_rules = load_rules_from_yaml(
+                os.path.join(config_dir, "disambiguation.yaml")
+            )
+            disambig.replace_rules(new_rules)
+            logger.info(
+                "Disambiguation rules reloaded; twin_dedup={} "
+                "opposing_pairs={}",
+                new_rules.twin_dedup,
+                len(new_rules.opposing_token_pairs),
+            )
+            self._send_json({"ok": True, "reloaded": True})
+        except Exception as exc:
+            logger.exception("Reload-disambiguation-rules failed")
+            self._send_json({"ok": False, "error": str(exc)}, 500)
 
     def _handle_reload_engine(self) -> None:
         """Hot-swap the engine in THIS process. Called by the WebUI process

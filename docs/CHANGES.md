@@ -1311,4 +1311,103 @@ follow-up context preserved across "How do you feel about cats?"
 
 ---
 
+## Change 14.1 — Phase 8.1: candidate dedup + opposing-token penalty
+
+**Date:** 2026-04-20
+**Status:** Complete (pending deploy)
+**Phase:** 8.1 of `docs/battery-findings-and-remediation-plan.md`
+
+First substantive Phase 8 change after the 8.0 infrastructure work.
+Targets Cluster A of the 435-test battery — the ~55 `light.*` /
+`switch.*` twin false-clarifies where Zooz/Inovelli dimmers expose
+the same physical relay as two entities — and the opposing-token
+ranking bug where "upstairs lights" could pick a downstairs fixture
+on fuzzy overlap.
+
+### Candidate dedup by device_id
+
+- `EntityState` gains a `device_id: str | None` field, populated
+  from HA's `config/entity_registry/list` (`get_states` does not
+  expose `device_id`). `HAClient._load_initial_states` now fetches
+  the registry immediately after `get_states` and calls the new
+  `EntityCache.apply_entity_registry(entries)`. Device IDs
+  survive `state_changed` events and full `get_states` resyncs —
+  both rebuild paths preserve any prior `device_id` to avoid a
+  race between state refreshes and the next registry apply.
+- `CandidateMatch` gains `device_id` for observability.
+- `get_candidates()` runs a post-ranking dedup pass: when two
+  candidates share a `device_id` and one is `light.*` while the
+  other is `switch.*`, the losing twin is dropped. Tiebreaker:
+  keep the light unless its `supported_color_modes` lacks any
+  dim capability (i.e., only `onoff` or missing entirely), in
+  which case keep the switch — handles the Inovelli fan/light
+  edge case where the light side is a decorative LED indicator.
+- Dedup is opt-out at the call site (`twin_dedup=True` default);
+  the operator can disable it via the WebUI card.
+
+### Opposing-token penalty
+
+- New `_DEFAULT_OPPOSING_TOKENS` list shipped with 11 pairs:
+  `upstairs/downstairs, lower/upper, front/back, inside/outside,
+  indoor/outdoor, master/guest, left/right, top/bottom,
+  primary/secondary, north/south, east/west`.
+- When the utterance contains one side of a pair and a candidate's
+  name contains the other, the candidate's rank score loses 50
+  points. Enough to drop it below a full-coverage alternative
+  but not enough to clobber a synonym override in the LLM prompt.
+- Operators can override the list via the WebUI; an explicit empty
+  list disables the penalty, `None` falls back to defaults.
+
+### Operator-facing plumbing (WebUI-managed, per §0.2 of the plan)
+
+- `DisambiguationRules` grows `opposing_token_pairs: list[list[str]]`
+  and `twin_dedup: bool` fields. Loader parses both from the YAML;
+  new `rules_to_dict` / `save_rules_to_yaml` helpers round-trip the
+  dataclass to disk.
+- New WebUI card **"Disambiguation rules"** under Integrations →
+  Home Assistant. Toggle for twin dedup + editable opposing-token
+  pair list (add/remove rows). Saves via new endpoints
+  `GET/PUT /api/config/disambiguation`.
+- Hot-reload via new endpoint `POST /api/reload-disambiguation-rules`
+  on api_wrapper. The tts_ui save handler POSTs it after writing the
+  YAML; the live disambiguator picks up the new rules on the next
+  request with no container restart. `Disambiguator.replace_rules()`
+  does atomic reference replacement — no lock needed because rules
+  are read-only during `run()`.
+- Rules card stores only rule config, never entity data — HA
+  remains the single source of truth for entities.
+
+### Files touched
+
+- `glados/ha/entity_cache.py` — `device_id` on EntityState +
+  CandidateMatch, `apply_entity_registry`, opposing-token penalty,
+  twin dedup, supporting helpers.
+- `glados/ha/ws_client.py` — `config/entity_registry/list` fetch
+  in `_load_initial_states`.
+- `glados/intent/rules.py` — two new fields, YAML round-trip.
+- `glados/intent/__init__.py` — exports `rules_to_dict` /
+  `save_rules_to_yaml`.
+- `glados/intent/disambiguator.py` — pass rules into
+  `get_candidates`, add `replace_rules` + `rules` property.
+- `glados/core/api_wrapper.py` — new reload endpoint.
+- `glados/webui/tts_ui.py` — GET/PUT config handlers + the
+  Integrations card + save handler.
+- `configs/disambiguation.example.yaml` — Phase 8.1 fields.
+- `tests/test_ha_entity_cache.py` — registry apply, dedup, and
+  opposing-token tests.
+- `tests/test_intent_rules.py` — Phase 8.1 rules fields tests.
+
+### Test count
+
+551 passing (1 skipped, pre-existing).
+
+### Phase 8.1 success criteria (from the plan)
+
+≥40 of ~55 Cluster-A FAILs from the 435-test battery flip to PASS
+or to a correct clarify that no longer lists the twin. Measurement
+against the next battery run; live validation deferred to the next
+operator session.
+
+---
+
 ---
