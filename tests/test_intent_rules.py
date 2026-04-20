@@ -10,8 +10,11 @@ import pytest
 from glados.intent.rules import (
     DisambiguationRules,
     IntentAllowlist,
+    apply_precheck_overrides,
     domain_filter_for_utterance,
+    explain_home_command_match,
     load_rules_from_yaml,
+    looks_like_home_command,
 )
 
 
@@ -179,3 +182,148 @@ opposing_token_pairs:
         loaded = load_rules_from_yaml(p)
         assert loaded.opposing_token_pairs == [["left", "right"]]
         assert loaded.twin_dedup is False
+
+
+# ──────────────────────────────────────────────────────────────
+# Phase 8.2 — Command verbs, ambient patterns, precheck extras
+# ──────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _reset_precheck_overrides_between_tests():
+    """Precheck overrides live at module level. Reset them before and
+    after each test so one test's configuration doesn't leak into
+    another's. Cleaner than making every test call it manually."""
+    apply_precheck_overrides(DisambiguationRules())
+    yield
+    apply_precheck_overrides(DisambiguationRules())
+
+
+class TestCommandVerbPrecheck:
+    def test_shipped_verbs_trigger_precheck(self) -> None:
+        # "darken" alone should pass — no noun keyword needed.
+        assert looks_like_home_command("darken the bedroom")
+        assert looks_like_home_command("bump it up a bit")
+        assert looks_like_home_command("crank everything")
+        assert looks_like_home_command("kill the power")
+
+    def test_no_verb_no_noun_falls_through(self) -> None:
+        # Pure chitchat with no verb, no noun, no activity, no pattern
+        # must remain a chitchat candidate.
+        assert not looks_like_home_command("tell me about rome")
+        assert not looks_like_home_command("what's your favourite colour")
+
+    def test_extra_verbs_additive_to_defaults(self) -> None:
+        # Defaults still work after overrides are applied with extras.
+        rules = DisambiguationRules()
+        rules.extra_command_verbs = ["nudge", "tickle"]
+        apply_precheck_overrides(rules)
+        assert looks_like_home_command("nudge the thermostat")
+        assert looks_like_home_command("tickle the lights")
+        # Default verb still active.
+        assert looks_like_home_command("darken the room")
+
+    def test_extra_verbs_are_case_insensitive(self) -> None:
+        rules = DisambiguationRules()
+        rules.extra_command_verbs = ["NUDGE"]
+        apply_precheck_overrides(rules)
+        assert looks_like_home_command("nudge it")
+        assert looks_like_home_command("Nudge it")
+
+
+class TestAmbientPatternPrecheck:
+    def test_default_its_too_dark(self) -> None:
+        assert looks_like_home_command("it's too dark in here")
+        assert looks_like_home_command("the living room is cold")
+
+    def test_default_i_want_more_light(self) -> None:
+        assert looks_like_home_command("I want more light")
+        assert looks_like_home_command("I need it brighter")
+        assert looks_like_home_command("I can't see")
+
+    def test_time_to_read_triggers(self) -> None:
+        assert looks_like_home_command("time to read")
+        assert looks_like_home_command("time for bed")
+
+    def test_bare_i_want_x_stays_chitchat(self) -> None:
+        # Phase 8.2 intentionally keeps "I want X" patterns narrow so
+        # random desires don't punch through the precheck. Note the
+        # chosen phrase avoids tripping the separate _ACTIVITY_PHRASES
+        # set (which includes words like "dinner", "movie" on their own).
+        assert not looks_like_home_command("I want coffee")
+        assert not looks_like_home_command("I need a new car")
+
+    def test_custom_pattern_extends_defaults(self) -> None:
+        rules = DisambiguationRules()
+        rules.extra_ambient_patterns = [r"\bthe cats? (?:need|want)\b"]
+        apply_precheck_overrides(rules)
+        assert looks_like_home_command("the cats need feeding")
+        # Default still fires.
+        assert looks_like_home_command("it's too dark")
+
+    def test_invalid_regex_is_skipped_not_fatal(self) -> None:
+        rules = DisambiguationRules()
+        rules.extra_ambient_patterns = ["(unterminated"]
+        # Loader compile errors are logged but must not raise.
+        apply_precheck_overrides(rules)
+        # Defaults still work.
+        assert looks_like_home_command("it's too dark")
+
+
+class TestExplainHomeCommandMatch:
+    def test_keyword_path_reports_reason_and_domains(self) -> None:
+        res = explain_home_command_match("turn off the bedroom lights")
+        assert res["matches"] is True
+        assert "keyword" in res["via"]
+        assert res["domains"] and "light" in res["domains"]
+
+    def test_activity_phrase_reason(self) -> None:
+        res = explain_home_command_match("movie time")
+        assert res["matches"] is True
+        assert "activity_phrase" in res["via"]
+
+    def test_command_verb_reason(self) -> None:
+        res = explain_home_command_match("darken")
+        assert res["matches"] is True
+        assert "command_verb" in res["via"]
+
+    def test_ambient_pattern_reason(self) -> None:
+        res = explain_home_command_match("it's too dark")
+        assert res["matches"] is True
+        assert "ambient_pattern" in res["via"]
+
+    def test_no_match_empty_via(self) -> None:
+        res = explain_home_command_match("tell me a joke")
+        assert res["matches"] is False
+        assert res["via"] == []
+
+    def test_multiple_reasons_stack(self) -> None:
+        # "time to read" is both an activity phrase AND an ambient pattern.
+        res = explain_home_command_match("time to read")
+        assert res["matches"] is True
+        assert len(res["via"]) >= 1
+
+
+class TestPhase82YAMLRoundTrip:
+    def test_load_extra_verbs_and_patterns(self, tmp_path: Path) -> None:
+        p = tmp_path / "rules.yaml"
+        p.write_text("""
+extra_command_verbs:
+  - nudge
+  - tickle
+extra_ambient_patterns:
+  - "\\\\bfeed the cats\\\\b"
+""", encoding="utf-8")
+        rules = load_rules_from_yaml(p)
+        assert rules.extra_command_verbs == ["nudge", "tickle"]
+        assert rules.extra_ambient_patterns == [r"\bfeed the cats\b"]
+
+    def test_roundtrip_preserves_extras(self, tmp_path: Path) -> None:
+        from glados.intent.rules import save_rules_to_yaml
+        rules = DisambiguationRules()
+        rules.extra_command_verbs = ["zap"]
+        rules.extra_ambient_patterns = [r"\bwake me up\b"]
+        p = tmp_path / "rules.yaml"
+        save_rules_to_yaml(p, rules)
+        loaded = load_rules_from_yaml(p)
+        assert loaded.extra_command_verbs == ["zap"]
+        assert loaded.extra_ambient_patterns == [r"\bwake me up\b"]

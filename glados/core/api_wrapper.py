@@ -2053,13 +2053,19 @@ class APIHandler(BaseHTTPRequestHandler):
     def _handle_reload_disambiguation_rules(self) -> None:
         """Re-read disambiguation.yaml and hot-swap the live rules on
         the singleton Disambiguator. Called by the WebUI process after
-        a save on the Disambiguation rules card. No engine rebuild — the
-        rules are read-only-at-request-time state on the disambiguator.
+        a save on the Disambiguation rules card OR the Command
+        recognition card. No engine rebuild — rules are read-only-at-
+        request-time state on the disambiguator, and precheck extras
+        are module-level state in `glados.intent.rules`.
         """
         try:
             import os
 
-            from glados.intent import get_disambiguator, load_rules_from_yaml
+            from glados.intent import (
+                apply_precheck_overrides,
+                get_disambiguator,
+                load_rules_from_yaml,
+            )
             disambig = get_disambiguator()
             if disambig is None:
                 self._send_json(
@@ -2072,11 +2078,14 @@ class APIHandler(BaseHTTPRequestHandler):
                 os.path.join(config_dir, "disambiguation.yaml")
             )
             disambig.replace_rules(new_rules)
+            apply_precheck_overrides(new_rules)
             logger.info(
                 "Disambiguation rules reloaded; twin_dedup={} "
-                "opposing_pairs={}",
+                "opposing_pairs={} extra_verbs={} extra_patterns={}",
                 new_rules.twin_dedup,
                 len(new_rules.opposing_token_pairs),
+                len(new_rules.extra_command_verbs),
+                len(new_rules.extra_ambient_patterns),
             )
             self._send_json({"ok": True, "reloaded": True})
         except Exception as exc:

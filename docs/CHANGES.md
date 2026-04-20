@@ -1410,4 +1410,87 @@ operator session.
 
 ---
 
+## Change 14.2 — Phase 8.2: precheck verb + ambient-pattern expansion
+
+**Date:** 2026-04-20
+**Status:** Complete (pending deploy)
+**Phase:** 8.2 of `docs/battery-findings-and-remediation-plan.md`
+
+Closes Cluster B (62 `fall_through:no_home_command_intent` FAILs)
+from the 435-test battery. Phase 6's precheck gate only recognised
+device nouns — "darken the bedroom", "bump it up", "it's too dark",
+"I want to read" all fell into chitchat and silently did nothing
+because no noun-keyword matched.
+
+### Precheck expansion
+
+Two new signal sources in `looks_like_home_command`:
+
+1. **Command-verb set.** Shipped 28-verb default list from the plan:
+   `darken, brighten, dim, lighten, bump, lower, raise, reduce,
+   increase, soften, tone, crank, kill, douse, extinguish,
+   illuminate, light, set, put, dial, slide, push, pull, close,
+   open, shut, drop`. Any of these words in the utterance (whole-
+   word, case-insensitive) triggers Tier 1/2.
+
+2. **Ambient-state regex patterns.** Five shipped defaults covering
+   `(it's|the X is) too (dark|bright|cold|…)`,
+   `I (can't|cannot) (see|hear|read|sleep)`,
+   `I (need|want|would like) more (light|sound|…)`,
+   `time (to|for) (read|bed|sleep|…)`, and
+   `(movie|reading|dinner|…) mode in …`. Conservative on "I want X"
+   so "I want coffee" stays chitchat.
+
+### Operator-editable extras (WebUI-managed, per plan §0.2)
+
+- `DisambiguationRules` grows `extra_command_verbs` + `extra_ambient_patterns`.
+  YAML round-trips both. Invalid regexes logged + skipped on load
+  (one bad edit can't break the entire precheck).
+- New **"Command recognition" card** on the Personality page.
+  Add/remove verb rows, add/remove regex rows, live test input that
+  calls `POST /api/precheck/test` and shows which of the four
+  signals fired (keyword / activity_phrase / command_verb /
+  ambient_pattern) plus any inferred HA domains.
+- Extras are additive — shipped defaults stay active even when the
+  extras are empty. Operators cannot remove a built-in at runtime
+  (part of the container contract).
+
+### Cross-process hot-reload
+
+- `glados/intent/rules.py` holds module-level `_runtime_extra_verbs`
+  and `_runtime_extra_ambient_patterns`, populated by new
+  `apply_precheck_overrides(rules)`.
+- `server.py::_init_ha_client` calls it at startup.
+- Existing `/api/reload-disambiguation-rules` now also calls it
+  after swapping the disambiguator's rules reference, so a save
+  on either the Disambiguation rules card (Integrations) or the
+  Command recognition card (Personality) applies live without a
+  container restart.
+
+### Files touched
+
+- `glados/intent/rules.py` — verbs, patterns, `_runtime_extra_*`,
+  `apply_precheck_overrides`, `explain_home_command_match`, new
+  dataclass fields, loader + round-trip.
+- `glados/intent/__init__.py` — exports.
+- `glados/server.py` — call `apply_precheck_overrides` after load.
+- `glados/core/api_wrapper.py` — reload endpoint applies overrides.
+- `glados/webui/tts_ui.py` — Command recognition card on Personality
+  page, `POST /api/precheck/test` handler, PUT handler accepts the
+  two new fields (+ regex pre-compile validation).
+- `configs/disambiguation.example.yaml` — Phase 8.2 fields.
+- `tests/test_intent_rules.py` — verb, pattern, override, explain,
+  and round-trip tests.
+
+### Test count
+
+569 passing (1 skipped, pre-existing). +18 over Phase 8.1.
+
+### Phase 8.2 success criteria (from the plan)
+
+Cluster B FAILs drop from 62 to <10 on the next battery run. Live
+measurement deferred to the next operator session.
+
+---
+
 ---

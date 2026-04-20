@@ -1361,6 +1361,8 @@ class Handler(BaseHTTPRequestHandler):
             self._chat()
         elif p == "/api/chat/stream":
             self._chat_stream()
+        elif p == "/api/precheck/test":
+            self._post_precheck_test()
         elif p == "/api/stt":
             self._stt()
         # --- Protected routes below ---
@@ -3540,6 +3542,38 @@ class Handler(BaseHTTPRequestHandler):
                     seen.add(key)
                     cleaned.append([a, b])
                 rules.opposing_token_pairs = cleaned
+            if "extra_command_verbs" in data:
+                verbs_raw = data.get("extra_command_verbs") or []
+                if not isinstance(verbs_raw, list):
+                    self._send_error(400, "extra_command_verbs must be a list")
+                    return
+                cleaned_verbs: list[str] = []
+                seen_verbs: set[str] = set()
+                for v in verbs_raw:
+                    vs = str(v).strip()
+                    if not vs or vs.lower() in seen_verbs:
+                        continue
+                    seen_verbs.add(vs.lower())
+                    cleaned_verbs.append(vs.lower())
+                rules.extra_command_verbs = cleaned_verbs
+            if "extra_ambient_patterns" in data:
+                pats_raw = data.get("extra_ambient_patterns") or []
+                if not isinstance(pats_raw, list):
+                    self._send_error(400, "extra_ambient_patterns must be a list")
+                    return
+                import re as _re
+                cleaned_pats: list[str] = []
+                for p in pats_raw:
+                    ps = str(p)
+                    if not ps.strip():
+                        continue
+                    try:
+                        _re.compile(ps)
+                    except _re.error as exc:
+                        self._send_error(400, f"Invalid regex {ps!r}: {exc}")
+                        return
+                    cleaned_pats.append(ps)
+                rules.extra_ambient_patterns = cleaned_pats
             save_rules_to_yaml(path, rules)
             applied = self._reload_disambiguator_rules()
             self._send_json(200, {
@@ -3547,9 +3581,31 @@ class Handler(BaseHTTPRequestHandler):
                 "applied": applied,
                 "twin_dedup": rules.twin_dedup,
                 "opposing_token_pairs": rules.opposing_token_pairs,
+                "extra_command_verbs": rules.extra_command_verbs,
+                "extra_ambient_patterns": rules.extra_ambient_patterns,
             })
         except Exception as exc:
             self._send_error(500, f"Failed to save rules: {exc}")
+
+    def _post_precheck_test(self) -> None:
+        """Phase 8.2 — dry-run an utterance through
+        `looks_like_home_command` so the WebUI Command recognition
+        card can show the operator whether their test phrase would
+        be picked up. Returns the structured match reasons so they
+        can see exactly which of the four signals fired."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_error(400, f"Invalid JSON: {exc}")
+            return
+        utterance = str(data.get("utterance") or "")
+        if not utterance.strip():
+            self._send_error(400, "utterance is required")
+            return
+        from glados.intent import explain_home_command_match
+        self._send_json(200, explain_home_command_match(utterance))
 
     def _reload_disambiguator_rules(self) -> bool:
         """Cross-process reload trigger. tts_ui (8052) POSTs the
@@ -6581,7 +6637,193 @@ function cfgRenderPersonality(data) {
     html += '</div>';
   }
 
+  // Phase 8.2 — Command recognition card. Separate card with its own
+  // fetch / save cycle; writes to disambiguation.yaml, same file as the
+  // Disambiguation rules card under Integrations → Home Assistant.
+  html += ''
+    + '<div class="card" id="cfg-cmdrec-card" style="margin-top:14px;">'
+    +   '<div class="cfg-subsection-title">Command recognition</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Tunes the Tier&nbsp;1/2 precheck gate. When an utterance matches any of these signals, '
+    +     'GLaDOS attempts a home-control intent before falling through to chitchat. Shipped defaults '
+    +     '(command verbs like <code>darken</code>, <code>dim</code>, <code>bump</code> and ambient '
+    +     'phrases like <em>&ldquo;it&rsquo;s too dark&rdquo;</em>) are always active; the fields below add extras.'
+    +   '</div>'
+    +   '<div id="cfg-cmdrec-body">Loading command recognition rules&hellip;</div>'
+    + '</div>';
+  setTimeout(_cfgLoadCommandRecognition, 0);
+
   return html;
+}
+
+// Phase 8.2 — Command recognition card fetch/render/save.
+
+async function _cfgLoadCommandRecognition() {
+  const body = document.getElementById('cfg-cmdrec-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/config/disambiguation');
+    if (!r.ok) {
+      body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Failed to load rules (' + r.status + ').</div>';
+      return;
+    }
+    const data = await r.json();
+    _cmdrecPopulate(data);
+  } catch (e) {
+    body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error loading rules: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function _cmdrecPopulate(data) {
+  const body = document.getElementById('cfg-cmdrec-body');
+  if (!body) return;
+  const verbs = Array.isArray(data.extra_command_verbs) ? data.extra_command_verbs : [];
+  const patterns = Array.isArray(data.extra_ambient_patterns) ? data.extra_ambient_patterns : [];
+  let html = '';
+  html += '<div class="cfg-field-label" style="margin-top:4px;">Extra command verbs</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    +   'Single words (not phrases). Merged with the shipped defaults (darken, brighten, dim, lighten, '
+    +   'bump, lower, raise, reduce, increase, soften, tone, crank, kill, douse, extinguish, illuminate, '
+    +   'light, set, put, dial, slide, push, pull, close, open, shut, drop).'
+    + '</div>'
+    + '<div id="cfg-cmdrec-verbs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
+    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_cmdrecAddVerb()">+ Add verb</button>';
+  html += '<div class="cfg-field-label" style="margin-top:14px;">Extra ambient-state patterns (regex)</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    +   'Case-insensitive Python regex. Invalid patterns are rejected on save.'
+    + '</div>'
+    + '<div id="cfg-cmdrec-patterns" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
+    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_cmdrecAddPattern()">+ Add pattern</button>';
+  html += '<div class="cfg-field-label" style="margin-top:18px;">Test input</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    +   'Type a phrase and see whether the current precheck (defaults + any edits above once saved) would recognise it.'
+    + '</div>'
+    + '<div style="display:flex;gap:6px;align-items:center;">'
+    +   '<input type="text" id="cfg-cmdrec-test-input" placeholder="e.g. bump the living room up a bit" style="flex:1;">'
+    +   '<button type="button" class="cfg-save-btn" onclick="_cmdrecTest()">Test</button>'
+    + '</div>'
+    + '<div id="cfg-cmdrec-test-result" class="cfg-field-desc" style="margin-top:8px;"></div>';
+  html += '<div class="cfg-save-row" style="margin-top:14px;">'
+    + '<button class="cfg-save-btn" onclick="cfgSaveCommandRecognition()">Save Command recognition</button>'
+    + '<span id="cfg-save-result-cmdrec" class="cfg-result"></span>'
+    + '</div>';
+  body.innerHTML = html;
+  const verbsHost = document.getElementById('cfg-cmdrec-verbs');
+  verbs.forEach(v => _cmdrecRenderVerbRow(verbsHost, v));
+  const patsHost = document.getElementById('cfg-cmdrec-patterns');
+  patterns.forEach(p => _cmdrecRenderPatternRow(patsHost, p));
+}
+
+function _cmdrecRenderVerbRow(host, v) {
+  const row = document.createElement('div');
+  row.className = 'cfg-cmdrec-verb-row';
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.innerHTML = ''
+    + '<input type="text" class="cfg-cmdrec-verb" value="' + escAttr(v) + '" placeholder="e.g. nudge" style="flex:1;">'
+    + '<button type="button" title="Remove verb" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+  const del = row.querySelector('button');
+  if (del) del.addEventListener('click', () => row.remove());
+  host.appendChild(row);
+}
+
+function _cmdrecRenderPatternRow(host, p) {
+  const row = document.createElement('div');
+  row.className = 'cfg-cmdrec-pattern-row';
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.innerHTML = ''
+    + '<input type="text" class="cfg-cmdrec-pattern" value="' + escAttr(p) + '" placeholder="e.g. \\\\bthe cats? (?:need|want)\\\\b" style="flex:1;font-family:monospace;">'
+    + '<button type="button" title="Remove pattern" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+  const del = row.querySelector('button');
+  if (del) del.addEventListener('click', () => row.remove());
+  host.appendChild(row);
+}
+
+function _cmdrecAddVerb() {
+  const host = document.getElementById('cfg-cmdrec-verbs');
+  if (host) _cmdrecRenderVerbRow(host, '');
+}
+
+function _cmdrecAddPattern() {
+  const host = document.getElementById('cfg-cmdrec-patterns');
+  if (host) _cmdrecRenderPatternRow(host, '');
+}
+
+async function _cmdrecTest() {
+  const input = document.getElementById('cfg-cmdrec-test-input');
+  const resultEl = document.getElementById('cfg-cmdrec-test-result');
+  if (!input || !resultEl) return;
+  const utt = (input.value || '').trim();
+  if (!utt) {
+    resultEl.innerHTML = '<span style="color:#999;">Enter an utterance above.</span>';
+    return;
+  }
+  resultEl.textContent = 'Testing...';
+  try {
+    const r = await fetch('/api/precheck/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({utterance: utt}),
+    });
+    const resp = await r.json();
+    if (!r.ok) {
+      resultEl.innerHTML = '<span style="color:#d66;">' + escHtml(resp.error || ('HTTP ' + r.status)) + '</span>';
+      return;
+    }
+    const matches = !!resp.matches;
+    const reasons = Array.isArray(resp.via) ? resp.via : [];
+    const domains = Array.isArray(resp.domains) ? resp.domains : null;
+    let out = '<div style="color:' + (matches ? '#6c6' : '#d66') + ';font-weight:bold;">'
+      + (matches ? 'Recognised as a home command.' : 'Not recognised &mdash; falls to chitchat.')
+      + '</div>';
+    if (matches) {
+      out += '<div>Matched via: <code>' + reasons.map(escHtml).join('</code>, <code>') + '</code></div>';
+    }
+    if (domains && domains.length) {
+      out += '<div>Domain hints: <code>' + domains.map(escHtml).join('</code>, <code>') + '</code></div>';
+    }
+    resultEl.innerHTML = out;
+  } catch (e) {
+    resultEl.innerHTML = '<span style="color:#d66;">Error: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+async function cfgSaveCommandRecognition() {
+  const resultEl = document.getElementById('cfg-save-result-cmdrec');
+  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
+  const verbs = [];
+  document.querySelectorAll('#cfg-cmdrec-verbs .cfg-cmdrec-verb-row .cfg-cmdrec-verb').forEach(el => {
+    const v = (el.value || '').trim();
+    if (v) verbs.push(v);
+  });
+  const patterns = [];
+  document.querySelectorAll('#cfg-cmdrec-patterns .cfg-cmdrec-pattern-row .cfg-cmdrec-pattern').forEach(el => {
+    const p = (el.value || '').trim();
+    if (p) patterns.push(p);
+  });
+  try {
+    const r = await fetch('/api/config/disambiguation', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        extra_command_verbs: verbs,
+        extra_ambient_patterns: patterns,
+      }),
+    });
+    const resp = await r.json();
+    if (r.ok) {
+      if (resultEl) resultEl.textContent = '';
+      if (resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Changes saved.', 'success');
+      }
+    } else if (resultEl) {
+      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
+      resultEl.className = 'cfg-result err';
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
+  }
 }
 
 /* â”€â”€ Config form data collection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
