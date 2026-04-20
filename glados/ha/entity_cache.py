@@ -526,6 +526,8 @@ class EntityCache:
         source_area: str | None = None,
         opposing_token_pairs: list[tuple[str, str]] | list[list[str]] | None = None,
         twin_dedup: bool = True,
+        ignore_segments: bool = True,
+        segment_tokens: tuple[str, ...] | None = None,
     ) -> list[CandidateMatch]:
         """Fuzzy-match the user's query against entity names.
 
@@ -552,7 +554,11 @@ class EntityCache:
         if not _RAPIDFUZZ_AVAILABLE:
             # Without rapidfuzz we can only do exact-name matching.
             # This path exists so bare dev envs can import the module.
-            return self._exact_match_fallback(query, domain_filter, limit)
+            return self._exact_match_fallback(
+                query, domain_filter, limit,
+                ignore_segments=ignore_segments,
+                segment_tokens=segment_tokens,
+            )
 
         # Strip command verbs so we match on the entity-identifying part:
         # "activate the evening scene" -> "evening scene".
@@ -565,9 +571,33 @@ class EntityCache:
         # Detect which side(s) of any pair the user's utterance mentions;
         # the penalty then fires against candidates carrying the opposite.
         utterance_words = _utterance_words(query)
+        # Phase 8.3 follow-up — segment-entity filter for the fuzzy
+        # path. Operators address whole lamps or scenes, never raw
+        # segments. The semantic path has its own equivalent in
+        # `apply_device_diversity(ignore_segments=True)`. When True,
+        # any entity whose name or entity_id matches the configured
+        # segment tokens is skipped before fuzzy scoring runs.
+        _segment_re = None
+        if ignore_segments:
+            from glados.ha.semantic_index import (
+                DEFAULT_SEGMENT_TOKENS, _compile_segment_regex,
+            )
+            _tokens = segment_tokens or DEFAULT_SEGMENT_TOKENS
+            _segment_re = _compile_segment_regex(_tokens)
+
+        def _is_segment_entity(e: EntityState) -> bool:
+            if _segment_re is None:
+                return False
+            if _segment_re.search(e.friendly_name or ""):
+                return True
+            tail = e.entity_id.split(".", 1)[-1]
+            return bool(_segment_re.search(tail))
+
         scored: list[tuple[float, CandidateMatch]] = []
         for entity in self.snapshot():
             if domain_filter and entity.domain not in domain_filter:
+                continue
+            if _is_segment_entity(entity):
                 continue
             names = entity.searchable_names()
             if not names:
@@ -635,12 +665,29 @@ class EntityCache:
         query: str,
         domain_filter: list[str] | None,
         limit: int,
+        *,
+        ignore_segments: bool = True,
+        segment_tokens: tuple[str, ...] | None = None,
     ) -> list[CandidateMatch]:
         q = query.strip().lower()
+        _segment_re = None
+        if ignore_segments:
+            from glados.ha.semantic_index import (
+                DEFAULT_SEGMENT_TOKENS, _compile_segment_regex,
+            )
+            _segment_re = _compile_segment_regex(
+                segment_tokens or DEFAULT_SEGMENT_TOKENS,
+            )
         out: list[CandidateMatch] = []
         for entity in self.snapshot():
             if domain_filter and entity.domain not in domain_filter:
                 continue
+            if _segment_re is not None:
+                if _segment_re.search(entity.friendly_name or ""):
+                    continue
+                tail = entity.entity_id.split(".", 1)[-1]
+                if _segment_re.search(tail):
+                    continue
             for name in entity.searchable_names():
                 if name.lower() == q:
                     out.append(CandidateMatch(
