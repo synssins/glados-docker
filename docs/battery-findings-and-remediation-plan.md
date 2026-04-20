@@ -1,8 +1,59 @@
 # GLaDOS Test-Battery — Findings & Remediation Plan
 
-**Date:** 2026-04-19 overnight session; revised 2026-04-20 after operator feedback.
+**Date:** 2026-04-19 overnight session; revised 2026-04-20 after operator feedback; session-delivery log last updated 2026-04-20 late afternoon.
 **Trigger:** 435-utterance live battery against `a13e9bd` on 10.0.0.50. Pass rate 55.9% (243 PASS / 154 FAIL / 38 QUERY_OK), with systemic failures concentrated entirely on Tier 2.
-**Status:** plan approved in principle; awaiting final sign-off on this revision.
+**Status:** Phase 8.0 delivered + infrastructure cleanups beyond original scope; Phase 8.1–8.9 queued.
+
+---
+
+## -1. Session delivery log (2026-04-20)
+
+Work actually shipped in this session, in chronological order. Reference for Phase 8 status tracking + the commit trail.
+
+### Infrastructure
+
+- **Ollama-ipex full rip-and-reinstall on AIBox.** Old NSSM service removed, 16 GB install dir deleted, logs + env vars cleared. Fresh IPEX-LLM 2.3.0b20250725 nightly installed. B60 now stable (no repeat of the 50–90 s pathology) — operator's "it was cruft" call was correct.
+- **Models on B60 (ollama-ipex, port 11434):** `qwen3:8b` (5.2 GB Q4_K_M), `qwen3:14b` (9.3 GB Q4_K_M), `qwen2.5vl:7b` (6.0 GB Q4_K_M). Production operator-selected model is `qwen3:14b` as of session end.
+- **OpenWebUI deployed** as Docker container `open-webui` on port 3000 for out-of-GLaDOS manual testing.
+
+### Container fixes (all pushed, built, deployed to 10.0.0.50)
+
+| Commit | Subject |
+|---|---|
+| `a70889d` | fix(webui): `_send_error` returns JSON envelope so browser can surface pydantic validation detail |
+| `03f3d02` | docs: Phase 8 battery-findings + remediation plan |
+| `4d641c1` | feat(config): hot-reload engine on save so changes apply live |
+| `58a2876` | fix(config): all LLM consumers honor live settings (model-name sync + frozen-at-import module constants replaced with live helpers) |
+| `292e029` | fix(webui): hoist loguru import to module scope (validation errors were shadowed by NameError) |
+| `5170cc1` | fix(webui): consistent "Changes saved." toast on live-apply paths |
+| `1c409fc` | fix(chat): strip Qwen3 `<think>` reasoning from user-visible responses + single-element audio playback |
+| `666549b` | fix(config): cross-process engine reload via `/api/reload-engine` (WebUI 8052 → api_wrapper 8015) |
+| `4fb26b4` | fix(config): hot-reload releases HA audio_io port before rebuild |
+| `95b85f1` | fix(api_wrapper): `main()` loops across hot-reloads instead of exiting |
+| `4babbc0` | feat(config): every LLM consumer honors LLM & Services page — no hard-coded model names anywhere |
+| `9b88f03` | fix(chat): `renderChat()` is incremental — audio element persists across content chunks |
+
+### Engine-side changes (operator-editable, on-disk)
+
+- **Production preprompt rewritten** (`/app/configs/glados_config.yaml`).
+  - Added PRIME DIRECTIVE at top: never invent facts / narrate scenes / state current-tense activities for residents or pets.
+  - Removed all 6 few-shot examples that were being copy-pasted verbatim by the model ("We have both said a lot of things you're going to regret" etc.).
+  - Demoted household narrative: `Pet1 obsessed with oranges — peeling one summons him from anywhere. Infiltrates the cat room …` → `Pet1: likes oranges.`
+  - Added explicit forbidden-phrase rule + "Use Aperture terminology as flavor, not factual location."
+  - Old preprompt preserved at `glados_config.yaml.bak.20260420_preprompt`.
+
+### What this means for the original Phase 8 plan
+
+- **Phase 8.0 COMPLETE** (in a stronger form than originally scoped — did the model swap AND solved the entire live-config-apply infrastructure chain end-to-end, fixed a cascade of four related bugs that surfaced, and fixed the audio playback regression discovered in passing).
+- **Phase 8.1–8.9 NOT STARTED** — queued and unchanged.
+
+Three new tracks surfaced during the session that weren't in the original plan:
+
+- **Phase 8.10 — TTS pronunciation polish** (new). Piper/Speaches mispronounces "AI" as "Aye" not "Aye Eye"; "live" vowel length wrong in some contexts; punctuation occasionally yields zero-gap word collision. Two attack surfaces: preprompt-side abbreviation expansion, Piper-side lexicon/SSML.
+- **Phase 8.11 — Live audio streaming** (new). Server currently buffers ~3 s of TTS audio before emitting the streaming URL; first playback starts ~1.5–3 s after TTS begins. Operator wants closer-to-zero first-chunk latency — stream byte-by-byte instead of chunk-gated.
+- **Phase 8.12 — SSL live-apply + HTTPS redirect + HTTP/HTTPS port split** (new). Certificate upload still says "restart container to activate HTTPS." Should hot-reload the TLS context. Non-HTTPS access should 301 to HTTPS when a valid cert is present. Port convention: 8052 HTTP (redirect), 8053 HTTPS.
+
+---
 
 > **Non-negotiable outcome:** natural-language home control must work reliably on the operator's actual house. "Works on the demo phrase" is not success.
 
@@ -133,20 +184,22 @@ Container runs on CPU. Qwen3-8B runs on whatever host the operator points the `c
 
 Each phase re-runs the 435-test battery AND `home-assistant-datasets` before merging. Phase gate: PASS rate improves ≥10 percentage points over the prior run on whichever benchmark the phase targets, OR the phase is reverted and re-planned.
 
-### Phase 8.0 — Unified Qwen3-8B via external Ollama (1 day)
+### Phase 8.0 — Unified Qwen3 via external Ollama (COMPLETE, 2026-04-20)
 
-**Problem fixed:** two-model plumbing; 3B rewriter drift; 14B disambiguator latency; Ollama-side grammar flakiness (bypassed by native tool-calling).
+**Problem fixed:** two-model plumbing (14B disambiguator + 3B rewriter); Qwen2.5-3B persona drift (German/Thai leakage, verb-polarity flips, cross-turn contamination); no live-apply on config saves.
 
-**Work (container-side only):**
-- Delete the 3B rewriter code path (`glados/persona/rewriter.py` callers removed from Tier 1, Tier 2, and chat SSE paths; file retained for legacy test coverage until Phase 8.8 lands).
-- Remove the "persona rewriter URL" env/config plumbing.
-- Wire Qwen3-native Hermes tool-calling: disambiguator prompt reshaped to use the model's built-in `<tools>` block, expecting `<tool_call>{...}</tool_call>` output.
-- Keep the `a13e9bd` tolerant-parse layer as a safety net (Qwen3's JSON is near-100% valid, but "near" is not "always").
-- WebUI LLM & Services page (already live) is the sole operator-facing control for model + URL. No code change needed there.
+**Shipped beyond the original scope:**
+- Ollama-ipex rip-and-reinstall on B60. `qwen3:8b`, `qwen3:14b`, `qwen2.5vl:7b` pulled. Operator selects which via LLM & Services.
+- Engine hot-reload via `/api/reload-engine`. Four stacked bugs unblocked ([`a70889d`], [`4d641c1`], [`666549b`], [`4fb26b4`], [`95b85f1`]). Config saves now apply live with no container restart.
+- Model-name sync from `services.yaml` → `glados_config.yaml` ([`58a2876`]).
+- `cfg.service_model()` helper ([`4babbc0`]) — every LLM consumer (chat, Tier 2 disambiguator, persona rewriter, autonomy subagents, observer judgment, doorbell screener) resolves through the operator's LLM & Services selection. No hard-coded model names anywhere. Dataclass defaults that previously said `gpt-4o-mini` are now required fields — fail loud instead of silently routing to OpenAI.
+- Preprompt rewritten to kill confabulation source: PRIME DIRECTIVE + few-shots removed + household narrative demoted.
+- Qwen3 `<think>` reasoning stripped from user-visible text ([`1c409fc`]).
+- Audio playback regression fixed (incremental `renderChat`) ([`9b88f03`]).
 
-**Operator-side (documented, not a container task):** in WebUI, change the Ollama model selection to `qwen3:8b-instruct-q4_K_M`. The container picks it up.
+**Outcome measured:** chat responses are in-character Qwen3-14B output with no scene confabulation, no German/Thai drift, no "regret" copy-paste; audio controls are a single persistent element; config saves take effect on the next request.
 
-**Success:** end-to-end latency for simple device commands drops from 15–45 s to under 5 s. Language drift in verbal responses drops to near zero. Re-runs of the battery and `home-assistant-datasets` produce the new baseline.
+**Pending within 8.0 scope:** 3B rewriter code path still imported but unused. Deletion deferred to Phase 8.7 when the response composer replaces it entirely. Native Qwen3 Hermes tool-calling still uses the `a13e9bd` tolerant parser — fine to keep as a safety net.
 
 ---
 
@@ -348,6 +401,58 @@ Output grammar-constrained (Qwen3 native) to English only, no JSON wrapping.
 - Harness verifies state actually changed to *match* the expected direction, not just "changed."
 - Adopt `home-assistant-datasets` as parallel benchmark (§0 requirement). Add the adapter layer that translates their YAML scenario format to our harness rows.
 - Wire CI: a 30-test sanity subset runs on every PR; full battery + `home-assistant-datasets` runs nightly.
+
+---
+
+---
+
+### Phase 8.10 — TTS pronunciation polish (surfaced 2026-04-20, P3)
+
+**Problem observed:** Piper (via Speaches TTS) mispronounces common short terms in GLaDOS replies. Specific operator-flagged cases: "AI" pronounced as "Aye" instead of "Aye Eye"; "live" (the verb) given the short-i vowel when the long-i was wanted. Punctuation sometimes yields zero-gap word collision (text-to-phoneme boundary issue).
+
+**Two attack surfaces:**
+
+1. **LLM-side expansion (container-scope).** Strengthen SPEECH RULES in the preprompt with explicit examples: `AI → "Aye Eye"`, `HA → "Home Assistant"`, percent signs spelled, and so on. Catch the common cases before they reach TTS. Low cost, maintainable via the Personality WebUI page.
+
+2. **TTS-side lexicon (Piper / Speaches scope).** Custom pronunciation dictionary per Piper voice (supported via `.espeak-ng` lexicon or Piper's phoneme override config). Handles homographs ("live" / "lead" / "read") and abbreviations. Edits live on the Speaches/Piper side, outside this container. The GLaDOS container's job is to emit well-formed text; it does not own phoneme-level rendering.
+
+**Success:** in a 20-utterance sample, zero mispronunciations of operator-flagged terms. Punctuation pacing sounds natural.
+
+**Cost:** ~100 LOC preprompt edits + operator-side Piper lexicon work (not in container).
+
+---
+
+### Phase 8.11 — Live streaming TTS (surfaced 2026-04-20, P2)
+
+**Problem observed:** current chat flow emits the streaming audio URL to the client only after `~3 s of TTS has buffered` on the server (see `streaming_tts_buffer_seconds: 3.0` in `glados_config.yaml`). First audible byte lands ~1.5–3 s after TTS begins. Operator wants closer to zero first-chunk latency — audio playback starts as soon as the first sentence's first chunk is rendered, not after a buffer is met.
+
+**Work:**
+
+- **Server side.** Replace the 3 s buffer gate with an immediate streaming-URL emission. `/chat_audio_stream/<request_id>` already supports serving chunks as they're generated. The buffer is there to absorb TTS jitter — alternatives: dynamic buffer (start shorter, grow only on underrun), or Range + chunked-transfer-encoding with partial-content semantics so the browser keeps the connection open.
+- **Per-sentence TTS dispatch.** `llm_processor._process_sentence_for_tts` already batches sentences for TTS (`MIN_TTS_FLUSH_CHARS: int = 150` in llm_processor.py). Lower that threshold to ~40–60 characters for streaming-mode so the first sentence fires sooner. Accept the extra TTS call overhead (cost: ~50 ms prep per call, parallel-able).
+- **Client side.** The `<audio controls>` already handles partial-content / streaming responses correctly now that [`9b88f03`] made it the single persistent element. No client changes needed unless the browser's default buffering is the bottleneck (then `preload="auto"` and small seek hints).
+- **Make the buffer target operator-configurable** via the Audio & Speakers page. Default 0.5–1.0 s; operators with slow TTS or flaky networks can raise it.
+
+**Success:** TTFB-audio (time from user send to first audible byte) drops from ~5–8 s current to ~2–3 s. Streaming playback handles underruns gracefully (no clicks / repeat chunks).
+
+**Cost:** ~250 LOC server, ~50 LOC config knob + WebUI slider.
+
+---
+
+### Phase 8.12 — SSL live-apply + HTTPS redirect + port split (surfaced 2026-04-20, P2)
+
+**Problem observed:** operator uploads / renews a TLS cert via the SSL page → toast says *"Certificate uploaded. Restart container to activate HTTPS."* Visiting the plain-HTTP URL doesn't auto-301 to HTTPS once a cert is present. The container uses port 8052 for HTTPS only — there's no plaintext listener that could redirect.
+
+**Work:**
+
+1. **Live TLS reload.** The server currently constructs an `SSLContext` once at startup and wraps the socket. Python's `ssl.SSLContext.load_cert_chain()` can be called on a running context to swap in new cert/key material; subsequent connections pick it up. After a cert save, call `ctx.load_cert_chain(new_cert, new_key)` in-place and update the WebUI toast to "Certificate applied."
+2. **HTTP → HTTPS 301 redirect.** Second listener on a separate port (default 8052 HTTP, 8053 HTTPS per operator preference; docker-compose env). The HTTP listener serves one handler — `301 Location: https://host:8053/<path>` for every request. Cheap; fewer than 30 LOC.
+3. **WebUI port config.** Ports are already env-driven via `SERVE_PORT` / a new `SERVE_HTTPS_PORT`. Docker-compose yaml controls them per the operator's note (no WebUI toggle needed for plumbing this low-level).
+4. **Cert upload & renewal flows** (certbot DNS-01 via Cloudflare is already wired): both trigger the live-reload path.
+
+**Success:** operator uploads cert → toast "Certificate applied." → visiting `http://host:8052/` returns 301 → browser lands on `https://host:8053/` with the new cert. No container restart needed.
+
+**Cost:** ~200 LOC (reload + redirect listener + small WebUI copy updates).
 
 ---
 
