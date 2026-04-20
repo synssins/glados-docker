@@ -2079,6 +2079,8 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_get_startup_speakers()
         elif self.path == "/api/force-emotion":
             self._handle_get_force_emotion_presets()
+        elif self.path == "/api/semantic/status":
+            self._handle_semantic_status()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
 
@@ -2099,6 +2101,10 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_reload_engine()
         elif self.path == "/api/reload-disambiguation-rules":
             self._handle_reload_disambiguation_rules()
+        elif self.path == "/api/semantic/test":
+            self._handle_semantic_test()
+        elif self.path == "/api/semantic/rebuild":
+            self._handle_semantic_rebuild()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
 
@@ -2143,6 +2149,154 @@ class APIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Reload-disambiguation-rules failed")
             self._send_json({"ok": False, "error": str(exc)}, 500)
+
+    # ── Phase 8.3.5 — semantic retrieval inspection + control ──
+
+    def _handle_semantic_status(self) -> None:
+        """Return the current SemanticIndex state for the WebUI
+        Candidate retrieval card: availability, entity count, on-disk
+        file info, plus last build timestamp when known."""
+        try:
+            from glados.intent import get_disambiguator
+            from glados.ha.semantic_index import (
+                DEFAULT_INDEX_PATH, DEFAULT_MODEL_PATH,
+                DEFAULT_TOKENIZER_PATH, is_semantic_retrieval_available,
+            )
+            d = get_disambiguator()
+            idx = getattr(d, "_semantic_index", None) if d else None
+            info: dict[str, Any] = {
+                "deps_available": is_semantic_retrieval_available(),
+                "model_path": DEFAULT_MODEL_PATH,
+                "tokenizer_path": DEFAULT_TOKENIZER_PATH,
+                "index_path": DEFAULT_INDEX_PATH,
+                "index_present": bool(idx),
+                "ready": False,
+                "size": 0,
+                "file_size_bytes": None,
+                "file_mtime": None,
+            }
+            if idx is not None:
+                info["ready"] = bool(idx.is_ready())
+                info["size"] = int(idx.size())
+                try:
+                    p = Path(idx._index_path)
+                    if p.exists():
+                        st = p.stat()
+                        info["file_size_bytes"] = int(st.st_size)
+                        info["file_mtime"] = int(st.st_mtime)
+                except Exception:  # noqa: BLE001
+                    pass
+            self._send_json(info)
+        except Exception as exc:
+            logger.exception("semantic/status failed")
+            self._send_json({"error": {"message": str(exc)}}, 500)
+
+    def _handle_semantic_test(self) -> None:
+        """Run a query against the semantic retriever and return both
+        the raw cosine top-K and the device-diversity-filtered top-K.
+        Lets the operator see what the retriever + filter would hand
+        to the planner for any utterance."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b"{}"
+            data = json.loads(body)
+        except Exception as exc:
+            self._send_json({"error": {"message": f"bad JSON: {exc}"}}, 400)
+            return
+        query = str(data.get("query") or "").strip()
+        k = int(data.get("k") or 8)
+        if not query:
+            self._send_json({"error": {"message": "query required"}}, 400)
+            return
+        try:
+            from glados.intent import get_disambiguator
+            from glados.ha.semantic_index import (
+                DEFAULT_SEGMENT_TOKENS, apply_device_diversity,
+            )
+            d = get_disambiguator()
+            idx = getattr(d, "_semantic_index", None) if d else None
+            if idx is None or not idx.is_ready():
+                self._send_json(
+                    {"error": {"message": "semantic index not ready"}},
+                    503,
+                )
+                return
+            # Raw cosine pool (larger than k so the diversity filter
+            # has room to drop siblings without leaving k short).
+            raw = idx.retrieve(query, k=max(k, 30))
+            # Merge operator extras with shipped defaults for the
+            # diversity pass — same behavior the disambiguator uses.
+            rules = getattr(d, "_rules", None)
+            extras = tuple(
+                getattr(rules, "extra_segment_tokens", []) or ()
+            )
+            filtered = apply_device_diversity(
+                raw,
+                utterance=query,
+                top_k=k,
+                segment_tokens=DEFAULT_SEGMENT_TOKENS + extras,
+                cache=idx._cache,
+            )
+            def _serialize(h: Any, *, dropped: bool = False) -> dict[str, Any]:
+                return {
+                    "entity_id": h.entity_id,
+                    "score": round(float(h.score), 4),
+                    "device_id": h.device_id,
+                    "document": h.document[:200],
+                    "kept": not dropped,
+                }
+            kept_ids = {h.entity_id for h in filtered}
+            self._send_json({
+                "query": query,
+                "raw_pool_size": len(raw),
+                "top_k": k,
+                "segment_tokens": list(DEFAULT_SEGMENT_TOKENS + extras),
+                "kept": [_serialize(h) for h in filtered],
+                "dropped_by_diversity": [
+                    _serialize(h, dropped=True)
+                    for h in raw if h.entity_id not in kept_ids
+                ][:k],
+            })
+        except Exception as exc:
+            logger.exception("semantic/test failed")
+            self._send_json({"error": {"message": str(exc)}}, 500)
+
+    def _handle_semantic_rebuild(self) -> None:
+        """Force a rebuild of the SemanticIndex on a background
+        thread. Returns immediately; the card polls /status to see
+        when size / mtime update."""
+        try:
+            from glados.intent import get_disambiguator
+            d = get_disambiguator()
+            idx = getattr(d, "_semantic_index", None) if d else None
+            if idx is None:
+                self._send_json(
+                    {"error": {"message": "semantic index not initialised"}},
+                    503,
+                )
+                return
+
+            def _rebuild() -> None:
+                try:
+                    n = idx.build()
+                    if n > 0:
+                        idx.persist()
+                    logger.info(
+                        "SemanticIndex rebuild requested via WebUI: {} entities",
+                        n,
+                    )
+                except Exception:
+                    logger.exception("SemanticIndex rebuild failed")
+
+            threading.Thread(
+                target=_rebuild,
+                name="SemanticIndexRebuild",
+                daemon=True,
+            ).start()
+            self._send_json({"ok": True, "rebuild": "started"})
+        except Exception as exc:
+            logger.exception("semantic/rebuild failed")
+            self._send_json({"error": {"message": str(exc)}}, 500)
 
     def _handle_reload_engine(self) -> None:
         """Hot-swap the engine in THIS process. Called by the WebUI process

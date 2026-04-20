@@ -987,10 +987,20 @@ class Disambiguator:
                 is_ready = False
             if is_ready:
                 try:
+                    # Phase 8.3.5 — thread operator-supplied extra
+                    # segment tokens through the retriever so the
+                    # device-diversity filter recognises house-
+                    # specific strip naming conventions.
+                    from glados.ha.semantic_index import (
+                        DEFAULT_SEGMENT_TOKENS,
+                    )
+                    extras = tuple(self._rules.extra_segment_tokens or ())
+                    tokens = DEFAULT_SEGMENT_TOKENS + extras
                     hits = sem.retrieve_for_planner(
                         utterance,
                         k=cand_limit,
                         domain_filter=domain_hint,
+                        segment_tokens=tokens,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(

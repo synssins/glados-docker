@@ -317,6 +317,13 @@ class DisambiguationRules:
     # contract). Invalid regexes are logged and skipped.
     extra_command_verbs: list[str] = field(default_factory=list)
     extra_ambient_patterns: list[str] = field(default_factory=list)
+    # Phase 8.3.5 — extra segment tokens used by the device-diversity
+    # filter on top-K retrieval. Merged additively with the shipped
+    # defaults (seg, segment, zone, channel, strip, group, head).
+    # Edited via the Disambiguation rules WebUI card. Typical
+    # addition for operators with LED strips that name segments
+    # unconventionally (e.g. 'pixel' on some WLED configs).
+    extra_segment_tokens: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +451,13 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
         rules.extra_ambient_patterns = [
             str(s) for s in ep if isinstance(s, str) and s.strip()
         ]
+    st = raw.get("extra_segment_tokens")
+    if isinstance(st, list):
+        rules.extra_segment_tokens = [
+            str(t).strip().lower()
+            for t in st
+            if isinstance(t, str) and t.strip()
+        ]
     return rules
 
 
@@ -464,6 +478,7 @@ def rules_to_dict(rules: DisambiguationRules) -> dict[str, Any]:
         "twin_dedup": bool(rules.twin_dedup),
         "extra_command_verbs": list(rules.extra_command_verbs),
         "extra_ambient_patterns": list(rules.extra_ambient_patterns),
+        "extra_segment_tokens": list(rules.extra_segment_tokens),
     }
 
 
