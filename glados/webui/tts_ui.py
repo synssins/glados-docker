@@ -1326,12 +1326,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "ok"})
             return
 
-        # Main page and TTS/Chat routes are public
-        if self.path in ("/", "/index.html") or _is_public_route(self.path):
+        # Security fix (2026-04-20) — the menu rebuild made `/` serve
+        # the full single-page admin app including the Configuration
+        # tabs. Previously `/` was treated as public because the chat
+        # page lived there alone; now it fronts every protected page
+        # in the SPA. Require auth for `/` and `/index.html` — the
+        # login page redirects here after a successful POST so the
+        # session cookie is already set for real admin users.
+        if self.path in ("/", "/index.html"):
+            if not self._require_auth():
+                return
             self._dispatch_get()
             return
 
-        # Protected routes â€” require auth
+        # API endpoints explicitly allow-listed as public (chat
+        # streaming, TTS generator, audio file fetches, health).
+        # Everything else requires auth.
+        if _is_public_route(self.path):
+            self._dispatch_get()
+            return
+
         if not self._require_auth():
             return
         self._dispatch_get()
