@@ -1488,6 +1488,35 @@ def _stream_chat_sse_impl(
             insert_idx += 1
         messages.insert(insert_idx, {"role": "system", "content": weather_prompt})
 
+    # Inject long-term memory context (household facts, explicit
+    # memories) — same pattern as weather, scoped to the current
+    # user message. The engine's own non-streaming response path
+    # already does this via context_builder; the streaming SSE
+    # path previously didn't, which is why name-referenced facts
+    # like "Who is ResidentB?" came back empty even though the facts
+    # were stored in ChromaDB.
+    try:
+        memory_ctx = getattr(glados, "memory_context", None)
+        if memory_ctx is not None:
+            memory_prompt = memory_ctx.as_prompt(user_message)
+            if memory_prompt:
+                insert_idx = 0
+                while (
+                    insert_idx < len(messages)
+                    and messages[insert_idx].get("role") == "system"
+                ):
+                    insert_idx += 1
+                messages.insert(
+                    insert_idx,
+                    {"role": "system", "content": memory_prompt},
+                )
+                logger.debug(
+                    "[{}] Memory context injected: {:.80}",
+                    request_id, memory_prompt,
+                )
+    except Exception as _mem_exc:
+        logger.debug("[{}] Memory context skipped: {}", request_id, _mem_exc)
+
     # Inject emotional state directive as the LAST system message before the user turn
     # This ensures it's the most recent context GLaDOS reads before generating
     try:
