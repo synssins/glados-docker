@@ -347,13 +347,86 @@ class SemanticIndex:
             return None
         return self._embedder
 
-    # Build / retrieve / persist / load — land in Phase 8.3.2.
-    # Skeleton stubs here so downstream callers can import the shape.
+    # ── Build / retrieve / persist / load (Phase 8.3.2) ─────────
 
-    def build(self) -> int:
-        """Re-embed every entity currently in the cache. Returns the
-        count embedded. Phase 8.3.2 implementation pending."""
-        raise NotImplementedError("SemanticIndex.build lands in Phase 8.3.2")
+    # Versions feed the on-disk header so a stale persisted index
+    # from a previous container version gets rejected cleanly
+    # instead of silently feeding the retriever mis-shaped data.
+    _SCHEMA_VERSION = "v1"
+    _DOC_VERSION = "doc-v1"
+    _MODEL_NAME = "bge-small-en-v1.5"
+    _INDEX_HEADER = f"{_SCHEMA_VERSION}|{_MODEL_NAME}|{_DOC_VERSION}"
+
+    def build(self, *, batch_size: int = 32) -> int:
+        """Re-embed every entity currently in the cache.
+
+        Synchronous; callers that don't want to block should run this
+        on a background thread. Returns the count of entities
+        embedded. Clears any previously-loaded index atomically at
+        the end — the old data remains queryable until the new batch
+        finishes."""
+        embedder = self._ensure_embedder()
+        if embedder is None:
+            return 0
+        snap = self._cache.snapshot()
+        if not snap:
+            logger.info("SemanticIndex.build: cache empty, nothing to embed")
+            return 0
+
+        ids: list[str] = []
+        documents: list[str] = []
+        device_ids: list[str | None] = []
+        for entity in snap:
+            area_name = (
+                self._area_names.get(entity.area_id or "")
+                if entity.area_id else None
+            )
+            floor_id = (
+                self._area_floor.get(entity.area_id or "")
+                if entity.area_id else None
+            )
+            floor_name = (
+                self._floor_names.get(floor_id or "")
+                if floor_id else None
+            )
+            device_id = getattr(entity, "device_id", None)
+            device_name = (
+                self._device_names.get(device_id or "")
+                if device_id else None
+            )
+            doc = build_entity_document(
+                friendly_name=entity.friendly_name or "",
+                entity_id=entity.entity_id,
+                domain=entity.domain,
+                device_class=entity.device_class,
+                area_name=area_name,
+                floor_name=floor_name,
+                device_name=device_name,
+                aliases=entity.aliases,
+            )
+            ids.append(entity.entity_id)
+            documents.append(doc)
+            device_ids.append(device_id if device_id else None)
+
+        # Batch to keep peak memory bounded on large houses.
+        chunks: list[Any] = []
+        for i in range(0, len(documents), batch_size):
+            chunk = documents[i : i + batch_size]
+            chunks.append(embedder.embed(chunk, is_query=False))
+        embeddings = (
+            np.vstack(chunks) if len(chunks) > 1 else chunks[0]
+        )
+
+        with self._lock:
+            self._entity_ids = ids
+            self._documents = documents
+            self._device_ids = device_ids
+            self._embeddings = embeddings
+        logger.info(
+            "SemanticIndex.build: embedded {} entities (dim={})",
+            len(ids), _EMBED_DIM,
+        )
+        return len(ids)
 
     def retrieve(
         self,
@@ -362,18 +435,150 @@ class SemanticIndex:
         k: int = 8,
         domain_filter: list[str] | None = None,
     ) -> list[SemanticHit]:
-        """Return the top-k semantically-closest entity hits. Phase
-        8.3.2 implements this; 8.3.3 wraps it with device-diversity
-        filtering."""
-        raise NotImplementedError("SemanticIndex.retrieve lands in Phase 8.3.2")
+        """Return the top-k semantically-closest entity hits.
+
+        Raw cosine ranking only — the device-diversity filter added
+        in Phase 8.3.3 wraps this to enforce the operator's
+        non-negotiable gates before the results reach the planner.
+        Callers that want the full "safe" retrieval should use
+        `retrieve_for_planner` (added in 8.3.3) instead."""
+        if not query or not query.strip():
+            return []
+        with self._lock:
+            embeddings = self._embeddings
+            ids = list(self._entity_ids)
+            documents = list(self._documents)
+            device_ids = list(self._device_ids)
+        if embeddings is None or len(ids) == 0:
+            return []
+        embedder = self._ensure_embedder()
+        if embedder is None:
+            return []
+
+        q_vec = embedder.embed([query], is_query=True)[0]
+        # Both sides L2-normalized → dot == cosine in [-1, 1].
+        sims = embeddings @ q_vec
+
+        # Domain filter by entity_id prefix — cheap, avoids re-
+        # embedding or keeping a parallel domain array.
+        if domain_filter:
+            allowed = set(domain_filter)
+            mask = np.array(
+                [i.split(".", 1)[0] in allowed for i in ids],
+                dtype=bool,
+            )
+            # Mark non-matching positions as -inf so they never
+            # surface; doesn't mutate the stored embeddings.
+            sims = np.where(mask, sims, -np.inf)
+
+        # Argpartition for top-k; final sort orders by score desc.
+        # Clamp k to the filtered size.
+        available = int(np.isfinite(sims).sum())
+        take = min(k, available)
+        if take <= 0:
+            return []
+        top_idx = np.argpartition(-sims, take - 1)[:take]
+        top_idx = top_idx[np.argsort(-sims[top_idx])]
+        return [
+            SemanticHit(
+                entity_id=ids[i],
+                score=float(sims[i]),
+                document=documents[i],
+                device_id=device_ids[i],
+            )
+            for i in top_idx
+        ]
 
     def persist(self) -> bool:
-        """Save embeddings + parallel metadata to disk. Idempotent."""
-        raise NotImplementedError("SemanticIndex.persist lands in Phase 8.3.2")
+        """Save embeddings + parallel metadata to disk. Returns True
+        on success. Safe to call when the index is empty — nothing
+        is written. Uses npz_compressed for a ~2:1 size win."""
+        with self._lock:
+            if self._embeddings is None or not self._entity_ids:
+                return False
+            ids = list(self._entity_ids)
+            documents = list(self._documents)
+            device_ids = [d or "" for d in self._device_ids]
+            embeddings = self._embeddings
+        try:
+            self._index_path.parent.mkdir(parents=True, exist_ok=True)
+            # np.savez_compressed auto-appends `.npz` when the target
+            # filename lacks that suffix — so our tmp has to already
+            # end in `.npz` to avoid a mangled filename that never
+            # shows up at the rename target. Format: `<stem>.tmp.npz`.
+            tmp = self._index_path.parent / (
+                self._index_path.stem + ".tmp.npz"
+            )
+            np.savez_compressed(
+                str(tmp),
+                header=np.array(self._INDEX_HEADER),
+                embeddings=embeddings,
+                entity_ids=np.array(ids, dtype=object),
+                documents=np.array(documents, dtype=object),
+                device_ids=np.array(device_ids, dtype=object),
+            )
+            tmp.replace(self._index_path)
+            logger.info(
+                "SemanticIndex.persist: wrote {} entities to {}",
+                len(ids), self._index_path,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SemanticIndex.persist failed: {}", exc,
+            )
+            return False
 
     def load(self) -> bool:
-        """Restore a persisted index. Returns True on success."""
-        raise NotImplementedError("SemanticIndex.load lands in Phase 8.3.2")
+        """Restore a persisted index. Returns True on success. False
+        means the caller should call `build()` to regenerate — the
+        file is missing, from an incompatible schema, or corrupt."""
+        if not self._index_path.exists():
+            return False
+        try:
+            with np.load(self._index_path, allow_pickle=True) as data:
+                header = str(data["header"])
+                if header != self._INDEX_HEADER:
+                    logger.info(
+                        "SemanticIndex.load: header mismatch "
+                        "(disk={!r}, expected={!r}), rebuilding",
+                        header, self._INDEX_HEADER,
+                    )
+                    return False
+                embeddings = data["embeddings"]
+                ids = [str(x) for x in data["entity_ids"]]
+                documents = [str(x) for x in data["documents"]]
+                device_ids = [
+                    (str(x) if x else None)
+                    for x in data["device_ids"]
+                ]
+            if embeddings.shape[0] != len(ids):
+                logger.warning(
+                    "SemanticIndex.load: shape mismatch "
+                    "(embeddings={}, ids={}), rebuilding",
+                    embeddings.shape, len(ids),
+                )
+                return False
+            with self._lock:
+                self._embeddings = embeddings.astype(np.float32)
+                self._entity_ids = ids
+                self._documents = documents
+                self._device_ids = device_ids
+            logger.info(
+                "SemanticIndex.load: restored {} entities from {}",
+                len(ids), self._index_path,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SemanticIndex.load failed: {}", exc,
+            )
+            return False
+
+    def size(self) -> int:
+        """Number of entities currently indexed."""
+        with self._lock:
+            return len(self._entity_ids)
 
 
 __all__ = [

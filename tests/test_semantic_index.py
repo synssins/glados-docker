@@ -193,18 +193,227 @@ class TestRegistryApply:
         assert n == 2
         assert idx._floor_names["main"] == "Main Floor"
 
-    def test_build_is_skeleton_in_this_commit(self) -> None:
-        # Explicit check that 8.3.1 ships a stub; 8.3.2 fills it in.
-        # This catches accidental early use by callers.
+    def test_build_without_embedder_returns_zero(self) -> None:
+        # When the model files don't exist, build() short-circuits
+        # to 0 instead of raising — the retriever silently disables
+        # and the disambiguator falls back to fuzzy matching. This
+        # is the CI path (no BGE-small on disk).
         idx = SemanticIndex(
             _StubCache(),
             model_path="/nonexistent/model.onnx",
             tokenizer_path="/nonexistent/tok.json",
         )
-        with pytest.raises(NotImplementedError):
-            idx.build()
-        with pytest.raises(NotImplementedError):
-            idx.retrieve("anything")
+        assert idx.build() == 0
+        # Retrieve returns empty when no embedder loaded.
+        assert idx.retrieve("desk lamp") == []
+
+
+# ──────────────────────────────────────────────────────────────
+# Phase 8.3.2 — build / retrieve / persist / load with stub embedder
+# ──────────────────────────────────────────────────────────────
+#
+# The real BGE-small produces 384-d embeddings; for unit tests we
+# inject a tiny 4-d feature-based stub so retrieval ordering is
+# deterministic and the embedder file isn't needed. The stub has
+# features for {desk, lamp, office, kitchen} — enough to verify
+# the query-document similarity path orders correctly.
+
+class _StubEmbedder:
+    dim = 4
+
+    def embed(self, texts, is_query=False):  # noqa: ARG002
+        import numpy as np
+        vocab = ("desk", "lamp", "office", "kitchen")
+        out = []
+        for t in texts:
+            t = t.lower()
+            v = np.array(
+                [1.0 if w in t else 0.0 for w in vocab],
+                dtype=np.float32,
+            )
+            n = np.linalg.norm(v)
+            v = v / n if n > 0 else np.ones(4, dtype=np.float32) / 2
+            out.append(v)
+        return np.array(out)
+
+
+class _Entity:
+    """Minimal EntityState-compatible object for index tests."""
+    def __init__(
+        self, entity_id, friendly_name, *,
+        domain=None, device_class=None, area_id=None,
+        device_id=None, aliases=None,
+    ) -> None:
+        self.entity_id = entity_id
+        self.friendly_name = friendly_name
+        self.domain = domain or entity_id.split(".", 1)[0]
+        self.device_class = device_class
+        self.area_id = area_id
+        self.device_id = device_id
+        self.aliases = aliases or []
+
+
+class _CacheWithEntities:
+    def __init__(self, entities):
+        self._entities = list(entities)
+
+    def snapshot(self):
+        return list(self._entities)
+
+
+@pytest.fixture
+def _stub_idx(tmp_path, monkeypatch):
+    """SemanticIndex wired to a stub embedder + temp index file."""
+    pytest.importorskip("numpy")
+    cache = _CacheWithEntities([
+        _Entity("light.task_lamp_one",
+                "Office Desk Monitor Lamp",
+                area_id="office", device_id="dev_desk"),
+        _Entity("light.kitchen_ceiling",
+                "Kitchen Ceiling Light",
+                area_id="kitchen", device_id="dev_kitchen"),
+        _Entity("light.living_arc_lamp",
+                "Living Arc Lamp",
+                area_id="living", device_id="dev_arc"),
+    ])
+    idx = SemanticIndex(
+        cache,
+        model_path="/nonexistent/model.onnx",
+        tokenizer_path="/nonexistent/tok.json",
+        index_path=tmp_path / "entity_embeddings.npz",
+    )
+    idx.apply_area_registry([
+        {"area_id": "office", "name": "Office", "floor_id": "main"},
+        {"area_id": "kitchen", "name": "Kitchen", "floor_id": "main"},
+        {"area_id": "living", "name": "Living Room", "floor_id": "main"},
+    ])
+    # Inject the stub directly — bypass _ensure_embedder's file check.
+    monkeypatch.setattr(idx, "_ensure_embedder", lambda: _StubEmbedder())
+    return idx
+
+
+class TestBuild:
+    def test_build_embeds_every_entity_in_cache(self, _stub_idx) -> None:
+        n = _stub_idx.build()
+        assert n == 3
+        assert _stub_idx.size() == 3
+
+    def test_build_captures_documents_in_sync(self, _stub_idx) -> None:
+        _stub_idx.build()
+        # Internal invariant: parallel arrays stay aligned.
+        assert len(_stub_idx._entity_ids) == len(_stub_idx._documents)
+        assert len(_stub_idx._entity_ids) == len(_stub_idx._device_ids)
+        # Documents include the area from the registry join.
+        docs = _stub_idx._documents
+        assert any("area=Office" in d for d in docs)
+        assert any("area=Kitchen" in d for d in docs)
+
+    def test_build_captures_device_ids(self, _stub_idx) -> None:
+        _stub_idx.build()
+        dev_map = dict(zip(_stub_idx._entity_ids, _stub_idx._device_ids))
+        assert dev_map["light.task_lamp_one"] == "dev_desk"
+        assert dev_map["light.kitchen_ceiling"] == "dev_kitchen"
+
+
+class TestRetrieve:
+    def test_desk_lamp_ranks_office_first(self, _stub_idx) -> None:
+        _stub_idx.build()
+        hits = _stub_idx.retrieve("desk lamp", k=3)
+        assert len(hits) == 3
+        assert hits[0].entity_id == "light.task_lamp_one"
+        # Score should be high (exact feature match = dot ~1.0).
+        assert hits[0].score > 0.7
+
+    def test_kitchen_ranks_kitchen_first(self, _stub_idx) -> None:
+        _stub_idx.build()
+        hits = _stub_idx.retrieve("kitchen", k=3)
+        assert hits[0].entity_id == "light.kitchen_ceiling"
+
+    def test_domain_filter_excludes_other_domains(self, _stub_idx) -> None:
+        _stub_idx.build()
+        hits = _stub_idx.retrieve(
+            "desk lamp", k=3, domain_filter=["switch"],
+        )
+        # All entities in the fixture are `light.*` so filtering to
+        # `switch` returns nothing.
+        assert hits == []
+
+    def test_empty_query_returns_empty(self, _stub_idx) -> None:
+        _stub_idx.build()
+        assert _stub_idx.retrieve("") == []
+        assert _stub_idx.retrieve("   ") == []
+
+    def test_retrieve_before_build_returns_empty(self, _stub_idx) -> None:
+        # No build() call → no embeddings → empty result.
+        assert _stub_idx.retrieve("desk lamp") == []
+
+    def test_hit_carries_document_and_device_id(self, _stub_idx) -> None:
+        _stub_idx.build()
+        hits = _stub_idx.retrieve("desk lamp", k=1)
+        assert hits[0].document  # non-empty
+        assert hits[0].device_id == "dev_desk"
+
+
+class TestPersistLoad:
+    def test_persist_then_load_round_trip(self, _stub_idx) -> None:
+        _stub_idx.build()
+        assert _stub_idx.persist() is True
+        assert _stub_idx._index_path.exists()
+
+        # Build a fresh SemanticIndex pointed at the same file and
+        # stub embedder; load() must restore the index.
+        import numpy as np  # noqa: F401  # used for shape assertion below
+        from glados.ha.semantic_index import SemanticIndex
+        other = SemanticIndex(
+            _stub_idx._cache,
+            model_path=str(_stub_idx._model_path),
+            tokenizer_path=str(_stub_idx._tokenizer_path),
+            index_path=_stub_idx._index_path,
+        )
+        assert other.load() is True
+        assert other.size() == 3
+        assert "light.task_lamp_one" in other._entity_ids
+
+    def test_load_missing_file_returns_false(self, tmp_path) -> None:
+        pytest.importorskip("numpy")
+        idx = SemanticIndex(
+            _StubCache(),
+            index_path=tmp_path / "missing.npz",
+        )
+        assert idx.load() is False
+
+    def test_load_wrong_header_returns_false(self, tmp_path, _stub_idx) -> None:
+        import numpy as np
+        _stub_idx.build()
+        _stub_idx.persist()
+        # Corrupt the header on disk.
+        data = np.load(_stub_idx._index_path, allow_pickle=True)
+        np.savez_compressed(
+            _stub_idx._index_path,
+            header=np.array("v99|future-model|doc-v99"),
+            embeddings=data["embeddings"],
+            entity_ids=data["entity_ids"],
+            documents=data["documents"],
+            device_ids=data["device_ids"],
+        )
+        # Fresh index should refuse to load the incompatible file.
+        from glados.ha.semantic_index import SemanticIndex
+        other = SemanticIndex(
+            _stub_idx._cache,
+            index_path=_stub_idx._index_path,
+        )
+        assert other.load() is False
+        assert other.size() == 0
+
+    def test_persist_empty_index_is_noop(self, tmp_path) -> None:
+        pytest.importorskip("numpy")
+        idx = SemanticIndex(
+            _StubCache(),
+            index_path=tmp_path / "empty.npz",
+        )
+        # No build() → nothing to persist.
+        assert idx.persist() is False
+        assert not idx._index_path.exists()
 
 
 # ──────────────────────────────────────────────────────────────
