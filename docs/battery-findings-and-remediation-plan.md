@@ -242,13 +242,26 @@ Each phase re-runs the 435-test battery AND `home-assistant-datasets` before mer
   - Entity document shape: `"{friendly_name} | area={area_name} | floor={floor_name} | domain={domain} | device_class={device_class} | device_name={device_name}"`.
   - Embed on startup + on HA cache resync; persist `/app/data/entity_embeddings.npy` for warm restarts.
   - `retrieve(utterance, k=8, filter=None)` returns top-k candidates with cosine scores.
-- Disambiguator (now planner in §8.7) consumes top-8 instead of the coverage-ranked full list.
-- **MCP tool exposure:** `search_entities(query, top_k)` and `get_entity_details(entity_id)` are registered as MCP tools the planner can call when top-8 isn't enough. Implements the mcp-assist pattern.
-- WebUI Integrations → Home Assistant page gains a "Candidate retrieval" card — operator can re-embed the index on demand and see the per-entity document text (for debugging why a given entity does or doesn't match).
+- **Device-diversity filter on top-K (non-negotiable; added 2026-04-20 after live test against "desk lamp" returning all Gledopto bedroom-strip segments).** Before the top-K list is handed to the planner:
+  - Group scored candidates by `device_id`.
+  - Detect "segment entities" via a configurable token list — default: `seg`, `segment`, `zone`, `_\d+` suffix, `channel`, `strip \d+`, `group \d+`. Editable under the existing Integrations → Home Assistant → Disambiguation rules card (new "Segment tokens" sub-list).
+  - For each device group with >1 matching candidate, keep **one representative entity** — the one without any segment token in its name, or if all are segments, the first by natural sort.
+  - **Exception: query-explicit segment override.** If the utterance itself contains a segment token (e.g. *"bedroom strip segment 3 to red"*), preserve the matching segment and drop siblings under the same device instead.
+  - Cap: **no top-K result may contain >2 entities from the same `device_id`** unless the utterance explicitly names one of them. Hard guard, enforced after diversity filtering.
+  - All drop decisions logged at debug level with the device_id and the winning entity_id so operators can diagnose via the Audit Log view.
+- Disambiguator (now planner in §8.7) consumes top-8 **after device-diversity filtering**, not the raw cosine-ranked top-8.
+- **MCP tool exposure:** `search_entities(query, top_k)` and `get_entity_details(entity_id)` are registered as MCP tools the planner can call when top-8 isn't enough. Implements the mcp-assist pattern. The diversity filter runs on the tool output too — device-segment storms are suppressed equally when the LLM calls the tool mid-reasoning.
+- WebUI Integrations → Home Assistant page gains a "Candidate retrieval" card — operator can re-embed the index on demand and see the per-entity document text (for debugging why a given entity does or doesn't match). Card also shows a live preview of what the device-diversity filter did for the last N test queries.
 
 **Why this is also the no-GPU precondition:** shrinking the planner prompt from ~3000 tokens to ~400 tokens converts the CPU-only latency budget from "unusable" to "feasible." Enables Phase 9 later.
 
-**Success:** Tier-2 over-asking rate (previously 18%) drops to ≤8%. Sanity check: "kitchen" returns kitchen lights/switches in top 8 with no `switch.midea_ac_...display` pollution.
+**Success criteria (phase gate; failing any of these is a revert, not a warning):**
+
+1. **Tier-2 over-asking rate drops to ≤8%** (previously 18%).
+2. **`search_entities("desk lamp")` returns `light.task_lamp_one` in top-3** even when the Gledopto bedroom LED strip exposes ≥8 sibling segments with "lamp" in their name. This is THE regression test the operator identified — no amount of semantic ranking helps if device-diversity isn't enforced.
+3. **`search_entities("bedroom strip seg 3 red")` still returns the specific `light.room_a_strip_seg_3` in top-3.** Segment-qualified queries must bypass the collapse and return the exact segment.
+4. **No top-K result list contains >2 entities from the same `device_id`** across a 50-query synthetic test set, unless the utterance explicitly names one of them.
+5. Sanity check: "kitchen" returns kitchen lights/switches in top 8 with no `switch.midea_ac_...display` pollution.
 
 ---
 
