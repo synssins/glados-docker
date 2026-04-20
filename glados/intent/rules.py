@@ -31,6 +31,21 @@ _DEFAULT_KEYWORD_DOMAINS: dict[str, list[str]] = {
     "lamp":      ["light"],
     "lamps":     ["light"],
     "bulb":      ["light"],
+    "bulbs":     ["light"],
+    # Phase 8.3 follow-up — LED strips, zones, and segment-level
+    # entities are always lights. "Bedroom strip" / "reading nook
+    # strip" / "hallway zone" previously fell through the
+    # precheck because no noun matched.
+    "strip":     ["light"],
+    "strips":    ["light"],
+    "zone":      ["light"],
+    "zones":     ["light"],
+    "segment":   ["light"],
+    "segments":  ["light"],
+    "node":      ["light"],
+    "nodes":     ["light"],
+    "pixel":     ["light"],
+    "pixels":    ["light"],
     "switch":    ["switch"],
     "switches":  ["switch"],
     "outlet":    ["switch"],
