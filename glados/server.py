@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -104,6 +105,48 @@ def _init_audit_logger() -> None:
         logger.warning("Audit logger init failed: {}", exc)
 
 
+def _fetch_and_apply_registries(client: Any, semantic_index: Any) -> None:
+    """Phase 8.3.4 — pull HA's area / device / floor registries
+    through the WS client and feed them into the SemanticIndex so
+    each entity's document carries its area + device + floor label.
+
+    Runs after HAClient.start() has authenticated; uses the same
+    `acall` helper the client uses internally. Failures here degrade
+    to documents without the extra facets — retrieval still works,
+    it just weights friendly_name more heavily.
+    """
+    def _sync_call(msg: dict[str, Any]) -> dict[str, Any] | None:
+        # HAClient.call() is thread-safe and waits for the WS loop
+        # to pick up the message. Used here so we don't fight the
+        # event loop from this bootstrap thread.
+        try:
+            return client.call(msg, timeout_s=15.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Registry call {!r} failed: {}", msg, exc)
+            return None
+
+    calls = (
+        ("area", {"type": "config/area_registry/list"},
+         semantic_index.apply_area_registry),
+        ("device", {"type": "config/device_registry/list"},
+         semantic_index.apply_device_registry),
+        ("floor", {"type": "config/floor_registry/list"},
+         semantic_index.apply_floor_registry),
+    )
+    for name, msg, apply_fn in calls:
+        resp = _sync_call(msg)
+        if not resp or not resp.get("success"):
+            logger.debug("HA {} registry fetch returned no data", name)
+            continue
+        entries = resp.get("result") or []
+        if isinstance(entries, list):
+            n = apply_fn(entries)
+            logger.info(
+                "SemanticIndex: applied {} {} registry entries",
+                n, name,
+            )
+
+
 def _init_ha_client() -> None:
     """Stage 3 Phase 1: stand up the HA WebSocket client + bridge.
 
@@ -169,14 +212,89 @@ def _init_ha_client() -> None:
         # (command verbs + ambient regexes). Merges additively with
         # the shipped defaults. Repeated on hot-reload.
         apply_precheck_overrides(rules)
+
+        # Phase 8.3 — SemanticIndex for the disambiguator. Built on
+        # a background thread so startup isn't blocked by the ~2 s
+        # one-time embed pass. The disambiguator falls back to the
+        # fuzzy matcher while the build is in flight; once the
+        # index is ready, semantic retrieval + device-diversity
+        # filtering take over on the next request.
+        from glados.ha.semantic_index import (
+            SemanticIndex, is_semantic_retrieval_available,
+        )
+        semantic_index: SemanticIndex | None = None
+        if is_semantic_retrieval_available():
+            try:
+                semantic_index = SemanticIndex(cache=cache)
+                # Try a warm restore first; on miss the background
+                # build writes a fresh one.
+                if not semantic_index.load():
+                    logger.info(
+                        "SemanticIndex: no cached index on disk; "
+                        "building from live cache"
+                    )
+                import threading
+                import time as _time
+
+                def _bootstrap_semantic_index() -> None:
+                    # Wait for the HA WS client to connect AND the
+                    # entity cache to populate before fetching
+                    # registries or building the index. Bounded so
+                    # a never-reachable HA doesn't leave a permanent
+                    # thread idling here.
+                    deadline = _time.monotonic() + 60.0
+                    while _time.monotonic() < deadline:
+                        try:
+                            if client.is_connected() and cache.size() > 0:
+                                break
+                        except Exception:  # noqa: BLE001
+                            pass
+                        _time.sleep(0.5)
+                    else:
+                        logger.warning(
+                            "SemanticIndex bootstrap: HA cache not "
+                            "populated within 60s; skipping"
+                        )
+                        return
+                    try:
+                        _fetch_and_apply_registries(client, semantic_index)
+                        n = semantic_index.build()
+                        if n > 0:
+                            semantic_index.persist()
+                            logger.info(
+                                "SemanticIndex ready (entities={})", n,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "SemanticIndex bootstrap failed: {}", exc,
+                        )
+                threading.Thread(
+                    target=_bootstrap_semantic_index,
+                    name="SemanticIndexBootstrap",
+                    daemon=True,
+                ).start()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "SemanticIndex init skipped: {}", exc,
+                )
+                semantic_index = None
+        else:
+            logger.info(
+                "Semantic retrieval unavailable (model files or "
+                "deps missing); Tier 2 stays on fuzzy matcher"
+            )
+
         disambig = Disambiguator(
             ha_client=client, cache=cache,
             ollama_url=ollama_url, model=disambig_model,
             rules=rules,
+            semantic_index=semantic_index,
         )
         init_disambiguator(disambig)
-        logger.info("Tier 2 disambiguator ready; ollama={} model={}",
-                    ollama_url, disambig_model)
+        logger.info(
+            "Tier 2 disambiguator ready; ollama={} model={} semantic={}",
+            ollama_url, disambig_model, bool(semantic_index),
+        )
 
         # Persona rewriter for Tier 1 hits (HA's plain "Turned off the
         # light." -> GLaDOS-voiced restyling). Same Ollama as the

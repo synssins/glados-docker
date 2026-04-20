@@ -457,6 +457,7 @@ class Disambiguator:
         model: str,
         rules: DisambiguationRules | None = None,
         allowlist: IntentAllowlist | None = None,
+        semantic_index: Any = None,
     ) -> None:
         self._ha = ha_client
         self._cache = cache
@@ -464,6 +465,14 @@ class Disambiguator:
         self._model = model
         self._rules = rules or DisambiguationRules()
         self._allowlist = allowlist or IntentAllowlist()
+        # Phase 8.3.4 — optional SemanticIndex. When present AND
+        # ready (model loaded, at least one entity embedded), the
+        # disambiguator uses retrieve_for_planner() in place of the
+        # cache's fuzzy get_candidates(). Missing or not-yet-built
+        # falls through to the original fuzzy path with no user-
+        # visible difference — this keeps the rollout safe under
+        # warm-up races.
+        self._semantic_index = semantic_index
 
     # ── Rule management ──────────────────────────────────────
 
@@ -526,21 +535,20 @@ class Disambiguator:
                 utterance=utterance, source=source,
             )
 
-        # 1. Pull candidates from the cache. Bump limit when the user
-        # used a universal quantifier — they want broad action and the
-        # default 12 truncates the candidate list well before the LLM
-        # has enough to act on "all lights".
+        # 1. Pull candidates. Phase 8.3.4 — prefer the SemanticIndex
+        # when it is loaded AND has a built index; fall back to the
+        # legacy fuzzy path otherwise. The semantic retriever applies
+        # the device-diversity gate internally, so the result list
+        # already respects the operator's Gledopto-case contract.
         is_universal = _has_universal_quantifier(utterance)
         domain_hint = domain_filter_for_utterance(utterance)
         cand_limit = max(self._rules.candidate_limit, 30) if is_universal \
                      else self._rules.candidate_limit
-        candidates = self._cache.get_candidates(
-            utterance,
-            domain_filter=domain_hint,
-            limit=cand_limit,
+        candidates = self._resolve_candidates(
+            utterance=utterance,
+            domain_hint=domain_hint,
+            cand_limit=cand_limit,
             source_area=source_area,
-            opposing_token_pairs=(self._rules.opposing_token_pairs or None),
-            twin_dedup=self._rules.twin_dedup,
         )
 
         # Carry-over injection: when the caller told us this is a
@@ -948,6 +956,104 @@ class Disambiguator:
         )
 
     # ── Helpers ───────────────────────────────────────────────
+
+    def _resolve_candidates(
+        self,
+        utterance: str,
+        *,
+        domain_hint: list[str] | None,
+        cand_limit: int,
+        source_area: str | None,
+    ) -> list[CandidateMatch]:
+        """Phase 8.3.4 — unified candidate-resolution point. Tries
+        the SemanticIndex (with device-diversity filter) first and
+        falls back to the legacy fuzzy path when:
+
+          - no SemanticIndex was passed in, OR
+          - the index hasn't built yet (async build still running), OR
+          - the index built but the query returned no semantic hits
+            (BGE-small quality floor — legitimate fallback).
+
+        Returns `CandidateMatch` objects either way so the rest of
+        the disambiguator is retriever-agnostic.
+        """
+        # Fast-fail cases → fuzzy path.
+        sem = self._semantic_index
+        if sem is not None:
+            try:
+                is_ready = sem.is_ready()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("SemanticIndex.is_ready raised: {}", exc)
+                is_ready = False
+            if is_ready:
+                try:
+                    hits = sem.retrieve_for_planner(
+                        utterance,
+                        k=cand_limit,
+                        domain_filter=domain_hint,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "SemanticIndex.retrieve_for_planner raised; "
+                        "falling back to fuzzy: {}", exc,
+                    )
+                    hits = []
+                if hits:
+                    converted = self._semantic_hits_to_candidates(
+                        hits, source_area=source_area,
+                    )
+                    if converted:
+                        return converted
+                logger.debug(
+                    "Semantic retrieve returned no usable hits; "
+                    "falling back to fuzzy path for {!r}",
+                    utterance[:80],
+                )
+        return self._cache.get_candidates(
+            utterance,
+            domain_filter=domain_hint,
+            limit=cand_limit,
+            source_area=source_area,
+            opposing_token_pairs=(self._rules.opposing_token_pairs or None),
+            twin_dedup=self._rules.twin_dedup,
+        )
+
+    def _semantic_hits_to_candidates(
+        self, hits: list[Any], *, source_area: str | None,
+    ) -> list[CandidateMatch]:
+        """Convert SemanticHit results to CandidateMatch so the
+        downstream prompt/action code stays unchanged. Skips hits
+        whose entity_id has fallen out of the cache between the
+        index build and the query — trusts the cache as the source
+        of truth for state/attributes."""
+        out: list[CandidateMatch] = []
+        for h in hits:
+            ent = self._cache.get(h.entity_id)
+            if ent is None:
+                continue
+            # Cosine in [-1, 1] scaled to [0, 100] so downstream
+            # code that treats `score` as a confidence stays
+            # coherent. BGE-small matches usually land in 0.3–0.9.
+            score = max(0.0, min(100.0, (h.score + 1.0) * 50.0))
+            area_match: bool | None = None
+            if source_area is not None:
+                area_match = (ent.area_id == source_area)
+            out.append(CandidateMatch(
+                entity=ent,
+                matched_name=ent.friendly_name or ent.entity_id,
+                score=score,
+                sensitive=(
+                    ent.domain in {"lock", "alarm_control_panel", "camera"}
+                ),
+                # Coverage is a fuzzy-path concept; the semantic
+                # retriever already captures qualifier alignment in
+                # its cosine score. Report 1.0 so the prompt's
+                # coverage hint doesn't penalize semantic picks.
+                coverage=1.0,
+                area_match=area_match,
+                device_id=h.device_id,
+            ))
+        return out
 
     def _lookup_prior_candidates(
         self, entity_ids: list[str],
