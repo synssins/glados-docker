@@ -7461,7 +7461,8 @@ let chatWaiting = false;
 let mediaRecorder = null;
 let micStream = null;
 let chatStreaming = false;
-let chatStreamingAudio = null;
+// Chat audio is now handled entirely by the visible <audio controls>
+// element in the message DOM. No separate background player.
 
 function renderChat() {
   const el = document.getElementById('chatMessages');
@@ -7630,35 +7631,50 @@ async function chatSendStreaming(text, history) {
         }
 
         if (chunk.audio_url !== undefined) {
+          // Streaming audio URL from the server. Render the visible
+          // <audio controls> element on the chat message and auto-play
+          // from there — the SAME element handles initial playback and
+          // all subsequent operator controls (play/pause, volume, mute,
+          // seek). This replaces the prior invisible `new Audio()` +
+          // hand-off dance, which caused double-playback because the
+          // invisible element kept playing while the visible one was
+          // operated on.
           if (chunk.audio_url) {
-            try {
-              chatStreamingAudio = new Audio(chunk.audio_url);
-              chatStreamingAudio.play();
-            } catch(e) {}
+            chatHistory[streamIdx].audio_url = chunk.audio_url;
+            renderChat();
+            requestAnimationFrame(function() {
+              var els = document.querySelectorAll('.chat-msg audio');
+              var el = els[els.length - 1];
+              if (el) el.play().catch(function() {});
+            });
           }
           continue;
         }
 
         if (chunk.audio_replay_url !== undefined) {
-          chatHistory[streamIdx].audio_url = chunk.audio_replay_url;
-          renderChat();
-          requestAnimationFrame(function() {
+          // Server has finalized the static WAV. Swap the element's src
+          // to the static URL (which supports Range/seek) while
+          // preserving playback position so the user doesn't hear a
+          // restart. If the streaming URL is already the source and
+          // audio is playing, do the swap mid-stream.
+          var prevUrl = chatHistory[streamIdx].audio_url;
+          var nextUrl = chunk.audio_replay_url;
+          chatHistory[streamIdx].audio_url = nextUrl;
+          if (prevUrl !== nextUrl) {
             var els = document.querySelectorAll('.chat-msg audio');
             var el = els[els.length - 1];
-            if (el && chatStreamingAudio) {
-              var bgAudio = chatStreamingAudio;
-              chatStreamingAudio = null;
-              el.addEventListener('canplay', function onReady() {
-                el.removeEventListener('canplay', onReady);
-                el.currentTime = bgAudio.currentTime;
-                el.play().catch(function(){});
-                bgAudio.pause();
+            if (el) {
+              var pos = el.currentTime || 0;
+              var wasPlaying = !el.paused && !el.ended;
+              el.src = nextUrl;
+              el.addEventListener('loadedmetadata', function _once() {
+                el.removeEventListener('loadedmetadata', _once);
+                try { el.currentTime = pos; } catch(_) {}
+                if (wasPlaying) el.play().catch(function() {});
               }, {once: true});
               el.load();
-            } else if (el) {
-              el.play().catch(function(){});
             }
-          });
+          }
           continue;
         }
 
@@ -7689,13 +7705,9 @@ async function chatSendStreaming(text, history) {
           chatStreaming = false;
         } else if (chunk.audio_url !== undefined) {
           if (chunk.audio_url) {
-            try {
-              chatStreamingAudio = new Audio(chunk.audio_url);
-              chatStreamingAudio.play();
-            } catch(e) {}
+            chatHistory[streamIdx].audio_url = chunk.audio_url;
           }
         } else if (chunk.audio_replay_url !== undefined) {
-          if (chatStreamingAudio) { chatStreamingAudio.pause(); chatStreamingAudio = null; }
           chatHistory[streamIdx].audio_url = chunk.audio_replay_url;
         } else if (chunk.audio_urls !== undefined) {
           chatHistory[streamIdx].audio_url = chunk.audio_urls[0] || null;

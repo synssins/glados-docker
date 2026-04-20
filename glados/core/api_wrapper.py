@@ -49,6 +49,34 @@ _engine: Glados | None = None
 _api_lock = threading.Lock()
 _response_timeout: float = 45.0
 
+# Matches <think>...</think>, <thinking>...</thinking>, <reasoning>...</reasoning>
+# including cross-line content. Qwen3 (and GLM-4.7, DeepSeek, MiniMax) emit
+# these blocks when "thinking mode" is active and they must not reach the UI.
+# llm_processor does stream-aware extraction for the TTS path; this is the
+# non-streaming / fallback path for text responses.
+_THINKING_BLOCK_RE = re.compile(
+    r"<(think|thinking|reasoning)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_STRAY_THINK_TAG_RE = re.compile(
+    r"</?(?:think|thinking|reasoning)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _strip_thinking(text: str) -> str:
+    """Strip closed thinking blocks + any stray opening/closing tags.
+
+    Conservative: preserves all other text exactly. If the model emitted an
+    unclosed <think> (truncated generation), the stray-tag pass keeps the
+    visible remainder rather than hiding the entire response.
+    """
+    if not text:
+        return text
+    text = _THINKING_BLOCK_RE.sub("", text)
+    text = _STRAY_THINK_TAG_RE.sub("", text)
+    return text.strip()
+
 # Hot-reload plumbing. `_engine_overrides` captures CLI flags so a reload
 # preserves operator runtime choices (input mode, audio backend, flags).
 # `_engine_config_path` is the path we were initially started with.
@@ -1600,6 +1628,66 @@ def _stream_chat_sse_impl(
     ollama_metrics: dict[str, Any] = {}
     pending_tool_calls: list[dict[str, Any]] = []
 
+    # Streaming thinking-tag filter state. The model emits content chunk-by-
+    # chunk and the <think>...</think> boundary can fall anywhere, including
+    # split across chunks. `think_state` tracks whether we're currently inside
+    # a thinking block; `think_buffer` holds a few unemitted trailing bytes
+    # when we're near-but-not-yet-past a partial tag. Any content we decide
+    # is visible flows out as SSE; thinking content is dropped.
+    think_state = {"in_thinking": False, "tail": ""}
+    _OPEN_TAGS = ("<think>", "<thinking>", "<reasoning>")
+    _CLOSE_TAGS = ("</think>", "</thinking>", "</reasoning>")
+    _MAX_TAIL_LEN = max(len(t) for t in (_OPEN_TAGS + _CLOSE_TAGS))
+
+    def _filter_think_chunk(chunk_text: str) -> str:
+        """Apply the running thinking-tag filter. Returns the text that
+        should actually be emitted. State is preserved between chunks."""
+        buf = think_state["tail"] + (chunk_text or "")
+        out: list[str] = []
+        i = 0
+        n = len(buf)
+        while i < n:
+            if think_state["in_thinking"]:
+                # Looking for a closing tag
+                next_close = -1
+                close_tag_len = 0
+                for tag in _CLOSE_TAGS:
+                    idx = buf.lower().find(tag, i)
+                    if idx != -1 and (next_close == -1 or idx < next_close):
+                        next_close = idx
+                        close_tag_len = len(tag)
+                if next_close == -1:
+                    # No close tag in buffer — hold trailing partial in tail
+                    keep = max(0, n - _MAX_TAIL_LEN)
+                    i = keep
+                    break
+                i = next_close + close_tag_len
+                think_state["in_thinking"] = False
+            else:
+                # Looking for an opening tag
+                next_open = -1
+                open_tag_len = 0
+                for tag in _OPEN_TAGS:
+                    idx = buf.lower().find(tag, i)
+                    if idx != -1 and (next_open == -1 or idx < next_open):
+                        next_open = idx
+                        open_tag_len = len(tag)
+                if next_open == -1:
+                    # No open tag — everything from i onward is visible
+                    # BUT keep a tail for partial-tag detection across chunks
+                    visible_end = max(i, n - _MAX_TAIL_LEN)
+                    if visible_end > i:
+                        out.append(buf[i:visible_end])
+                    i = visible_end
+                    break
+                # Emit everything before the opening tag
+                if next_open > i:
+                    out.append(buf[i:next_open])
+                i = next_open + open_tag_len
+                think_state["in_thinking"] = True
+        think_state["tail"] = buf[i:]
+        return "".join(out)
+
     try:
         while True:
             raw_line = api_resp.readline()
@@ -1651,23 +1739,45 @@ def _stream_chat_sse_impl(
             if content:
                 if t_first_token is None:
                     t_first_token = time.time()
-                full_response.append(content)
-                # Emit SSE chunk in OpenAI format
-                chunk_data = {
-                    "id": f"chatcmpl-{request_id}",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": "glados",
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": content},
-                        "finish_reason": None,
-                    }],
-                }
-                handler.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode())
-                handler.wfile.flush()
+                visible = _filter_think_chunk(content)
+                if visible:
+                    full_response.append(visible)
+                    # Emit SSE chunk in OpenAI format
+                    chunk_data = {
+                        "id": f"chatcmpl-{request_id}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": "glados",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": visible},
+                            "finish_reason": None,
+                        }],
+                    }
+                    handler.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode())
+                    handler.wfile.flush()
 
             if done:
+                # Flush any held tail — if we weren't inside thinking the
+                # remainder is visible; if we were, it's discarded.
+                if think_state["tail"]:
+                    tail_visible = "" if think_state["in_thinking"] else think_state["tail"]
+                    if tail_visible:
+                        full_response.append(tail_visible)
+                        chunk_data = {
+                            "id": f"chatcmpl-{request_id}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": "glados",
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": tail_visible},
+                                "finish_reason": None,
+                            }],
+                        }
+                        handler.wfile.write(f"data: {json.dumps(chunk_data)}\n\n".encode())
+                        handler.wfile.flush()
+                    think_state["tail"] = ""
                 break
 
         # ── Agentic tool loop ─────────────────────────────────────
@@ -2454,7 +2564,7 @@ class APIHandler(BaseHTTPRequestHandler):
         # speakers sentence-by-sentence.  Return "." so the HA voice pipeline's
         # TTS renders near-silence on the satellite (same pattern as command
         # interceptor).
-        reply_text = "." if engine_audio else response_text
+        reply_text = "." if engine_audio else _strip_thinking(response_text)
 
         self._send_json({
             "id": f"chatcmpl-{request_id}",
