@@ -1312,6 +1312,8 @@ class Handler(BaseHTTPRequestHandler):
             self._get_gpu_status()
         elif p == "/api/entities/states":
             self._get_ha_entities()
+        elif p == "/api/semantic/status":
+            self._get_semantic_status()
         elif p == "/api/audio/stats":
             self._get_audio_stats()
         elif p == "/api/logs/sources":
@@ -1434,6 +1436,10 @@ class Handler(BaseHTTPRequestHandler):
             self._chat_stream()
         elif p == "/api/precheck/test":
             self._post_precheck_test()
+        elif p == "/api/semantic/test":
+            self._post_semantic_test()
+        elif p == "/api/semantic/rebuild":
+            self._post_semantic_rebuild()
         elif p == "/api/stt":
             self._stt()
         # --- Protected routes below ---
@@ -3645,6 +3651,20 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     cleaned_pats.append(ps)
                 rules.extra_ambient_patterns = cleaned_pats
+            if "extra_segment_tokens" in data:
+                tokens_raw = data.get("extra_segment_tokens") or []
+                if not isinstance(tokens_raw, list):
+                    self._send_error(400, "extra_segment_tokens must be a list")
+                    return
+                cleaned_tokens: list[str] = []
+                seen_tokens: set[str] = set()
+                for t in tokens_raw:
+                    ts = str(t).strip().lower()
+                    if not ts or ts in seen_tokens:
+                        continue
+                    seen_tokens.add(ts)
+                    cleaned_tokens.append(ts)
+                rules.extra_segment_tokens = cleaned_tokens
             save_rules_to_yaml(path, rules)
             applied = self._reload_disambiguator_rules()
             self._send_json(200, {
@@ -3654,6 +3674,7 @@ class Handler(BaseHTTPRequestHandler):
                 "opposing_token_pairs": rules.opposing_token_pairs,
                 "extra_command_verbs": rules.extra_command_verbs,
                 "extra_ambient_patterns": rules.extra_ambient_patterns,
+                "extra_segment_tokens": rules.extra_segment_tokens,
             })
         except Exception as exc:
             self._send_error(500, f"Failed to save rules: {exc}")
@@ -3698,6 +3719,53 @@ class Handler(BaseHTTPRequestHandler):
                 "Disambiguation rules reload RPC failed: {}", exc,
             )
             return False
+
+    # ── Phase 8.3.5 — semantic retrieval proxy endpoints ──
+    #
+    # The SemanticIndex lives in the api_wrapper process (same one
+    # that holds the Disambiguator singleton). The WebUI proxies
+    # GET/POST through to :8015 with the same cross-process pattern
+    # used for disambiguation rule reload.
+
+    def _proxy_api_wrapper(
+        self, path: str, *, method: str = "GET", body: bytes = b"",
+        timeout: float = 30.0,
+    ) -> None:
+        """Forward a request to api_wrapper and stream the response
+        (status + JSON body) back to the browser."""
+        try:
+            headers = {"Content-Type": "application/json"}
+            req = urllib.request.Request(
+                _svc_api_wrapper() + path,
+                data=body if method != "GET" else None,
+                headers=headers,
+                method=method,
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                self._send_json(resp.status, json.loads(resp.read() or b"{}"))
+        except urllib.error.HTTPError as exc:
+            try:
+                err = json.loads(exc.read() or b"{}")
+            except Exception:
+                err = {"error": {"message": exc.reason or "proxy error"}}
+            self._send_json(exc.code, err)
+        except Exception as exc:
+            self._send_error(502, f"semantic proxy failed: {exc}")
+
+    def _get_semantic_status(self) -> None:
+        self._proxy_api_wrapper("/api/semantic/status", method="GET")
+
+    def _post_semantic_test(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b"{}"
+        self._proxy_api_wrapper(
+            "/api/semantic/test", method="POST", body=body, timeout=30.0,
+        )
+
+    def _post_semantic_rebuild(self) -> None:
+        self._proxy_api_wrapper(
+            "/api/semantic/rebuild", method="POST", body=b"{}", timeout=10.0,
+        )
 
     # â”€â”€ HUB75 test endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -5952,6 +6020,21 @@ function _cfgRenderIntegrationsExtras() {
     +   '</div>'
     +   '<div id="cfg-disamb-body">Loading rules&hellip;</div>'
     + '</div>';
+  // Phase 8.3.5 — Candidate retrieval card. Status, rebuild, and
+  // a live test input for the semantic retriever + device-
+  // diversity filter. Lives directly under Disambiguation rules
+  // since the two systems compose: the rules define which tokens
+  // count as segments, the retriever applies them.
+  html += ''
+    + '<div class="card" id="cfg-candretrieval-card" style="margin-top:14px;">'
+    +   '<div class="cfg-subsection-title">Candidate retrieval</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Phase&nbsp;8.3 semantic retriever (BGE-small-en-v1.5 ONNX) with a '
+    +     'device-diversity filter on top-K. Use the test input to see which '
+    +     'entities would be handed to the planner for any phrasing.'
+    +   '</div>'
+    +   '<div id="cfg-candretrieval-body">Loading retriever status&hellip;</div>'
+    + '</div>';
   html += ''
     + '<div class="cfg-placeholder-card">'
     +   '<div class="cfg-placeholder-title">MQTT <span class="cfg-placeholder-tag">Coming soon</span></div>'
@@ -5970,6 +6053,7 @@ function _cfgRenderIntegrationsExtras() {
   // Defer fetch until the DOM exists. setTimeout(0) punts to the next
   // tick — by then cfg-form-area has been painted.
   setTimeout(_cfgLoadDisambiguation, 0);
+  setTimeout(_cfgLoadCandRetrieval, 0);
   return html;
 }
 
@@ -6019,6 +6103,19 @@ function _disambPopulate(data) {
     + '</div>';
   html += '<div id="cfg-disamb-pairs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;"></div>';
   html += '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddPair()">+ Add pair</button>';
+  // Phase 8.3.5 — operator-editable extra segment tokens used by
+  // the device-diversity filter on top-K retrieval. Merges with
+  // the shipped defaults (seg, segment, zone, channel, strip,
+  // group, head); entries here add to (never replace) that list.
+  const tokens = Array.isArray(data.extra_segment_tokens) ? data.extra_segment_tokens : [];
+  html += '<div class="cfg-field-label" style="margin-top:14px;">Extra segment tokens</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    +   'Added to the shipped defaults (<code>seg, segment, zone, channel, strip, group, head</code>) '
+    +   'when detecting multi-segment devices like Gledopto LED strips. Add house-specific tokens (e.g. '
+    +   '<code>pixel</code>) if your strip entities use a different naming convention.'
+    + '</div>'
+    + '<div id="cfg-disamb-tokens" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
+    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddToken()">+ Add token</button>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
     + '<button class="cfg-save-btn" onclick="cfgSaveDisambiguation()">Save Disambiguation rules</button>'
     + '<span id="cfg-save-result-disamb" class="cfg-result"></span>'
@@ -6026,6 +6123,25 @@ function _disambPopulate(data) {
   body.innerHTML = html;
   const rows = document.getElementById('cfg-disamb-pairs');
   pairs.forEach(p => _disambRenderPairRow(rows, p[0] || '', p[1] || ''));
+  const tokensHost = document.getElementById('cfg-disamb-tokens');
+  tokens.forEach(t => _disambRenderTokenRow(tokensHost, t));
+}
+
+function _disambRenderTokenRow(host, t) {
+  const row = document.createElement('div');
+  row.className = 'cfg-disamb-token-row';
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.innerHTML = ''
+    + '<input type="text" class="cfg-disamb-token" value="' + escAttr(t) + '" placeholder="e.g. pixel" style="flex:1;">'
+    + '<button type="button" title="Remove token" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+  const del = row.querySelector('button');
+  if (del) del.addEventListener('click', () => row.remove());
+  host.appendChild(row);
+}
+
+function _disambAddToken() {
+  const host = document.getElementById('cfg-disamb-tokens');
+  if (host) _disambRenderTokenRow(host, '');
 }
 
 function _disambRenderPairRow(host, a, b) {
@@ -6047,6 +6163,138 @@ function _disambAddPair() {
   if (host) _disambRenderPairRow(host, '', '');
 }
 
+// ── Phase 8.3.5 — Candidate retrieval card ──────────────────
+
+async function _cfgLoadCandRetrieval() {
+  const body = document.getElementById('cfg-candretrieval-body');
+  if (!body) return;
+  let status = null;
+  try {
+    const r = await fetch('/api/semantic/status');
+    if (r.ok) status = await r.json();
+    else body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Failed to load status (' + r.status + ').</div>';
+  } catch (e) {
+    body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error loading status: ' + escHtml(e.message) + '</div>';
+    return;
+  }
+  if (!status) return;
+  _candRetrievalPopulate(status);
+}
+
+function _candRetrievalPopulate(status) {
+  const body = document.getElementById('cfg-candretrieval-body');
+  if (!body) return;
+  const ready = !!status.ready;
+  const mtime = status.file_mtime ? new Date(status.file_mtime * 1000).toLocaleString() : 'never';
+  const sizeMb = status.file_size_bytes ? (status.file_size_bytes / (1024 * 1024)).toFixed(2) + ' MB' : '—';
+  let html = '';
+  // Status row
+  html += '<div class="cfg-field-desc" style="margin-bottom:10px;line-height:1.6;">'
+    + '<strong>Status:</strong> '
+    + (ready ? '<span style="color:#6c6;">ready</span>' : '<span style="color:#d99;">not ready</span>')
+    + ' &middot; <strong>Entities indexed:</strong> ' + (status.size || 0)
+    + ' &middot; <strong>Last persist:</strong> ' + escHtml(mtime)
+    + ' &middot; <strong>File size:</strong> ' + sizeMb
+    + '</div>';
+  if (!status.deps_available) {
+    html += '<div class="cfg-field-desc" style="color:#d99;margin-bottom:8px;">'
+      + 'Embedding dependencies or model files are missing. Tier&nbsp;2 stays on the fuzzy matcher.'
+      + '</div>';
+  }
+  // Rebuild button
+  html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;">'
+    + '<button class="cfg-save-btn" onclick="_candRetrievalRebuild()">Rebuild index</button>'
+    + '<span class="cfg-field-desc" style="margin:0;">'
+    + '(Background. Poll the status line above to confirm size updates.)'
+    + '</span>'
+    + '</div>';
+  // Test input
+  html += '<div class="cfg-field-label">Test a query</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    + 'See which entities the retriever + device-diversity filter would hand to the planner. '
+    + 'Useful for confirming Gledopto-style multi-segment devices don&rsquo;t swamp top-K.'
+    + '</div>'
+    + '<div style="display:flex;gap:6px;align-items:center;">'
+    + '<input type="text" id="cfg-candretrieval-q" placeholder="e.g. desk lamp" style="flex:1;">'
+    + '<input type="number" id="cfg-candretrieval-k" value="8" min="1" max="20" style="width:60px;">'
+    + '<button type="button" class="cfg-save-btn" onclick="_candRetrievalTest()">Test</button>'
+    + '</div>'
+    + '<div id="cfg-candretrieval-result" style="margin-top:10px;"></div>';
+  body.innerHTML = html;
+}
+
+async function _candRetrievalRebuild() {
+  showToast('Rebuild started...', 'info');
+  try {
+    const r = await fetch('/api/semantic/rebuild', {method: 'POST'});
+    if (!r.ok) { showToast('Rebuild failed', 'err'); return; }
+    // Give the background a couple seconds, then refresh the status line
+    setTimeout(_cfgLoadCandRetrieval, 3000);
+  } catch (e) {
+    showToast('Rebuild error: ' + e.message, 'err');
+  }
+}
+
+async function _candRetrievalTest() {
+  const qEl = document.getElementById('cfg-candretrieval-q');
+  const kEl = document.getElementById('cfg-candretrieval-k');
+  const res = document.getElementById('cfg-candretrieval-result');
+  if (!qEl || !res) return;
+  const query = (qEl.value || '').trim();
+  const k = parseInt(kEl.value || '8', 10) || 8;
+  if (!query) { res.innerHTML = '<div class="cfg-field-desc">Enter a query.</div>'; return; }
+  res.innerHTML = '<div class="cfg-field-desc">Running&hellip;</div>';
+  try {
+    const r = await fetch('/api/semantic/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query, k}),
+    });
+    const resp = await r.json();
+    if (!r.ok) {
+      res.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">'
+        + escHtml((resp.error && resp.error.message) || ('HTTP ' + r.status))
+        + '</div>';
+      return;
+    }
+    _candRetrievalRenderTable(res, resp);
+  } catch (e) {
+    res.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function _candRetrievalRenderTable(host, resp) {
+  const kept = Array.isArray(resp.kept) ? resp.kept : [];
+  const dropped = Array.isArray(resp.dropped_by_diversity) ? resp.dropped_by_diversity : [];
+  const tokens = Array.isArray(resp.segment_tokens) ? resp.segment_tokens : [];
+  let html = '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    + '<strong>Raw pool:</strong> ' + resp.raw_pool_size
+    + ' &middot; <strong>Segment tokens in effect:</strong> <code>' + tokens.map(escHtml).join(', ') + '</code>'
+    + '</div>';
+  const renderRows = (list, color) => {
+    if (!list.length) return '<tr><td colspan="3" style="padding:6px;color:#888;">(none)</td></tr>';
+    return list.map(h =>
+      '<tr>'
+      + '<td style="padding:4px 8px;font-family:monospace;color:' + color + ';">' + escHtml(h.entity_id) + '</td>'
+      + '<td style="padding:4px 8px;text-align:right;">' + h.score.toFixed(3) + '</td>'
+      + '<td style="padding:4px 8px;font-family:monospace;font-size:0.85em;color:#aaa;">' + escHtml(h.document || '') + '</td>'
+      + '</tr>'
+    ).join('');
+  };
+  html += '<div style="margin-top:8px;"><strong>Kept (top ' + resp.top_k + '):</strong></div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:0.88rem;">'
+    + '<thead><tr style="text-align:left;color:#888;"><th style="padding:4px 8px;">entity_id</th><th style="padding:4px 8px;text-align:right;">score</th><th style="padding:4px 8px;">document</th></tr></thead>'
+    + '<tbody>' + renderRows(kept, '#6c6') + '</tbody>'
+    + '</table>';
+  if (dropped.length) {
+    html += '<div style="margin-top:10px;"><strong>Dropped by diversity filter:</strong></div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:0.88rem;">'
+      + '<tbody>' + renderRows(dropped, '#d99') + '</tbody>'
+      + '</table>';
+  }
+  host.innerHTML = html;
+}
+
 async function cfgSaveDisambiguation() {
   const resultEl = document.getElementById('cfg-save-result-disamb');
   if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
@@ -6058,11 +6306,20 @@ async function cfgSaveDisambiguation() {
     const b = (row.querySelector('.cfg-disamb-pair-b') || {}).value || '';
     if (a.trim() && b.trim()) pairs.push([a.trim(), b.trim()]);
   });
+  const tokens = [];
+  document.querySelectorAll('#cfg-disamb-tokens .cfg-disamb-token-row .cfg-disamb-token').forEach(el => {
+    const t = (el.value || '').trim();
+    if (t) tokens.push(t);
+  });
   try {
     const r = await fetch('/api/config/disambiguation', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({twin_dedup: twin, opposing_token_pairs: pairs}),
+      body: JSON.stringify({
+        twin_dedup: twin,
+        opposing_token_pairs: pairs,
+        extra_segment_tokens: tokens,
+      }),
     });
     const resp = await r.json();
     if (r.ok) {

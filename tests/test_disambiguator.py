@@ -950,7 +950,8 @@ class _StubSemanticIndex:
     def is_ready(self) -> bool:
         return self._ready
 
-    def retrieve_for_planner(self, query, *, k=8, domain_filter=None):
+    def retrieve_for_planner(self, query, *, k=8, domain_filter=None,
+                             segment_tokens=None):  # noqa: ARG002
         self.calls.append(query)
         if self._raises:
             raise RuntimeError("simulated retriever explosion")
