@@ -420,6 +420,286 @@ class TestPersistLoad:
 # Live Embedder — only runs if the BGE-small ONNX is present
 # ──────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────
+# Phase 8.3.3 — device-diversity filter (operator's 4 gates)
+# ──────────────────────────────────────────────────────────────
+#
+# These tests DO NOT require the real Embedder — the filter
+# operates on SemanticHit lists. Each test constructs the hits
+# directly so the scoring inputs are deterministic and the gate
+# semantics are asserted in isolation.
+
+from glados.ha.semantic_index import (  # noqa: E402
+    DEFAULT_SEGMENT_TOKENS,
+    PER_DEVICE_CAP,
+    SemanticHit,
+    apply_device_diversity,
+)
+
+
+def _hit(entity_id: str, score: float = 0.8,
+         device_id: str | None = None, document: str = "") -> SemanticHit:
+    return SemanticHit(
+        entity_id=entity_id,
+        score=score,
+        document=document or entity_id.split(".", 1)[-1].replace("_", " "),
+        device_id=device_id,
+    )
+
+
+class TestDeviceDiversityOperatorGates:
+    """The four gates from docs/battery-findings-and-remediation-plan.md
+    §Phase 8.3 Success criteria. Each test maps to one gate."""
+
+    # ── Gate 2: desk-lamp query survives N bedroom-strip siblings ──
+
+    def test_gate_2_desk_lamp_survives_gledopto_siblings(self) -> None:
+        """`search_entities("desk lamp")` must return
+        `light.task_lamp_one` in top-3 even when the
+        Gledopto bedroom LED strip has ≥8 sibling segments with
+        'lamp' in their name."""
+        hits = [
+            # 10 bedroom strip segments, high-ranking by cosine
+            # because they all include "lamp" in their aliases.
+            *[
+                _hit(
+                    f"light.room_a_strip_seg_{i}",
+                    score=0.90 - 0.01 * i,
+                    device_id="gledopto_bedroom",
+                    document=f"Bedroom Strip Seg {i} | aliases=lamp",
+                )
+                for i in range(1, 11)
+            ],
+            _hit(
+                "light.task_lamp_one",
+                score=0.85,  # loses the raw ranking battle
+                device_id="dev_office_desk",
+                document="Office Desk Monitor Lamp | area=Office",
+            ),
+        ]
+        out = apply_device_diversity(hits, "desk lamp", top_k=3)
+        ids = [h.entity_id for h in out]
+        assert "light.task_lamp_one" in ids[:3]
+        # At most one bedroom_strip entity should survive to top-3.
+        bedroom_count = sum(1 for i in ids if "bedroom_strip" in i)
+        assert bedroom_count <= 1
+
+    # ── Gate 3: segment-qualified queries still return the segment ──
+
+    def test_gate_3_segment_qualifier_preserves_specific_segment(self) -> None:
+        """`search_entities("bedroom strip seg 3 red")` must still
+        return `light.room_a_strip_seg_3` in top-3. Segment-qualified
+        queries bypass the collapse rule."""
+        hits = [
+            *[
+                _hit(
+                    f"light.room_a_strip_seg_{i}",
+                    score=0.90 - 0.01 * i,
+                    device_id="gledopto_bedroom",
+                    document=f"Bedroom Strip Seg {i}",
+                )
+                for i in range(1, 11)
+            ],
+        ]
+        out = apply_device_diversity(
+            hits, "bedroom strip seg 3 red", top_k=3,
+        )
+        ids = [h.entity_id for h in out]
+        assert "light.room_a_strip_seg_3" in ids[:3]
+
+    def test_gate_3_variant_qualifier_wording(self) -> None:
+        """'segment 3' must pin the same as 'seg 3'. Different
+        wording, same intent."""
+        hits = [
+            _hit(
+                f"light.room_a_strip_seg_{i}",
+                score=0.9,
+                device_id="gledopto_bedroom",
+                document=f"Bedroom Strip Seg {i}",
+            )
+            for i in range(1, 6)
+        ]
+        out = apply_device_diversity(
+            hits, "bedroom strip segment 3 red", top_k=3,
+        )
+        ids = [h.entity_id for h in out]
+        assert "light.room_a_strip_seg_3" in ids
+
+    # ── Gate 4: no device_id appears >2 times unless named ──
+
+    def test_gate_4_per_device_cap_enforced(self) -> None:
+        """No device_id may appear more than PER_DEVICE_CAP (=2)
+        times in the output when no segment qualifier is present."""
+        hits = [
+            _hit(
+                f"light.big_device_zone_{i}",
+                score=0.9 - 0.01 * i,
+                device_id="big_device",
+                document=f"Big Device Zone {i}",
+            )
+            for i in range(20)
+        ]
+        out = apply_device_diversity(hits, "lights", top_k=8)
+        counts: dict[str, int] = {}
+        for h in out:
+            if h.device_id:
+                counts[h.device_id] = counts.get(h.device_id, 0) + 1
+        assert all(c <= PER_DEVICE_CAP for c in counts.values())
+
+    def test_gate_4_cap_relaxed_when_segment_named(self) -> None:
+        """When the utterance explicitly names a segment on a
+        device, pinned siblings bypass the cap. Other siblings
+        still get collapsed — we're not unlimited, just honoring
+        the explicit pin."""
+        hits = [
+            _hit(
+                f"light.strip_seg_{i}",
+                score=0.9,
+                device_id="dev_strip",
+                document=f"Strip Seg {i}",
+            )
+            for i in range(1, 8)
+        ]
+        out = apply_device_diversity(hits, "strip seg 3", top_k=8)
+        ids = [h.entity_id for h in out]
+        # The pinned entity is present even though the cap would
+        # otherwise block multiple same-device hits.
+        assert "light.strip_seg_3" in ids
+        # Non-pinned siblings get dropped (pin won the group).
+        non_pinned = [
+            i for i in ids
+            if i.startswith("light.strip_seg_") and i != "light.strip_seg_3"
+        ]
+        assert len(non_pinned) == 0
+
+
+class TestDeviceDiversityRepresentativePicker:
+    """Tiebreakers inside a same-device group with no pin."""
+
+    def test_non_segment_name_wins_over_segment_sibling(self) -> None:
+        hits = [
+            _hit("light.foo_seg_1", score=0.95,
+                 device_id="dev", document="Foo Seg 1"),
+            _hit("light.foo_main", score=0.90,
+                 device_id="dev", document="Foo Main"),
+        ]
+        out = apply_device_diversity(hits, "foo", top_k=3)
+        ids = [h.entity_id for h in out]
+        assert ids == ["light.foo_main"]
+
+    def test_light_beats_switch_within_same_device(self) -> None:
+        """Phase 8.1's twin-dedup rule baked into the representative
+        picker for the semantic path."""
+        hits = [
+            _hit("switch.ceiling_lights", score=0.92,
+                 device_id="zooz1", document="Kitchen Overhead"),
+            _hit("light.ceiling_lights", score=0.85,
+                 device_id="zooz1", document="Kitchen Overhead"),
+        ]
+        out = apply_device_diversity(hits, "kitchen overhead", top_k=3)
+        ids = [h.entity_id for h in out]
+        assert ids == ["light.ceiling_lights"]
+
+    def test_natural_sort_order_on_pure_segment_group(self) -> None:
+        """When every sibling is a segment and no pin exists, pick
+        the first by natural sort (so Seg 2 beats Seg 10)."""
+        hits = [
+            _hit("light.strip_seg_10", score=0.9,
+                 device_id="dev", document="Strip Seg 10"),
+            _hit("light.strip_seg_2", score=0.9,
+                 device_id="dev", document="Strip Seg 2"),
+            _hit("light.strip_seg_1", score=0.9,
+                 device_id="dev", document="Strip Seg 1"),
+        ]
+        out = apply_device_diversity(hits, "strip", top_k=3)
+        assert out[0].entity_id == "light.strip_seg_1"
+
+
+class TestDeviceDiversityEdgeCases:
+    def test_empty_input_returns_empty(self) -> None:
+        assert apply_device_diversity([], "anything", top_k=5) == []
+
+    def test_hits_without_device_id_pass_through(self) -> None:
+        """Entities not tied to a registry device can't be proven
+        to be siblings; they shouldn't be collapsed."""
+        hits = [
+            _hit("scene.evening", score=0.9, device_id=None,
+                 document="Evening Scene"),
+            _hit("script.bedtime", score=0.8, device_id=None,
+                 document="Bedtime Script"),
+        ]
+        out = apply_device_diversity(hits, "evening", top_k=5)
+        assert len(out) == 2
+
+    def test_default_segment_tokens_include_plan_list(self) -> None:
+        expected = {"seg", "segment", "zone", "channel", "strip", "group"}
+        assert expected.issubset(set(DEFAULT_SEGMENT_TOKENS))
+
+    def test_custom_token_list_can_restrict_detection(self) -> None:
+        """An operator narrowing the segment list to only 'zone'
+        should leave 'seg' patterns unfiltered."""
+        hits = [
+            _hit(f"light.strip_seg_{i}", score=0.9,
+                 device_id="dev", document=f"Strip Seg {i}")
+            for i in range(1, 4)
+        ]
+        # With only "zone" as a segment token, strip_seg_N entries
+        # are no longer detected as segments → the representative
+        # picker can't prefer one based on the "non-segment wins"
+        # rule. The natural-sort tiebreaker takes over.
+        out = apply_device_diversity(
+            hits, "strip", top_k=3, segment_tokens=("zone",),
+        )
+        assert len(out) == 1
+        assert out[0].entity_id == "light.strip_seg_1"
+
+    def test_top_k_truncation_after_filter(self) -> None:
+        hits = [
+            _hit(f"light.room_{i}", score=0.9 - 0.01 * i,
+                 device_id=f"dev_{i}", document=f"Room {i} Light")
+            for i in range(10)
+        ]
+        out = apply_device_diversity(hits, "room", top_k=3)
+        assert len(out) == 3
+        # Sorted by original rank.
+        assert out[0].entity_id == "light.room_0"
+
+    def test_ranking_order_preserved_for_survivors(self) -> None:
+        """Survivors retain the ranker's ordering."""
+        hits = [
+            _hit("light.a", score=0.9, device_id="dev_a", document="A"),
+            _hit("light.b", score=0.8, device_id="dev_b", document="B"),
+            _hit("light.c", score=0.7, device_id="dev_c", document="C"),
+        ]
+        out = apply_device_diversity(hits, "anything", top_k=5)
+        assert [h.entity_id for h in out] == ["light.a", "light.b", "light.c"]
+
+
+class TestRetrieveForPlanner:
+    """Integration check — the convenience method chains retrieve()
+    into apply_device_diversity with sensible defaults."""
+
+    def test_chains_retrieve_and_diversity(self, _stub_idx) -> None:
+        # Add Gledopto-style siblings to the fixture cache so we
+        # exercise the operator's Gate 2 case end-to-end.
+        sibling_entities = [
+            _Entity(
+                f"light.room_a_strip_seg_{i}",
+                f"Bedroom Strip Seg {i}",
+                area_id="bedroom",
+                device_id="gledopto_bedroom",
+            )
+            for i in range(1, 9)
+        ]
+        _stub_idx._cache._entities.extend(sibling_entities)
+        _stub_idx.build()
+        out = _stub_idx.retrieve_for_planner("desk lamp", k=3)
+        ids = [h.entity_id for h in out]
+        assert "light.task_lamp_one" in ids[:3]
+        bedroom_count = sum(1 for i in ids if "bedroom_strip" in i)
+        assert bedroom_count <= 1
+
+
 @pytest.mark.skipif(
     not Path(DEFAULT_MODEL_PATH).exists()
     or not Path(DEFAULT_TOKENIZER_PATH).exists(),

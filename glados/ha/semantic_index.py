@@ -17,6 +17,7 @@ All embeddings are L2-normalized, so similarity = dot product.
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,6 +68,267 @@ DEFAULT_INDEX_PATH = "/app/data/entity_embeddings.npz"
 # the NDCG on MTEB. We keep both formats explicit so the contract is
 # auditable.
 _QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
+
+# ---------------------------------------------------------------------------
+# Device-diversity filter (Phase 8.3.3 — the four operator-named gates)
+#
+# The operator's non-negotiable requirement: no matter how well the
+# semantic ranker likes every segment of one multi-entity device, the
+# top-K that reaches the planner must not be dominated by that one
+# device. Gledopto LED strips, WLED zones, Hue gradient strips, and
+# multi-head Z-Wave RGB controllers all expose N light.* entities
+# sharing one device_id — left unfiltered they swamp top-8 and the
+# real "desk lamp" falls off the list.
+# ---------------------------------------------------------------------------
+
+# Default token set that marks a segment entity. Matched as whole-
+# word substrings (case-insensitive) in the entity's friendly_name
+# or in the tail of its entity_id. Operator edits this via the
+# existing Integrations → Home Assistant → Disambiguation rules
+# card (new "Segment tokens" sub-list added in §8.3.5).
+DEFAULT_SEGMENT_TOKENS: tuple[str, ...] = (
+    "seg", "segment", "zone", "channel", "strip", "group", "head",
+)
+
+# Hard per-device cap in any returned top-K. When the utterance
+# doesn't explicitly name a segment, NO device gets more than this
+# many entities in the result — even if the raw cosine ranker loved
+# N-1 of them. Tuned to 2 per plan spec: allows a light + its paired
+# switch companion on the rare case where dedup doesn't apply, but
+# rules out "8 bedroom strip segments" dominance.
+PER_DEVICE_CAP: int = 2
+
+
+def _compile_segment_regex(tokens: tuple[str, ...]) -> re.Pattern[str]:
+    """Build a regex that matches any of `tokens` as a whole word,
+    optionally followed by digits (e.g. `seg3`, `segment 12`,
+    `zone_4`). Trailing `_<digits>` anywhere in a name also counts
+    as a segment indicator — Gledopto entity_ids sometimes arrive
+    as `light.room_a_strip_1` with no literal `seg` anywhere."""
+    if not tokens:
+        # No tokens means the filter falls back to the `_<digits>`
+        # suffix detector only.
+        return re.compile(r"_(\d+)\b", re.IGNORECASE)
+    escaped = "|".join(re.escape(t) for t in tokens if t)
+    # Token followed by optional separator + digits, OR _<digits>
+    # anywhere as a suffix marker.
+    return re.compile(
+        rf"\b(?:{escaped})[\s_-]*\d*\b|_(?:\d+)\b",
+        re.IGNORECASE,
+    )
+
+
+_NUM_RE = re.compile(r"(\d+)")
+
+
+def _natural_sort_key(name: str) -> tuple[Any, ...]:
+    """Sort `Seg 2` before `Seg 10`. Splits on digit runs and
+    compares numeric chunks as int."""
+    parts = _NUM_RE.split(name or "")
+    return tuple(
+        int(p) if p.isdigit() else p.lower()
+        for p in parts if p
+    )
+
+
+def _entity_is_segment(
+    entity_id: str,
+    friendly_name: str,
+    pattern: re.Pattern[str],
+) -> bool:
+    """True when the entity's name or id matches the segment pattern.
+    Used by `_pick_representative` to prefer non-segment entities and
+    by `_utterance_segment_match` to detect operator-intent overrides."""
+    if pattern.search(friendly_name or ""):
+        return True
+    tail = entity_id.split(".", 1)[-1]
+    if pattern.search(tail):
+        return True
+    return False
+
+
+def _utterance_pin_candidates(
+    utterance: str,
+    hits: list["SemanticHit"],
+    pattern: re.Pattern[str],
+) -> set[str]:
+    """Return the entity_ids in `hits` that the operator has
+    explicitly named via a segment qualifier in the utterance.
+
+    Example: utterance "bedroom strip segment 3 red" with hits for
+    `bedroom_strip_seg_3` and `bedroom_strip_seg_4` → pin seg_3.
+    When the utterance doesn't mention any segment token at all,
+    the set is empty and every group gets normal collapse.
+    """
+    matches = pattern.findall(utterance or "")
+    if not matches:
+        return set()
+    # Extract the digit parts — we want to pin entities whose name
+    # contains the same digit qualifier. "segment 3" and "seg 3"
+    # both pin any candidate with "3" adjacent to a segment token.
+    digits: set[str] = set()
+    for m in _NUM_RE.findall(utterance or ""):
+        digits.add(m)
+    pinned: set[str] = set()
+    for h in hits:
+        name = (h.document or "").lower()
+        eid_tail = h.entity_id.split(".", 1)[-1].lower()
+        # Require BOTH a segment token AND one of the utterance's
+        # digits to appear in the entity's name/id.
+        if not pattern.search(name) and not pattern.search(eid_tail):
+            continue
+        if not digits:
+            # Utterance had a segment token with no digit (e.g.
+            # "the strip") — any segment entity of that device
+            # doesn't get pinned; it goes through normal collapse.
+            continue
+        hit_digits = set(_NUM_RE.findall(name)) | set(
+            _NUM_RE.findall(eid_tail)
+        )
+        if hit_digits & digits:
+            pinned.add(h.entity_id)
+    return pinned
+
+
+def _pick_representative(
+    group: list["SemanticHit"],
+    pattern: re.Pattern[str],
+    cache: Any = None,
+) -> "SemanticHit":
+    """Pick one entity from a same-device group when the utterance
+    has no explicit pin. Preference order, matching the plan spec:
+
+      1. Non-segment name wins (the "master" rather than a numbered
+         sibling).
+      2. `light.*` beats `switch.*` — same rule Phase 8.1 uses for
+         twin dedup, hoisted here so the semantic path doesn't need
+         a separate dedup pass.
+      3. If both are lights, the one with real dim capability
+         (`supported_color_modes` richer than just 'onoff') wins —
+         Inovelli fan/light edge case.
+      4. Highest raw cosine score (keep the model's best pick).
+      5. Natural-sort-first by name (deterministic tiebreaker so
+         repeat queries return stable results).
+    """
+    def _is_seg(h: "SemanticHit") -> bool:
+        name = (h.document or "")
+        return _entity_is_segment(h.entity_id, name, pattern)
+
+    def _domain(h: "SemanticHit") -> str:
+        return h.entity_id.split(".", 1)[0]
+
+    def _light_has_dim(h: "SemanticHit") -> bool:
+        if _domain(h) != "light" or cache is None:
+            return False
+        try:
+            e = cache.get(h.entity_id)
+        except Exception:
+            return False
+        if e is None:
+            return False
+        modes = e.attributes.get("supported_color_modes") or []
+        if not isinstance(modes, (list, tuple, set)):
+            return False
+        return any(str(m).lower() != "onoff" for m in modes)
+
+    def sort_key(h: "SemanticHit") -> tuple[Any, ...]:
+        # Lower = better. Each component reverses boolean preferences
+        # so True (preferred) sorts before False.
+        return (
+            _is_seg(h),                        # non-seg first
+            _domain(h) != "light",             # light before switch
+            not _light_has_dim(h),             # dim-capable first
+            -h.score,                          # higher score first
+            _natural_sort_key(h.document or h.entity_id),
+        )
+
+    return sorted(group, key=sort_key)[0]
+
+
+def apply_device_diversity(
+    hits: list["SemanticHit"],
+    utterance: str,
+    *,
+    top_k: int = 8,
+    segment_tokens: tuple[str, ...] = DEFAULT_SEGMENT_TOKENS,
+    per_device_cap: int = PER_DEVICE_CAP,
+    cache: Any = None,
+) -> list["SemanticHit"]:
+    """Filter a raw cosine-ranked hit list to enforce the four
+    operator-named gates from the plan:
+
+      1. No device_id appears more than `per_device_cap` times in
+         the final top-K UNLESS the utterance explicitly pins one
+         of its siblings (segment qualifier like "strip 3").
+      2. For a same-device group with no pin, keep one
+         representative per `_pick_representative`.
+      3. Pinned entities bypass the per-device cap — operator
+         intent (naming a segment) always wins.
+      4. Hits without a device_id pass through unchanged; dedup
+         requires a registry id to join on.
+
+    Input ranking order is preserved for survivors. The returned
+    list is truncated to `top_k`.
+    """
+    if not hits:
+        return []
+    pattern = _compile_segment_regex(segment_tokens)
+    pinned_ids = _utterance_pin_candidates(utterance, hits, pattern)
+
+    # Group hits by device_id; track per-device kept count.
+    by_device: dict[str, list[SemanticHit]] = {}
+    loose: list[SemanticHit] = []
+    for h in hits:
+        if h.device_id:
+            by_device.setdefault(h.device_id, []).append(h)
+        else:
+            loose.append(h)
+
+    # Build the keep-set in original ranking order.
+    keep_ids: set[str] = set()
+    for did, group in by_device.items():
+        # Pinned candidates are always kept regardless of cap.
+        for h in group:
+            if h.entity_id in pinned_ids:
+                keep_ids.add(h.entity_id)
+        # Remaining candidates in this group go through collapse.
+        non_pinned = [h for h in group if h.entity_id not in pinned_ids]
+        if not non_pinned:
+            continue
+        # When no pin exists and the group has siblings, collapse
+        # to a single representative. When a pin DOES exist, we
+        # already honored operator intent on that device — drop
+        # the rest of the siblings to avoid diluting the top-K.
+        if pinned_ids & {h.entity_id for h in group}:
+            # Pin exists on this device — siblings get dropped.
+            continue
+        # No pin → keep one representative.
+        rep = _pick_representative(non_pinned, pattern, cache=cache)
+        keep_ids.add(rep.entity_id)
+
+    # Assemble the final list by walking the input in its original
+    # order so the ranker's ordering is preserved.
+    filtered: list[SemanticHit] = []
+    per_device_count: dict[str, int] = {}
+    for h in hits:
+        if h.device_id is None:
+            filtered.append(h)
+            continue
+        if h.entity_id not in keep_ids:
+            continue
+        # Apply the per-device cap for non-pinned survivors. Pinned
+        # entities bypass the cap (operator explicitly named them).
+        if h.entity_id in pinned_ids:
+            filtered.append(h)
+            continue
+        current = per_device_count.get(h.device_id, 0)
+        if current >= per_device_cap:
+            continue
+        per_device_count[h.device_id] = current + 1
+        filtered.append(h)
+
+    return filtered[:top_k]
 
 
 def is_semantic_retrieval_available(
@@ -580,14 +842,46 @@ class SemanticIndex:
         with self._lock:
             return len(self._entity_ids)
 
+    def retrieve_for_planner(
+        self,
+        query: str,
+        *,
+        k: int = 8,
+        domain_filter: list[str] | None = None,
+        raw_pool: int = 30,
+        segment_tokens: tuple[str, ...] = DEFAULT_SEGMENT_TOKENS,
+    ) -> list[SemanticHit]:
+        """Phase 8.3.3 — retrieve with the device-diversity gate
+        applied. This is the method the disambiguator should call;
+        raw cosine-only `retrieve()` is exposed for diagnostics /
+        the WebUI preview card.
+
+        The raw pool (`raw_pool=30`) is intentionally larger than
+        `k` so the diversity filter has room to drop sibling
+        segments without leaving top-K short."""
+        raw = self.retrieve(
+            query, k=max(raw_pool, k),
+            domain_filter=domain_filter,
+        )
+        return apply_device_diversity(
+            raw,
+            utterance=query,
+            top_k=k,
+            segment_tokens=segment_tokens,
+            cache=self._cache,
+        )
+
 
 __all__ = [
     "DEFAULT_INDEX_PATH",
     "DEFAULT_MODEL_PATH",
+    "DEFAULT_SEGMENT_TOKENS",
     "DEFAULT_TOKENIZER_PATH",
     "Embedder",
+    "PER_DEVICE_CAP",
     "SemanticHit",
     "SemanticIndex",
+    "apply_device_diversity",
     "build_entity_document",
     "is_semantic_retrieval_available",
 ]
