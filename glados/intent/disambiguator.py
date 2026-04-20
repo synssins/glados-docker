@@ -1317,6 +1317,12 @@ class Disambiguator:
 
     def _call_ollama(self, messages: list[dict[str, str]]) -> str:
         """POST to /api/chat with format=json, return assistant content."""
+        # Phase 8.0.1 — suppress Qwen3 thinking mode on the structured-
+        # JSON prompt. Without this, Qwen3 emits 500+ tokens of <think>
+        # prose before the JSON, often blowing the token budget before
+        # the JSON ever arrives → `fall_through:unknown_decision`.
+        from glados.core.llm_directives import apply_model_family_directives
+        messages = apply_model_family_directives(messages, self._model)
         body = json.dumps({
             "model": self._model,
             "messages": messages,

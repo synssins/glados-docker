@@ -72,6 +72,11 @@ class PersonaRewriter:
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": _build_user_prompt(input_text, context_hint)},
         ]
+        # Phase 8.0.1 — kill Qwen3 think-mode on the rewrite call. A
+        # ~30-char plain response from HA should produce a one-liner,
+        # not a think-block prelude that eats num_predict=200.
+        from glados.core.llm_directives import apply_model_family_directives
+        messages = apply_model_family_directives(messages, self._model)
         body = json.dumps({
             "model": self._model,
             "messages": messages,

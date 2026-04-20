@@ -577,6 +577,10 @@ class DoorbellScreener:
             {"role": "system", "content": _EVAL_SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ]
+        # Phase 8.0.1 — Qwen3 think-mode suppression. `format=json` with
+        # a think prefix silently fails the schema constraint; suppress.
+        from glados.core.llm_directives import apply_model_family_directives
+        messages = apply_model_family_directives(messages, model)
 
         payload = {
             "model": model,

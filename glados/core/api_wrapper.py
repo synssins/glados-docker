@@ -1559,6 +1559,13 @@ def _stream_chat_sse_impl(
     # path (qwen2.5:14b-instruct vs the retired glados:latest Modelfile) —
     # persona strength is more sensitive to these parameters when no SYSTEM
     # is baked into the Modelfile.
+    # Phase 8.0.1 — Qwen3 thinking-mode suppression on the Tier 3 chat
+    # path. Prevents the model from emitting a long <think>…</think>
+    # prelude on each tool round, which was blowing the output budget
+    # before a user-visible answer could be produced (see the
+    # "It's too bright in the office" investigation in Change 14.3).
+    from glados.core.llm_directives import apply_model_family_directives
+    messages = apply_model_family_directives(messages, glados.llm_model)
     payload: dict[str, Any] = {
         "model": glados.llm_model,
         "stream": True,
@@ -1898,10 +1905,20 @@ def _stream_chat_sse_impl(
                     if _content2:
                         if t_first_token is None:
                             t_first_token = time.time()
-                        full_response.append(_content2)
-                        _cd2 = {"id": f"chatcmpl-{request_id}", "object": "chat.completion.chunk", "created": int(time.time()), "model": "glados", "choices": [{"index": 0, "delta": {"content": _content2}, "finish_reason": None}]}
-                        handler.wfile.write(f"data: {json.dumps(_cd2)}\n\n".encode())
-                        handler.wfile.flush()
+                        # Phase 8.0.1 — the tool-loop continuation
+                        # emitted raw chunks (including <think>…</think>)
+                        # straight to the UI and to full_response,
+                        # bypassing the stream filter that the first
+                        # round uses. Qwen3 tool-response turns were
+                        # often pure think blocks; without this, the
+                        # reasoning text leaked into the chat and the
+                        # conversation_store save at the finally block.
+                        _visible2 = _filter_think_chunk(_content2)
+                        if _visible2:
+                            full_response.append(_visible2)
+                            _cd2 = {"id": f"chatcmpl-{request_id}", "object": "chat.completion.chunk", "created": int(time.time()), "model": "glados", "choices": [{"index": 0, "delta": {"content": _visible2}, "finish_reason": None}]}
+                            handler.wfile.write(f"data: {json.dumps(_cd2)}\n\n".encode())
+                            handler.wfile.flush()
                     if _done2:
                         break
                 _c2.close()
@@ -1959,6 +1976,12 @@ def _stream_chat_sse_impl(
         conn.close()
         # Save to conversation store so follow-ups have context
         response_text = "".join(full_response)
+        # Phase 8.0.1 belt — even with /no_think and per-chunk stream
+        # filtering, strip any residual thinking tags from the final
+        # persisted message. Any unmatched / partial tag (e.g. a
+        # response truncated mid-think on token cap) would otherwise
+        # end up in the UI's next history fetch.
+        response_text = _strip_thinking(response_text)
         if response_text:
             store.append({"role": "user", "content": user_message})
             store.append({"role": "assistant", "content": response_text})
