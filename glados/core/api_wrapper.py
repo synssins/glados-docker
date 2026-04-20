@@ -2761,16 +2761,50 @@ def main() -> None:
     server_thread.start()
     logger.success(f"GLaDOS API Wrapper listening on {args.host}:{args.port}")
 
-    # Run engine on main thread (blocks until shutdown)
+    # Run engine on main thread, looping across hot-reloads. `_engine` is a
+    # module global; reload_engine() may set it to None briefly and then to
+    # a fresh Glados instance. When engine.run() returns because the reload
+    # triggered the old instance's shutdown_event, we loop to pick up the
+    # new one rather than letting main() fall through and terminate the
+    # process (which docker would then restart, defeating the point of
+    # hot-reload).
     try:
-        if _engine.announcement:
-            _engine.play_announcement()
-        _engine.run()
+        while True:
+            current = _engine
+            if current is None:
+                # Reload in progress — wait for the swap to complete.
+                time.sleep(0.1)
+                continue
+            try:
+                if current.announcement:
+                    current.play_announcement()
+                current.run()
+            except KeyboardInterrupt:
+                raise
+            except Exception:
+                logger.exception("Engine run crashed; attempting continuation")
+                # If the crash wasn't a reload, exit so docker restarts us.
+                if _engine is current:
+                    raise
+            # engine.run() returned. Three cases:
+            #   - _engine is still `current` and shutdown_event is set:
+            #     this is a real shutdown (SIGTERM / KeyboardInterrupt path).
+            #   - _engine is None: mid-reload. Loop and wait.
+            #   - _engine is a different instance: reload completed. Loop
+            #     and run the new engine.
+            if _engine is current:
+                break
+            # else: reload — loop around to run the new engine (or wait for it)
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
     finally:
         logger.info("Shutting down...")
-        _engine.shutdown_event.set()
+        final = _engine
+        if final is not None:
+            try:
+                final.shutdown_event.set()
+            except Exception as exc:
+                logger.debug("Final shutdown_event.set raised: {}", exc)
         server.shutdown()
         logger.info("Shutdown complete")
 
