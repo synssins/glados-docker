@@ -121,7 +121,8 @@ def _init_ha_client() -> None:
             ConversationBridge, EntityCache, HAClient, init_singletons,
         )
         from glados.intent import (
-            Disambiguator, init_disambiguator, load_rules_from_yaml,
+            Disambiguator, apply_precheck_overrides, init_disambiguator,
+            load_rules_from_yaml,
         )
         from glados.persona import PersonaRewriter, init_rewriter
 
@@ -164,6 +165,10 @@ def _init_ha_client() -> None:
         rules = load_rules_from_yaml(
             os.path.join(config_dir, "disambiguation.yaml")
         )
+        # Phase 8.2 — activate operator-supplied precheck extras
+        # (command verbs + ambient regexes). Merges additively with
+        # the shipped defaults. Repeated on hot-reload.
+        apply_precheck_overrides(rules)
         disambig = Disambiguator(
             ha_client=client, cache=cache,
             ollama_url=ollama_url, model=disambig_model,

@@ -46,7 +46,8 @@ Work actually shipped in this session, in chronological order. Reference for Pha
 
 - **Phase 8.0 COMPLETE** (in a stronger form than originally scoped — did the model swap AND solved the entire live-config-apply infrastructure chain end-to-end, fixed a cascade of four related bugs that surfaced, and fixed the audio playback regression discovered in passing).
 - **Phase 8.1 COMPLETE** (2026-04-20 late evening). Change 14.1 in `docs/CHANGES.md`. Twin dedup by HA device_id, 11-pair opposing-token penalty, operator-editable WebUI card under Integrations → Home Assistant with hot-reload via new `/api/reload-disambiguation-rules`. 551 tests pass.
-- **Phase 8.2–8.9 NOT STARTED** — queued and unchanged.
+- **Phase 8.2 COMPLETE** (2026-04-20 late evening). Change 14.2. 28-verb command set + 5 shipped ambient-state regexes expand the precheck gate; operator-editable extras on a new "Command recognition" card on the Personality page with a live test input. `/api/precheck/test` endpoint. Same reload path as 8.1. 569 tests pass.
+- **Phase 8.3–8.9 NOT STARTED** — queued and unchanged.
 
 Three new tracks surfaced during the session that weren't in the original plan:
 

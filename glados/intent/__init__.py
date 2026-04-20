@@ -20,8 +20,11 @@ from .disambiguator import (
 from .rules import (
     DisambiguationRules,
     IntentAllowlist,
+    apply_precheck_overrides,
     domain_filter_for_utterance,
+    explain_home_command_match,
     load_rules_from_yaml,
+    looks_like_home_command,
     rules_to_dict,
     save_rules_to_yaml,
 )
@@ -31,10 +34,13 @@ __all__ = [
     "DisambiguationResult",
     "DisambiguationRules",
     "IntentAllowlist",
+    "apply_precheck_overrides",
     "domain_filter_for_utterance",
+    "explain_home_command_match",
     "get_disambiguator",
     "init_disambiguator",
     "load_rules_from_yaml",
+    "looks_like_home_command",
     "rules_to_dict",
     "save_rules_to_yaml",
 ]

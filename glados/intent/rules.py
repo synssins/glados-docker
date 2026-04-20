@@ -7,9 +7,10 @@ the system works out of the box without a config file.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 from loguru import logger
@@ -100,6 +101,107 @@ def _has_activity_phrase(utterance: str) -> bool:
     return any((" " + p + " ") in norm for p in _ACTIVITY_PHRASES)
 
 
+# ---------------------------------------------------------------------------
+# Phase 8.2 — Home-command verbs + ambient-state patterns
+#
+# Cluster B in the 435-test battery: 62 FAILs where the utterance carried
+# real command intent but the Phase 6 precheck rejected it because no
+# noun keyword matched. "Darken the bedroom", "bump it up", "it's too
+# dark", "I want to read" all fell into chitchat and silently did
+# nothing. The precheck now also catches:
+#
+#   • action verbs implied to drive a device ("darken", "dim", "bump", …)
+#   • ambient-state phrases ("it's too dark", "I can't see", "time to read")
+#
+# Both sets are mergeable: operators add house-specific extras via the
+# Personality → Command recognition card (saved into disambiguation.yaml
+# and applied at runtime via `apply_precheck_overrides`).
+# ---------------------------------------------------------------------------
+
+# Shipped defaults — the 28-verb set from the remediation plan §6.8.2.
+_HOME_COMMAND_VERBS: frozenset[str] = frozenset({
+    "darken", "brighten", "dim", "lighten", "bump",
+    "lower", "raise", "reduce", "increase", "soften",
+    "tone", "crank", "kill", "douse", "extinguish",
+    "illuminate", "light", "set", "put", "dial",
+    "slide", "push", "pull", "close", "open", "shut", "drop",
+})
+
+# Shipped default ambient-state regexes. Conservative — they trigger
+# only on clear environment-reference phrasing so "I want pizza" stays
+# in chitchat but "I want to read" / "it's too dark" pass. Operators
+# extend via the WebUI.
+_AMBIENT_STATE_DEFAULT_PATTERNS: tuple[str, ...] = (
+    # "it's too dark", "the living room is cold", etc.
+    r"\b(?:it'?s|that'?s|the\s+\w+(?:\s+\w+){0,2}\s+is)\s+"
+    r"(?:too\s+|way\s+too\s+|really\s+)?"
+    r"(?:dark|bright|dim|hot|cold|cool|warm|stuffy|loud|quiet|noisy)\b",
+    # "I can't see / hear / read"
+    r"\bi\s+(?:can'?t|cannot)\s+(?:see|hear|read|sleep)\b",
+    # "I need more light", "I want it brighter"
+    r"\bi\s+(?:need|want|would\s+like)\s+"
+    r"(?:more|less|some|the|it\s+)?\s*"
+    r"(?:light|lights|sound|music|heat|warmth|quiet|silence|air|fan|"
+    r"brighter|darker|louder|quieter|warmer|cooler|to\s+read|to\s+sleep)\b",
+    # "time to read", "time for bed"
+    r"\btime\s+(?:to|for)\s+"
+    r"(?:read|reading|sleep|bed|wake|dinner|movie|watch|relax|focus)\b",
+    # "... mode in the kitchen"
+    r"\b(?:movie|reading|dinner|party|sleep|focus|relax|bedtime)\s+mode\s+in\b",
+)
+
+
+def _compile_patterns(raw: Iterable[str]) -> list[re.Pattern[str]]:
+    """Compile a list of regex source strings to case-insensitive
+    patterns. Invalid regexes are logged and skipped so one bad
+    operator edit can't break the entire precheck."""
+    out: list[re.Pattern[str]] = []
+    for src in raw:
+        if not src or not isinstance(src, str):
+            continue
+        try:
+            out.append(re.compile(src, re.IGNORECASE))
+        except re.error as exc:
+            logger.warning(
+                "Invalid ambient pattern ignored: {!r} ({})", src, exc,
+            )
+    return out
+
+
+_AMBIENT_STATE_PATTERNS: list[re.Pattern[str]] = _compile_patterns(
+    _AMBIENT_STATE_DEFAULT_PATTERNS
+)
+
+# Runtime extras — populated by `apply_precheck_overrides(rules)` when
+# the disambiguator loads (or hot-reloads) rules. Merged additively with
+# the shipped defaults; shipped defaults are never removed at runtime.
+_runtime_extra_verbs: frozenset[str] = frozenset()
+_runtime_extra_ambient_patterns: list[re.Pattern[str]] = []
+
+
+def _has_command_verb(utterance: str) -> bool:
+    if not utterance:
+        return False
+    words = {w.strip(".,!?;:'\"").lower() for w in utterance.split()}
+    if words & _HOME_COMMAND_VERBS:
+        return True
+    if _runtime_extra_verbs and (words & _runtime_extra_verbs):
+        return True
+    return False
+
+
+def _matches_ambient_pattern(utterance: str) -> bool:
+    if not utterance:
+        return False
+    for pat in _AMBIENT_STATE_PATTERNS:
+        if pat.search(utterance):
+            return True
+    for pat in _runtime_extra_ambient_patterns:
+        if pat.search(utterance):
+            return True
+    return False
+
+
 def looks_like_home_command(utterance: str) -> bool:
     """Cheap precheck: does this utterance carry ANY signal that the
     operator intends a home-automation action?
@@ -113,15 +215,66 @@ def looks_like_home_command(utterance: str) -> bool:
     when there's no device-keyword and no activity phrase, and
     falls through to Tier 3 (the chitchat-capable full LLM) instead.
 
-    True when:
-      • any keyword from the domain-filter map appears, OR
+    Phase 8.2 expansion (2026-04-20): cluster-B FAILs showed the
+    noun-only gate was too narrow. "Darken the bedroom", "bump it
+    up", and ambient phrases like "it's too dark" carry intent but
+    no device noun; they now pass the precheck via the verb and
+    pattern checks added here. False-positives fall through to
+    Tier 3 chitchat — cheap, no silent ignore.
+
+    True when ANY of:
+      • a keyword from the domain-filter map appears
       • a known activity phrase maps to a scene / script
+      • a home-command verb appears (darken, dim, bump, …)
+      • an ambient-state pattern matches (it's too dark, time to read, …)
     """
     if domain_filter_for_utterance(utterance) is not None:
         return True
     if _has_activity_phrase(utterance):
         return True
+    if _has_command_verb(utterance):
+        return True
+    if _matches_ambient_pattern(utterance):
+        return True
     return False
+
+
+def explain_home_command_match(utterance: str) -> dict[str, Any]:
+    """Same predicate as `looks_like_home_command`, but returns a
+    structured explanation for the WebUI test-input preview box.
+    Keys: `matches` (bool), `via` (list of reasons), `domains` (list
+    of inferred HA domains when the noun-keyword path triggered)."""
+    reasons: list[str] = []
+    domains = domain_filter_for_utterance(utterance)
+    if domains is not None:
+        reasons.append("keyword")
+    if _has_activity_phrase(utterance):
+        reasons.append("activity_phrase")
+    if _has_command_verb(utterance):
+        reasons.append("command_verb")
+    if _matches_ambient_pattern(utterance):
+        reasons.append("ambient_pattern")
+    return {
+        "matches": bool(reasons),
+        "via": reasons,
+        "domains": domains,
+    }
+
+
+def apply_precheck_overrides(rules: "DisambiguationRules") -> None:
+    """Update the module-level runtime extras from a loaded rules
+    object. Additive with the shipped defaults — operator edits never
+    remove a built-in. Called at startup and on hot-reload."""
+    global _runtime_extra_verbs, _runtime_extra_ambient_patterns
+    verbs = {
+        v.strip().lower()
+        for v in (rules.extra_command_verbs or [])
+        if isinstance(v, str) and v.strip()
+    }
+    _runtime_extra_verbs = frozenset(verbs)
+    _runtime_extra_ambient_patterns = _compile_patterns(
+        rules.extra_ambient_patterns or []
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +309,14 @@ class DisambiguationRules:
     # See glados.ha.entity_cache._DEFAULT_OPPOSING_TOKENS.
     opposing_token_pairs: list[list[str]] = field(default_factory=list)
     twin_dedup: bool = True
+    # Phase 8.2 — precheck command verbs + ambient-state regexes,
+    # edited via the WebUI's Personality → Command recognition card.
+    # Merged additively with the shipped defaults. An empty list here
+    # means "use only shipped defaults" (the defaults themselves are
+    # NEVER removable at runtime — they're part of the container's
+    # contract). Invalid regexes are logged and skipped.
+    extra_command_verbs: list[str] = field(default_factory=list)
+    extra_ambient_patterns: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +434,16 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
         rules.opposing_token_pairs = cleaned
     if isinstance(raw.get("twin_dedup"), bool):
         rules.twin_dedup = bool(raw["twin_dedup"])
+    ev = raw.get("extra_command_verbs")
+    if isinstance(ev, list):
+        rules.extra_command_verbs = [
+            str(v).strip() for v in ev if str(v).strip()
+        ]
+    ep = raw.get("extra_ambient_patterns")
+    if isinstance(ep, list):
+        rules.extra_ambient_patterns = [
+            str(s) for s in ep if isinstance(s, str) and s.strip()
+        ]
     return rules
 
 
@@ -291,6 +462,8 @@ def rules_to_dict(rules: DisambiguationRules) -> dict[str, Any]:
         "extra_guidance": str(rules.extra_guidance or ""),
         "opposing_token_pairs": [list(p) for p in rules.opposing_token_pairs],
         "twin_dedup": bool(rules.twin_dedup),
+        "extra_command_verbs": list(rules.extra_command_verbs),
+        "extra_ambient_patterns": list(rules.extra_ambient_patterns),
     }
 
 

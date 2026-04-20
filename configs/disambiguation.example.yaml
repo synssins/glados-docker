@@ -62,3 +62,23 @@ opposing_token_pairs: []
 # where `light.*` has `supported_color_modes=['onoff']` is handled
 # automatically — the switch wins there.
 twin_dedup: true
+
+# Phase 8.2 — Precheck expansion (WebUI: Personality → "Command
+# recognition" card).
+#
+# `looks_like_home_command` triggers Tier 1/2 when an utterance carries
+# home-automation intent. Shipped defaults cover ~28 action verbs
+# (darken, brighten, dim, bump, lower, raise, reduce, increase, …) and
+# a handful of ambient-state regex patterns ("it's too dark", "time to
+# read", "I want more light"). The fields below let operators add
+# house-specific extras without editing code. They're ADDITIVE — the
+# shipped defaults stay on even when these are empty.
+extra_command_verbs: []
+  # - nudge
+  # - tickle
+
+# Regex strings. Case-insensitive. Use raw patterns; invalid ones are
+# logged at startup and skipped (so one bad edit doesn't break the
+# entire precheck).
+extra_ambient_patterns: []
+  # - "\\bthe cats? (?:need|want)\\b"
