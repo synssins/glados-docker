@@ -164,6 +164,11 @@ class GladosConfig(BaseModel):
     streaming_tts: bool = False
     streaming_tts_buffer_seconds: float = 3.0
     streaming_tts_chunk_chars: int = 80
+    # First-TTS-flush threshold (chars). Smaller = earlier first audio
+    # chunk at cost of one extra TTS call; larger = smoother continuous
+    # playback. 30 is aggressive (first sentence fires ~200-300 ms into
+    # LLM generation); 60-80 matches the rest of the stream.
+    streaming_tts_first_chunk_chars: int = 30
 
     @classmethod
     def from_yaml(cls, path: str | Path, key_to_config: tuple[str, ...] = ("Glados",)) -> "GladosConfig":
@@ -247,6 +252,7 @@ class Glados:
         streaming_tts: bool = False,
         streaming_tts_buffer_seconds: float = 3.0,
         streaming_tts_chunk_chars: int = 80,
+        streaming_tts_first_chunk_chars: int = 30,
     ) -> None:
         """
         Initialize the Glados voice assistant with configuration parameters.
@@ -370,6 +376,7 @@ class Glados:
         self.streaming_tts = streaming_tts
         self.streaming_tts_buffer_seconds = streaming_tts_buffer_seconds
         self.streaming_tts_chunk_chars = streaming_tts_chunk_chars
+        self.streaming_tts_first_chunk_chars = streaming_tts_first_chunk_chars
         self.audio_state = AudioState()
         self.knowledge_store = KnowledgeStore(resource_path("data/knowledge.json"))
         self.preferences_store = Store[Any](
@@ -582,6 +589,7 @@ class Glados:
             extra_headers=llm_headers,
             lane="priority",
             streaming_tts_chunk_chars=self.streaming_tts_chunk_chars if self.streaming_tts else None,
+            streaming_tts_first_chunk_chars=self.streaming_tts_first_chunk_chars if self.streaming_tts else None,
         )
         self.autonomy_llm_processors: list[LanguageModelProcessor] = []
         autonomy_parallel_calls = 0
@@ -615,6 +623,7 @@ class Glados:
                     lane="autonomy",
                     inflight_counter=self._autonomy_inflight,
                     streaming_tts_chunk_chars=self.streaming_tts_chunk_chars if self.streaming_tts else None,
+                    streaming_tts_first_chunk_chars=self.streaming_tts_first_chunk_chars if self.streaming_tts else None,
                 )
             )
 
@@ -1259,6 +1268,7 @@ class Glados:
             streaming_tts=config.streaming_tts,
             streaming_tts_buffer_seconds=config.streaming_tts_buffer_seconds,
             streaming_tts_chunk_chars=config.streaming_tts_chunk_chars,
+            streaming_tts_first_chunk_chars=config.streaming_tts_first_chunk_chars,
         )
 
     @classmethod

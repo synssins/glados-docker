@@ -36,6 +36,12 @@ class LanguageModelProcessor:
     # Minimum characters to accumulate before flushing to TTS.
     # Batching sentences reduces gaps between HA play_media calls.
     MIN_TTS_FLUSH_CHARS: ClassVar[int] = 150
+    # First-flush threshold: smaller so the FIRST sentence of a response
+    # reaches TTS as soon as possible. Operator-visible latency is
+    # dominated by the first audible byte; subsequent chunks stream in
+    # parallel. After the first flush of a given request, the regular
+    # `_tts_flush_chars` threshold applies for the remainder.
+    FIRST_TTS_FLUSH_CHARS: ClassVar[int] = 30
 
     # Standard thinking tags (GLM-4.7, MiniMax M2.1, DeepSeek, etc.)
     THINKING_OPEN_TAGS: ClassVar[tuple[str, ...]] = ("<think>", "<thinking>", "<reasoning>")
@@ -72,6 +78,7 @@ class LanguageModelProcessor:
         lane: str = "priority",
         inflight_counter: InFlightCounter | None = None,
         streaming_tts_chunk_chars: int | None = None,
+        streaming_tts_first_chunk_chars: int | None = None,
     ) -> None:
         self.llm_input_queue = llm_input_queue
         self.tool_calls_queue = tool_calls_queue
@@ -98,6 +105,12 @@ class LanguageModelProcessor:
         # When streaming TTS is enabled, flush smaller text chunks for faster first-audio.
         # None → use class default MIN_TTS_FLUSH_CHARS (150).
         self._tts_flush_chars: int = streaming_tts_chunk_chars or self.MIN_TTS_FLUSH_CHARS
+        # First-flush threshold. Hits TTS as soon as ~30 chars accumulate
+        # so the first audible byte lands early; subsequent flushes use
+        # the regular threshold to reduce per-call TTS overhead.
+        self._first_tts_flush_chars: int = (
+            streaming_tts_first_chunk_chars or self.FIRST_TTS_FLUSH_CHARS
+        )
 
         # HTTP timeouts from centralized config (fallback to hardcoded defaults)
         try:
@@ -726,6 +739,11 @@ class LanguageModelProcessor:
                 t_request_sent: float | None = None
                 t_first_token: float | None = None
                 ollama_metrics: dict[str, Any] = {}
+                # Track whether the first TTS flush has happened for
+                # this request. The first flush uses a smaller char
+                # threshold (FIRST_TTS_FLUSH_CHARS) so audio playback
+                # starts closer to when the model begins generating.
+                first_flush_done = False
                 try:
                     http_error_detail: tuple[str | int, str] | None = None
                     request_urls = [str(self.completion_url)]
@@ -791,12 +809,19 @@ class LanguageModelProcessor:
                                                         ):
                                                             # Batch sentences to reduce gaps between HA play_media calls.
                                                             # Only flush when we've accumulated enough text for smooth playback.
-                                                            # _tts_flush_chars is 80 for streaming TTS (faster first-audio)
-                                                            # or 150 for batch mode (fewer, larger chunks).
+                                                            # First flush uses FIRST_TTS_FLUSH_CHARS for fastest first-audio;
+                                                            # subsequent flushes use _tts_flush_chars (80 streaming / 150 batch)
+                                                            # to keep TTS-call overhead low for the rest of the response.
                                                             accumulated = "".join(sentence_buffer)
-                                                            if len(accumulated) >= self._tts_flush_chars:
+                                                            threshold = (
+                                                                self._first_tts_flush_chars
+                                                                if not first_flush_done
+                                                                else self._tts_flush_chars
+                                                            )
+                                                            if len(accumulated) >= threshold:
                                                                 self._process_sentence_for_tts(sentence_buffer)
                                                                 sentence_buffer = []
+                                                                first_flush_done = True
                                             elif cleaned_line_data.get("done_marker"):
                                                 break
                                             elif cleaned_line_data.get("done"):
