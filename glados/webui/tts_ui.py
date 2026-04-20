@@ -73,6 +73,27 @@ SERVICE_MAP = {
 _DOCKER_SOCKET = Path(os.environ.get("DOCKER_SOCKET", "/var/run/docker.sock"))
 
 
+def _apply_config_live(section: str) -> bool:
+    """Apply a saved config section to live runtime without a process restart.
+
+    Sections that affect the GLaDOS chat engine (services URLs / models,
+    global HA URL/token, personality, memory, observer) trigger an engine
+    hot-swap via `api_wrapper.reload_engine()`. Sections with no live
+    consumers return True immediately.
+
+    Returns True on success (live or no-op), False on failure.
+    """
+    engine_affecting = {"services", "global", "personality", "memory", "observer"}
+    if section not in engine_affecting:
+        return True
+    try:
+        from glados.core import api_wrapper as _aw
+        return _aw.reload_engine()
+    except Exception as exc:
+        logger.error("Live config apply for section {!r} failed: {}", section, exc)
+        return False
+
+
 def _docker_logs_tail(container: str, *, tail: int = 500, timestamps: bool = True,
                       socket_timeout_s: float = 15.0) -> str:
     """Fetch container logs via the Docker Engine API over the mounted
@@ -3273,7 +3294,12 @@ class Handler(BaseHTTPRequestHandler):
             _cfg.update_section(section, data)
             if section == "services":
                 self._sync_glados_config_urls(data)
-            self._send_json(200, {"ok": True, "section": section})
+            applied = _apply_config_live(section)
+            self._send_json(200, {
+                "ok": True,
+                "section": section,
+                "applied": applied,
+            })
         except KeyError as e:
             self._send_error(404, str(e))
         except Exception as e:
@@ -3367,7 +3393,10 @@ class Handler(BaseHTTPRequestHandler):
                 parsed = {}
             # Validate against Pydantic model
             _cfg.update_section(filename, parsed)
-            self._send_json(200, {"ok": True, "file": filename})
+            if filename == "services":
+                self._sync_glados_config_urls(parsed)
+            applied = _apply_config_live(filename)
+            self._send_json(200, {"ok": True, "file": filename, "applied": applied})
         except Exception as e:
             self._send_error(400, f"Error: {e}")
 
@@ -5851,7 +5880,11 @@ async function _cfgSaveSystemSubset(scopeEl, resultElId) {
     if (r.ok) {
       _cfgData.global = next;
       if (resultEl) resultEl.textContent = '';
-      showToast('Saved. Restart services for changes to take effect.', 'success');
+      if (resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Saved and applied.', 'success');
+      }
     } else if (resultEl) {
       resultEl.textContent = resp.error || ('Error (' + r.status + ')');
       resultEl.className = 'cfg-result err';
@@ -6502,9 +6535,13 @@ async function cfgSaveSection(section, resultElId) {
     });
     const resp = await r.json();
     if (r.ok) {
-      if (resultEl) resultEl.textContent = '';
-      showToast('Saved! Restart services for changes to take effect.', 'success');
       _cfgData[section] = data;
+      if (resultEl) resultEl.textContent = '';
+      if (resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Saved and applied.', 'success');
+      }
     } else if (resultEl) {
       resultEl.textContent = resp.error || ('Error (' + r.status + ')');
       resultEl.className = 'cfg-result err';
@@ -6557,13 +6594,23 @@ async function cfgSaveRaw() {
       body: JSON.stringify({file: _cfgCurrentRawFile, content})
     });
     if (r.ok) {
+      let resp = {};
+      try { resp = await r.json(); } catch (_) { /* old server */ }
       resultEl.textContent = '';
-      showToast('Saved! Restart services for changes to take effect.', 'success');
+      if (resp && resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Saved and applied.', 'success');
+      }
       _cfgRaw[_cfgCurrentRawFile] = content;
       await cfgLoadAll();
     } else {
-      const resp = await r.text();
-      resultEl.textContent = resp;
+      let msg = 'Error (' + r.status + ')';
+      try {
+        const body = await r.json();
+        if (body && body.error) msg = body.error;
+      } catch (_) {}
+      resultEl.textContent = msg;
       resultEl.className = 'cfg-result err';
     }
   } catch(e) {
