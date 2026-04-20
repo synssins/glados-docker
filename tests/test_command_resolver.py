@@ -496,6 +496,70 @@ class TestSessionCarryover:
         assert last_call["prior_service"] is None
         assert last_call["assume_home_command"] is False
 
+    def test_qualifier_in_current_utterance_skips_carryover(
+        self, ctx_chat_no_area: SourceContext, learned: LearnedContextStore,
+    ) -> None:
+        """Phase 8.3 fix: if the second turn names its own target
+        (e.g. 'bedroom strip segment 3' after 'turn on the desk
+        lamp'), carry-over must NOT attach the prior desk lamp as
+        prior context. Otherwise the disambiguator reads 'segment 3'
+        as a brightness qualifier on the wrong entity. Regression
+        test for the Gate 3 live failure."""
+        clock = _Clock()
+        disambig = _FakeDisambiguator(_FakeDisambigResult(
+            handled=True, decision="execute",
+            service="light.turn_on", entity_ids=["light.task_lamp_one"],
+            speech="Office lamp on.",
+        ))
+        session = SessionMemory(now_fn=clock)
+        resolver, _, d_seen, _ = _make_resolver(
+            disambiguator=disambig, session_memory=session,
+            learned_context=learned, clock=clock,
+        )
+        # Turn 1 — commits a desk-lamp target to session memory.
+        resolver.resolve("turn on the desk lamp", ctx_chat_no_area)
+        # Turn 2 — fresh target, has its own qualifiers.
+        clock.advance(5.0)
+        resolver.resolve("bedroom strip segment 3", ctx_chat_no_area)
+
+        last_call = d_seen.calls[-1]
+        # The second turn must be handled on its own merits:
+        # no prior entity injection, no assume_home_command bypass.
+        assert last_call["prior_entity_ids"] == []
+        assert last_call["prior_service"] is None
+        assert last_call["assume_home_command"] is False
+
+    def test_true_anaphora_still_uses_carryover(
+        self, ctx_chat_no_area: SourceContext, learned: LearnedContextStore,
+    ) -> None:
+        """Guard against over-correcting the Gate 3 fix: single-word
+        refinements with no qualifier tokens must still attach the
+        prior entities. This is the 'increase the brightness by ten
+        percent' / 'brighter' case that originally motivated the
+        carry-over code path."""
+        clock = _Clock()
+        disambig = _FakeDisambiguator(_FakeDisambigResult(
+            handled=True, decision="execute",
+            service="light.turn_on", entity_ids=["light.task_lamp_one"],
+            speech="Brighter.",
+        ))
+        session = SessionMemory(now_fn=clock)
+        resolver, _, d_seen, _ = _make_resolver(
+            disambiguator=disambig, session_memory=session,
+            learned_context=learned, clock=clock,
+        )
+        resolver.resolve("turn on the desk lamp", ctx_chat_no_area)
+        clock.advance(5.0)
+        # Pure modifier — no distinctive qualifier, no device noun.
+        resolver.resolve("brighter", ctx_chat_no_area)
+
+        last_call = d_seen.calls[-1]
+        assert last_call["prior_entity_ids"] == [
+            "light.task_lamp_one"
+        ]
+        assert last_call["prior_service"] == "light.turn_on"
+        assert last_call["assume_home_command"] is True
+
     def test_query_response_does_not_set_carryover(
         self, ctx_chat_no_area: SourceContext, learned: LearnedContextStore,
     ) -> None:
