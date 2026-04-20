@@ -2023,8 +2023,28 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_set_startup_speakers()
         elif self.path == "/api/force-emotion":
             self._handle_set_force_emotion()
+        elif self.path == "/api/reload-engine":
+            self._handle_reload_engine()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
+
+    def _handle_reload_engine(self) -> None:
+        """Hot-swap the engine in THIS process. Called by the WebUI process
+        (tts_ui.py, port 8052) after a config save so changes take effect
+        without any container restart. Has to be an HTTP boundary because
+        tts_ui and api_wrapper run as separate processes."""
+        try:
+            ok = reload_engine()
+            if ok:
+                self._send_json({"ok": True, "reloaded": True})
+            else:
+                self._send_json(
+                    {"ok": False, "error": "reload_engine declined (no config path registered)"},
+                    500,
+                )
+        except Exception as exc:
+            logger.exception("Reload-engine endpoint failed")
+            self._send_json({"ok": False, "error": str(exc)}, 500)
 
     def _handle_announce(self) -> None:
         try:

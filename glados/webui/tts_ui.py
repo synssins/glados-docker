@@ -98,19 +98,38 @@ def _apply_config_live(section: str) -> bool:
 
     Sections that affect the GLaDOS chat engine (services URLs / models,
     global HA URL/token, personality, memory, observer) trigger an engine
-    hot-swap via `api_wrapper.reload_engine()`. Sections with no live
-    consumers return True immediately.
+    hot-swap by POSTing to `api_wrapper`'s /api/reload-engine endpoint.
+    Crossing the process boundary over HTTP is required — tts_ui.py (port
+    8052) and api_wrapper.py (port 8015) are separate processes, so an
+    in-process `reload_engine()` call would create a *second* engine in
+    the wrong process and collide on port binding.
 
-    Returns True on success (live or no-op), False on failure.
+    Sections with no live consumers return True immediately.
+
+    Returns True on success, False on reload failure (network or server-side).
     """
     engine_affecting = {"services", "global", "personality", "memory", "observer"}
     if section not in engine_affecting:
         return True
     try:
-        from glados.core import api_wrapper as _aw
-        return _aw.reload_engine()
+        req = urllib.request.Request(
+            _svc_api_wrapper() + "/api/reload-engine",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read() or b"{}")
+            return bool(body.get("ok"))
+    except urllib.error.HTTPError as exc:
+        try:
+            err_body = exc.read().decode()
+        except Exception:
+            err_body = ""
+        logger.error("Live reload HTTP {} for section {!r}: {}", exc.code, section, err_body[:300])
+        return False
     except Exception as exc:
-        logger.error("Live config apply for section {!r} failed: {}", section, exc)
+        logger.error("Live reload for section {!r} failed: {}", section, exc)
         return False
 
 
