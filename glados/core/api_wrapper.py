@@ -49,6 +49,43 @@ _engine: Glados | None = None
 _api_lock = threading.Lock()
 _response_timeout: float = 45.0
 
+# Hot-reload plumbing. `_engine_overrides` captures CLI flags so a reload
+# preserves operator runtime choices (input mode, audio backend, flags).
+# `_engine_config_path` is the path we were initially started with.
+_engine_overrides: dict[str, Any] = {}
+_engine_config_path: str | None = None
+_engine_reload_lock = threading.RLock()
+
+
+def reload_engine() -> bool:
+    """Hot-swap the engine using the current on-disk config.
+
+    Creates a fresh `Glados` from `_engine_config_path` + `_engine_overrides`,
+    atomically promotes it to the module-level `_engine`, then signals the
+    previous instance's shutdown on a short grace period so any in-flight
+    request holding the old reference can finish. Returns True on success.
+    """
+    global _engine
+    if _engine_config_path is None:
+        logger.warning("reload_engine called before startup registered a config path; skipping")
+        return False
+    with _engine_reload_lock:
+        previous = _engine
+        logger.info("Engine reload: building new instance from {}", _engine_config_path)
+        new_engine = _create_engine(_engine_config_path, _engine_overrides)
+        _engine = new_engine
+        logger.info("Engine reload: new instance live; scheduling previous shutdown")
+    if previous is not None:
+        def _retire_old() -> None:
+            time.sleep(3.0)  # grace for in-flight requests holding the old ref
+            try:
+                previous.shutdown_event.set()
+                logger.info("Engine reload: previous instance signalled shutdown")
+            except Exception as exc:
+                logger.warning("Engine reload: previous-instance shutdown raised: {}", exc)
+        threading.Thread(target=_retire_old, daemon=True, name="engine-retire").start()
+    return True
+
 # ---------------------------------------------------------------------------
 # Doorbell screening system
 # ---------------------------------------------------------------------------
@@ -2524,6 +2561,12 @@ def main() -> None:
     logger.info(f"Creating GLaDOS engine from {args.config}")
     if overrides:
         logger.info(f"Config overrides: {overrides}")
+
+    # Remember the startup path + overrides so config-save hot-reload
+    # (reload_engine()) can recreate the engine with identical CLI context.
+    global _engine_config_path, _engine_overrides
+    _engine_config_path = args.config
+    _engine_overrides = dict(overrides)
 
     _engine = _create_engine(args.config, overrides)
 
