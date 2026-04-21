@@ -1466,6 +1466,29 @@ def _stream_chat_sse_impl(
             "stop. Do not append a self-status or sign-off line."
         )
         messages.append({"role": "system", "content": _chitchat_guard})
+    else:
+        # Home-command turn with tools available. 2026-04-20 bug:
+        # "What level is the desk lamp set to?" came back as a
+        # 1161-token markdown summary of EVERY HA entity —
+        # because the model called a broad state-dump tool and
+        # then narrated the output instead of extracting the one
+        # entity the user asked about. Steer the agentic loop
+        # toward the targeted in-process tools, forbid inventory
+        # narration, and cap the answer length.
+        _home_command_guard = (
+            "Tools are available this turn. For a query about ONE "
+            "specific device or entity: call `search_entities` "
+            "with the user's phrasing to get matching entity_ids, "
+            "then `get_entity_details` on the best match. For an "
+            "action on ONE device: same resolution path, then the "
+            "appropriate HA tool. Do NOT call tools that dump the "
+            "full entity list. Do NOT narrate an inventory of "
+            "devices or their states. Do NOT use markdown headers, "
+            "bullets, or bold. Answer the user's specific question "
+            "with the specific value in one or two sentences, then "
+            "stop."
+        )
+        messages.append({"role": "system", "content": _home_command_guard})
 
     messages.append({"role": "user", "content": user_message})
 
