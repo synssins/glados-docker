@@ -131,6 +131,99 @@ class HAAudioConfig(BaseModel):
             self.media_player_entities = [self.media_player_entities]
 
 
+def _ollama_as_chat_url(u: str | None) -> str:
+    """Normalize a bare or `/api/...` Ollama URL to the `/api/chat` form
+    stored in Glados.completion_url. Mirrors _ollama_chat_url in
+    glados/webui/tts_ui.py — duplicated deliberately to avoid an inbound
+    import from webui into core. Both should behave identically."""
+    s = (u or "").strip().rstrip("/")
+    if not s:
+        return ""
+    if s.endswith("/api/chat"):
+        return s
+    if "/api/" in s:
+        s = s.rsplit("/api/", 1)[0]
+    return s + "/api/chat"
+
+
+def _reconcile_glados_with_services(glados_raw: Any) -> Any:
+    """Override Glados-block llm_model / completion_url (and autonomy
+    equivalents) from services.yaml whenever they disagree.
+
+    services.ollama_interactive and services.ollama_autonomy are the
+    UI's authoritative source (LLM & Services page). The Glados block
+    historically duplicated these fields for engine convenience; the
+    save-side sync (`glados/webui/tts_ui.py::_sync_glados_config_urls`)
+    keeps them aligned on UI saves, but out-of-UI edits — e.g. a sed
+    restore from a stale backup — would still leave the engine reading
+    the drifted value at boot.
+
+    This load-time reconciliation closes that gap: services.yaml wins,
+    a warning names the override, and no path exists where the UI
+    advertises one model while the engine runs another. Skipped if
+    services.yaml is absent (dev/test without a configs dir) or the
+    Glados block is malformed.
+    """
+    if not isinstance(glados_raw, dict):
+        return glados_raw
+
+    from .config_store import cfg  # local import to avoid cycle at module load
+
+    services_yaml = cfg._configs_dir / "services.yaml"
+    if not services_yaml.exists():
+        return glados_raw
+
+    try:
+        svcs = cfg.services
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Services reconciliation skipped: {}", exc)
+        return glados_raw
+
+    chat_model = (svcs.ollama_interactive.model or "").strip()
+    chat_url = _ollama_as_chat_url(svcs.ollama_interactive.url)
+    auton_model = (svcs.ollama_autonomy.model or "").strip()
+    auton_url = _ollama_as_chat_url(svcs.ollama_autonomy.url)
+
+    if chat_model and glados_raw.get("llm_model") != chat_model:
+        logger.warning(
+            "Config drift: Glados.llm_model={!r} overridden by "
+            "services.ollama_interactive.model={!r} (UI is source of truth)",
+            glados_raw.get("llm_model"), chat_model,
+        )
+        glados_raw["llm_model"] = chat_model
+
+    if chat_url:
+        current_chat = (glados_raw.get("completion_url") or "").strip().rstrip("/")
+        if current_chat != chat_url:
+            logger.warning(
+                "Config drift: Glados.completion_url={!r} overridden by "
+                "services.ollama_interactive.url={!r} (UI is source of truth)",
+                glados_raw.get("completion_url"), chat_url,
+            )
+            glados_raw["completion_url"] = chat_url
+
+    auton = glados_raw.get("autonomy")
+    if isinstance(auton, dict):
+        if auton_model and (auton.get("llm_model") or "") != auton_model:
+            logger.warning(
+                "Config drift: Glados.autonomy.llm_model={!r} overridden by "
+                "services.ollama_autonomy.model={!r} (UI is source of truth)",
+                auton.get("llm_model"), auton_model,
+            )
+            auton["llm_model"] = auton_model
+        if auton_url:
+            current_auton = (auton.get("completion_url") or "").strip().rstrip("/")
+            if current_auton != auton_url:
+                logger.warning(
+                    "Config drift: Glados.autonomy.completion_url={!r} overridden by "
+                    "services.ollama_autonomy.url={!r} (UI is source of truth)",
+                    auton.get("completion_url"), auton_url,
+                )
+                auton["completion_url"] = auton_url
+
+    return glados_raw
+
+
 class GladosConfig(BaseModel):
     """
     Configuration model for the Glados voice assistant.
@@ -202,6 +295,12 @@ class GladosConfig(BaseModel):
         config = data
         for key in key_to_config:
             config = config[key]
+
+        # Phase 8.13: reconcile with services.yaml before validation so
+        # the UI's LLM & Services page stays the single source of truth
+        # even if glados_config.yaml drifts via hand-edit or backup
+        # restore. See docs/battery-findings-and-remediation-plan.md §8.13.
+        config = _reconcile_glados_with_services(config)
 
         return cls.model_validate(config)
 

@@ -1665,4 +1665,232 @@ semantic retrieval, which cuts prompt size from ~3000 tokens to
 
 ---
 
+## Change 15 — Phases 8.5 / 8.6 / 8.7 + chitchat hardening (2026-04-21)
+
+Single long session landed three plan phases plus live-surfaced
+fixes. Final commit on deploy target: `a0cdd15`. 824 tests pass.
+
+### Phase 8.5 — Area & floor taxonomy
+
+New `glados/intent/area_inference.py` maps spoken keywords
+("downstairs", "upstairs", "basement", "outside", etc.) to live
+HA registry ids. Shipped keyword table redesigned for split-level
+houses after live probe showed "main floor" mis-routing. Longest-
+keyword-wins + word-boundary match. Operator-editable aliases on
+the Disambiguation rules card (`floor_aliases`/`area_aliases`).
+
+`SemanticIndex` gained parallel `_entity_area_ids`/`_entity_floor_ids`
+arrays with persist/load (schema-v2). Area resolution uses the HA-
+native cascade: `entity.area_id` → `entity_registry.area_id` →
+`device.area_id`. Before the cascade, ~290 entities had blank
+area facets because HA publishes `area_id` sparsely at the state
+level. `retrieve()`/`retrieve_for_planner()` take optional
+`area_id`/`floor_id` filter hints.
+
+HA registry on `10.0.0.50` cleaned up via
+`scripts/ha_cleanup_rename_and_assign.py`: `Theater` renamed to
+`Basement`; 287 orphan entities assigned (18 explicit + 269 via 6
+prefix rules for camera/doorbell/driveway groups).
+
+Live-verified keywords: "downstairs" → `ground_level`,
+"main floor" → `main_level`, "upstairs" → `bedroom_level`,
+"backyard" → `back_yard`.
+
+Commits: `22b27fb`, `df3780a`, `4754fc3`, `1b4e83b`, `99cf86f`.
+
+### Phase 8.6 — Compound-command dropout fix (reframed)
+
+Scoping showed all 9 compound battery FAILs had "0 state changes"
+— the LLM silently dropped actions before emission. Pure planner/
+executor rename (original spec) would not have helped. Fixed at
+emission: two concrete few-shots + CRITICAL directive in the
+planner prompt, plus `min_expected_action_count()` + retry-once
+on dropout. Live probe of 5 compound utterances all produced the
+correct action count; retry path never fired because few-shots
+alone solved it. Commit `44fa115`.
+
+### Phase 8.7 — Response composer + quip library
+
+`glados/persona/quip_selector.py` + `composer.py` + `llm_composer.py`
+ship four response modes driven by `DisambiguationRules.response_mode`:
+
+- **LLM** (default): pass the planner's LLM speech through unchanged.
+- **LLM_safe**: dedicated narrow Ollama call that never sees device
+  names. `/no_think` + 120-tok budget + tidy pass for stray
+  `<think>` tags. Graceful fallback to passthrough on failure.
+- **quip**: pick a pre-written line from `configs/quips/**/*.txt`
+  via most-specific → global fallback chain.
+  `mood_from_affect()` per spec (anger>0.6→cranky, joy>0.6→amused).
+- **chime**: emit sentinel for audio pipeline.
+- **silent**: empty string.
+
+Disambiguator wraps every execute in a composer call; `response_mode`
+lands in audit via `DisambiguationResult → ResolverResult → _audit`.
+
+WebUI: **Response behavior** card on Audio & Speakers (global
+dropdown + per-event matrix), **Quip editor** card on Personality
+(tree view / textarea / dry-run test) backed by
+`GET/PUT/DELETE/test /api/quips` with path-escape protection.
+
+Seed library: 13 files / ~60 lines across turn_on, turn_off,
+brightness_up/down, scene_activate, too_dark, state_query, global/
+acknowledgement, partial_success, already_in_state. Target ~450
+deferred.
+
+Live-verified: quip mode produces Portal-voice lines with zero
+device-name leakage; LLM_safe mode produces mood-appropriate device-
+name-free sentences via the dedicated Ollama call.
+
+Commits: `93873a9`, `c72d115`, `b5a0f97`, `cdab414`, `275c447`,
+`db47f57`.
+
+### Chitchat hardening — HA misclassification + context pollution
+
+Cascade of live-observed bugs where chat turns returned telemetry
+instead of chat replies. Narrow fixes:
+
+- **HA weather-fallback guard** (`9d3b0b6`): HA's conversation API
+  falls back to a `weather.openweathermap` `query_answer` when it
+  can't parse an utterance. Live-observed: "Hey, what was life like
+  as a potato?" → "56 °F and sunny". Detect weather-only success
+  sources + no weather tokens in the utterance, fall through.
+- **HA empty-nop guard** (`506f61f`): Generalises the above. HA also
+  returns `action_done` with `targets`/`success`/`failed` all empty
+  when filling a speech-slot template. Observed: "Tell me about the
+  testing tracks" → `action_done`, speech "9:55 AM", all data lists
+  empty. Fall through.
+- **Autonomy-noise filter on non-streaming chat** (`a334a27`): The
+  SSE path already stripped `Autonomy update. Time: ...` messages
+  from history; the non-streaming engine path (`llm_processor.run`)
+  did not. Live DB dump showed ~30% of stored user turns were
+  autonomy chatter. Same filter now applied in `_build_messages`.
+- **Anti-parrot guard** (`dfb1faa`, `a0cdd15`): `_drop_parrot_anchors()`
+  removes prior (user, assistant) pairs whose user content matches
+  the current turn (case + trailing-punctuation insensitive).
+  Applied on both SSE and non-streaming paths. Few-shots at index
+  1..N protected.
+- **5 new closing-boilerplate patterns** (`dfb1faa`): "You are welcome
+  to speculate...", "I leave that to you", "You may draw your own
+  conclusions", "How may I assist you today?", "Is there anything
+  else I can help you with?"
+- **Chitchat tool-list strip** (`5d82991`): `_filter_tools_for_message`
+  now uses `looks_like_home_command` to strip HA/MCP tools on non-
+  device utterances. Without this, qwen3 defaults to "my capabilities
+  are limited to the tools provided" refusals for lore questions.
+- **MCP context-resource suppression** (`91685cf`): Tools filter
+  alone wasn't enough — MCP servers also inject entity catalogs as
+  system messages. `_build_messages` now skips MCP context injection
+  on chitchat turns.
+- **Tier 1 RewriteResult JSON-leak fix**: `CommandResolver._persona_rewrite`
+  was returning the `RewriteResult` dataclass instead of `.text`.
+  Observed on "turn off the basement lights" as a bare `.` reply.
+  Fix extracts `.text` with string-passthrough for test stubs.
+
+### Persona preprompt rewrite
+
+`configs/glados_config.yaml` (gitignored — host-only edit):
+
+- New `APERTURE SCIENCE LORE` section instructing concrete canon
+  engagement on Portal 1/2 topics, with Caroline as the deflect
+  topic.
+- Two paraphrased Portal-lore few-shots that teach SHAPE (specific
+  canonical detail + bitter clarity + terminal stop) without giving
+  verbatim answers to parrot.
+- New CRITICAL RULE: "NEVER parrot or reuse exact phrasing from
+  prior responses or example exchanges."
+- 5 new entries in FORBIDDEN ENDINGS matching the new closing-
+  boilerplate stripper.
+
+### Known issues handed to next session
+
+1. **Config-drift bug (WebUI-first rule violation):** engine reads
+   `Glados.llm_model` directly; UI's authoritative source is
+   `services.ollama_interactive.model`; they can silently diverge
+   when the Glados field is hand-edited. Fix: on load, let services-
+   block value override Glados-block value when they disagree.
+2. **Portal canon confabulation:** 14B invents a "harvested, fried,
+   and consumed" ending for the potato arc. Cause is prior-weight
+   mismatch (real-potato biology dominates Portal canon in training
+   data) + fragmented references in preprompt leaving a narrative
+   gap the model fills from priors. More preprompt facts don't
+   scale. Proposed **Phase 8.X — Portal canon RAG**: seed canonical
+   event summaries into `memory_store`, retrieve at query time when
+   canon keywords fire, inject per-turn context the same way user
+   facts already flow through `memory_context.as_prompt()`.
+3. **Non-streaming "testing tracks" refusal** — orthogonal leftover;
+   probably obsoleted by Phase 8.X.
+4. **Non-streaming weather "."** — pre-existing engine-audio sentinel
+   behavior, untouched.
+
+---
+
+## Change 16 — Phase 8.13: load-time config-drift reconciliation (2026-04-21)
+
+**Problem carried from Change 15 open-issues list #1.** The engine's
+`GladosConfig` read `Glados.llm_model` and `Glados.completion_url`
+directly from `glados_config.yaml` at boot, while the LLM & Services
+WebUI page's authoritative source for the same values is
+`services.ollama_interactive.{url,model}` in `services.yaml`. The
+save-side sync (`tts_ui._sync_glados_config_urls`) already mirrored
+UI edits into the Glados block so the engine saw them, but any edit
+that bypassed the UI — a `sed` backup-restore, a manual YAML tweak,
+a partial deploy — would leave the two files disagreeing. The engine
+would then run the stale `Glados` value while the UI still advertised
+the services value, violating the §0.2 rule that every operator-
+facing setting must surface through the WebUI as the single source of
+truth.
+
+### Fix
+
+Load-time reconciliation in `glados/core/engine.py::GladosConfig.from_yaml`.
+Before pydantic validation of the raw `Glados` dict, a new
+`_reconcile_glados_with_services` helper pulls `services.ollama_interactive`
+and `services.ollama_autonomy` from the central config store and
+overrides the Glados block whenever the services value is non-empty
+and disagrees. Each override logs a WARNING naming the field,
+the old value, the new value, and "UI is source of truth" — so drift
+is auditable in the engine log without being silent.
+
+Implementation details:
+- Reconciliation is guarded by `services.yaml` existing on disk.
+  Dev / test runs without a services file (e.g. bare `pytest`) skip
+  reconciliation entirely; otherwise pydantic `ServicesConfig`
+  defaults would pretend to be authoritative and stomp on test
+  fixtures.
+- A `_ollama_as_chat_url` helper in engine.py mirrors the
+  `_ollama_chat_url` helper in `tts_ui.py` so `services.yaml`'s
+  bare base URL (`http://host:11436`) matches cleanly against
+  `Glados.completion_url`'s canonical `/api/chat`-suffixed form.
+  Duplicated deliberately to avoid a core→webui import.
+- Empty services values (model field blank, URL blank) are ignored —
+  a half-configured services.yaml must not blank a working Glados
+  field.
+- Works for both interactive chat (`llm_model`, `completion_url`)
+  and the nested `autonomy` block (`autonomy.llm_model`,
+  `autonomy.completion_url`).
+
+### Tests
+
+New `tests/test_glados_services_override.py` (13 cases): model
+override, URL override, no-op when values agree, empty-model non-
+blank guard, missing services.yaml skip, non-dict input tolerance,
+missing autonomy block tolerance, bare-base-vs-chat-URL equivalence.
+Full suite: **837 passed / 3 skipped** (was 824 / 3; +13 new).
+
+### Commits
+
+- `engine.py` — helper + reconciliation
+- `tests/test_glados_services_override.py` — new coverage
+- `docs/CHANGES.md` (this entry)
+- `docs/battery-findings-and-remediation-plan.md` — Phase 8.13 marked
+  COMPLETE in the session delivery log
+- `SESSION_STATE.md` — Active Handoff updated
+
+### Closes
+
+Open issue #1 from Change 15 (config-drift bug). Leaves open issues
+#2 (Portal canon confabulation — queued as Phase 8.14, scope memo
+in this session), #3 (non-streaming testing-tracks refusal), and
+#4 (non-streaming weather `.`) untouched.
+
 ---
