@@ -2274,8 +2274,26 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_get_force_emotion_presets()
         elif self.path == "/api/semantic/status":
             self._handle_semantic_status()
+        elif self.path == "/api/test-harness/noise-patterns":
+            self._handle_test_harness_noise_patterns()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
+
+    def _handle_test_harness_noise_patterns(self) -> None:
+        """Phase 8.9 — return the operator-edited noise-entity globs
+        (and direction-match flag) so the external scoring harness can
+        pull them at the start of every run. No auth: the payload is
+        trivially non-sensitive and the harness has no session cookie.
+        """
+        try:
+            th = cfg.test_harness
+            self._send_json({
+                "noise_entity_patterns": list(th.noise_entity_patterns),
+                "require_direction_match": bool(th.require_direction_match),
+            })
+        except Exception as exc:
+            logger.exception("test-harness noise-patterns fetch failed")
+            self._send_json({"error": {"message": str(exc)}}, 500)
 
     def do_POST(self) -> None:
         if self.path == "/v1/chat/completions":
