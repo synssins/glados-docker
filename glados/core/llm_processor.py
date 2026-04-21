@@ -390,11 +390,38 @@ class LanguageModelProcessor:
     def _filter_tools_for_message(tools: list[dict[str, Any]], content: str) -> list[dict[str, Any]]:
         text = content.casefold()
         wants_clap = "clap" in text
+        # Home-command gate: when the utterance looks like pure
+        # chitchat (no device / activity / command-verb keyword), the
+        # large MCP tool catalog makes qwen3:8b default to refusing
+        # the question ("my capabilities are limited to the tools
+        # provided"). Strip MCP / HA tools on those turns so the
+        # model composes a fresh persona reply.
+        try:
+            from glados.intent.rules import looks_like_home_command
+            is_home = looks_like_home_command(content)
+        except Exception:
+            is_home = True  # fail safe — don't strip on import/path errors
         filtered: list[dict[str, Any]] = []
         for tool in tools:
             name = tool.get("function", {}).get("name", "")
             if name == "slow clap" and not wants_clap:
                 continue
+            # MCP / HA tools have dotted names like "home_assistant.turn_on"
+            # or a leading "search_entities" / "get_entity_details" etc.
+            # Built-in engine tools have bare names (speak, do_nothing,
+            # vision_look, robot_move, etc.). When the utterance isn't
+            # a home command, drop anything that looks like an HA/MCP
+            # tool — the model shouldn't be weighing them.
+            if not is_home:
+                if "." in name or name in {
+                    "search_entities", "get_entity_details",
+                    "call_service", "get_state", "get_states",
+                    "turn_on", "turn_off", "toggle",
+                    "light_turn_on", "light_turn_off",
+                    "switch_turn_on", "switch_turn_off",
+                    "scene_turn_on", "cover_open", "cover_close",
+                }:
+                    continue
             filtered.append(tool)
         return filtered
 
