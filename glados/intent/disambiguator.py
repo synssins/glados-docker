@@ -527,6 +527,12 @@ class Disambiguator:
         # Created lazily so tests that don't need it don't have to
         # mock the ha_client's state-change subscription API.
         self._state_verifier: Any = None
+        # Phase 8.7 — quip library. Loaded lazily from
+        # /app/configs/quips (or the operator's bind-mounted path).
+        # None means "not yet tried"; an empty QuipLibrary means
+        # "tried, nothing there — fall back to LLM mode".
+        self._quip_library: Any = None
+        self._quip_library_root: Any = None
 
     # ── Rule management ──────────────────────────────────────
 
@@ -1170,6 +1176,24 @@ class Disambiguator:
             rationale = (
                 rationale + f" [unverified: {','.join(failed_ids)[:120]}]"
             )
+
+        # Phase 8.7 — composer pass. When response_mode != "LLM" we
+        # may replace final_speech with a quip / chime sentinel /
+        # empty string per operator config. Default config keeps LLM
+        # mode, so production speech is unchanged until the operator
+        # flips it on a per-event basis.
+        composed_mode = "LLM"
+        try:
+            composed_mode, final_speech = self._compose_response(
+                utterance=utterance,
+                service=(service or combined_service or ""),
+                llm_speech=final_speech,
+                outcome=("partial" if state_verified is False else "success"),
+                entity_count=len(entity_ids),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Tier 2 composer raised: {}", exc)
+
         audit_extra: dict[str, Any] = {
             "candidates_shown": candidates_summary,
             "speech": final_speech[:500],
@@ -1177,6 +1201,7 @@ class Disambiguator:
             "rationale": rationale,
             "decision": "execute",
             "action_count": len(parsed_actions),
+            "response_mode": composed_mode,
         }
         if state_verified is not None:
             audit_extra["state_verified"] = state_verified
@@ -1475,6 +1500,67 @@ class Disambiguator:
             latency_ms=elapsed_ms,
             llm_raw=llm_raw,
         )
+
+    # ── Phase 8.7 — composer glue ─────────────────────────────────
+
+    def _ensure_quip_library(self) -> Any:
+        """Lazy-load the quip library on first composer request.
+        Reloaded if rules.response_mode suggests the operator may
+        have edited content (no watchdog; next turn re-reads)."""
+        from glados.persona import QuipLibrary
+
+        from pathlib import Path
+
+        # Prefer an operator-configured bind-mount path; default to
+        # /app/configs/quips. The library returns empty if the dir
+        # doesn't exist — the composer then falls back to LLM speech.
+        root = Path(
+            os.environ.get("GLADOS_QUIP_DIR", "/app/configs/quips")
+        )
+        if self._quip_library is None or self._quip_library_root != root:
+            self._quip_library = QuipLibrary.load(root)
+            self._quip_library_root = root
+        return self._quip_library
+
+    def _compose_response(
+        self,
+        *,
+        utterance: str,
+        service: str,
+        llm_speech: str,
+        outcome: str,
+        entity_count: int,
+    ) -> tuple[str, str]:
+        """Run the Phase 8.7 composer. Returns (mode, text). When the
+        request mode is LLM (default), text is llm_speech unchanged.
+        Never raises — any bug here would gag the planner, so callers
+        wrap with a try/except."""
+        from glados.persona import (
+            ComposeRequest, classify_intent, compose,
+        )
+
+        # Per-event override takes precedence over the global mode.
+        event_category = "command_ack"
+        mode = str(
+            self._rules.response_mode_per_event.get(
+                event_category,
+                self._rules.response_mode,
+            ) or "LLM"
+        )
+        if mode == "LLM":
+            return "LLM", llm_speech
+        library = self._ensure_quip_library() if mode == "quip" else None
+        intent = classify_intent(service, utterance)
+        req = ComposeRequest(
+            event_category=event_category,
+            intent=intent,
+            llm_speech=llm_speech,
+            outcome=outcome,
+            entity_count=entity_count,
+            mode=mode,  # type: ignore[arg-type]
+        )
+        out = compose(req, library)
+        return out.mode, out.text
 
     def _build_prompt(
         self,

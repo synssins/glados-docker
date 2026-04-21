@@ -420,6 +420,21 @@ class DisambiguationRules:
     # Home Assistant → Area / floor aliases WebUI card.
     floor_aliases: dict[str, str] = field(default_factory=dict)
     area_aliases: dict[str, str] = field(default_factory=dict)
+    # Phase 8.7 — response-composition mode. Controls what the
+    # planner's spoken output looks like:
+    #   "LLM"    — keep the LLM-emitted speech verbatim (default —
+    #              pre-8.7 behaviour, no change to shipped deploys).
+    #   "quip"   — replace with a Portal-voice pre-written one-liner
+    #              from configs/quips/. Eliminates device-name
+    #              leaks, language drift, verb-polarity flips.
+    #   "chime"  — emit a sentinel the audio pipeline plays as a
+    #              short sound file instead of running TTS.
+    #   "silent" — no spoken output.
+    # Per-event-category override map lives alongside. When a
+    # category key is missing, the global response_mode applies.
+    # Keys: "command_ack" | "query_answer" | "ambient_cue" | "error".
+    response_mode: str = "LLM"
+    response_mode_per_event: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +594,19 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
             for k, v in aa.items()
             if str(k).strip() and str(v).strip()
         }
+    rm = raw.get("response_mode")
+    if isinstance(rm, str) and rm.strip() in {"LLM", "quip", "chime", "silent"}:
+        rules.response_mode = rm.strip()
+    rmp = raw.get("response_mode_per_event")
+    if isinstance(rmp, dict):
+        rules.response_mode_per_event = {
+            str(k).strip(): str(v).strip()
+            for k, v in rmp.items()
+            if isinstance(v, str)
+            and v.strip() in {"LLM", "quip", "chime", "silent"}
+            and isinstance(k, str)
+            and k.strip() in {"command_ack", "query_answer", "ambient_cue", "error"}
+        }
     return rules
 
 
@@ -605,6 +633,8 @@ def rules_to_dict(rules: DisambiguationRules) -> dict[str, Any]:
         "verification_timeout_s": float(rules.verification_timeout_s),
         "floor_aliases": dict(rules.floor_aliases),
         "area_aliases": dict(rules.area_aliases),
+        "response_mode": str(rules.response_mode),
+        "response_mode_per_event": dict(rules.response_mode_per_event),
     }
 
 

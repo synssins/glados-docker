@@ -1,0 +1,5 @@
+# Appended/prefixed to another quip when only some actions landed.
+Only partially applied.
+Some parameters did not register.
+Not every instruction took effect.
+Partial compliance.

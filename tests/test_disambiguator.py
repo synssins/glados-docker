@@ -1034,6 +1034,67 @@ class TestStateVerification:
 # Phase 8.6 — compound-command dropout recovery
 # ──────────────────────────────────────────────────────────────
 
+class TestPhase87Composer:
+    """Phase 8.7 — the disambiguator's execute path consults the
+    composer. When rules.response_mode is "LLM" (default) the LLM
+    speech passes through unchanged; when set to "quip" the on-disk
+    library picks the line and the audit records response_mode=quip;
+    when silent, the reply is empty and the caller can suppress TTS."""
+
+    def _run_with_mode(
+        self, tmp_path, monkeypatch, *, mode: str,
+        utterance: str = "turn off the kitchen",
+    ):
+        from glados.intent.rules import DisambiguationRules
+        # Seed a minimal quip library and point GLADOS_QUIP_DIR at it.
+        d = tmp_path / "command_ack" / "turn_off"
+        d.mkdir(parents=True)
+        (d / "normal.txt").write_text("QUIP_LINE\n", encoding="utf-8")
+        monkeypatch.setenv("GLADOS_QUIP_DIR", str(tmp_path))
+
+        states = [_state("light.kitchen", "Kitchen", state="on")]
+        llm = (
+            '{"decision":"execute","entity_ids":["light.kitchen"],'
+            '"service":"turn_off","speech":"Original LLM speech.",'
+            '"rationale":"x"}'
+        )
+        rules = DisambiguationRules()
+        rules.response_mode = mode
+        # Build a disambiguator that won't run state verification.
+        ha = _FakeHAClient()
+        from glados.ha.entity_cache import CandidateMatch
+        cache = EntityCache()
+        cache.apply_get_states(states)
+        all_matches = [
+            CandidateMatch(entity=e, matched_name=e.friendly_name,
+                           score=100.0, sensitive=False)
+            for e in cache.snapshot()
+        ]
+        cache.get_candidates = lambda *a, **kw: all_matches  # type: ignore[method-assign]
+        # Disable verification so we don't wait or flag failures.
+        rules.verification_mode = "silent"
+        from unittest.mock import MagicMock
+        d = Disambiguator(
+            ha_client=ha, cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=rules,
+        )
+        d._call_ollama = MagicMock(return_value=llm)
+        return d.run(utterance, source="webui_chat", assume_home_command=True)
+
+    def test_llm_mode_is_unchanged(self, tmp_path, monkeypatch) -> None:
+        r = self._run_with_mode(tmp_path, monkeypatch, mode="LLM")
+        assert r.speech == "Original LLM speech."
+
+    def test_quip_mode_replaces_speech(self, tmp_path, monkeypatch) -> None:
+        r = self._run_with_mode(tmp_path, monkeypatch, mode="quip")
+        assert r.speech == "QUIP_LINE"
+
+    def test_silent_mode_returns_empty(self, tmp_path, monkeypatch) -> None:
+        r = self._run_with_mode(tmp_path, monkeypatch, mode="silent")
+        assert r.speech == ""
+
+
 class TestCompoundDropoutRetry:
     """When the utterance structurally demands ≥2 actions but the
     LLM emits fewer, the planner re-prompts once with a reminder

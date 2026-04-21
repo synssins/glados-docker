@@ -1,0 +1,5 @@
+# The target was already in the requested state. No action taken.
+Already in that state. Your instruction was redundant.
+Redundant request. No action necessary.
+It was already so.
+The apparatus was already configured as requested.

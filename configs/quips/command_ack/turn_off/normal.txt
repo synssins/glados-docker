@@ -1,0 +1,9 @@
+# Portal-voice acknowledgements for turn_off events, neutral mood.
+Silence. Compliance.
+The apparatus is no longer engaged.
+Power, revoked.
+Terminated. As instructed.
+Extinguished. Precisely as requested.
+Darkness, delivered.
+Deactivation complete.
+Off. Efficient.

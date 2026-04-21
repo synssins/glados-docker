@@ -1,0 +1,10 @@
+# Portal-voice acknowledgements for turn_on events, neutral mood.
+# One line per quip. Blank lines and `#` comments ignored.
+Illumination restored.
+Chamber lit. Compliance.
+The apparatus is now engaged.
+Power, applied. Observe.
+Activation complete. Proceed.
+As requested. Illuminated.
+Light, delivered on schedule.
+Engaged. You're welcome.

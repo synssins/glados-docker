@@ -1,0 +1,8 @@
+# Final-fallback acknowledgement when no more specific quip is found.
+Done.
+Complete.
+Processed.
+Acknowledged.
+Executed.
+As instructed.
+Compliance.

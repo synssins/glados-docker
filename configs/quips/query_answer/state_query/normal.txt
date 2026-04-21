@@ -1,0 +1,7 @@
+# State-query responses (before the factual substitution runs).
+# These are NOT a template system — the caller supplies the actual
+# state reading; the quip adds Portal-voice framing around it.
+Observe.
+Here is the current reading.
+The sensor reports the following.
+Current status, as recorded.
