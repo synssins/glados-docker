@@ -530,6 +530,148 @@ Same failure class applies to any niche-canon Portal question (Cave Johnson's fu
 
 ---
 
+#### 8.14 — Integration plan (scoped 2026-04-21)
+
+Concrete file/line map for next session. All paths relative to
+`C:\src\glados-container\`. Commit sequence is meant to stay
+reviewable — each bullet lands independently and is deployable
+without the next.
+
+**A. Storage & seed content (~90 LOC + 60 canon snippets)**
+
+- Canon source files bind-mounted under `configs/canon/<topic>.txt`,
+  one 2–3 sentence entry per blank-line-separated block. Mirrors
+  `configs/quips/` layout. Topics seeded: `glados_arc`, `cave_johnson`,
+  `wheatley`, `chell`, `aperture_worldbuilding`, `turret_opera`,
+  `gels_and_physics`, `old_aperture`.
+- New `glados/memory/canon_loader.py`:
+  - `load_canon_from_configs(memory_store) -> int` walks `configs/canon/`,
+    hashes each block to a stable id so re-loads are idempotent, writes
+    to the `semantic` collection via `memory_store.add_semantic()` with
+    metadata `{"source": "canon", "topic": <stem>, "canon_version": 1}`.
+  - Called from engine boot **after** `MemoryStore` is constructed but
+    **before** the autonomy / chat threads start. Delta-only: existing
+    canon ids are skipped.
+  - Rationale for `source="canon"` (not `kind`): the existing
+    `MemoryContext` RAG filter is `source != "canon" AND review_status != "pending"`
+    symmetry — one metadata field, one keyword, one filter expression.
+    Kind-vs-source would double the bookkeeping.
+
+**B. Retrieval & injection (~120 LOC across 4 files)**
+
+- New `glados/core/canon_context.py` mirroring
+  [`glados/core/memory_context.py`](glados/core/memory_context.py:67):
+  - `CanonContext(memory_store, keyword_gate).as_prompt(query) -> str | None`.
+  - Does `memory_store.query(query, collection="semantic", n=5, where={"source": "canon"})`.
+  - Returns `"[canon] Portal universe facts you may be asked about:\n- …\n- …"`
+    or `None` when the keyword gate rejects the turn or retrieval is empty.
+- New keyword gate in
+  [`glados/core/context_gates.py`](glados/core/context_gates.py) mirroring
+  `needs_weather_context`:
+  - `needs_canon_context(message: str) -> bool` — substring match (case-insensitive,
+    word-boundary) against an editable list loaded from
+    `configs/context_gates.yaml` under a new `canon` key.
+  - Default trigger list: `potato, Wheatley, Caroline, Cave, Aperture,
+    turret, moon, neurotoxin, Old Aperture, test subject, GLaDOS,
+    Chell, Rattmann, companion cube, portal device, enrichment
+    center, science, combustible lemon, faith plate, excursion
+    funnel, thermal discouragement, repulsion gel, propulsion gel,
+    conversion gel, PotatOS, morality core, reactor, Wheatley's
+    space, management rail`.
+- Two injection call sites (no shared helper, matches existing
+  memory_context pattern):
+  1. SSE path —
+     [`glados/core/api_wrapper.py::_stream_chat_sse_impl`](glados/core/api_wrapper.py:1597)
+     adds a sibling block immediately after the existing
+     `memory_context` insertion (~lines 1597–1621).
+  2. Non-streaming path — register with `ContextBuilder` at
+     [`glados/core/engine.py`](glados/core/engine.py:514) using
+     `context_builder.register("canon", canon_context.as_prompt, priority=6)`
+     so it runs one slot below memory (priority 7) and above weather.
+- Injection shape: system message, inserted **before** the user turn,
+  **after** the user-memory system message so canon claims don't
+  override operator-written household facts.
+
+**C. WebUI card (~80 LOC, precedent = quip editor)**
+
+- New "Canon library" card under Configuration → Personality,
+  rendered from `cfgRenderPersonality` in
+  [`glados/webui/tts_ui.py:7410`](glados/webui/tts_ui.py:7410) next to
+  the existing Quip library card.
+- Tree view (topic files → entries), right-pane textarea, dry-run
+  panel that posts `{utterance}` and shows which entries would be
+  retrieved. Atomic temp-file-rename save pattern copied verbatim
+  from the quip endpoints at
+  [`glados/webui/tts_ui.py:3822-3960`](glados/webui/tts_ui.py:3822):
+  - `GET /api/canon` → tree OR `?path=` fetches one file
+  - `PUT /api/canon` → save (triggers canon_loader re-index)
+  - `DELETE /api/canon` → remove file + empty-dir cleanup
+  - `POST /api/canon/test` → dry-run returning the retrieved entries
+    and whether the gate fired
+- Save side calls `canon_loader.load_canon_from_configs(store)` so
+  edits are picked up live — same hot-reload pattern as the quip
+  editor and disambiguation rules.
+
+**D. Tests (~50 LOC)**
+
+- `tests/test_canon_loader.py`: idempotent load, topic metadata
+  plumbed through, empty-file tolerance.
+- `tests/test_canon_gate.py`: keyword match cases (pos + neg),
+  case-insensitive, word-boundary (no false positive on "moonlight").
+- `tests/test_canon_context.py`: `as_prompt` returns None when gate
+  rejects, returns formatted string when retrieval hits, filters
+  `source="canon"` only (no bleed-through from user facts).
+- One SSE integration test confirming canon block appears in the
+  outgoing messages list when the trigger utterance hits.
+
+**Integration risks (flag early)**
+
+1. **Two call sites, no shared helper.** SSE injection is manual
+   (see existing memory/weather blocks at ~line 1580 + 1597); non-
+   streaming uses `ContextBuilder`. Canon must land in both — same
+   constraint memory_context already lives with. Don't try to
+   unify in this phase; that's a separate refactor.
+2. **Metadata namespace.** `MemoryContext`'s existing RAG filter
+   picks everything in the semantic collection minus
+   `review_status=="pending"`. If canon entries arrive with no
+   `review_status` they'll enter the user-fact RAG as well and
+   pollute household responses. Fix: write them with
+   `review_status="canon"` and extend `MemoryContext`'s filter to
+   exclude that status from user-fact retrieval. One-line change
+   in `memory_context.py`.
+3. **Trigger keyword breadth.** The first pass list includes
+   `GLaDOS` and `science` — both common in the operator's normal
+   chit-chat. If the gate fires too often the canon block will
+   inject on non-lore turns and waste ~400 tokens of context. Ship
+   with a conservative list (potato, Wheatley, Caroline, Cave,
+   Aperture, turret, moon rock, neurotoxin, Old Aperture, PotatOS,
+   Wheatley's space, combustible lemon — ~15 terms), expand via
+   the WebUI. Operator can tune against their own false-positive
+   rate.
+4. **Container image size.** Pure text, no new Python deps, no
+   ONNX/embedding artifacts — delta is <50 KB. No Dockerfile
+   changes needed.
+
+**Gate (ship / revert criterion)**
+
+- Live probe: ten Portal-canon questions chosen to span topics
+  (potato fate, Wheatley fate, Caroline, Cave's lemon speech,
+  turret opera, moon rock, Old Aperture, Chell role, companion
+  cube, faith plate). ≥8 produce canon-consistent answers
+  (accurate fact or honest "I don't have that detail"; never an
+  invented culinary ending or Cave-on-Mars confabulation).
+- Zero measurable regression on the non-canon chit-chat battery
+  (sample 30 ordinary household turns before + after; response-
+  time and content should be indistinguishable when the gate
+  doesn't fire).
+- If either gate fails: revert in one commit, keep the scope
+  memo, re-plan.
+
+**Cost estimate (revised):** ~340 LOC Python + ~60 curated canon
+entries + ~80 LOC WebUI + ~100 LOC tests. One focused session.
+
+---
+
 ## 7. Phase ordering
 
 ```
