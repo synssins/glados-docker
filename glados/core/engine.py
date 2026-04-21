@@ -1610,6 +1610,16 @@ class Glados:
                 kind="user_input",
                 message=trim_message(text),
             )
+        # Race-condition fix: mark the user message BEFORE the queue
+        # push so context_builder callbacks that read
+        # ``interaction_state.last_user_message`` (weather / canon /
+        # turn-guard gates) see this turn's utterance, not the
+        # previous one. Pre-fix the queue push at line below happened
+        # first, LLMProcessor could wake up before mark_user ran, and
+        # the gate callbacks then fired on stale or empty content —
+        # causing weather_cache to never inject for the current turn.
+        if self.interaction_state:
+            self.interaction_state.mark_user(message=text)
         self.llm_queue_priority.put(
             {
                 "role": "user",
@@ -1625,8 +1635,6 @@ class Glados:
         else:
             desc = f"User said: {text[:120]}"
         self._push_emotion_event("user", desc)
-        if self.interaction_state:
-            self.interaction_state.mark_user(message=text)
         self.processing_active_event.set()
         return True
 
