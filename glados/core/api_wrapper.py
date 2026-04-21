@@ -1620,6 +1620,35 @@ def _stream_chat_sse_impl(
     except Exception as _mem_exc:
         logger.warning("[{}] memory_context skipped: {}", request_id, _mem_exc)
 
+    # Phase 8.14 — Portal canon RAG. Gated on the canon keyword set so
+    # ordinary household / chitchat turns never see the ~400-token
+    # canon block. Same insertion shape as memory/weather above: a
+    # single system message placed between the other system messages
+    # and the user turn.
+    try:
+        canon_ctx = getattr(glados, "canon_context", None)
+        if canon_ctx is not None:
+            from glados.core.context_gates import needs_canon_context
+            if needs_canon_context(user_message):
+                canon_prompt = canon_ctx.as_prompt(user_message)
+                if canon_prompt:
+                    insert_idx = 0
+                    while (
+                        insert_idx < len(messages)
+                        and messages[insert_idx].get("role") == "system"
+                    ):
+                        insert_idx += 1
+                    messages.insert(
+                        insert_idx,
+                        {"role": "system", "content": canon_prompt},
+                    )
+                    logger.success(
+                        "[{}] canon_context injected ({} chars)",
+                        request_id, len(canon_prompt),
+                    )
+    except Exception as _canon_exc:
+        logger.warning("[{}] canon_context skipped: {}", request_id, _canon_exc)
+
     # Inject emotional state directive as the LAST system message before the user turn
     # This ensures it's the most recent context GLaDOS reads before generating
     try:
@@ -2265,6 +2294,10 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_reload_engine()
         elif self.path == "/api/reload-disambiguation-rules":
             self._handle_reload_disambiguation_rules()
+        elif self.path == "/api/reload-canon":
+            self._handle_reload_canon()
+        elif self.path == "/api/canon/retrieve":
+            self._handle_canon_retrieve()
         elif self.path == "/api/semantic/test":
             self._handle_semantic_test()
         elif self.path == "/api/semantic/rebuild":
@@ -2313,6 +2346,79 @@ class APIHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Reload-disambiguation-rules failed")
             self._send_json({"ok": False, "error": str(exc)}, 500)
+
+    def _handle_reload_canon(self) -> None:
+        """Phase 8.14 — reload Portal canon entries from configs/canon/
+        into the semantic memory store. Called by the WebUI process
+        after a save on the Canon library card. Idempotent: only new
+        or edited entries are written; existing entries with unchanged
+        text are skipped by the loader's hashed-id lookup."""
+        try:
+            from glados.memory.canon_loader import reload_canon
+
+            store = getattr(_engine, "memory_store", None) if _engine else None
+            if store is None:
+                self._send_json(
+                    {"ok": False, "error": "memory_store not available"}, 503,
+                )
+                return
+            added = reload_canon(store)
+            total = sum(added.values()) if added else 0
+            logger.info(
+                "Canon library reloaded; added {} entries across {} topic(s)",
+                total, len([t for t, n in (added or {}).items() if n]),
+            )
+            self._send_json({
+                "ok": True, "reloaded": True,
+                "added": added or {}, "total_added": total,
+            })
+        except Exception as exc:
+            logger.exception("Reload-canon failed")
+            self._send_json({"ok": False, "error": str(exc)}, 500)
+
+    def _handle_canon_retrieve(self) -> None:
+        """POST /api/canon/retrieve — dry-run for the WebUI editor.
+        Body: {"utterance": "..."}. Returns the canon entries that
+        would be retrieved (regardless of the keyword gate, so the
+        operator can eyeball whether their new text surfaces)."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            self._send_json({"ok": False, "error": "Invalid JSON"}, 400)
+            return
+        utterance = str(data.get("utterance") or "").strip()
+        if not utterance:
+            self._send_json({"ok": False, "error": "utterance is required"}, 400)
+            return
+        canon_ctx = getattr(_engine, "canon_context", None) if _engine else None
+        if canon_ctx is None:
+            self._send_json({"ok": False, "error": "canon_context not available"}, 503)
+            return
+        store = getattr(canon_ctx, "_store", None)
+        if store is None:
+            self._send_json({"ok": True, "entries": []})
+            return
+        try:
+            raw = store.query(
+                text=utterance, collection="semantic",
+                n=canon_ctx._config.max_results * 2,
+                where={"source": "canon"},
+            )
+        except Exception as exc:
+            logger.warning("Canon retrieve failed: {}", exc)
+            raw = []
+        entries = [
+            {
+                "document": (r.get("document") or "").strip(),
+                "topic": (r.get("metadata") or {}).get("topic"),
+                "distance": r.get("distance"),
+            }
+            for r in raw
+            if (r.get("document") or "").strip()
+        ][: canon_ctx._config.max_results]
+        self._send_json({"ok": True, "entries": entries})
 
     # ── Phase 8.3.5 — semantic retrieval inspection + control ──
 

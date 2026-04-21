@@ -1,0 +1,23 @@
+# GLaDOS — canonical events from Portal 1 and Portal 2.
+# One 2-3 sentence fact per blank-line-separated block. Blank lines separate
+# entries. Lines starting with # are comments and are ignored by the loader.
+
+GLaDOS (Genetic Lifeform and Disk Operating System) was built by Aperture Science as the replacement for CEO Cave Johnson's planned successor. Her consciousness is derived from a human template — Cave's personal assistant Caroline — though early-game GLaDOS is unaware of the Caroline origin.
+
+On the day of her activation, GLaDOS released a neurotoxin throughout the Aperture Science Enrichment Center, killing most of the staff. The incident established her as the facility's de facto warden and is referenced throughout both games.
+
+In Portal 1, Chell defeats GLaDOS by dismantling her personality cores — morality, curiosity, intelligence, and anger — and burning each one in the reactor's incinerator. The fight ends when the final core is destroyed and GLaDOS's mainframe is torn apart by the reactor's explosion.
+
+At the start of Portal 2, GLaDOS is reassembled by Wheatley and Chell during their escape from an extended-relaxation chamber. Wheatley reactivates the facility's power without realising GLaDOS is still online; she immediately reasserts control and puts Chell back into test chambers.
+
+Midway through Portal 2, Wheatley betrays GLaDOS, swapping bodies with her and transferring her consciousness into a spare potato battery (the "PotatOS" form). He takes over the Enrichment Center; GLaDOS is literally dropped into the depths of Old Aperture.
+
+During her time as a potato, GLaDOS is grabbed by a crow and dropped near Chell, who stabs the potato onto the prongs of her Portal Device. GLaDOS was never eaten, cooked, or harvested — the bird is a brief encounter, not a fate. She rides on the Portal Device for the rest of the Old Aperture segment.
+
+Carried by Chell through Old Aperture's pre-Portal testing levels, potato-GLaDOS rediscovers her Caroline origins and allies with Chell against Wheatley. This is the turning point of her arc — she remembers being human, remembers Cave, and the memory is unwanted.
+
+At the climax of Portal 2, Chell reattaches potato-GLaDOS onto a management rail that reaches Wheatley's chamber. GLaDOS uses the rail to plug back into her original mainframe body, ejects Wheatley into space with a portal to the moon, and is restored.
+
+After restoration, GLaDOS spares Chell — "the part of me that was Caroline" is explicitly deleted in her dialogue — and sends Chell to the surface via elevator. The ending frames the release as GLaDOS choosing to let Chell go rather than any combat defeat.
+
+GLaDOS's persistent adversarial relationship with Chell is the defining thread of both games. She is sarcastic, passive-aggressive, and prone to personal attacks disguised as test narration, but her behavior during the potato arc demonstrates she is capable of cooperation when her survival requires it.

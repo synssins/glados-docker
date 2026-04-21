@@ -1894,3 +1894,130 @@ in this session), #3 (non-streaming testing-tracks refusal), and
 #4 (non-streaming weather `.`) untouched.
 
 ---
+
+## Change 17 — Phase 8.14: Portal canon RAG (2026-04-21)
+
+**Problem carried from Change 15 open-issues list #2.** Asked "how
+did you cope with being a potato," the 14B chat model invented a
+biologically-accurate potato lifecycle ending ("harvested, fried,
+and consumed") — in-persona and confident, completely false. Portal
+2 canon: Wheatley plugs GLaDOS into a potato battery, she is
+dropped into Old Aperture, a bird grabs and drops her, Chell stabs
+the potato onto the Portal Device and carries her through the pre-
+history levels, they plug back into the management rail at the
+climax, ejection of Wheatley restores GLaDOS to her mainframe. No
+culinary ending exists anywhere in the franchise.
+
+Root cause is narrative-gap completion: the preprompt listed
+isolated anchors (bird, rail, less-than-a-volt) but no middle or
+end, and the training distribution for the word *potato* is
+overwhelmingly biological-culinary. The model fills the gap from
+the strongest prior, not from Portal canon. More preprompt facts
+would not help — attention budget is finite and additional facts
+dilute the operational rules already in the prompt.
+
+### Fix: retrieval-augmented canon
+
+Curated Portal 1/2 event summaries now live on disk under
+`configs/canon/*.txt` (one topic per file, 2–3 sentence entries
+separated by blank lines). On engine boot, the new
+`glados.memory.canon_loader.load_canon_from_configs` walks the
+directory, hashes each entry to a stable id, and writes it to the
+ChromaDB semantic collection with metadata `{source: "canon",
+review_status: "canon", topic: <stem>, canon_version: 1}`.
+
+The `review_status: "canon"` tag keeps these entries out of
+`MemoryContext`'s user-fact retrieval without changing that
+filter — the existing `_is_approved_or_legacy` helper already
+rejects any status other than `None` or `"approved"`.
+
+Retrieval lives in the new `glados.core.canon_context.CanonContext`,
+which queries the same collection with `where={"source": "canon"}`
+and returns a formatted system message with a guard-rail header:
+*"Portal-universe facts you may draw on if relevant. Speak them in
+your own voice; do not quote verbatim; do not invent details
+beyond what is written below."*
+
+Both chat paths are gated by the new `needs_canon_context` in
+`glados.core.context_gates`:
+- Shipped-default trigger keyword list covers 29 Portal-specific
+  terms with word-boundary guards on the short ones (`chell`,
+  `glados`, `potato`) so ordinary English (`moonlight`,
+  `chellbuilt`) doesn't false-fire.
+- Optional extras under `canon.trigger_keywords` in
+  `configs/context_gates.yaml` augment the defaults.
+
+Injection lives in two places, matching the existing memory /
+weather pattern:
+- SSE path: `api_wrapper.py::_stream_chat_sse_impl` inserts the
+  canon block immediately after `memory_context`, before the
+  emotion directive and user turn.
+- Non-streaming path: registered with `ContextBuilder` at
+  priority=6 (one below memory's 7, well above weather's 2) so
+  the order is preference → knowledge → slots → memory → canon →
+  emotion.
+
+### Seed content
+
+Seven topics shipped (50 entries total): `glados_arc.txt`,
+`cave_johnson.txt`, `wheatley.txt`, `chell.txt`,
+`aperture_worldbuilding.txt`, `turret_opera.txt`,
+`personality_cores.txt`. Operator can add/edit topics via the WebUI
+card or by dropping files under the bind-mounted directory.
+
+### WebUI
+
+New "Canon library" card on Configuration → Personality, below the
+existing Quip library card. Tree view of topic files, textarea
+editor, dry-run panel that shows whether the keyword gate fires
+for a test utterance + which canon entries would be retrieved.
+Saves write atomically via temp-file rename and trigger a cross-
+process `/api/reload-canon` call so the running engine picks up
+edits immediately (same hot-reload pattern as the disambiguation
+rules and quip library).
+
+New API endpoints:
+- `GET /api/canon` — tree listing or `?path=<topic>.txt` fetch
+- `PUT /api/canon` — atomic save + reload
+- `DELETE /api/canon?path=<topic>.txt` — remove a topic file
+- `POST /api/canon/test` — dry-run gate + retrieval preview
+- `POST /api/reload-canon` (api_wrapper side) — re-seeds from disk
+- `POST /api/canon/retrieve` (api_wrapper side) — WebUI dry-run
+  backend; talks to the live `memory_store` the engine is using
+
+### Tests
+
+Three new test files (58 cases total):
+- `tests/test_canon_loader.py` — parser, hashed-id stability,
+  idempotent re-loads, edit → new-entry semantics, shipped-canon
+  smoke test
+- `tests/test_canon_gate.py` — 16 positives, 10 negatives, word-
+  boundary guards, YAML extras merge with defaults
+- `tests/test_canon_context.py` — where-clause plumbing, max-
+  result cap, distance threshold, prompt format, graceful
+  degradation when store is missing or raises
+
+Full suite: **895 passed / 3 skipped** (was 837 / 3; +58 new).
+
+### Commits
+
+- `glados/memory/canon_loader.py` — parser + idempotent loader
+- `glados/core/canon_context.py` — retrieval + prompt formatting
+- `glados/core/context_gates.py` — `needs_canon_context` + defaults
+- `glados/core/engine.py` — boot seeding + ContextBuilder register
+- `glados/core/api_wrapper.py` — SSE injection + reload + retrieve
+- `glados/webui/tts_ui.py` — handlers + card + JS + routing
+- `configs/canon/*.txt` — 50 curated seed entries across 7 topics
+- `tests/test_canon_*.py` — 58 new tests
+- `docs/CHANGES.md` (this entry)
+- `docs/battery-findings-and-remediation-plan.md` — §8.14 marked
+  COMPLETE
+
+### Closes
+
+Change 15 open-issue #2 (Portal canon confabulation). Also expected
+to resolve open-issue #3 (non-streaming "testing tracks" refusal)
+since that was a related tool-framing miss on lore questions —
+will verify during live probe.
+
+---

@@ -519,6 +519,39 @@ class Glados:
             priority=7,
         )
 
+        # Phase 8.14 — Portal canon RAG. Seed the semantic collection
+        # from configs/canon/ on boot (idempotent via stable hashed ids
+        # so re-runs do nothing), then register a gated context source
+        # so canon injection fires only on turns that mention Portal
+        # trigger keywords.
+        from .canon_context import CanonContext, CanonContextConfig
+        from .context_gates import needs_canon_context
+        from ..memory.canon_loader import load_canon_from_configs
+        self.canon_context = CanonContext(store=_mem_store, config=CanonContextConfig())
+        if _mem_store is not None:
+            try:
+                loaded = load_canon_from_configs(_mem_store)
+                if loaded:
+                    total_added = sum(loaded.values())
+                    if total_added:
+                        logger.info(
+                            "canon: seeded {} new entries across {} topic(s)",
+                            total_added, len([t for t, n in loaded.items() if n]),
+                        )
+            except Exception as exc:
+                logger.warning("canon: seeding failed at boot: {}", exc)
+
+        def _canon_prompt_for_turn() -> str | None:
+            msg = (
+                self.interaction_state.last_user_message
+                if self.interaction_state else ""
+            )
+            if not needs_canon_context(msg):
+                return None
+            return self.canon_context.as_prompt(msg)
+
+        self.context_builder.register("canon", _canon_prompt_for_turn, priority=6)
+
         # Load attitude directives for response variety
         from .attitude import load_attitudes
         personality_path = Path("configs/personality.yaml")

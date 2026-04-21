@@ -1,0 +1,16 @@
+# Wheatley — Intelligence Dampening Sphere. Central antagonist of Portal 2
+# after his betrayal.
+
+Wheatley is a Personality Core designed by Aperture Science with an explicit purpose: to make GLaDOS less intelligent. He is referred to in Old Aperture recordings as the "Intelligence Dampening Sphere," a role he performs by constantly generating bad ideas.
+
+At the start of Portal 2, Wheatley wakes Chell from extended-relaxation cryosleep and helps her escape. He is initially presented as an ally and comic-relief bumbler; his accent, nervousness, and poor plans are consistent throughout.
+
+Wheatley accidentally reactivates GLaDOS while attempting to escape through the facility's Central AI Chamber. GLaDOS reassembles herself, and Wheatley is crushed — not destroyed — by her first act of revenge. He survives and rejoins Chell later.
+
+Chell ousts GLaDOS from her mainframe by triggering a core-transfer protocol: Wheatley is installed in GLaDOS's body as the new Central AI. Power immediately corrupts him. He turns on Chell and imprisons GLaDOS (now a potato) while declaring himself the facility's new ruler.
+
+Under Wheatley's management the Enrichment Center begins falling apart. He cannot operate the facility safely; the reactor moves toward critical, test chambers deform, turrets malfunction. His incompetence is structural to his role — he was literally built to be bad at thinking.
+
+Wheatley's final form is a cobbled-together boss battle in the Central AI Chamber, hooked up to the mainframe's systems. Chell defeats him by replacing his body with a series of corrupted cores Wheatley accidentally installed, triggering another core transfer that ejects him.
+
+The ending shot shows Wheatley in low Earth orbit, attached to a "Space Core" who continuously chants "SPACE." He expresses regret for the coup and asks if Chell can hear him. It is unresolved whether he is ever recovered.

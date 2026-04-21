@@ -1,0 +1,24 @@
+# Aperture Science Enrichment Center — worldbuilding, facility layout,
+# and named test elements that appear in player questions.
+
+The Aperture Science Enrichment Center is the underground facility beneath Upper Michigan where GLaDOS operates. It is organised into test chambers, maintenance levels, offices, a central AI chamber, and — far below all of these — the Old Aperture strata where the company's earlier work was done.
+
+"Old Aperture" refers to three strata built progressively deeper underground in the 1950s, 1970s, and 1980s. Each stratum represents a technological generation (mid-century industrial, research campus, unfinished modern). Portal 2's middle act takes place during a descent through all three, with Cave Johnson's recordings playing as ambient context.
+
+The Aperture Science Handheld Portal Device ("Portal Gun") creates a pair of linked portals on white or moon-rock-coated surfaces. Portals preserve momentum. The device does not create portals on darker or uncoated surfaces; that constraint is the basis of most test-chamber puzzle design.
+
+Repulsion Gel is a blue gel that makes surfaces and objects bounce. It was originally marketed as a weight-loss dietary supplement before Cave Johnson rebranded it as a test element. It is one of Portal 2's three gel mechanics.
+
+Propulsion Gel is an orange gel that increases movement speed on contact. It was originally developed as an industrial friction lubricant. Propulsion Gel stains surfaces and does not wash off easily.
+
+Conversion Gel is a white gel introduced in Portal 2. It coats any surface with a portal-conductive layer, allowing portals to be opened on otherwise incompatible walls. It is made from ground moon rock suspended in a liquid vehicle.
+
+Aerial Faith Plates are launch pads that fling the player (or a cube, or a turret) along a pre-computed arc. They appear in both Cave-era test chambers and GLaDOS-era modern ones. Cave Johnson notes in a recording that early Faith Plates were calibrated with live test subjects.
+
+Thermal Discouragement Beams are high-temperature laser emitters used in puzzles. They destroy turrets, cubes, and test subjects on contact. Reflector Cubes redirect the beams and are a common puzzle element.
+
+Excursion Funnels are tractor-beam-like currents that move the player or objects along a fixed path. They can be polarised by a button press; toggling polarity reverses the direction of flow.
+
+Weighted Companion Cubes are inert puzzle-element cubes with a heart printed on each face. GLaDOS verbally mocks and eventually requests the player "euthanise" their Companion Cube in Portal 1, leading to one of the most-quoted lines in the series. Companion Cubes do not talk.
+
+Sentry Turrets are bipod-style automated weapons used by GLaDOS's defense system. They speak in a soft, polite voice ("I see you," "hello," "are you still there?") and are central to several boss fights. Several corrupted variants appear in Portal 2.

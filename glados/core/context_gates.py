@@ -12,11 +12,58 @@ Platform note: Uses pathlib throughout — works on Windows and Linux.
 
 from __future__ import annotations
 
+import re
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+
+
+@dataclass(frozen=True)
+class _CanonKW:
+    text: str
+    needs_word_boundary: bool = False
+
+
+# Portal-canon triggers shipped with the container. Word-boundary is
+# applied to short nouns that would otherwise fire on common English
+# words (``moon`` in ``moonlight``, ``cave`` in the verb form). Longer
+# multi-word phrases and Portal-specific proper nouns go through plain
+# substring match.
+_CANON_DEFAULT_TRIGGERS: tuple[_CanonKW, ...] = (
+    _CanonKW("potato", needs_word_boundary=True),
+    _CanonKW("potatos"),
+    _CanonKW("wheatley"),
+    _CanonKW("caroline"),
+    _CanonKW("cave johnson"),
+    _CanonKW("aperture"),
+    _CanonKW("aperture science"),
+    _CanonKW("enrichment center"),
+    _CanonKW("neurotoxin"),
+    _CanonKW("turret opera"),
+    _CanonKW("companion cube"),
+    _CanonKW("portal gun"),
+    _CanonKW("portal device"),
+    _CanonKW("combustible lemon"),
+    _CanonKW("moon rock"),
+    _CanonKW("faith plate"),
+    _CanonKW("excursion funnel"),
+    _CanonKW("propulsion gel"),
+    _CanonKW("repulsion gel"),
+    _CanonKW("conversion gel"),
+    _CanonKW("old aperture"),
+    _CanonKW("space core"),
+    _CanonKW("fact core"),
+    _CanonKW("morality core"),
+    _CanonKW("personality core"),
+    _CanonKW("management rail"),
+    _CanonKW("chell", needs_word_boundary=True),
+    _CanonKW("glados", needs_word_boundary=True),
+    _CanonKW("cara mia"),
+    _CanonKW("still alive"),
+)
 
 # Lazy-loaded config — populated on first call, reloaded on restart
 _lock = threading.Lock()
@@ -84,6 +131,54 @@ def needs_weather_context(message: str) -> bool:
         if not any(kw in text for kw in indoor_kws):
             return True
 
+    return False
+
+
+def needs_canon_context(message: str) -> bool:
+    """
+    Return True if the user message is likely a Portal canon question.
+
+    Phase 8.14 — gates the Portal canon RAG injection so the ~400-token
+    canon block only appears on turns that actually need it. False
+    positives waste context; false negatives leave the model free to
+    confabulate (the whole reason this exists).
+
+    Two trigger sets:
+
+    - Hardcoded defaults — Portal-specific terms that are unambiguous
+      (potato, Wheatley, Caroline, Cave, Aperture, PotatOS, turret
+      opera, combustible lemon, moon rock, faith plate, etc.). Shipped
+      in-code so fresh installs work without a YAML.
+    - Optional extras under ``canon.trigger_keywords`` in
+      ``configs/context_gates.yaml`` for operator-added topics.
+
+    Matching is substring, case-insensitive, word-boundary for the
+    short terms so ``moonlight`` doesn't fire the ``moon`` keyword.
+    """
+    if not message:
+        return False
+    text = message.lower()
+
+    for kw in _CANON_DEFAULT_TRIGGERS:
+        if kw.needs_word_boundary:
+            if re.search(r"\b" + re.escape(kw.text) + r"\b", text):
+                return True
+        elif kw.text in text:
+            return True
+
+    cfg = _get_section("canon")
+    extras = cfg.get("trigger_keywords") or []
+    for raw in extras:
+        if not isinstance(raw, str):
+            continue
+        kw = raw.strip().lower()
+        if not kw:
+            continue
+        if len(kw) <= 5:
+            if re.search(r"\b" + re.escape(kw) + r"\b", text):
+                return True
+        elif kw in text:
+            return True
     return False
 
 

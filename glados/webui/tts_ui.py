@@ -1342,6 +1342,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._get_config_section(section)
         elif p == "/api/quips" or p.startswith("/api/quips?"):
             self._get_quips()
+        elif p == "/api/canon" or p.startswith("/api/canon?"):
+            self._get_canon()
         elif p == "/api/hub75/test/ping":
             self._hub75_test_ping()
         elif p == "/api/announcement-settings":
@@ -1444,6 +1446,8 @@ class Handler(BaseHTTPRequestHandler):
             self._post_semantic_rebuild()
         elif p == "/api/quips/test":
             self._post_quips_test()
+        elif p == "/api/canon/test":
+            self._post_canon_test()
         elif p == "/api/stt":
             self._stt()
         # --- Protected routes below ---
@@ -1514,6 +1518,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._put_config_section(section)
         elif self.path == "/api/quips":
             self._put_quips()
+        elif self.path == "/api/canon":
+            self._put_canon()
         else:
             self._send_error(404, "Not found")
 
@@ -1526,6 +1532,8 @@ class Handler(BaseHTTPRequestHandler):
             self._memory_action("delete")
         elif self.path == "/api/quips" or self.path.startswith("/api/quips?"):
             self._delete_quip()
+        elif self.path == "/api/canon" or self.path.startswith("/api/canon?"):
+            self._delete_canon()
         else:
             self._send_error(404, "Not found")
 
@@ -3970,6 +3978,190 @@ class Handler(BaseHTTPRequestHandler):
                 "time_of_day": req.time_of_day,
             },
         })
+
+    # ── Phase 8.14 — canon library editor ────────────────────────
+
+    def _canon_dir(self) -> Path:
+        """Root of the canon library on disk. GLADOS_CANON_DIR env
+        override; defaults to /app/configs/canon under the bind mount."""
+        return Path(os.environ.get("GLADOS_CANON_DIR", "/app/configs/canon"))
+
+    def _canon_path_safe(self, rel: str) -> Path | None:
+        """Resolve a caller-supplied relative path within the canon
+        root, refusing anything that escapes via '..' or absolute
+        components. Returns None when the path is unsafe."""
+        if not rel or not isinstance(rel, str):
+            return None
+        root = self._canon_dir().resolve()
+        try:
+            candidate = (root / rel).resolve()
+            candidate.relative_to(root)
+        except (ValueError, OSError):
+            return None
+        return candidate
+
+    @staticmethod
+    def _count_canon_entries(raw: str) -> int:
+        """Count blank-line-separated entries in a canon file, ignoring
+        pure-comment blocks. Mirrors parse_canon_file's logic."""
+        import re as _re
+        stripped = _re.sub(r"^\s*#.*$", "", raw, flags=_re.MULTILINE)
+        return sum(
+            1 for b in _re.split(r"\n\s*\n", stripped) if b.strip()
+        )
+
+    def _get_canon(self) -> None:
+        """GET /api/canon — tree listing or single-file fetch via
+        ?path=. Response shape mirrors /api/quips."""
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
+        root = self._canon_dir()
+        rel = (q.get("path") or [""])[0].strip()
+        if rel:
+            target = self._canon_path_safe(rel)
+            if target is None or not target.is_file():
+                self._send_error(404, "Not found")
+                return
+            try:
+                text = target.read_text(encoding="utf-8")
+            except OSError as exc:
+                self._send_error(500, f"Read failed: {exc}")
+                return
+            self._send_json(200, {
+                "path": rel,
+                "text": text,
+                "entry_count": self._count_canon_entries(text),
+            })
+            return
+        tree: list[dict[str, object]] = []
+        if root.exists():
+            for p in sorted(root.glob("*.txt")):
+                try:
+                    raw = p.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                tree.append({
+                    "path": p.name,
+                    "entry_count": self._count_canon_entries(raw),
+                })
+        self._send_json(200, {"root": str(root), "files": tree})
+
+    def _put_canon(self) -> None:
+        """PUT /api/canon — atomic save of a single canon .txt file.
+        Body: {"path": "<topic>.txt", "text": "<whole file>"}. Triggers
+        a cross-process reload so the running engine picks up new
+        entries without a restart."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_error(400, f"Invalid JSON: {exc}")
+            return
+        rel = str(data.get("path") or "").strip()
+        if not rel.endswith(".txt") or "/" in rel or "\\" in rel:
+            self._send_error(400, "path must be a flat <topic>.txt")
+            return
+        text = data.get("text")
+        if not isinstance(text, str):
+            self._send_error(400, "text must be a string")
+            return
+        target = self._canon_path_safe(rel)
+        if target is None:
+            self._send_error(400, "Unsafe path")
+            return
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+            tmp.replace(target)
+        except OSError as exc:
+            self._send_error(500, f"Write failed: {exc}")
+            return
+        reloaded = self._reload_canon_library()
+        entry_count = self._count_canon_entries(text)
+        self._send_json(200, {
+            "ok": True,
+            "path": rel,
+            "entry_count": entry_count,
+            "reloaded": reloaded,
+        })
+
+    def _delete_canon(self) -> None:
+        """DELETE /api/canon?path=<topic>.txt — removes the file.
+        Canon entries previously seeded from that file remain in
+        ChromaDB until the next engine rebuild; the editor is
+        file-oriented, not entry-oriented."""
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
+        rel = (q.get("path") or [""])[0].strip()
+        if not rel.endswith(".txt"):
+            self._send_error(400, "path must end with .txt")
+            return
+        target = self._canon_path_safe(rel)
+        if target is None or not target.is_file():
+            self._send_error(404, "Not found")
+            return
+        try:
+            target.unlink()
+        except OSError as exc:
+            self._send_error(500, f"Delete failed: {exc}")
+            return
+        self._send_json(200, {"ok": True, "path": rel})
+
+    def _post_canon_test(self) -> None:
+        """POST /api/canon/test — dry-run. Given an utterance, return
+        whether the gate fired and which canon entries (if any) would
+        be retrieved. Lets the operator validate edits without
+        round-tripping through a real chat request."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_error(400, f"Invalid JSON: {exc}")
+            return
+        utterance = str(data.get("utterance") or "")
+        if not utterance.strip():
+            self._send_error(400, "utterance is required")
+            return
+        from glados.core.context_gates import needs_canon_context
+        gate_fired = needs_canon_context(utterance)
+        # Retrieval lives in the api_wrapper process; proxy through so
+        # we hit the actual running memory_store, not a fresh one.
+        try:
+            proxied = self._proxy_api_wrapper(
+                "/api/canon/retrieve",
+                method="POST",
+                body=json.dumps({"utterance": utterance}).encode("utf-8"),
+            )
+            retrieved = proxied.get("entries") if isinstance(proxied, dict) else []
+        except Exception as exc:
+            retrieved = []
+            logger.debug("Canon retrieval proxy failed: {}", exc)
+        self._send_json(200, {
+            "gate_fired": gate_fired,
+            "entries": retrieved,
+        })
+
+    def _reload_canon_library(self) -> bool:
+        """Cross-process reload trigger. tts_ui (8052) POSTs the
+        api_wrapper (8015) endpoint that owns the live memory_store."""
+        try:
+            req = urllib.request.Request(
+                _svc_api_wrapper() + "/api/reload-canon",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read() or b"{}")
+                return bool(body.get("ok"))
+        except Exception as exc:
+            logger.warning("Canon library reload RPC failed: {}", exc)
+            return False
 
     def _reload_disambiguator_rules(self) -> bool:
         """Cross-process reload trigger. tts_ui (8052) POSTs the
@@ -7520,6 +7712,23 @@ function cfgRenderPersonality(data) {
     + '</div>';
   setTimeout(_cfgLoadQuips, 0);
 
+  // Phase 8.14 — Portal canon library editor. Retrieval-augmented
+  // facts the model pulls when a trigger keyword fires. Tree on the
+  // left by topic, textarea on the right for the selected file,
+  // dry-run panel at the bottom to preview retrieval.
+  html += ''
+    + '<div class="card" id="cfg-canon-card" style="margin-top:14px;">'
+    +   '<div class="cfg-subsection-title">Canon library</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Curated Portal 1/2 facts under <code>configs/canon/</code>. GLaDOS retrieves relevant '
+    +     'entries per-turn when a trigger keyword fires (potato, Wheatley, Caroline, Cave, Aperture, '
+    +     'turret opera, combustible lemon, moon rock, etc.). Entries are blank-line-separated; '
+    +     '<code>#</code> lines are comments. Saves reload into the running engine immediately.'
+    +   '</div>'
+    +   '<div id="cfg-canon-body">Loading canon library&hellip;</div>'
+    + '</div>';
+  setTimeout(_cfgLoadCanon, 0);
+
   return html;
 }
 
@@ -7721,6 +7930,172 @@ async function _quipDryRun() {
     }
   } catch (e) {
     if (resEl) { resEl.textContent = 'Error: ' + e.message; resEl.style.color = '#f66'; }
+  }
+}
+
+// Phase 8.14 — Canon library editor. Tree of topic files on the left,
+// textarea on the right for the whole-file content, dry-run panel at
+// the bottom that shows gate firing + retrieved entries.
+
+let _canonSelectedPath = null;
+
+async function _cfgLoadCanon() {
+  const body = document.getElementById('cfg-canon-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/canon');
+    if (!r.ok) {
+      body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Failed to load (' + r.status + ').</div>';
+      return;
+    }
+    const data = await r.json();
+    _canonRenderTree(data);
+  } catch (e) {
+    body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function _canonRenderTree(data) {
+  const body = document.getElementById('cfg-canon-body');
+  if (!body) return;
+  const files = data.files || [];
+  let html = '<div style="display:flex;gap:14px;flex-wrap:wrap;">';
+  html += '<div id="cfg-canon-tree" style="flex:1;min-width:220px;max-height:420px;overflow-y:auto;border:1px solid #333;border-radius:4px;padding:8px;background:#1a1a1a;">';
+  if (!files.length) {
+    html += '<div class="cfg-field-desc">No canon files yet. Enter a <em>&lt;topic&gt;.txt</em> path and click Save to create one.</div>';
+  } else {
+    files.forEach(f => {
+      html += '<div style="cursor:pointer;padding:3px 4px;border-radius:2px;" '
+        + 'onclick="_canonLoad(\'' + escAttr(f.path) + '\')" '
+        + 'onmouseover="this.style.background=\'#2a2a2a\'" '
+        + 'onmouseout="this.style.background=\'transparent\'">'
+        + '&rarr; ' + escHtml(f.path) + ' <span style="color:#888;font-size:0.85em;">(' + (f.entry_count || 0) + ' entries)</span>'
+        + '</div>';
+    });
+  }
+  html += '</div>';
+  html += '<div style="flex:2;min-width:320px;display:flex;flex-direction:column;gap:8px;">';
+  html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
+    + '<input type="text" id="cfg-canon-path" placeholder="<topic>.txt" style="flex:1;min-width:220px;">'
+    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_canonLoadFromPath()">Open</button>'
+    + '<button type="button" class="cfg-save-btn" style="background:#a33;" onclick="_canonDelete()">Delete</button>'
+    + '</div>';
+  html += '<textarea id="cfg-canon-editor" style="width:100%;min-height:300px;font-family:monospace;background:#1a1a1a;color:#ddd;border:1px solid #333;padding:8px;" placeholder="# Optional comment line.\n\nFirst canon entry. One to three sentences.\n\nSecond canon entry. Blank line separates."></textarea>';
+  html += '<div class="cfg-save-row"><button class="cfg-save-btn" onclick="_canonSave()">Save file</button>'
+    + '<span id="cfg-canon-save-result" class="cfg-result"></span></div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="cfg-field-label" style="margin-top:14px;">Retrieval test</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">Enter an utterance; the panel shows whether the canon gate fires and which entries would be injected into the LLM context.</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+    + '<input type="text" id="cfg-canon-test-utt" placeholder="How did you cope with being a potato?" style="flex:1;min-width:280px;">'
+    + '<button class="cfg-save-btn" style="background:#333;" onclick="_canonDryRun()">Retrieve</button>'
+    + '</div>'
+    + '<div id="cfg-canon-test-result" style="margin-top:8px;font-family:monospace;font-size:0.9em;color:#ddd;"></div>';
+  body.innerHTML = html;
+}
+
+async function _canonLoad(path) {
+  const ed = document.getElementById('cfg-canon-editor');
+  const pathEl = document.getElementById('cfg-canon-path');
+  try {
+    const r = await fetch('/api/canon?path=' + encodeURIComponent(path));
+    if (!r.ok) { showToast('Load failed (' + r.status + ')', 'warn'); return; }
+    const data = await r.json();
+    if (ed) ed.value = data.text || '';
+    if (pathEl) pathEl.value = data.path || path;
+    _canonSelectedPath = data.path || path;
+  } catch (e) {
+    showToast('Load error: ' + e.message, 'warn');
+  }
+}
+
+function _canonLoadFromPath() {
+  const pathEl = document.getElementById('cfg-canon-path');
+  if (pathEl && pathEl.value.trim()) _canonLoad(pathEl.value.trim());
+}
+
+async function _canonSave() {
+  const pathEl = document.getElementById('cfg-canon-path');
+  const ed = document.getElementById('cfg-canon-editor');
+  const result = document.getElementById('cfg-canon-save-result');
+  const path = pathEl ? pathEl.value.trim() : '';
+  if (!path) { showToast('Enter a path first', 'warn'); return; }
+  const text = ed ? ed.value : '';
+  if (result) { result.textContent = 'Saving...'; result.className = 'cfg-result'; }
+  try {
+    const r = await fetch('/api/canon', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ path, text }),
+    });
+    const resp = await r.json();
+    if (r.ok) {
+      if (result) result.textContent = '';
+      const reloadedNote = resp.reloaded ? ' (live)' : ' (reload failed — restart to apply)';
+      showToast('Saved: ' + path + ' (' + (resp.entry_count || 0) + ' entries)' + reloadedNote, 'success');
+      _cfgLoadCanon();
+    } else if (result) {
+      result.textContent = resp.error || ('Error (' + r.status + ')');
+      result.className = 'cfg-result err';
+    }
+  } catch (e) {
+    if (result) { result.textContent = 'Error: ' + e.message; result.className = 'cfg-result err'; }
+  }
+}
+
+async function _canonDelete() {
+  const pathEl = document.getElementById('cfg-canon-path');
+  const path = pathEl ? pathEl.value.trim() : '';
+  if (!path) return;
+  if (!confirm('Delete ' + path + '?')) return;
+  try {
+    const r = await fetch('/api/canon?path=' + encodeURIComponent(path), {method: 'DELETE'});
+    if (r.ok) {
+      showToast('Deleted: ' + path, 'success');
+      const ed = document.getElementById('cfg-canon-editor');
+      if (ed) ed.value = '';
+      _cfgLoadCanon();
+    } else {
+      showToast('Delete failed (' + r.status + ')', 'warn');
+    }
+  } catch (e) {
+    showToast('Delete error: ' + e.message, 'warn');
+  }
+}
+
+async function _canonDryRun() {
+  const uttEl = document.getElementById('cfg-canon-test-utt');
+  const resEl = document.getElementById('cfg-canon-test-result');
+  const utterance = uttEl ? uttEl.value.trim() : '';
+  if (!utterance) { showToast('Enter an utterance first', 'warn'); return; }
+  try {
+    const r = await fetch('/api/canon/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ utterance }),
+    });
+    const data = await r.json();
+    if (!resEl) return;
+    let html = '<div style="margin-bottom:6px;">Gate: '
+      + (data.gate_fired ? '<span style="color:#6f6;">FIRED</span>' : '<span style="color:#f96;">skipped</span>')
+      + '</div>';
+    const entries = data.entries || [];
+    if (!entries.length) {
+      html += '<div style="color:#f96;">No entries retrieved.</div>';
+    } else {
+      html += '<div>' + entries.length + ' entr' + (entries.length === 1 ? 'y' : 'ies') + ':</div>';
+      entries.forEach(e => {
+        const dist = (e.distance != null) ? (' <span style="color:#888;">[' + e.distance.toFixed(3) + ']</span>') : '';
+        const topic = e.topic ? ' <span style="color:#ffa94d;">[' + escHtml(e.topic) + ']</span>' : '';
+        html += '<div style="margin:4px 0;padding:4px 6px;border-left:2px solid #555;">'
+          + topic + dist + '<br>' + escHtml(e.document || '')
+          + '</div>';
+      });
+    }
+    resEl.innerHTML = html;
+  } catch (e) {
+    if (resEl) { resEl.innerHTML = '<span style="color:#f66;">Error: ' + escHtml(e.message) + '</span>'; }
   }
 }
 
