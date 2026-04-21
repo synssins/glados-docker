@@ -425,6 +425,17 @@ class MemoryConfig(BaseModel):
     # How often the retention sweeper runs (seconds).
     retention_sweep_interval_s: int = 3600  # hourly
 
+    # Phase 8.8 — Follow-up window for anaphoric carry-over.
+    # Short-term SessionMemory TTL (seconds). Utterances like
+    # "turn it up more" or "do that again" within this window of
+    # the most-recent Tier 1/2 action inherit that action's
+    # entity/service as the implied target. 600 s (10 min) is the
+    # default; operators who walk away and come back mid-command
+    # can shorten, those with slower dialog cadence can lengthen.
+    # Read by SessionMemory at engine boot; value takes effect on
+    # the next hot-reload of the engine.
+    session_idle_ttl_seconds: int = 600
+
     # Stage 3 Phase 5: passive memory dedup-with-reinforcement.
     # Passive-extracted facts default to review_status="approved" so
     # they enter RAG immediately (the old "pending" flow required

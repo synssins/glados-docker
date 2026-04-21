@@ -2021,3 +2021,110 @@ since that was a related tool-framing miss on lore questions —
 will verify during live probe.
 
 ---
+
+## Change 18 — Phase 8.8: positive anaphora detector (2026-04-21)
+
+**Problem.** Pre-8.8 the follow-up carry-over logic in
+`CommandResolver._build_carryover` used
+`_looks_anaphoric(utterance)` = "`_extract_qualifiers(utterance)`
+returned no distinctive qualifier words." That reused the
+disambiguator's stopword list, which was tuned for a different
+purpose: telling "bedroom strip **segment 3**" apart from
+"bedroom strip" (content words vs generic domain nouns).
+Common follow-up words that carry the anaphora signal —
+`more`, `again`, `keep`, `going`, `same`, `dark` — were NOT
+in that list, so the resolver misclassified the operator's
+actual failure cases:
+
+- "Turn it up more" → qualifier `["more"]` → anaphoric=False →
+  no carry-over → fall-through → Tier 3 chitchat hallucinates
+  a confirmation, light doesn't change.
+- "Do that again" → qualifier `["again"]` → same path.
+- "Keep going" → qualifiers `["keep", "going"]` → same path.
+
+Extending the stopword list would have regressed Phase 8.3's Gate-
+3 fix, where "segment 3" had to stay classifiable as a distinctive
+qualifier. Two competing purposes of one token list.
+
+### Fix
+
+New module `glados/intent/anaphora.py` with a positive detector
+`is_anaphoric_followup(utterance) -> bool`. Four rules (any one
+fires), plus a WH-question guard:
+
+1. **Pronoun deictic** — `it`, `them`, `that`, `those`, `these`,
+   `this`, `one`, `ones`. "Turn **it** up more" catches on `it`.
+2. **Explicit repetition marker** — `again`, `more`, `same`,
+   `keep`, `continue`, `resume`. "Do that **again**" catches on
+   `again`.
+3. **Bare intensity adverb with no content word** — the utterance
+   contains `brighter` / `louder` / `warmer` / `up` / `off` /
+   etc. AND has no content tokens outside fillers + pronouns +
+   intensity words. "A bit brighter" catches, "a bit brighter in
+   the kitchen" does not.
+4. **Short additive continuation** — "also the kitchen too", "and
+   the office as well". Fires only on utterances ≤ 6 tokens so a
+   long sentence that happens to contain `too` isn't a follow-up.
+
+WH-question guard: utterances that start with `what`, `when`,
+`where`, `how`, `which`, `who`, `whom`, `whose`, `why` always
+return False. Protects against the "what time is **it**" class
+that would otherwise fire Rule 1. (The resolver already short-
+circuits state queries upstream, but the module stays correct in
+isolation.)
+
+### Rewire
+
+`CommandResolver._looks_anaphoric` now delegates to the new
+function. All other carry-over machinery is unchanged:
+`SessionMemory.record_turn` / `last_turn`, the carry-over window
+check, `Disambiguator.run(assume_home_command=..., prior_entity_ids=...,
+prior_service=...)`. Phase 8.8 is a swap-out of the gate, not a
+rewrite of the path.
+
+### Configurable follow-up window
+
+`MemoryConfig.session_idle_ttl_seconds: int = 600` — read at
+engine boot, passed to `SessionMemory(idle_ttl_seconds=...)` via
+`glados/server.py`. The field auto-renders on Configuration →
+Memory because the page is driven by `cfgBuildForm` over the
+pydantic model; no new card needed.
+
+### Tests
+
+- `tests/test_anaphora.py` — 37 parametrized cases.
+  Positives: bare intensity adverbs, pronoun deictics, repetition
+  markers, additive continuations, case-insensitive, punctuation-
+  tolerant. Negatives: new-target commands, state queries,
+  greetings, Phase 8.3 regression guard for
+  `"bedroom strip segment 3"`, size guard for long additives.
+- `tests/test_command_resolver.py::TestPhase88Followups` — 8
+  parametrized end-to-end cases driving the resolver with a fake
+  disambiguator. Records a first-turn Tier 2 hit on
+  `light.task_lamp_one`, then fires each operator-
+  reported follow-up phrase and asserts `prior_entity_ids` +
+  `prior_service` + `assume_home_command` thread through to the
+  disambiguator call.
+
+Full suite: **959 passed / 3 skipped** (was 895 / 3; +64 new).
+
+### Commits
+
+- `glados/intent/anaphora.py` — positive detector
+- `glados/core/command_resolver.py` — `_looks_anaphoric`
+  delegates
+- `glados/core/config_store.py` — `session_idle_ttl_seconds`
+- `glados/server.py` — reads config and passes to SessionMemory
+- `tests/test_anaphora.py` — unit tests
+- `tests/test_command_resolver.py` — integration tests
+- `docs/CHANGES.md` (this entry)
+- `docs/battery-findings-and-remediation-plan.md` — §8.8 marked
+  COMPLETE
+
+### Closes
+
+Phase 8.8 complete. Also resolves the SESSION_STATE handoff's
+original P0 #2: *"Follow-up turns without a device keyword
+bypass Tier 1/2"* — now they don't.
+
+---

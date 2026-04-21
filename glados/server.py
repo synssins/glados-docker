@@ -332,7 +332,12 @@ def _init_ha_client() -> None:
         data_dir = Path(os.environ.get("GLADOS_DATA", "/app/data"))
         prefs_path = Path(config_dir) / "user_preferences.yaml"
         preferences = load_user_preferences(prefs_path)
-        session_memory = SessionMemory()
+        # Phase 8.8 — read the anaphora follow-up window from the
+        # memory config. Default 600 s; YAML override surfaces in the
+        # Memory page as session_idle_ttl_seconds.
+        from glados.core.config_store import cfg as _cfg
+        session_ttl = max(1, int(_cfg.memory.session_idle_ttl_seconds))
+        session_memory = SessionMemory(idle_ttl_seconds=session_ttl)
         learned_store = LearnedContextStore(data_dir / "learned_context.db")
         state_validator = HAStateValidator(entity_cache=cache)
         resolver = CommandResolver(

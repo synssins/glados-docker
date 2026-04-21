@@ -444,21 +444,20 @@ class CommandResolver:
         return (self._now() - turn.timestamp) <= self._carryover_window_s
 
     def _looks_anaphoric(self, utterance: str) -> bool:
-        """True when the utterance has no distinctive qualifier words
-        of its own — a pure refinement that needs prior context to
-        resolve ("brighter", "turn it up", "increase by ten percent").
+        """True when the utterance refers back to a prior Tier 1/2
+        target without naming a new one of its own — e.g. "brighter",
+        "turn it up more", "do that again", "keep going".
 
-        Utterances with their own qualifier tokens (e.g. "bedroom
-        strip segment 3") name a new target and must NOT inherit
-        the previous turn's entity_ids — that was the source of the
-        Gate 3 failure where "segment 3" got read as a brightness
-        value on the desk lamp from the prior turn.
+        Phase 8.8: delegates to the positive detector in
+        ``glados.intent.anaphora``. The old heuristic ("no distinctive
+        qualifier words = anaphoric") silently passed bare adverbs
+        like ``"brighter"`` but missed common follow-ups like
+        ``"turn it up more"`` because ``more`` wasn't in the
+        disambiguator's stopword list, and fixing that list would
+        have broken the segment-qualifier Gate-3 regression.
         """
-        # Imported here (not at module top) to avoid bootstrapping
-        # disambiguator module state before the resolver loads.
-        from glados.intent.disambiguator import _extract_qualifiers
-        quals = _extract_qualifiers(utterance)
-        return not quals
+        from glados.intent.anaphora import is_anaphoric_followup
+        return is_anaphoric_followup(utterance)
 
     def _validate_learned(self, row: LearnedRow) -> bool:
         return self._validator.validates(
