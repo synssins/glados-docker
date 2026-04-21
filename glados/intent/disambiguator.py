@@ -75,6 +75,10 @@ class DisambiguationResult:
     # Phase 8.6 — how many actions the planner actually executed,
     # so the audit layer can record compound plans accurately.
     action_count: int = 1
+    # Phase 8.7 — which response mode the composer landed on. One
+    # of LLM / quip / chime / silent. "LLM" means the speech was
+    # passed through unchanged.
+    response_mode: str = "LLM"
 
 
 # ---------------------------------------------------------------------------
@@ -1221,6 +1225,7 @@ class Disambiguator:
             state_verified=state_verified,
             state_verification=verification_detail,
             action_count=len(parsed_actions),
+            response_mode=composed_mode,
         )
 
     def _summarize_verifications(

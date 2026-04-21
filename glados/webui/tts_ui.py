@@ -3713,6 +3713,40 @@ class Handler(BaseHTTPRequestHandler):
                     if ks and vs:
                         cleaned_aa[ks] = vs
                 rules.area_aliases = cleaned_aa
+            if "response_mode" in data:
+                rm = str(data["response_mode"] or "").strip()
+                if rm not in {"LLM", "quip", "chime", "silent"}:
+                    self._send_error(
+                        400,
+                        "response_mode must be one of: LLM, quip, chime, silent",
+                    )
+                    return
+                rules.response_mode = rm
+            if "response_mode_per_event" in data:
+                rmp_raw = data.get("response_mode_per_event") or {}
+                if not isinstance(rmp_raw, dict):
+                    self._send_error(400, "response_mode_per_event must be an object")
+                    return
+                valid_events = {"command_ack", "query_answer", "ambient_cue", "error"}
+                valid_modes = {"LLM", "quip", "chime", "silent"}
+                cleaned_rmp: dict[str, str] = {}
+                for k, v in rmp_raw.items():
+                    ks = str(k).strip()
+                    vs = str(v).strip()
+                    if ks not in valid_events:
+                        self._send_error(
+                            400,
+                            f"response_mode_per_event: unknown event {ks!r}",
+                        )
+                        return
+                    if vs not in valid_modes:
+                        self._send_error(
+                            400,
+                            f"response_mode_per_event[{ks}]: invalid mode {vs!r}",
+                        )
+                        return
+                    cleaned_rmp[ks] = vs
+                rules.response_mode_per_event = cleaned_rmp
             save_rules_to_yaml(path, rules)
             applied = self._reload_disambiguator_rules()
             self._send_json(200, {
@@ -3728,6 +3762,8 @@ class Handler(BaseHTTPRequestHandler):
                 "verification_timeout_s": rules.verification_timeout_s,
                 "floor_aliases": rules.floor_aliases,
                 "area_aliases": rules.area_aliases,
+                "response_mode": rules.response_mode,
+                "response_mode_per_event": rules.response_mode_per_event,
             })
         except Exception as exc:
             self._send_error(500, f"Failed to save rules: {exc}")
