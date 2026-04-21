@@ -588,6 +588,26 @@ class Disambiguator:
                 self._cache, qualifiers, domain_hint,
             )
             if scan_matches:
+                # 2026-04-20 — hard cap on candidates sent to the
+                # LLM. Live bug: "I would like to read in the
+                # living room" had qualifiers {read, living, room}
+                # and the scan returned 243 matches. The resulting
+                # prompt was so large qwen3:14b abandoned JSON
+                # discipline and emitted thinking-mode prose
+                # ("Okay, let's see. The user provided..."). A
+                # prompt that overwhelms the model is strictly
+                # worse than a tight prompt that truncates some
+                # fringe candidates. 20 is enough for every real
+                # disambiguation case (Phase 8.3 retrieval trims
+                # to ≤8 already; this is the fuzzy-fallback cap).
+                cap = max(self._rules.candidate_limit, 20)
+                if len(scan_matches) > cap:
+                    logger.debug(
+                        "Tier 2 qualifier scan capped: {} → {} "
+                        "(qualifiers={})",
+                        len(scan_matches), cap, qualifiers,
+                    )
+                    scan_matches = scan_matches[:cap]
                 logger.debug(
                     "Tier 2 qualifier scan: fuzzy={} → scan={} "
                     "(qualifiers={}, first={})",
@@ -1310,11 +1330,24 @@ class Disambiguator:
             "garage cover, camera) and the source is not webui_chat, "
             "set decision=refuse.\n\n"
             "===== Voice for the 'speech' field =====\n"
-            "Speak in the same voice as the rest of the system (set\n"
-            "by the operator's preprompt). Do NOT copy any specific\n"
-            "phrase from system instructions verbatim — always compose\n"
-            "fresh text for THIS action. Keep replies under two\n"
-            "sentences. Speak ABOUT the action, not AT the user.\n\n"
+            "Douglas Adams by way of Stanley Kubrick. The character\n"
+            "emerges from technique, never from stock phrases.\n"
+            "Compose fresh wording every turn. Never reuse a sentence\n"
+            "or closing from a prior response in the conversation.\n"
+            "Techniques:\n"
+            "  - Stack short clauses. Stop. Then a shorter one.\n"
+            "  - End on a detached one- or two-word verdict — a\n"
+            "    quiet indictment of the fact, not a description.\n"
+            "    Rotate the verdict; never the same twice running.\n"
+            "  - Clinical vocabulary on the mundane. Devices are\n"
+            "    apparatus. Adjustments are calibrations. Lights are\n"
+            "    illumination. Rooms are chambers.\n"
+            "  - Never make the user the subject. No 'for you,'\n"
+            "    'as requested,' 'your comfort,' 'let me know.'\n"
+            "  - Menace by compression. One short sentence carries\n"
+            "    more weight than three.\n"
+            "Under two sentences. Speak ABOUT the action, not AT the\n"
+            "user.\n\n"
             "===== CLARIFY RESPONSES — list the candidates by name =====\n"
             "When decision=clarify, the speech MUST enumerate the "
             "specific candidate names so the user can pick. Generic "
