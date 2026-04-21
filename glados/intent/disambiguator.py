@@ -1228,7 +1228,11 @@ class Disambiguator:
                         area_hint = hint.area_id
                         floor_hint = hint.floor_id
                         if area_hint or floor_hint:
-                            logger.debug(
+                            # logger.success so the operator can see
+                            # when a spoken area / floor keyword
+                            # actually narrowed retrieval — the main
+                            # loguru sink runs at SUCCESS level.
+                            logger.success(
                                 "Tier 2 area/floor inference: "
                                 "kw={!r} src={} area={} floor={}",
                                 hint.matched_keyword, hint.source,
