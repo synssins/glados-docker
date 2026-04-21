@@ -5,3 +5,9 @@ Observe.
 Here is the current reading.
 The sensor reports the following.
 Current status, as recorded.
+The apparatus reports:
+Reading, retrieved.
+Telemetry, as requested.
+For your information.
+The relevant measurement.
+The latest value on file.

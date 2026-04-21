@@ -1377,6 +1377,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._get_config_section(section)
         elif p == "/api/quips" or p.startswith("/api/quips?"):
             self._get_quips()
+        elif p == "/api/chimes" or p.startswith("/api/chimes?"):
+            self._get_chimes()
         elif p == "/api/canon" or p.startswith("/api/canon?"):
             self._get_canon()
         elif p == "/api/hub75/test/ping":
@@ -1553,6 +1555,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._put_config_section(section)
         elif self.path == "/api/quips":
             self._put_quips()
+        elif self.path == "/api/chimes":
+            self._put_chime()
         elif self.path == "/api/canon":
             self._put_canon()
         else:
@@ -1567,6 +1571,8 @@ class Handler(BaseHTTPRequestHandler):
             self._memory_action("delete")
         elif self.path == "/api/quips" or self.path.startswith("/api/quips?"):
             self._delete_quip()
+        elif self.path == "/api/chimes" or self.path.startswith("/api/chimes?"):
+            self._delete_chime()
         elif self.path == "/api/canon" or self.path.startswith("/api/canon?"):
             self._delete_canon()
         else:
@@ -4050,6 +4056,158 @@ class Handler(BaseHTTPRequestHandler):
                 "time_of_day": req.time_of_day,
             },
         })
+
+    # ── Phase 8.7 (deferred) — chime library editor ──────────────
+
+    # Allowed extensions for upload. ``.mp3`` because HA media_player
+    # supports it directly; ``.wav`` because Piper/Speaches emits it
+    # and the existing scenario chime loader at api_wrapper.py reads
+    # it. Nothing else is served from this endpoint — unknown
+    # extensions refuse on both upload and fetch to keep this from
+    # becoming a generic file host.
+    _CHIME_ALLOWED_EXT: "frozenset[str]" = frozenset({".wav", ".mp3"})
+    _CHIME_MAX_BYTES: int = 5 * 1024 * 1024  # 5 MB per clip
+
+    def _chime_dir(self) -> Path:
+        """Root of the chime library on disk. Operator-configurable
+        via `AudioConfig.chimes_dir` (defaults to `/app/audio_files/chimes`).
+        This is the directory `api_wrapper.py`'s scenario-chime loader
+        reads from at request time."""
+        return Path(_cfg.audio.chimes_dir)
+
+    def _chime_path_safe(self, rel: str) -> Path | None:
+        """Resolve a caller-supplied relative path within the chime
+        root. Refuses path traversal (``..``, absolute), unknown
+        extensions, and any nested directory (chimes are flat —
+        filename only, no subdirs)."""
+        if not rel or not isinstance(rel, str):
+            return None
+        # Flat library: reject anything with a separator.
+        if "/" in rel or "\\" in rel:
+            return None
+        if not rel.lower().endswith(tuple(self._CHIME_ALLOWED_EXT)):
+            return None
+        root = self._chime_dir().resolve()
+        try:
+            candidate = (root / rel).resolve()
+            candidate.relative_to(root)
+        except (ValueError, OSError):
+            return None
+        return candidate
+
+    def _get_chimes(self) -> None:
+        """GET /api/chimes — tree listing.
+        GET /api/chimes?path=<file.wav> — fetch the file bytes for
+        play-test (audio/wav or audio/mpeg content-type)."""
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
+        rel = (q.get("path") or [""])[0].strip()
+        if rel:
+            target = self._chime_path_safe(rel)
+            if target is None or not target.is_file():
+                self._send_error(404, "Not found")
+                return
+            try:
+                data = target.read_bytes()
+            except OSError as exc:
+                self._send_error(500, f"Read failed: {exc}")
+                return
+            ct = "audio/wav" if target.suffix.lower() == ".wav" else "audio/mpeg"
+            self.send_response(200)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if getattr(self, "_head_only", False):
+                self._head_only = False
+                return
+            self.wfile.write(data)
+            return
+        # Tree listing: flat file list with size.
+        root = self._chime_dir()
+        files: list[dict[str, object]] = []
+        if root.exists():
+            for p in sorted(root.iterdir()):
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in self._CHIME_ALLOWED_EXT:
+                    continue
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    continue
+                files.append({
+                    "name": p.name,
+                    "bytes": size,
+                })
+        self._send_json(200, {"root": str(root), "files": files})
+
+    def _put_chime(self) -> None:
+        """PUT /api/chimes — upload a single clip. Body:
+        {"name": "notify.wav", "data_b64": "<base64 payload>"}.
+        Max 5 MB. Overwrites an existing file with the same name
+        (atomic rename) so the operator can revise a clip in place.
+        """
+        import base64
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length > self._CHIME_MAX_BYTES * 2:  # base64 ≈ 4/3 overhead
+                self._send_error(413, "Payload too large")
+                return
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_error(400, f"Invalid JSON: {exc}")
+            return
+        name = str(data.get("name") or "").strip()
+        b64 = str(data.get("data_b64") or "").strip()
+        if not name or not b64:
+            self._send_error(400, "Both 'name' and 'data_b64' are required")
+            return
+        target = self._chime_path_safe(name)
+        if target is None:
+            self._send_error(
+                400,
+                "Unsafe name or unsupported extension (allowed: .wav .mp3)",
+            )
+            return
+        try:
+            payload = base64.b64decode(b64, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            self._send_error(400, f"Invalid base64: {exc}")
+            return
+        if len(payload) > self._CHIME_MAX_BYTES:
+            self._send_error(413, f"Clip exceeds {self._CHIME_MAX_BYTES} bytes")
+            return
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_bytes(payload)
+            tmp.replace(target)
+        except OSError as exc:
+            self._send_error(500, f"Write failed: {exc}")
+            return
+        self._send_json(200, {
+            "ok": True, "name": target.name, "bytes": len(payload),
+        })
+
+    def _delete_chime(self) -> None:
+        """DELETE /api/chimes?path=<file.wav> — remove one clip."""
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
+        rel = (q.get("path") or [""])[0].strip()
+        target = self._chime_path_safe(rel)
+        if target is None or not target.is_file():
+            self._send_error(404, "Not found")
+            return
+        try:
+            target.unlink()
+        except OSError as exc:
+            self._send_error(500, f"Delete failed: {exc}")
+            return
+        self._send_json(200, {"ok": True, "name": target.name})
 
     # ── Phase 8.14 — canon library editor ────────────────────────
 
@@ -7396,9 +7554,157 @@ function _cfgRenderAudioSpeakers() {
     +   '<div id="cfg-pronunciation-body">Loading&hellip;</div>'
     + '</div>';
 
+  // Phase 8.7 (deferred) — Chime library. Flat list of .wav / .mp3
+  // clips the scenario-chime loader plays before announcements, plus
+  // the "chime" response mode uses them for command acknowledgements.
+  // Upload / preview / delete — no subdirectory structure.
+  html += ''
+    + '<div class="card" id="cfg-chimes-card" style="margin-top:18px;">'
+    +   '<div class="cfg-subsection-title">Chime library</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Short sound clips played before announcements and for the '
+    +     '<strong>chime</strong> response mode. Allowed formats: '
+    +     '<code>.wav</code>, <code>.mp3</code>. 5 MB per clip. '
+    +     'Flat library (no subdirectories).'
+    +   '</div>'
+    +   '<div id="cfg-chimes-body">Loading&hellip;</div>'
+    + '</div>';
+
   document.getElementById('cfg-form-area').innerHTML = html;
   setTimeout(_cfgLoadResponseBehavior, 0);
   setTimeout(_cfgLoadPronunciation, 0);
+  setTimeout(_cfgLoadChimes, 0);
+}
+
+// ── Phase 8.7 chime library JS ──────────────────────────────────
+
+async function _cfgLoadChimes() {
+  const body = document.getElementById('cfg-chimes-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/chimes');
+    if (!r.ok) {
+      body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Failed to load (' + r.status + ').</div>';
+      return;
+    }
+    const data = await r.json();
+    _chimesPopulate(data);
+  } catch (e) {
+    body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function _chimesPopulate(data) {
+  const body = document.getElementById('cfg-chimes-body');
+  if (!body) return;
+  const files = Array.isArray(data.files) ? data.files : [];
+  const tableRows = files.length
+    ? files.map(f =>
+        '<tr>'
+        + '<td style="padding:4px 8px;font-family:monospace;">' + escHtml(f.name) + '</td>'
+        + '<td style="padding:4px 8px;color:var(--text-dim);text-align:right;">'
+        +   _chimesFmtBytes(f.bytes)
+        + '</td>'
+        + '<td style="padding:4px 8px;">'
+        +   '<button class="btn-small" onclick="_chimesPlay(\'' + encodeURIComponent(f.name) + '\')" style="font-size:0.72rem;padding:3px 10px;margin-right:6px;">Play</button>'
+        +   '<button class="btn-small" onclick="_chimesDelete(\'' + encodeURIComponent(f.name) + '\')" style="font-size:0.72rem;padding:3px 10px;background:#c0392b;">Delete</button>'
+        + '</td>'
+        + '</tr>'
+      ).join('')
+    : '<tr><td colspan="3" style="padding:8px;color:var(--text-dim);font-style:italic;">No chime files. Upload one below.</td></tr>';
+  let html = '';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;margin-bottom:12px;">';
+  html += '<thead><tr style="background:var(--bg-input);">'
+    +   '<th style="padding:6px 8px;text-align:left;">File</th>'
+    +   '<th style="padding:6px 8px;text-align:right;">Size</th>'
+    +   '<th style="padding:6px 8px;text-align:left;width:160px;">Actions</th>'
+    + '</tr></thead>';
+  html += '<tbody>' + tableRows + '</tbody>';
+  html += '</table>';
+  html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+    +   '<input type="file" id="cfg-chimes-upload" accept=".wav,.mp3,audio/wav,audio/mpeg" '
+    +     'style="flex:1;min-width:220px;background:var(--bg-input);color:var(--text);'
+    +     'border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:0.82rem;">'
+    +   '<button class="btn-small" onclick="_chimesUpload()" style="font-size:0.78rem;padding:5px 14px;">Upload</button>'
+    +   '<audio id="cfg-chimes-player" controls style="flex:2;min-width:240px;"></audio>'
+    + '</div>';
+  body.innerHTML = html;
+}
+
+function _chimesFmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function _chimesPlay(encodedName) {
+  const audio = document.getElementById('cfg-chimes-player');
+  if (!audio) return;
+  audio.src = '/api/chimes?path=' + encodedName;
+  audio.play().catch(e => { /* browsers may require user gesture; fallthrough */ });
+}
+
+async function _chimesDelete(encodedName) {
+  const decoded = decodeURIComponent(encodedName);
+  if (!confirm('Delete chime "' + decoded + '"?')) return;
+  try {
+    const r = await fetch('/api/chimes?path=' + encodedName, { method: 'DELETE' });
+    const resp = r.ok ? await r.json() : { error: 'HTTP ' + r.status };
+    if (r.ok) {
+      showToast('Deleted ' + decoded, 'success');
+      _cfgLoadChimes();
+    } else {
+      showToast('Delete failed: ' + (resp.error || 'unknown'), 'error');
+    }
+  } catch (e) {
+    showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+async function _chimesUpload() {
+  const input = document.getElementById('cfg-chimes-upload');
+  if (!input || !input.files || !input.files[0]) {
+    showToast('Choose a file first', 'warn');
+    return;
+  }
+  const file = input.files[0];
+  const name = file.name;
+  const MAX = 5 * 1024 * 1024;
+  if (file.size > MAX) {
+    showToast('File exceeds 5 MB', 'error');
+    return;
+  }
+  const b64 = await _fileToBase64(file);
+  try {
+    const r = await fetch('/api/chimes', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name: name, data_b64: b64 }),
+    });
+    const resp = r.ok ? await r.json() : { error: await r.text() };
+    if (r.ok) {
+      showToast('Uploaded ' + name, 'success');
+      input.value = '';
+      _cfgLoadChimes();
+    } else {
+      showToast('Upload failed: ' + (resp.error || 'HTTP ' + r.status), 'error');
+    }
+  } catch (e) {
+    showToast('Upload failed: ' + e.message, 'error');
+  }
+}
+
+function _fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result || '';
+      const comma = String(result).indexOf(',');
+      resolve(comma >= 0 ? String(result).slice(comma + 1) : String(result));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 async function _cfgLoadPronunciation() {

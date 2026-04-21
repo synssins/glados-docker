@@ -3,3 +3,7 @@ Already in that state. Your instruction was redundant.
 Redundant request. No action necessary.
 It was already so.
 The apparatus was already configured as requested.
+No change necessary. The state already matches.
+A correct observation, but the apparatus had anticipated you.
+Already satisfied. No adjustment required.
+The requested state was already in effect.
