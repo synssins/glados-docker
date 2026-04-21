@@ -3689,6 +3689,30 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
                 rules.verification_timeout_s = ts
+            if "floor_aliases" in data:
+                fa_raw = data.get("floor_aliases") or {}
+                if not isinstance(fa_raw, dict):
+                    self._send_error(400, "floor_aliases must be an object")
+                    return
+                cleaned_fa: dict[str, str] = {}
+                for k, v in fa_raw.items():
+                    ks = str(k).strip().lower()
+                    vs = str(v).strip()
+                    if ks and vs:
+                        cleaned_fa[ks] = vs
+                rules.floor_aliases = cleaned_fa
+            if "area_aliases" in data:
+                aa_raw = data.get("area_aliases") or {}
+                if not isinstance(aa_raw, dict):
+                    self._send_error(400, "area_aliases must be an object")
+                    return
+                cleaned_aa: dict[str, str] = {}
+                for k, v in aa_raw.items():
+                    ks = str(k).strip().lower()
+                    vs = str(v).strip()
+                    if ks and vs:
+                        cleaned_aa[ks] = vs
+                rules.area_aliases = cleaned_aa
             save_rules_to_yaml(path, rules)
             applied = self._reload_disambiguator_rules()
             self._send_json(200, {
@@ -3702,6 +3726,8 @@ class Handler(BaseHTTPRequestHandler):
                 "ignore_segments": rules.ignore_segments,
                 "verification_mode": rules.verification_mode,
                 "verification_timeout_s": rules.verification_timeout_s,
+                "floor_aliases": rules.floor_aliases,
+                "area_aliases": rules.area_aliases,
             })
         except Exception as exc:
             self._send_error(500, f"Failed to save rules: {exc}")
@@ -6110,6 +6136,11 @@ function _disambPopulate(data) {
   const pairs = Array.isArray(data.opposing_token_pairs) ? data.opposing_token_pairs : [];
   const verifyMode = (typeof data.verification_mode === 'string') ? data.verification_mode : 'strict';
   const verifyTimeout = (typeof data.verification_timeout_s === 'number') ? data.verification_timeout_s : 3.0;
+  // Phase 8.5 — {spoken keyword: registry name} alias maps.
+  const floorAliases = (data.floor_aliases && typeof data.floor_aliases === 'object')
+    ? data.floor_aliases : {};
+  const areaAliases = (data.area_aliases && typeof data.area_aliases === 'object')
+    ? data.area_aliases : {};
   let html = '';
   html += '<div class="cfg-field" style="display:flex;align-items:center;gap:10px;">'
     +   '<input type="checkbox" id="cfg-disamb-twin-dedup"' + (dedup ? ' checked' : '') + ' style="width:auto;">'
@@ -6183,6 +6214,26 @@ function _disambPopulate(data) {
     +   '<label class="cfg-field-label" for="cfg-disamb-verify-timeout" style="margin:0;min-width:140px;">Timeout (seconds)</label>'
     +   '<input type="number" id="cfg-disamb-verify-timeout" min="0.1" max="30" step="0.1" value="' + escAttr(verifyTimeout.toFixed(1)) + '" style="flex:1;min-width:120px;">'
     + '</div>';
+  // Phase 8.5 — area / floor alias editor.
+  html += '<div class="cfg-field-label" style="margin-top:18px;">Area &amp; floor aliases</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:8px;">'
+    +   'Map house-specific keywords the shipped defaults don&rsquo;t know to the exact <em>registry name</em> '
+    +   'of one of your HA areas or floors. Examples: <code>living floor &rarr; Main Level</code>, '
+    +   '<code>mom&rsquo;s room &rarr; Master Bedroom</code>. Keywords match case-insensitively against the utterance; '
+    +   'registry names must match exactly (including punctuation and spacing) so the inference can resolve them.'
+    + '</div>';
+  html += '<div class="cfg-field-label" style="margin-top:6px;">Floor aliases</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    +   'Utterance keyword &rarr; floor-registry name (e.g. <code>main level &rarr; Main Level</code>).'
+    + '</div>'
+    + '<div id="cfg-disamb-floor-aliases" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
+    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddFloorAlias()">+ Add floor alias</button>';
+  html += '<div class="cfg-field-label" style="margin-top:14px;">Area aliases</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    +   'Utterance keyword &rarr; area-registry name (e.g. <code>mom&rsquo;s room &rarr; Master Bedroom</code>).'
+    + '</div>'
+    + '<div id="cfg-disamb-area-aliases" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
+    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddAreaAlias()">+ Add area alias</button>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
     + '<button class="cfg-save-btn" onclick="cfgSaveDisambiguation()">Save Disambiguation rules</button>'
     + '<span id="cfg-save-result-disamb" class="cfg-result"></span>'
@@ -6192,6 +6243,36 @@ function _disambPopulate(data) {
   pairs.forEach(p => _disambRenderPairRow(rows, p[0] || '', p[1] || ''));
   const tokensHost = document.getElementById('cfg-disamb-tokens');
   tokens.forEach(t => _disambRenderTokenRow(tokensHost, t));
+  const floorHost = document.getElementById('cfg-disamb-floor-aliases');
+  Object.keys(floorAliases).forEach(k =>
+    _disambRenderAliasRow(floorHost, 'floor', k, floorAliases[k] || ''));
+  const areaHost = document.getElementById('cfg-disamb-area-aliases');
+  Object.keys(areaAliases).forEach(k =>
+    _disambRenderAliasRow(areaHost, 'area', k, areaAliases[k] || ''));
+}
+
+function _disambRenderAliasRow(host, kind, keyword, target) {
+  const row = document.createElement('div');
+  row.className = 'cfg-disamb-alias-row cfg-disamb-alias-' + kind;
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.innerHTML = ''
+    + '<input type="text" class="cfg-disamb-alias-keyword" value="' + escAttr(keyword) + '" placeholder="e.g. living floor" style="flex:1;">'
+    + '<span style="opacity:0.6;">&rarr;</span>'
+    + '<input type="text" class="cfg-disamb-alias-target" value="' + escAttr(target) + '" placeholder="e.g. Main Level" style="flex:1;">'
+    + '<button type="button" title="Remove alias" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+  const del = row.querySelector('button');
+  if (del) del.addEventListener('click', () => row.remove());
+  host.appendChild(row);
+}
+
+function _disambAddFloorAlias() {
+  const host = document.getElementById('cfg-disamb-floor-aliases');
+  if (host) _disambRenderAliasRow(host, 'floor', '', '');
+}
+
+function _disambAddAreaAlias() {
+  const host = document.getElementById('cfg-disamb-area-aliases');
+  if (host) _disambRenderAliasRow(host, 'area', '', '');
 }
 
 function _disambRenderTokenRow(host, t) {
@@ -6385,6 +6466,19 @@ async function cfgSaveDisambiguation() {
   const verifyTimeoutEl = document.getElementById('cfg-disamb-verify-timeout');
   let verifyTimeout = verifyTimeoutEl ? parseFloat(verifyTimeoutEl.value) : 3.0;
   if (!isFinite(verifyTimeout) || verifyTimeout <= 0) verifyTimeout = 3.0;
+  // Phase 8.5 — collect alias rows.
+  const floorAliases = {};
+  document.querySelectorAll('#cfg-disamb-floor-aliases .cfg-disamb-alias-row').forEach(row => {
+    const k = ((row.querySelector('.cfg-disamb-alias-keyword') || {}).value || '').trim();
+    const v = ((row.querySelector('.cfg-disamb-alias-target') || {}).value || '').trim();
+    if (k && v) floorAliases[k] = v;
+  });
+  const areaAliases = {};
+  document.querySelectorAll('#cfg-disamb-area-aliases .cfg-disamb-alias-row').forEach(row => {
+    const k = ((row.querySelector('.cfg-disamb-alias-keyword') || {}).value || '').trim();
+    const v = ((row.querySelector('.cfg-disamb-alias-target') || {}).value || '').trim();
+    if (k && v) areaAliases[k] = v;
+  });
   try {
     const r = await fetch('/api/config/disambiguation', {
       method: 'PUT',
@@ -6396,6 +6490,8 @@ async function cfgSaveDisambiguation() {
         extra_segment_tokens: tokens,
         verification_mode: verifyMode,
         verification_timeout_s: verifyTimeout,
+        floor_aliases: floorAliases,
+        area_aliases: areaAliases,
       }),
     });
     const resp = await r.json();

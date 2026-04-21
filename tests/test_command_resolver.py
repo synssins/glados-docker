@@ -347,6 +347,39 @@ class TestTier1Path:
         assert result.handled is True
         assert result.spoken_response == "Done."
 
+    def test_tier1_rewriter_returning_rewriteresult_is_unwrapped(
+        self, ctx_voice_living_room: SourceContext, learned: LearnedContextStore,
+    ) -> None:
+        """Regression for the 2026-04-21 basement short-circuit: the
+        real PersonaRewriter returns a RewriteResult dataclass, not
+        a bare string. When this leaked into spoken_response, the
+        API JSON-serialize call crashed and the client saw a bare
+        '.' reply. spoken_response must be a string."""
+        from glados.persona.rewriter import RewriteResult
+
+        class _RewriteResultRewriter:
+            def rewrite(self, plain_text, context_hint=None):
+                return RewriteResult(
+                    success=True,
+                    text="Basement lights extinguished. Compliance.",
+                    latency_ms=42,
+                )
+
+        bridge = _FakeBridge(_FakeConversationResult(
+            handled=True, speech="Turned off the basement lights.",
+            response_type="action_done",
+        ))
+        resolver, *_ = _make_resolver(
+            bridge=bridge, rewriter=_RewriteResultRewriter(),
+            learned_context=learned,
+        )
+        result = resolver.resolve(
+            "turn off the basement lights", ctx_voice_living_room,
+        )
+        assert result.handled is True
+        assert isinstance(result.spoken_response, str)
+        assert "Basement lights extinguished" in result.spoken_response
+
     def test_tier1_bridge_exception_falls_to_tier2(
         self, ctx_voice_living_room: SourceContext, learned: LearnedContextStore,
     ) -> None:

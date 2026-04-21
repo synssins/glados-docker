@@ -72,6 +72,9 @@ class DisambiguationResult:
     # skipped (scene.turn_on, etc).
     state_verified: bool | None = None
     state_verification: dict[str, Any] = field(default_factory=dict)
+    # Phase 8.6 — how many actions the planner actually executed,
+    # so the audit layer can record compound plans accurately.
+    action_count: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -1142,6 +1145,7 @@ class Disambiguator:
                 candidates_shown=candidates_summary,
                 latency_ms=int((time.perf_counter() - t0) * 1000),
                 llm_raw=raw,
+                action_count=len(parsed_actions),
             )
         # Some succeeded, some errored — still report handled but
         # include error details in rationale for audit review.
@@ -1191,6 +1195,7 @@ class Disambiguator:
             llm_raw=raw,
             state_verified=state_verified,
             state_verification=verification_detail,
+            action_count=len(parsed_actions),
         )
 
     def _summarize_verifications(
