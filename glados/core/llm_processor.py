@@ -549,8 +549,14 @@ class LanguageModelProcessor:
         if sentence and sentence != ".":  # Avoid sending just a period
             tts_params = get_tts_params()
             logger.info(f"LLM Processor: Sending to TTS queue: '{sentence}'")
-            # Send as (text, params) tuple so TTS synthesizer can apply attitude-specific params
-            self.tts_input_queue.put((sentence, tts_params))
+            # Send as (text, params, lane) 3-tuple. Lane (priority vs
+            # autonomy) propagates to `BufferedSpeechPlayer` which
+            # stamps the conversation-store append accordingly so the
+            # API non-streaming response scanner can skip autonomy
+            # cross-talk. Older 2-tuple form still accepted downstream
+            # for any non-LLMProcessor callers (engine announcement
+            # path, ha_sensor_watcher, tools/speak.py).
+            self.tts_input_queue.put((sentence, tts_params, self._lane))
 
     def _extract_thinking(
         self,
@@ -1101,7 +1107,10 @@ class LanguageModelProcessor:
 
                     if self.processing_active_event.is_set():  # Only send EOS if not interrupted
                         logger.debug("LLM Processor: Sending EOS token to TTS queue.")
-                        self.tts_input_queue.put("<EOS>")
+                        # Same cross-talk fix — EOS carries lane so the
+                        # buffered player flushes the accumulator with
+                        # the correct source tag.
+                        self.tts_input_queue.put(("<EOS>", None, self._lane))
                     else:
                         logger.info("LLM Processor: Interrupted, not sending EOS from LLM processing.")
                         # The AudioPlayer will handle clearing its state.

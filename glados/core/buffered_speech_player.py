@@ -52,6 +52,12 @@ class PreparedChunk:
     audio_data: NDArray[np.float32]  # raw audio for duration calculation
     text: str
     is_eos: bool = False
+    # Phase 8.x cross-talk fix: propagate the originating
+    # `LLMProcessor.lane` so the EOS / interrupt flush paths know
+    # whether the assistant message is user-facing (``priority``) or
+    # a background autonomy byproduct. The API's non-streaming
+    # response scanner filters the latter out.
+    lane: str = "priority"
 
 
 class BufferedSpeechPlayer:
@@ -147,6 +153,7 @@ class BufferedSpeechPlayer:
                     audio_data=np.array([], dtype=np.float32),
                     text="",
                     is_eos=True,
+                    lane=getattr(audio_msg, "lane", "priority"),
                 )
                 with self._buffer_lock:
                     self._play_buffer.append(chunk)
@@ -183,6 +190,7 @@ class BufferedSpeechPlayer:
                 chunk = PreparedChunk(
                     audio_data=audio_msg.audio,
                     text=audio_msg.text,
+                    lane=getattr(audio_msg, "lane", "priority"),
                 )
                 with self._buffer_lock:
                     self._play_buffer.append(chunk)
@@ -271,8 +279,13 @@ class BufferedSpeechPlayer:
                 logger.debug("BufferedPlayer: EOS received, flushing.")
                 with self._text_lock:
                     if self._text_accumulator:
+                        # Cross-talk fix: autonomy-lane replies get
+                        # stamped `_source="autonomy"` so the API
+                        # non-streaming scanner skips them.
+                        _src = "autonomy" if chunk.lane == "autonomy" else None
                         self._conversation_store.append(
-                            {"role": "assistant", "content": " ".join(self._text_accumulator)}
+                            {"role": "assistant", "content": " ".join(self._text_accumulator)},
+                            source=_src,
                         )
                     self._text_accumulator = []
                 self.currently_speaking_event.clear()
@@ -313,16 +326,23 @@ class BufferedSpeechPlayer:
 
                 with self._text_lock:
                     self._text_accumulator.append(clipped)
-                    self._conversation_store.append_multiple([
-                        {"role": "assistant", "content": " ".join(self._text_accumulator)},
-                        {
-                            "role": "user",
-                            "content": (
-                                "[SYSTEM: User interrupted mid-response! Full intended output: "
-                                f"'{chunk.text}']"
-                            ),
-                        },
-                    ])
+                    # Cross-talk fix: propagate lane into the source tag
+                    # so an autonomy-lane interrupt doesn't pollute the
+                    # API non-streaming response scanner.
+                    _src = "autonomy" if chunk.lane == "autonomy" else None
+                    self._conversation_store.append_multiple(
+                        [
+                            {"role": "assistant", "content": " ".join(self._text_accumulator)},
+                            {
+                                "role": "user",
+                                "content": (
+                                    "[SYSTEM: User interrupted mid-response! Full intended output: "
+                                    f"'{chunk.text}']"
+                                ),
+                            },
+                        ],
+                        source=_src,
+                    )
                     self._text_accumulator = []
 
                 # Clear everything on interrupt
