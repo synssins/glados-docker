@@ -1,13 +1,16 @@
-name: Battery (self-hosted, nightly)
+name: Battery (self-hosted, manual dispatch only)
 
 # Runs the private 435-row GLaDOS battery against the deployed container
 # on 10.0.0.50 + the HA instance on 10.0.0.20 via a self-hosted
 # runner on AIBox (`glados-lan` label). Cloud runners can't reach those
 # IPs; only the AIBox agent can.
 #
-# Schedule: 07:00 UTC = 02:00 America/Chicago (post-midnight, pre-morning).
-# Also exposes a manual dispatch button so the operator can kick a run
-# on demand from the Actions tab.
+# MANUAL DISPATCH ONLY — no cron. The battery flips real physical
+# lights and switches in an occupied household; running it on a
+# schedule (especially overnight) would wake residents. The operator
+# triggers it when they're awake, aware the lights will flicker, and
+# ready to interpret results. Previous cron at 02:00 Central removed
+# 2026-04-21.
 #
 # All steps use `shell: powershell` (Windows PowerShell 5.1, always
 # present on AIBox). `shell: bash` maps to WSL on Windows and WSL
@@ -16,8 +19,6 @@ name: Battery (self-hosted, nightly)
 # logic is unit-testable outside of CI.
 
 on:
-  schedule:
-    - cron: '0 7 * * *'   # 02:00 America/Chicago (UTC-5 CDT)
   workflow_dispatch:
     inputs:
       max_tests:
