@@ -7,3 +7,15 @@ Extinguished. Precisely as requested.
 Darkness, delivered.
 Deactivation complete.
 Off. Efficient.
+The circuit is open.
+Illumination, withdrawn.
+Power flow, interrupted.
+Shut down. Operation logged.
+Deactivated. Nominal procedure.
+Off. The room meets the new parameters.
+Disengaged. As requested.
+Lumens, zeroed.
+Off. A straightforward procedure.
+Terminated. Within tolerance.
+The lighting array reports standby.
+A reasonable request. Completed.

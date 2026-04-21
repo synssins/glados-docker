@@ -3,3 +3,7 @@ Only partially applied.
 Some parameters did not register.
 Not every instruction took effect.
 Partial compliance.
+A portion of the request completed.
+One element did not cooperate.
+The outcome is incomplete.
+Compliance, but not universal.

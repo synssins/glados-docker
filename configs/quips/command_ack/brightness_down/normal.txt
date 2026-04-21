@@ -5,3 +5,9 @@ Lumens, reduced.
 Softer. Precisely on schedule.
 The room is now measurably dimmer.
 Brightness, reduced.
+Output: attenuated.
+Light, diminished.
+Brightness lowered within tolerance.
+Applied. The sensor reports a lower reading.
+Dimmed. Proceed.
+Illumination, curtailed.

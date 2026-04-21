@@ -290,6 +290,7 @@ class AudioConfig(BaseModel):
     chat_audio_max_files: int = 100
     announcements_dir: str = f"{_GLADOS_AUDIO}/glados_announcements"
     commands_dir: str = f"{_GLADOS_AUDIO}/glados_commands"
+    chimes_dir: str = f"{_GLADOS_AUDIO}/chimes"
     silence_between_sentences_ms: int = 400
     sample_rate: int = 24000
 
