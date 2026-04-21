@@ -57,11 +57,11 @@ Work actually shipped in this session, in chronological order. Reference for Pha
 - **Phase 8.8 COMPLETE** (2026-04-21). Positive anaphora detector replaces the "no qualifiers = anaphoric" heuristic that silently missed every operator-reported follow-up failure case. New `glados.intent.anaphora.is_anaphoric_followup` checks pronouns / repetition markers / bare-intensity-with-no-content / short additives with a WH-question guard. `CommandResolver._looks_anaphoric` delegates. Configurable follow-up window via `MemoryConfig.session_idle_ttl_seconds`, auto-renders on the existing Memory page. 959 tests pass (+64 new). Change 18 in `docs/CHANGES.md`.
 - **Phase 8.9 COMPLETE** (2026-04-21) — test-harness hardening + CI. `TestHarnessConfig` (noise-entity fnmatch globs + `require_direction_match`) on System tab (Advanced). Public `GET /api/test-harness/noise-patterns` read-from-YAML for the external harness. Harness-side `score()` now noise-filters + requires direction match on the target set (off-target flips no longer rescue FAILs; tier-ack rescue disabled when direction required). `hadatasets_adapter.py` converts `allenporter/home-assistant-datasets` scenario YAMLs to our tests.json row format. `.github/workflows/tests.yml` runs the 970-test container suite on every PR + push. Change 19 in `docs/CHANGES.md`. Self-hosted-runner-dependent lanes (nightly full battery + ha-datasets against live HA) deferred — waits on operator decision.
 
-Three new tracks surfaced during the session that weren't in the original plan:
+Three tracks surfaced mid-session (now all shipped — see §8.10 / §8.11 / §8.12 below and Change 20 in `docs/CHANGES.md`):
 
-- **Phase 8.10 — TTS pronunciation polish** (new). Piper/Speaches mispronounces "AI" as "Aye" not "Aye Eye"; "live" vowel length wrong in some contexts; punctuation occasionally yields zero-gap word collision. Two attack surfaces: preprompt-side abbreviation expansion, Piper-side lexicon/SSML.
-- **Phase 8.11 — Live audio streaming** (new). Server currently buffers ~3 s of TTS audio before emitting the streaming URL; first playback starts ~1.5–3 s after TTS begins. Operator wants closer-to-zero first-chunk latency — stream byte-by-byte instead of chunk-gated.
-- **Phase 8.12 — SSL live-apply + HTTPS redirect + HTTP/HTTPS port split** (new). Certificate upload still says "restart container to activate HTTPS." Should hot-reload the TLS context. Non-HTTPS access should 301 to HTTPS when a valid cert is present. Port convention: 8052 HTTP (redirect), 8053 HTTPS.
+- **Phase 8.10 — TTS pronunciation overrides (COMPLETE, 2026-04-21).** Operator-editable word/symbol expansion maps in `TtsPronunciationConfig`; pre-pass in `SpokenTextConverter` runs before the all-caps splitter so ``"AI"`` → ``"Aye Eye"`` instead of slurred ``"A I"``.
+- **Phase 8.11 — Sentence-boundary flush (COMPLETE, 2026-04-21).** New `sentence_boundary_flush` bool on `AudioConfig`; short replies fire to TTS on the period instead of waiting for the char threshold. Plan's premise about 3s URL buffer turned out false (browser already unbuffered).
+- **Phase 8.12 — Live TLS reload + HTTP redirect (COMPLETE, 2026-04-21).** `reload_tls_certs()` swaps cert material on the same `SSLContext`; cert upload + certbot renewal trigger reload. Optional HTTP→HTTPS 301 redirect listener on env-configurable port. Plan's 8052→8053 port swap rejected in favour of keeping HTTPS on 8052 (preserves bookmarks / Unifi rules / LE DNS config).
 
 ---
 
@@ -445,53 +445,33 @@ Output grammar-constrained (Qwen3 native) to English only, no JSON wrapping.
 
 ---
 
-### Phase 8.10 — TTS pronunciation polish (surfaced 2026-04-20, P3)
+### Phase 8.10 — TTS pronunciation overrides (COMPLETE, 2026-04-21)
 
-**Problem observed:** Piper (via Speaches TTS) mispronounces common short terms in GLaDOS replies. Specific operator-flagged cases: "AI" pronounced as "Aye" instead of "Aye Eye"; "live" (the verb) given the short-i vowel when the long-i was wanted. Punctuation sometimes yields zero-gap word collision (text-to-phoneme boundary issue).
+**Problem fixed:** `SpokenTextConverter`'s all-caps splitter (`glados/utils/spoken_text_converter.py:692`) reduced ``"AI"`` → ``"A I"``, which Piper slurred into one letter. Same pathology for ``"HA"``, ``"TV"``, etc.
 
-**Two attack surfaces:**
+**Shipped:** New `TtsPronunciationConfig` section with two maps: ``word_expansions`` (whole-word case-insensitive regex) and ``symbol_expansions`` (literal str.replace). A pre-pass `_apply_pronunciation_overrides` in the converter runs BEFORE quote normalization and BEFORE the all-caps splitter so acronyms never reach the splitter. Engine + `glados/api/tts.py` both thread the config through. Engine reload picks up WebUI edits. New card on Audio & Speakers page with two textareas for operator edits. Defaults: AI, HA, TV, IoT (word); %, &, @ (symbol). 1003 tests pass (+16). Change 20 in `docs/CHANGES.md`.
 
-1. **LLM-side expansion (container-scope).** Strengthen SPEECH RULES in the preprompt with explicit examples: `AI → "Aye Eye"`, `HA → "Home Assistant"`, percent signs spelled, and so on. Catch the common cases before they reach TTS. Low cost, maintainable via the Personality WebUI page.
-
-2. **TTS-side lexicon (Piper / Speaches scope).** Custom pronunciation dictionary per Piper voice (supported via `.espeak-ng` lexicon or Piper's phoneme override config). Handles homographs ("live" / "lead" / "read") and abbreviations. Edits live on the Speaches/Piper side, outside this container. The GLaDOS container's job is to emit well-formed text; it does not own phoneme-level rendering.
-
-**Success:** in a 20-utterance sample, zero mispronunciations of operator-flagged terms. Punctuation pacing sounds natural.
-
-**Cost:** ~100 LOC preprompt edits + operator-side Piper lexicon work (not in container).
+**Out of scope:** Piper-side phoneme lexicon for context-dependent homographs (``live``, ``read``, ``lead``) lives in Speaches, not this container.
 
 ---
 
-### Phase 8.11 — Live streaming TTS (surfaced 2026-04-20, P2)
+### Phase 8.11 — Sentence-boundary flush for streaming TTS (COMPLETE, 2026-04-21)
 
-**Problem observed:** current chat flow emits the streaming audio URL to the client only after `~3 s of TTS has buffered` on the server (see `streaming_tts_buffer_seconds: 3.0` in `glados_config.yaml`). First audible byte lands ~1.5–3 s after TTS begins. Operator wants closer to zero first-chunk latency — audio playback starts as soon as the first sentence's first chunk is rendered, not after a buffer is met.
+**Problem fixed:** The plan's premise about the 3s URL-emission gate turned out false — browser SSE already defaults to `STREAM_BUFFER_SECONDS = 0.0`. The real bottleneck was `LLMProcessor`'s flush predicate: ``"Affirmative."`` (13 chars) stalled because 13 < 30-char first-flush threshold, even at a sentence terminator.
 
-**Work:**
-
-- **Server side.** Replace the 3 s buffer gate with an immediate streaming-URL emission. `/chat_audio_stream/<request_id>` already supports serving chunks as they're generated. The buffer is there to absorb TTS jitter — alternatives: dynamic buffer (start shorter, grow only on underrun), or Range + chunked-transfer-encoding with partial-content semantics so the browser keeps the connection open.
-- **Per-sentence TTS dispatch.** `llm_processor._process_sentence_for_tts` already batches sentences for TTS (`MIN_TTS_FLUSH_CHARS: int = 150` in llm_processor.py). Lower that threshold to ~40–60 characters for streaming-mode so the first sentence fires sooner. Accept the extra TTS call overhead (cost: ~50 ms prep per call, parallel-able).
-- **Client side.** The `<audio controls>` already handles partial-content / streaming responses correctly now that [`9b88f03`] made it the single persistent element. No client changes needed unless the browser's default buffering is the bottleneck (then `preload="auto"` and small seek hints).
-- **Make the buffer target operator-configurable** via the Audio & Speakers page. Default 0.5–1.0 s; operators with slow TTS or flaky networks can raise it.
-
-**Success:** TTFB-audio (time from user send to first audible byte) drops from ~5–8 s current to ~2–3 s. Streaming playback handles underruns gracefully (no clicks / repeat chunks).
-
-**Cost:** ~250 LOC server, ~50 LOC config knob + WebUI slider.
+**Shipped:** New ``sentence_boundary_flush`` bool on `AudioConfig` (default True) + `LLMProcessor.__init__` arg. When True, the char-threshold check is bypassed at sentence terminators — a complete sentence always fires regardless of length. Thresholds (``first_tts_flush_chars``, ``min_tts_flush_chars``) migrated to `AudioConfig` per §0.2; legacy Glados-block `streaming_tts_chunk_chars` kept as back-compat fallback. Auto-surfaces on existing Audio page via `cfgBuildForm`. 1003 tests pass (+10). Change 20 in `docs/CHANGES.md`.
 
 ---
 
-### Phase 8.12 — SSL live-apply + HTTPS redirect + port split (surfaced 2026-04-20, P2)
+### Phase 8.12 — Live TLS reload + HTTP→HTTPS redirect (COMPLETE, 2026-04-21)
 
-**Problem observed:** operator uploads / renews a TLS cert via the SSL page → toast says *"Certificate uploaded. Restart container to activate HTTPS."* Visiting the plain-HTTP URL doesn't auto-301 to HTTPS once a cert is present. The container uses port 8052 for HTTPS only — there's no plaintext listener that could redirect.
+**Problem fixed:** Every cert rotation required a container restart. Socket wrap happened once at process start; cert upload/certbot renewal wrote new material but the running server kept using the old cert in memory. No HTTP redirect listener.
 
-**Work:**
+**Shipped — live TLS reload:** Module-level `_tls_context` holds the live `SSLContext` set at HTTPS listener startup in both entry points (`__main__`, `run_webui`). New `reload_tls_certs()` helper calls `ctx.load_cert_chain()` on the same context to swap cert material — new TLS handshakes pick up the new cert, existing connections keep theirs until close. `_ssl_upload` and `_ssl_request_letsencrypt` now call reload after writing new files and respond with ``live_reload: true`` + "Certificate applied." on success. Graceful fallback to the old restart-required message on reload failure.
 
-1. **Live TLS reload.** The server currently constructs an `SSLContext` once at startup and wraps the socket. Python's `ssl.SSLContext.load_cert_chain()` can be called on a running context to swap in new cert/key material; subsequent connections pick it up. After a cert save, call `ctx.load_cert_chain(new_cert, new_key)` in-place and update the WebUI toast to "Certificate applied."
-2. **HTTP → HTTPS 301 redirect.** Second listener on a separate port (default 8052 HTTP, 8053 HTTPS per operator preference; docker-compose env). The HTTP listener serves one handler — `301 Location: https://host:8053/<path>` for every request. Cheap; fewer than 30 LOC.
-3. **WebUI port config.** Ports are already env-driven via `SERVE_PORT` / a new `SERVE_HTTPS_PORT`. Docker-compose yaml controls them per the operator's note (no WebUI toggle needed for plumbing this low-level).
-4. **Cert upload & renewal flows** (certbot DNS-01 via Cloudflare is already wired): both trigger the live-reload path.
+**Shipped — HTTP→HTTPS 301 redirect:** Tiny `ThreadingHTTPServer` on a separate port (env `WEBUI_HTTP_REDIRECT_PORT`, disabled by default) emits 301 to ``https://<host>:<HTTPS_PORT><path>`` for every verb. Starts as a daemon thread from both entry points when the env var is set AND TLS is active.
 
-**Success:** operator uploads cert → toast "Certificate applied." → visiting `http://host:8052/` returns 301 → browser lands on `https://host:8053/` with the new cert. No container restart needed.
-
-**Cost:** ~200 LOC (reload + redirect listener + small WebUI copy updates).
+**Plan deviation:** Plan proposed `8052 HTTP / 8053 HTTPS`. That would break operator bookmarks, Unifi firewall rules, and Let's Encrypt DNS challenge config. Kept HTTPS on 8052 and added opt-in separate redirect port. Zero impact on unmodified deployments. 1003 tests pass (+7). Change 20 in `docs/CHANGES.md`.
 
 ---
 

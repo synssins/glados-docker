@@ -2325,3 +2325,174 @@ idempotent-scorer patch. Outstanding follow-ups:
   on/off case.
 
 ---
+
+## Change 20 — Phases 8.10, 8.11, 8.12 (2026-04-21)
+
+Closes the last three queued items on the Phase 8.x remediation
+plan: TTS pronunciation polish, live streaming TTS pacing, and
+SSL live-apply + HTTP redirect.
+
+### Phase 8.10 — TTS pronunciation overrides
+
+**Problem.** Piper (via Speaches) mispronounces short all-caps
+abbreviations. ``"AI"`` reads as one slurred letter because the
+pre-TTS converter's all-caps splitter at
+`glados/utils/spoken_text_converter.py:692` turns
+``"AI"`` → ``"A I"`` and Piper collapses the spacing. Same
+pathology on ``"HA"``, ``"TV"``, etc. The splitter exists for a
+reason — unknown acronyms ARE better as spelled letters — but
+operator-flagged terms needed explicit overrides.
+
+**Shipped.** New `TtsPronunciationConfig` section
+(`config_store.py`) with two operator-editable maps:
+``word_expansions`` (whole-word case-insensitive; alphabetic
+keys — ``AI → "Aye Eye"``) and ``symbol_expansions`` (literal
+str.replace; non-alphabetic keys — ``% → " percent"``).
+`SpokenTextConverter.__init__` now accepts both; a pre-pass
+`_apply_pronunciation_overrides` runs BEFORE quote normalization
+and BEFORE the all-caps splitter so the acronym never gets
+reduced to single letters first. Engine and `glados/api/tts.py`
+both thread the config into their converter instances. Engine
+reload rebuilds the converter with fresh overrides.
+
+New WebUI card on the Audio & Speakers page: two textareas with
+one-per-line ``key = value`` rows. Loads from / saves to
+`/api/config/tts_pronunciation`; `_apply_config_live` now includes
+this section in the engine-affecting set.
+
+Defaults ship the operator-flagged cases from the 2026-04-20
+audit: AI, HA, TV, IoT (word); %, &, @ (symbol).
+
+**Tests:** +16 in `tests/test_tts_pronunciation.py` covering
+defaults, word-boundary prevention of substring matches,
+case-insensitive matching, longest-key-first, no-op-when-empty,
+back-compat path, and YAML round-trip. Verified live on deploy:
+``"AI is cool"`` → ``"aye eye is cool"``, ``"at 80%"`` →
+``"at eighty percent"`` (including number-formatter interaction).
+
+**Commit:** [`5eb5b2a`](https://github.com/synssins/glados-docker/commit/5eb5b2a).
+
+**Scope note.** Container-side LLM text normalization only.
+Piper-side phoneme overrides for context-dependent homographs
+(``live`` verb vs. adjective, ``read``, ``lead``) remain a
+Speaches-side task outside this container.
+
+### Phase 8.11 — Sentence-boundary flush for streaming TTS
+
+**Problem.** Pre-8.11 the TTS flush predicate was
+``speakable.strip() in PUNCTUATION_SET and accumulated >= threshold``.
+Short replies like ``"Affirmative."`` (13 chars) stalled because
+13 < 30 (first-flush threshold). The first TTS call waited for
+a second sentence to come in, inflating time-to-first-audible-
+byte on every short acknowledgement.
+
+**Shipped.** New boolean ``sentence_boundary_flush`` on
+`AudioConfig` (default True) + `LLMProcessor.__init__` arg.
+When True, the threshold check is bypassed at sentence
+terminators — a complete sentence always fires regardless of
+length. When False, pre-8.11 threshold-gated behaviour is
+preserved for A/B.
+
+Also migrates ``first_tts_flush_chars`` and
+``min_tts_flush_chars`` into `AudioConfig` per §0.2 (every
+operator knob on a WebUI card); legacy `Glados`-block
+`streaming_tts_chunk_chars` still read as a back-compat
+fallback. The Audio & Speakers page auto-surfaces the new
+fields via the existing `cfgBuildForm`.
+
+**Tests:** +10 in `tests/test_tts_streaming_flush.py` — short
+replies flush under boundary-flush, stall when disabled, mid-
+sentence tokens don't flush regardless, subsequent-flush uses
+correct threshold, exact-threshold fires, boundary-flush flag
+plumbs through `LLMProcessor`.
+
+**Commit:** [`a680f6f`](https://github.com/synssins/glados-docker/commit/a680f6f).
+
+**Plan premise that turned out false.** The plan said the
+browser's ``/chat_audio_stream`` URL waited on
+``streaming_tts_buffer_seconds = 3.0``. It doesn't — the SSE
+path already defaults to ``STREAM_BUFFER_SECONDS = 0.0`` at
+`tts_ui.py:757` and only waits for chunk[0]. The 3s constant
+gates HA speaker playback via `BufferedSpeechPlayer`, a separate
+path. The real perceptual win was sentence-boundary flush; the
+URL gate was already unbuffered.
+
+### Phase 8.12 — Live TLS reload + HTTP→HTTPS redirect
+
+**Problem.** Every cert rotation required a container restart.
+`_ssl_upload` and `_ssl_request_letsencrypt` wrote new
+cert/key material to `/app/certs/` and displayed "Restart
+container to activate HTTPS." The socket wrap in both entry
+points (`__main__` lines 10886-10910 and `run_webui` lines
+10913-10935) happened exactly once at process start; there
+was no mechanism to re-wrap mid-flight.
+
+Additionally there was no HTTP→HTTPS redirect listener — a
+visit to the plain-HTTP URL silently hung when a cert was
+present.
+
+**Shipped — live TLS reload.**
+
+- Module-level `_tls_context` holds the live `SSLContext` set
+  at startup.
+- New `reload_tls_certs()` helper calls
+  `ctx.load_cert_chain(cert, key)` on the same context. New
+  TLS handshakes pick up the new cert; existing connections
+  keep theirs until they close. Graceful failure when the
+  server is plaintext (no live context) or cert files are
+  malformed.
+- `_ssl_upload` and `_ssl_request_letsencrypt` now call
+  `reload_tls_certs()` after writing new cert/key. Response
+  carries ``live_reload: true`` with message "Certificate
+  applied." on success; falls back to the old restart-required
+  message when reload fails so the operator is never silently
+  stuck.
+
+**Shipped — HTTP→HTTPS 301 redirect.**
+
+- Tiny `ThreadingHTTPServer` on a separate port (env
+  `WEBUI_HTTP_REDIRECT_PORT`, disabled by default) emits 301
+  to ``https://<host>:<HTTPS_PORT><path>`` for every verb.
+- Starts as a daemon thread from both entry points when the
+  env var is set AND TLS is active. Silently skipped when
+  disabled so existing deployments are unchanged.
+
+**Plan deviation.** The plan called for ``8052 HTTP / 8053
+HTTPS``. That would break operator bookmarks, Unifi firewall
+rules, Let's Encrypt DNS challenge config, and any reverse-
+proxy configs keyed on 8052 = HTTPS. Kept HTTPS on 8052 and
+added an opt-in separate port for the redirect. Zero impact
+on existing deployments unless the operator opts in.
+
+**Tests:** +7 in `tests/test_ssl_live_reload.py` — plaintext
+no-op, missing-file no-op, happy-path cert swap using two
+generated self-signed certs, malformed-cert graceful failure,
+301 emission preserving original path + query string,
+Host-header fallback to localhost, env-var parsing of
+`WEBUI_HTTP_REDIRECT_PORT`.
+
+**Commit:** [`a1ae72b`](https://github.com/synssins/glados-docker/commit/a1ae72b).
+
+### Tests end-state
+
+Container suite: **1003 passed / 3 skipped** (was 959 / 3 at
+Phase 8.8; +44 new this session across 8.9–8.12).
+Harness suite (scratch dir): 38/38.
+
+### Closes
+
+Phase 8.x remediation plan complete. All queued phases
+(8.1–8.14, counting 8.13/8.14 from the earlier session) now
+shipped. Self-hosted nightly battery runs at 02:00 Central
+with a 50-test subset and will catch regressions.
+
+Remaining items are follow-on polish, not plan-gated:
+
+- Piper-side phoneme overrides for homographs (Speaches scope).
+- TTS pronunciation defaults expansion as operators surface
+  more Piper-slurred cases.
+- Idempotent-PASS for brightness / color in the harness
+  scorer if a future phase introduces those domains.
+- Harness scratch dir's eventual promotion to its own git repo.
+
+---
