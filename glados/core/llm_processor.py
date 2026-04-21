@@ -646,6 +646,27 @@ class LanguageModelProcessor:
         # instead of the configured persona (2026-04-21 live bug).
         if not autonomy_mode:
             messages = _strip_autonomy_noise(messages)
+        # Chitchat gate: detect whether the CURRENT user turn is a
+        # home command. If not, suppress the MCP context-resource
+        # dump (entity lists, device catalogs, etc.) — those
+        # resources bias qwen3:8b into refusing lore questions with
+        # "my capabilities are limited to the tools provided". The
+        # tool-list filter in _filter_tools_for_message covers the
+        # `tools` field; this filter covers the system-message
+        # injection that runs in parallel.
+        _is_chitchat = False
+        if not autonomy_mode:
+            last_user = None
+            for m in reversed(messages):
+                if isinstance(m, dict) and m.get("role") == "user":
+                    last_user = m.get("content") or ""
+                    break
+            if isinstance(last_user, str) and last_user.strip():
+                try:
+                    from glados.intent.rules import looks_like_home_command
+                    _is_chitchat = not looks_like_home_command(last_user)
+                except Exception:
+                    _is_chitchat = False
         extra_messages: list[dict[str, Any]] = []
 
         if autonomy_mode and self.autonomy_system_prompt:
@@ -675,8 +696,11 @@ class LanguageModelProcessor:
                 if modifiers_prompt:
                     extra_messages.append({"role": "system", "content": modifiers_prompt})
 
-        # MCP context is handled separately (returns list of messages)
-        if self.mcp_manager:
+        # MCP context is handled separately (returns list of messages).
+        # Skip for chitchat turns — the entity/device catalog resources
+        # bias the model toward tool-refusal framings on pure lore
+        # questions.
+        if self.mcp_manager and not _is_chitchat:
             try:
                 extra_messages.extend(self.mcp_manager.get_context_messages(block=False))
             except Exception as e:
