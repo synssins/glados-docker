@@ -35,7 +35,15 @@ jobs:
           ANONYMIZED_TELEMETRY: "false"
           # Harness connectivity shouldn't be attempted in CI
           GLADOS_TEST_BATTERY_DISABLE_LIVE: "1"
+          # Redirect writable paths away from the container-style
+          # `/app/...` defaults — GitHub runners can't mkdir /app.
+          # Import-time side effects in tts_ui.py create these dirs.
+          GLADOS_ROOT: "/tmp/glados-app"
+          GLADOS_AUDIO: "/tmp/glados-app/audio_files"
+          GLADOS_DATA: "/tmp/glados-app/data"
+          GLADOS_LOGS: "/tmp/glados-app/logs"
         run: |
+          mkdir -p /tmp/glados-app/audio_files /tmp/glados-app/data /tmp/glados-app/logs
           pytest -q --tb=short
 
       - name: Report summary
