@@ -595,7 +595,9 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
             if str(k).strip() and str(v).strip()
         }
     rm = raw.get("response_mode")
-    if isinstance(rm, str) and rm.strip() in {"LLM", "quip", "chime", "silent"}:
+    if isinstance(rm, str) and rm.strip() in {
+        "LLM", "LLM_safe", "quip", "chime", "silent",
+    }:
         rules.response_mode = rm.strip()
     rmp = raw.get("response_mode_per_event")
     if isinstance(rmp, dict):
@@ -603,7 +605,7 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
             str(k).strip(): str(v).strip()
             for k, v in rmp.items()
             if isinstance(v, str)
-            and v.strip() in {"LLM", "quip", "chime", "silent"}
+            and v.strip() in {"LLM", "LLM_safe", "quip", "chime", "silent"}
             and isinstance(k, str)
             and k.strip() in {"command_ack", "query_answer", "ambient_cue", "error"}
         }
