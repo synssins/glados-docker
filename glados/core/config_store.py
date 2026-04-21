@@ -453,6 +453,49 @@ class MemoryConfig(BaseModel):
     passive_importance_cap: float = 0.95
 
 
+class TtsPronunciationConfig(BaseModel):
+    """Phase 8.10 — deterministic pre-TTS text normalization.
+
+    Piper (via Speaches) mispronounces common short abbreviations.
+    Operator-flagged cases: ``AI`` is read as "Aye" (one letter)
+    because ``SpokenTextConverter``'s all-caps splitter turns it into
+    ``"A I"`` which Piper then slurs; ``HA`` as "H A" reads
+    mechanically. A pre-pass *before* the all-caps split gives each
+    abbreviation a direct spoken expansion the TTS pronounces cleanly.
+
+    Two maps, evaluated in this order inside
+    ``SpokenTextConverter.text_to_spoken``:
+
+    1. ``symbol_expansions`` — literal str.replace on non-alphabetic
+       keys (``"%"`` → ``" percent"``, ``"&"`` → ``" and "``).
+       Runs first so ``"10%"`` becomes ``"10 percent"`` before any
+       word-boundary logic.
+    2. ``word_expansions`` — case-insensitive whole-word match on
+       alphabetic keys (``"AI"`` → ``"Aye Eye"``, ``"TV"`` →
+       ``"Tee Vee"``). Runs before the all-caps splitter so the
+       acronym never gets reduced to single letters.
+
+    Keys in either map may be edited / removed / added via the Audio
+    & Speakers WebUI card. Defaults cover the operator-reported
+    cases from the 2026-04-20 pronunciation audit. Adding more (for
+    instance, "SSL" → "S S L" if Piper stumbles on that) is a text
+    edit, not a deploy.
+    """
+
+    symbol_expansions: dict[str, str] = {
+        "%": " percent",
+        "&": " and ",
+        "@": " at ",
+    }
+
+    word_expansions: dict[str, str] = {
+        "AI": "Aye Eye",
+        "HA": "Home Assistant",
+        "TV": "Tee Vee",
+        "IoT": "I o T",
+    }
+
+
 class TestHarnessConfig(BaseModel):
     """Phase 8.9 — external test-battery scoring knobs.
 
@@ -590,6 +633,7 @@ class GladosConfigStore:
         self._hub75: Hub75DisplayConfig = Hub75DisplayConfig()
         self._robots: RobotsConfig = RobotsConfig()
         self._test_harness: TestHarnessConfig = TestHarnessConfig()
+        self._tts_pronunciation: TtsPronunciationConfig = TtsPronunciationConfig()
 
     @staticmethod
     def _resolve_config_dir() -> Path:
@@ -626,6 +670,9 @@ class GladosConfigStore:
         self._robots = self._load_model(d / "robots.yaml", RobotsConfig)
         self._test_harness = self._load_model(
             d / "test_harness.yaml", TestHarnessConfig,
+        )
+        self._tts_pronunciation = self._load_model(
+            d / "tts_pronunciation.yaml", TtsPronunciationConfig,
         )
         logger.info("Config store loaded from {}", d)
 
@@ -794,6 +841,11 @@ class GladosConfigStore:
         return self._test_harness
 
     @property
+    def tts_pronunciation(self) -> TtsPronunciationConfig:
+        self._ensure_loaded()
+        return self._tts_pronunciation
+
+    @property
     def global_(self) -> GlobalConfig:
         self._ensure_loaded()
         return self._global
@@ -814,6 +866,7 @@ class GladosConfigStore:
             "hub75": self._hub75.model_dump(),
             "robots": self._robots.model_dump(),
             "test_harness": self._test_harness.model_dump(),
+            "tts_pronunciation": self._tts_pronunciation.model_dump(),
         }
 
     def update_section(self, section: str, data: dict) -> None:
@@ -829,6 +882,7 @@ class GladosConfigStore:
             "hub75": (Hub75DisplayConfig, "hub75.yaml"),
             "robots": (RobotsConfig, "robots.yaml"),
             "test_harness": (TestHarnessConfig, "test_harness.yaml"),
+            "tts_pronunciation": (TtsPronunciationConfig, "tts_pronunciation.yaml"),
         }
         if section not in model_map:
             raise KeyError(f"Unknown config section: {section!r}")
