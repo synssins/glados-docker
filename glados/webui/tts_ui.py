@@ -108,7 +108,10 @@ def _apply_config_live(section: str) -> bool:
 
     Returns True on success, False on reload failure (network or server-side).
     """
-    engine_affecting = {"services", "global", "personality", "memory", "observer"}
+    engine_affecting = {
+        "services", "global", "personality", "memory", "observer",
+        "tts_pronunciation",  # rebuilds SpokenTextConverter (engine.py:~640)
+    }
     if section not in engine_affecting:
         return True
     try:
@@ -7306,8 +7309,115 @@ function _cfgRenderAudioSpeakers() {
     +   '<div id="cfg-response-behavior-body">Loading&hellip;</div>'
     + '</div>';
 
+  // Phase 8.10 — Pronunciation overrides. Two maps the operator edits
+  // as plain text: one-per-line key=value rows. Piper mispronounces
+  // common short abbreviations ("AI" as one-letter "Aye"); this pass
+  // expands them BEFORE the all-caps splitter that caused the slur.
+  html += ''
+    + '<div class="card" id="cfg-pronunciation-card" style="margin-top:18px;">'
+    +   '<div class="cfg-subsection-title">TTS Pronunciation overrides</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Piper pronounces short abbreviations poorly by default &mdash; '
+    +     '<code>AI</code> becomes one slurred letter, <code>HA</code> reads '
+    +     'mechanically. These overrides expand each key before the text-to-speech '
+    +     'converter processes it. <strong>Word expansions</strong> match whole '
+    +     'words case-insensitively. <strong>Symbol expansions</strong> replace '
+    +     'literal characters. One <code>key = value</code> pair per line.'
+    +   '</div>'
+    +   '<div id="cfg-pronunciation-body">Loading&hellip;</div>'
+    + '</div>';
+
   document.getElementById('cfg-form-area').innerHTML = html;
   setTimeout(_cfgLoadResponseBehavior, 0);
+  setTimeout(_cfgLoadPronunciation, 0);
+}
+
+async function _cfgLoadPronunciation() {
+  const body = document.getElementById('cfg-pronunciation-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/config/tts_pronunciation');
+    if (!r.ok) {
+      body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Failed to load (' + r.status + ').</div>';
+      return;
+    }
+    const data = await r.json();
+    _pronunciationPopulate(data);
+  } catch (e) {
+    body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function _pronunciationPopulate(data) {
+  const body = document.getElementById('cfg-pronunciation-body');
+  if (!body) return;
+  const sym = data.symbol_expansions || {};
+  const words = data.word_expansions || {};
+  const symText = Object.entries(sym).map(a => a[0] + ' = ' + a[1]).join('\n');
+  const wordText = Object.entries(words).map(a => a[0] + ' = ' + a[1]).join('\n');
+  const ta = 'background:var(--bg-input);color:var(--text);border:1px solid var(--border);'
+    + 'border-radius:4px;padding:8px;width:100%;font-family:monospace;font-size:0.82rem;';
+  let html = '';
+  html += '<div class="cfg-field">'
+    + '<label class="cfg-label">Word expansions <span style="color:var(--text-dim);font-weight:normal;">(whole-word, case-insensitive)</span></label>'
+    + '<textarea id="cfg-pr-words" rows="6" style="' + ta + '">' + escHtml(wordText) + '</textarea>'
+    + '</div>';
+  html += '<div class="cfg-field" style="margin-top:10px;">'
+    + '<label class="cfg-label">Symbol expansions <span style="color:var(--text-dim);font-weight:normal;">(literal replace, e.g. <code>%</code>, <code>&amp;</code>)</span></label>'
+    + '<textarea id="cfg-pr-symbols" rows="3" style="' + ta + '">' + escHtml(symText) + '</textarea>'
+    + '</div>';
+  html += '<div class="cfg-save-row" style="margin-top:14px;">'
+    + '<button class="cfg-save-btn" onclick="cfgSavePronunciation()">Save Pronunciation</button>'
+    + '<span id="cfg-save-result-pronunciation" class="cfg-result"></span>'
+    + '</div>';
+  body.innerHTML = html;
+}
+
+function _parsePronunciationRows(text) {
+  const out = {};
+  String(text || '').split(/\r?\n/).forEach(line => {
+    const t = line.trim();
+    if (!t) return;
+    const eq = t.indexOf('=');
+    if (eq < 1) return;
+    const k = t.substring(0, eq).trim();
+    const v = t.substring(eq + 1).trim();
+    if (k) out[k] = v;
+  });
+  return out;
+}
+
+async function cfgSavePronunciation() {
+  const resultEl = document.getElementById('cfg-save-result-pronunciation');
+  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
+  const words = _parsePronunciationRows(document.getElementById('cfg-pr-words').value);
+  const symbols = _parsePronunciationRows(document.getElementById('cfg-pr-symbols').value);
+  try {
+    const r = await fetch('/api/config/tts_pronunciation', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        word_expansions: words,
+        symbol_expansions: symbols,
+      }),
+    });
+    const txt = await r.text();
+    let resp = {};
+    try { resp = JSON.parse(txt); } catch (_) { resp = { error: txt }; }
+    if (r.ok) {
+      if (resultEl) resultEl.textContent = '';
+      if (resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Pronunciation overrides saved. Restart TTS to fully apply.', 'success');
+      }
+    } else if (resultEl) {
+      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
+      resultEl.className = 'cfg-result err';
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
+  }
 }
 
 async function _cfgLoadResponseBehavior() {

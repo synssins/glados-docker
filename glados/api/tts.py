@@ -27,8 +27,32 @@ def _get_converter() -> spoken_text_converter.SpokenTextConverter:
     if _converter is None:
         with _lock:
             if _converter is None:
-                _converter = spoken_text_converter.SpokenTextConverter()
+                # Phase 8.10: pull pronunciation overrides so the
+                # shared-cache converter matches the engine-side one.
+                # Cached-forever is fine because operator saves trigger
+                # a hot-reload which re-imports this module.
+                try:
+                    from glados.core.config_store import cfg as _pr_cfg
+                    _pr = _pr_cfg.tts_pronunciation
+                    _converter = spoken_text_converter.SpokenTextConverter(
+                        symbol_expansions=dict(_pr.symbol_expansions),
+                        word_expansions=dict(_pr.word_expansions),
+                    )
+                except Exception:
+                    # Config not yet loadable (very early import path):
+                    # fall back to an empty-overrides converter so the
+                    # module stays importable.
+                    _converter = spoken_text_converter.SpokenTextConverter()
     return _converter
+
+
+def reset_converter() -> None:
+    """Drop the cached converter so the next ``_get_converter`` call
+    pulls the current ``cfg.tts_pronunciation``. Used by the engine-
+    reload path when the operator saves new pronunciation overrides."""
+    global _converter
+    with _lock:
+        _converter = None
 
 
 def generate_speech(

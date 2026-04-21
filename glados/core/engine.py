@@ -635,7 +635,15 @@ class Glados:
 
 
         # Initialize spoken text converter, that converts text to spoken text. eg. 12 -> "twelve"
-        self._stc = stc.SpokenTextConverter()
+        # Phase 8.10: thread operator-editable pronunciation overrides
+        # from cfg.tts_pronunciation so ``AI`` is read ``"Aye Eye"``
+        # instead of the default all-caps splitter's slurred ``"A I"``.
+        from glados.core.config_store import cfg as _pr_cfg
+        _pr = _pr_cfg.tts_pronunciation
+        self._stc = stc.SpokenTextConverter(
+            symbol_expansions=dict(_pr.symbol_expansions),
+            word_expansions=dict(_pr.word_expansions),
+        )
 
         # warm up onnx ASR model, this is needed to avoid long pauses on first request
         self._asr_model.transcribe_file(resource_path("data/0.wav"))

@@ -45,7 +45,11 @@ class SpokenTextConverter:
         "ain't": "is not",
     }
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        symbol_expansions: dict[str, str] | None = None,
+        word_expansions: dict[str, str] | None = None,
+    ) -> None:
         # Initialize any necessary state or configurations here, maybe for other languages?
 
         # Precompile quick check pattern
@@ -65,6 +69,14 @@ class SpokenTextConverter:
         - Ellipses (three or more dots, including spaced versions)
 
         The regex is compiled with verbose mode (re.VERBOSE) to allow more readable pattern construction.
+
+        Phase 8.10: ``symbol_expansions`` and ``word_expansions`` override
+        Piper pronunciation for operator-flagged cases. Symbol expansions
+        run as literal ``str.replace`` (for non-alphabetic keys like
+        ``%``/``&``/``@``); word expansions run as case-insensitive
+        whole-word regex replacement, applied *before* the all-caps
+        splitter on line ~692 so ``"AI"`` expands to ``"Aye Eye"``
+        instead of being reduced to ``"A I"`` and slurred.
         """
         self.convertible_pattern = re.compile(
             r"""(?x)
@@ -76,7 +88,39 @@ class SpokenTextConverter:
             """
         )
 
+        # Phase 8.10: pronunciation overrides. Precompile a regex that
+        # OR-matches every word-expansion key as a whole word; the
+        # match callback looks up the preserved-case replacement.
+        self._symbol_expansions: dict[str, str] = dict(symbol_expansions or {})
+        self._word_expansions: dict[str, str] = dict(word_expansions or {})
+        self._word_expansion_re: re.Pattern[str] | None = None
+        if self._word_expansions:
+            # Sort longest-first so longer keys (e.g. "IoT") match
+            # before shorter overlapping ones (e.g. "I"). Escape each
+            # key to handle any punctuation operators may include.
+            keys = sorted(self._word_expansions.keys(), key=len, reverse=True)
+            pattern = r"\b(?:" + "|".join(re.escape(k) for k in keys) + r")\b"
+            self._word_expansion_re = re.compile(pattern, re.IGNORECASE)
+
         # TODO: Add compiled regex patterns for other conversions
+
+    def _apply_pronunciation_overrides(self, text: str) -> str:
+        """Phase 8.10 — run the symbol + word expansion passes. Called
+        from ``text_to_spoken`` before any other transformation so the
+        downstream passes see the expanded form."""
+        for sym, repl in self._symbol_expansions.items():
+            text = text.replace(sym, repl)
+        if self._word_expansion_re is not None:
+            # Case-insensitive match, but look up by original casing
+            # first and fall back to any-case lookup.
+            exp = self._word_expansions
+            # Pre-index a case-folded view so ``"ai"`` matches ``"AI"``.
+            lowered = {k.lower(): v for k, v in exp.items()}
+            text = self._word_expansion_re.sub(
+                lambda m: exp.get(m.group(0), lowered.get(m.group(0).lower(), m.group(0))),
+                text,
+            )
+        return text
 
     def _number_to_words(self, num: float | str) -> str:
         """
@@ -631,6 +675,13 @@ class SpokenTextConverter:
         """
         # remove leading and trailing whitespace and empty lines
         text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+        # Phase 8.10: apply operator-edited pronunciation overrides
+        # BEFORE any other transformation. Must precede the all-caps
+        # splitter on step 5 so acronyms with explicit expansions
+        # (``"AI"`` → ``"Aye Eye"``) don't get reduced to single
+        # letters first. No-op when both maps are empty.
+        text = self._apply_pronunciation_overrides(text)
 
         # 2. Quote normalization
         text = text.replace(chr(8216), "'").replace(chr(8217), "'")
