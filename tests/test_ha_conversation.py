@@ -45,6 +45,71 @@ class TestClassify:
         assert r.handled is True
         assert "kitchen" in r.speech.lower()
 
+    def test_weather_fallback_on_chitchat_falls_through(self) -> None:
+        """Regression for 2026-04-21: HA's conversation/process
+        returned a weather-sourced query_answer for the pure chitchat
+        "Hey, what was life like as a potato?" — targets=[] but
+        success=[weather.openweathermap], speech="56 °F and sunny".
+        The bridge must detect this pattern and fall through so
+        Tier 3 can answer the actual question."""
+        r = classify(
+            _wrap({
+                "response_type": "query_answer",
+                "speech": _speech("56 °F and sunny"),
+                "data": {
+                    "targets": [],
+                    "success": [
+                        {"id": "weather.openweathermap", "type": "entity"},
+                    ],
+                    "failed": [],
+                },
+            }),
+            utterance="Hey, what was life like as a potato?",
+        )
+        assert r.handled is False
+        assert r.should_fall_through is True
+        assert r.error_code == "weather_fallback_misclassify"
+
+    def test_weather_question_still_handled(self) -> None:
+        """If the user ACTUALLY asked about the weather, the
+        weather-sourced answer is legitimate and should pass through."""
+        r = classify(
+            _wrap({
+                "response_type": "query_answer",
+                "speech": _speech("56 °F and sunny"),
+                "data": {
+                    "targets": [],
+                    "success": [
+                        {"id": "weather.openweathermap", "type": "entity"},
+                    ],
+                    "failed": [],
+                },
+            }),
+            utterance="What's the weather like outside?",
+        )
+        assert r.handled is True
+        assert "sunny" in r.speech.lower()
+
+    def test_non_weather_source_query_answer_still_handled(self) -> None:
+        """A query_answer sourced from a non-weather entity (e.g.
+        sensor.living_room_temperature) is legitimate regardless of
+        the utterance — we only guard against the weather fallback."""
+        r = classify(
+            _wrap({
+                "response_type": "query_answer",
+                "speech": _speech("72 degrees"),
+                "data": {
+                    "targets": [],
+                    "success": [
+                        {"id": "sensor.living_room_temperature", "type": "entity"},
+                    ],
+                },
+            }),
+            utterance="Hey, what was life like as a potato?",
+        )
+        # Not weather-sourced → trust HA's answer.
+        assert r.handled is True
+
     def test_no_intent_match_triggers_disambiguation(self) -> None:
         r = classify(_wrap({
             "response_type": "error",
