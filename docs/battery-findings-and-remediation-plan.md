@@ -47,7 +47,9 @@ Work actually shipped in this session, in chronological order. Reference for Pha
 - **Phase 8.0 COMPLETE** (in a stronger form than originally scoped — did the model swap AND solved the entire live-config-apply infrastructure chain end-to-end, fixed a cascade of four related bugs that surfaced, and fixed the audio playback regression discovered in passing).
 - **Phase 8.1 COMPLETE** (2026-04-20 late evening). Change 14.1 in `docs/CHANGES.md`. Twin dedup by HA device_id, 11-pair opposing-token penalty, operator-editable WebUI card under Integrations → Home Assistant with hot-reload via new `/api/reload-disambiguation-rules`. 551 tests pass.
 - **Phase 8.2 COMPLETE** (2026-04-20 late evening). Change 14.2. 28-verb command set + 5 shipped ambient-state regexes expand the precheck gate; operator-editable extras on a new "Command recognition" card on the Personality page with a live test input. `/api/precheck/test` endpoint. Same reload path as 8.1. 569 tests pass.
-- **Phase 8.3–8.9 NOT STARTED** — queued and unchanged.
+- **Phase 8.3 COMPLETE** (2026-04-20). Semantic retrieval via BGE-small-en-v1.5 ONNX over a 3482-entity corpus, device-diversity filter on top-K, qualifier-scan gated behind primary-retrieval-empty. Cuts planner prompt from ~3000 to ~400 tokens. Gate-2 live probe confirmed.
+- **Phase 8.4 COMPLETE** (2026-04-20). StateVerifier waits for `state_changed` after every `call_service`; strict mode replaces optimistic speech with an honest-failure line when a transition doesn't land. `verification_mode` / `verification_timeout_s` exposed in the WebUI Disambiguation rules card with hot-reload. Live-verified on 10.0.0.50. 697 tests pass.
+- **Phase 8.5–8.9 NOT STARTED** — queued and unchanged.
 
 Three new tracks surfaced during the session that weren't in the original plan:
 
@@ -265,18 +267,23 @@ Each phase re-runs the 435-test battery AND `home-assistant-datasets` before mer
 
 ---
 
-### Phase 8.4 — Post-execute state verification (2 days, P1 — fixes the biggest lie)
+### Phase 8.4 — Post-execute state verification (COMPLETE, 2026-04-20)
 
-**Problem fixed:** 58% Tier-1 silent-success rate. The worst quality issue in the current stack.
+**Problem fixed:** 58% Tier-1 silent-success rate — the worst quality issue in the prior stack.
 
-**Work:**
-- In `glados/ha/ws_client.py`, assign a correlation id per `call_service` dispatch.
-- After dispatch, subscribe to `state_changed` for targeted `entity_ids`; wait up to 3 s for the expected transition.
-- On no-transition: audit row gets `state_verified=false`, composer path is told "no change detected," and the verbal response (if any) reflects that honestly ("I tried, but the kitchen overhead didn't actually change. Retry?").
-- New audit field `state_verified: true | false | timeout`, visible in the WebUI Audit Log view.
-- WebUI Personality → Response behavior card (added in §8.8) gains a "verification mode" setting: `strict` (fail on no-transition) | `warn` (log, but tell user success) | `silent` (current behavior). Default `strict`.
+**Shipped:**
+- New `glados/ha/state_verifier.py`: `StateVerifier` + `Watch` register a `state_changed` callback before each `call_service` and block on a `threading.Event` for up to the rule-configured timeout.
+- `expected_from_service_call()` infers per-entity `ExpectedTransition` from the service name (turn_on→"on", turn_off→"off", toggle→any-change) and from numeric / named attributes in `service_data`. Tolerances: brightness ±15 (0-255), color_temp_kelvin ±200, volume_level ±0.05.
+- Scenes / scripts / reloads / `input_*` services are marked `skip_verification` — the verifier returns success without waiting since those services don't produce observable state on their own entity.
+- `DisambiguationRules` gained `verification_mode ∈ {strict, warn, silent}` (default strict) and `verification_timeout_s` (default 3.0), round-tripped through YAML and exposed in the WebUI via Integrations → HA → Disambiguation rules card with a live hot-reload.
+- Disambiguator wires a Watch around every successful `call_service`, aggregates per-action results in `_summarize_verifications`, and — in strict mode — replaces the optimistic LLM speech with a specific, in-character "did not register the change" line that names the failed device.
+- `state_verified` + `state_verification` (per-entity detail: verified / skipped / observed_state / mismatch_reason) land in the audit log for every Tier-2 intent, plumbed from `DisambiguationResult` → `ResolverResult` → `CommandResolver._audit`.
 
-**Success:** on the next battery run, rows with `state_verified=false` appear. PASS rate drops transparently (honest), but the "HA lied" failure mode becomes visible and addressable.
+**Tests:** 23 unit tests for `StateVerifier`, 6 for `expected_from_service_call` (including the `brightness_pct → brightness 0-255` translation that caught a live false-negative), 5 for the Disambiguator integration. Full suite 697 passed / 3 skipped.
+
+**Live-verified on 10.0.0.50:** happy path (`turn off` → state_verified=true, elapsed_s ≈ 0.06), scene path (skipped, state_verified=null, speech preserved), and the brightness_pct fix (`"Set the desk lamp to 10%"` moved from state_verified=false/timed_out:3.0s → state_verified=true, elapsed_s=0.05).
+
+**Commits:** [d9d385e](https://github.com/synssins/glados-docker/commit/d9d385e) (StateVerifier + wiring), [a7a2ea6](https://github.com/synssins/glados-docker/commit/a7a2ea6) (audit plumbing), [73ba1a7](https://github.com/synssins/glados-docker/commit/73ba1a7) (brightness_pct → brightness translation).
 
 ---
 
