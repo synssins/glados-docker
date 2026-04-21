@@ -21,29 +21,43 @@ from dataclasses import dataclass
 from typing import Mapping
 
 
-# Shipped floor keywords. Values are case-insensitive substrings matched
-# against the floor-registry `name` field. Kept narrow — a keyword only
-# makes the cut when it unambiguously names a floor (not a floor-ish
-# noun like "bottom" that might mean "bottom shelf").
+# Shipped floor keywords. Each key is the spoken phrase; each value is
+# a tuple of case-insensitive substrings that are tried against the
+# floor-registry `name` field. First registry floor whose name contains
+# ANY hint term wins.
+#
+# Why not lump "main floor" and "ground floor" together: split-level
+# houses (including the reference deployment) have BOTH — a "Ground
+# Level" you walk in on AND a "Main Level" half a flight up. Lumping
+# them under a single hint set makes "main floor" resolve to the
+# wrong floor.  Houses that only have one of the two still work
+# because only one registry entry exists to match.
 _FLOOR_KEYWORDS: dict[str, tuple[str, ...]] = {
-    # downstairs family → whatever the operator's registry calls the
-    # ground level. Most HA installs use exactly one of these names.
-    "downstairs":    ("downstairs", "main floor", "ground", "first floor", "first"),
-    "main floor":    ("downstairs", "main floor", "ground", "first floor", "first"),
-    "ground floor":  ("downstairs", "main floor", "ground", "first floor", "first"),
-    "first floor":   ("downstairs", "main floor", "ground", "first floor", "first"),
-    "ground level":  ("downstairs", "main floor", "ground", "first floor", "first"),
-    # upstairs family
-    "upstairs":      ("upstairs", "second floor", "upper", "top floor", "second"),
-    "upper level":   ("upstairs", "second floor", "upper", "top floor", "second"),
-    "upper floor":   ("upstairs", "second floor", "upper", "top floor", "second"),
-    "second floor":  ("upstairs", "second floor", "upper", "top floor", "second"),
-    "top floor":     ("upstairs", "second floor", "upper", "top floor", "second"),
-    # basement — separate floor in many HA installs
-    "basement":      ("basement", "cellar", "lower level"),
-    "cellar":        ("basement", "cellar", "lower level"),
-    # attic — rare but real
+    # Basement family
+    "basement":      ("basement", "cellar"),
+    "cellar":        ("basement", "cellar"),
+    # Ground / lower / first-floor (US convention) family
+    "ground level":  ("ground", "first"),
+    "ground floor":  ("ground", "first"),
+    "lower level":   ("lower", "ground"),
+    "lower floor":   ("lower", "ground"),
+    "downstairs":    ("downstairs", "lower", "ground", "first"),
+    "first floor":   ("first", "ground"),  # US. UK-style rigs use alias.
+    # Main-level family — the common-area floor when it's distinct
+    # from the ground floor (split-level houses).
+    "main level":    ("main",),
+    "main floor":    ("main",),
+    # Upper / bedroom / second floor family
+    "upstairs":      ("upstairs", "upper", "bedroom", "top", "second"),
+    "upper level":   ("upper", "bedroom", "top"),
+    "upper floor":   ("upper", "bedroom", "top"),
+    "bedroom level": ("bedroom",),
+    "bedroom floor": ("bedroom",),
+    "top floor":     ("top", "upper", "bedroom"),
+    "second floor":  ("second", "upper", "bedroom"),
+    # Attic
     "attic":         ("attic", "loft"),
+    "loft":          ("loft", "attic"),
 }
 
 
