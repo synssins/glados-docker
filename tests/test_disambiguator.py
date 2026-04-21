@@ -1366,11 +1366,12 @@ class TestSemanticIndexIntegration:
                 SemanticHit(
                     entity_id="light.kitchen_ceiling",
                     score=0.9, document="doc",
-                    area_id="kitchen", floor_id="floor_main",
+                    area_id="kitchen", floor_id="floor_ground",
                 ),
             ]},
-            floor_names={"floor_main": "Main Floor",
-                         "floor_upper": "Upper Floor"},
+            # "downstairs" resolves via hint 'ground' → 'Ground Level'.
+            floor_names={"floor_ground": "Ground Level",
+                         "floor_upper":  "Upper Floor"},
         )
         disambig, _ha, _cache = _make(
             cache_states=cache_states,
@@ -1386,7 +1387,7 @@ class TestSemanticIndexIntegration:
         )
         # Single retrieve_for_planner call with floor_id hint.
         assert len(semantic.call_kwargs) == 1
-        assert semantic.call_kwargs[0]["floor_id"] == "floor_main"
+        assert semantic.call_kwargs[0]["floor_id"] == "floor_ground"
 
     def test_phase_85_no_keyword_sends_no_filter(self) -> None:
         """Utterances without an area/floor keyword must NOT pass
