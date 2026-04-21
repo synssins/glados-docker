@@ -657,7 +657,7 @@ class SemanticIndex:
     # Versions feed the on-disk header so a stale persisted index
     # from a previous container version gets rejected cleanly
     # instead of silently feeding the retriever mis-shaped data.
-    _SCHEMA_VERSION = "v1"
+    _SCHEMA_VERSION = "v2"  # Phase 8.5 — added area_ids / floor_ids arrays
     _DOC_VERSION = "doc-v1"
     _MODEL_NAME = "bge-small-en-v1.5"
     _INDEX_HEADER = f"{_SCHEMA_VERSION}|{_MODEL_NAME}|{_DOC_VERSION}"
@@ -797,19 +797,34 @@ class SemanticIndex:
         # the relevant registry tag (area_id=None on the entity) are
         # excluded from a filtered query: if the operator asked for
         # "downstairs" and an entity has no floor info, it's not
-        # credibly "downstairs" either.
-        if area_id:
+        # credibly "downstairs" either. Parallel-array length must
+        # match `ids` — a stale on-disk archive can leave them empty
+        # or short; in that case skip the filter so the search
+        # degrades gracefully rather than broadcasting onto nothing.
+        if area_id and len(entity_area_ids) == len(ids):
             mask = np.array(
                 [aid == area_id for aid in entity_area_ids],
                 dtype=bool,
             )
             sims = np.where(mask, sims, -np.inf)
-        if floor_id:
+        elif area_id:
+            logger.warning(
+                "SemanticIndex.retrieve: entity_area_ids length "
+                "{} != ids length {}; skipping area filter",
+                len(entity_area_ids), len(ids),
+            )
+        if floor_id and len(entity_floor_ids) == len(ids):
             mask = np.array(
                 [fid == floor_id for fid in entity_floor_ids],
                 dtype=bool,
             )
             sims = np.where(mask, sims, -np.inf)
+        elif floor_id:
+            logger.warning(
+                "SemanticIndex.retrieve: entity_floor_ids length "
+                "{} != ids length {}; skipping floor filter",
+                len(entity_floor_ids), len(ids),
+            )
 
         # Argpartition for top-k; final sort orders by score desc.
         # Clamp k to the filtered size.
@@ -819,14 +834,16 @@ class SemanticIndex:
             return []
         top_idx = np.argpartition(-sims, take - 1)[:take]
         top_idx = top_idx[np.argsort(-sims[top_idx])]
+        has_area = len(entity_area_ids) == len(ids)
+        has_floor = len(entity_floor_ids) == len(ids)
         return [
             SemanticHit(
                 entity_id=ids[i],
                 score=float(sims[i]),
                 document=documents[i],
                 device_id=device_ids[i],
-                area_id=entity_area_ids[i],
-                floor_id=entity_floor_ids[i],
+                area_id=entity_area_ids[i] if has_area else None,
+                floor_id=entity_floor_ids[i] if has_floor else None,
             )
             for i in top_idx
         ]
@@ -841,6 +858,11 @@ class SemanticIndex:
             ids = list(self._entity_ids)
             documents = list(self._documents)
             device_ids = [d or "" for d in self._device_ids]
+            # Phase 8.5 — area / floor parallel arrays. Empty string
+            # stands in for None so numpy's object dtype doesn't
+            # need special-case handling on save/load.
+            area_ids = [a or "" for a in self._entity_area_ids]
+            floor_ids = [f or "" for f in self._entity_floor_ids]
             embeddings = self._embeddings
         try:
             self._index_path.parent.mkdir(parents=True, exist_ok=True)
@@ -858,6 +880,8 @@ class SemanticIndex:
                 entity_ids=np.array(ids, dtype=object),
                 documents=np.array(documents, dtype=object),
                 device_ids=np.array(device_ids, dtype=object),
+                area_ids=np.array(area_ids, dtype=object),
+                floor_ids=np.array(floor_ids, dtype=object),
             )
             tmp.replace(self._index_path)
             logger.success(
@@ -894,6 +918,17 @@ class SemanticIndex:
                     (str(x) if x else None)
                     for x in data["device_ids"]
                 ]
+                # Phase 8.5 — area / floor parallel arrays. Present on
+                # v2+ archives; missing means the .npz is pre-8.5 and
+                # the header check below will already reject it.
+                area_ids = [
+                    (str(x) if x else None)
+                    for x in data["area_ids"]
+                ]
+                floor_ids = [
+                    (str(x) if x else None)
+                    for x in data["floor_ids"]
+                ]
             if embeddings.shape[0] != len(ids):
                 logger.warning(
                     "SemanticIndex.load: shape mismatch "
@@ -906,6 +941,8 @@ class SemanticIndex:
                 self._entity_ids = ids
                 self._documents = documents
                 self._device_ids = device_ids
+                self._entity_area_ids = area_ids
+                self._entity_floor_ids = floor_ids
             logger.success(
                 "SemanticIndex.load: restored {} entities from {}",
                 len(ids), self._index_path,
