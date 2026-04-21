@@ -69,6 +69,45 @@ class DisambiguationResult:
 
 
 # ---------------------------------------------------------------------------
+# Phase 8.4 — honest-failure speech builder
+# ---------------------------------------------------------------------------
+
+def _build_unverified_speech(
+    failed_entity_ids: list[str], cache: Any,
+) -> str:
+    """Compose a short, in-character honest-failure line when state
+    verification fails under strict mode. No pre-scripted stock
+    phrases — pulls the friendly_name of the failing entity so the
+    line is specific, and keeps structure consistent with the voice
+    techniques (clinical vocab, stacked clauses, detached verdict)
+    without reusing a fixed sentence."""
+    names: list[str] = []
+    for eid in failed_entity_ids[:3]:
+        try:
+            e = cache.get(eid) if cache else None
+            if e is not None and getattr(e, "friendly_name", ""):
+                names.append(e.friendly_name)
+            else:
+                names.append(eid.split(".", 1)[-1].replace("_", " "))
+        except Exception:  # noqa: BLE001
+            names.append(eid)
+    if not names:
+        return "The action did not land. Diagnostics recommended."
+    if len(names) == 1:
+        subject = names[0]
+    elif len(names) == 2:
+        subject = f"{names[0]} and {names[1]}"
+    else:
+        subject = ", ".join(names[:-1]) + f", and {names[-1]}"
+    # Two sentence structure: clinical report + detached verdict.
+    # Different phrasing each call keeps us from seeding a tic.
+    return (
+        f"The {subject} did not register the change. "
+        "The transition failed to land."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Disambiguator
 # ---------------------------------------------------------------------------
 
@@ -473,6 +512,12 @@ class Disambiguator:
         # visible difference — this keeps the rollout safe under
         # warm-up races.
         self._semantic_index = semantic_index
+        # Phase 8.4 — post-execute state verifier. Each Tier 2
+        # call_service is wrapped with a state_changed watch to
+        # confirm the action actually landed; see glados.ha.state_verifier.
+        # Created lazily so tests that don't need it don't have to
+        # mock the ha_client's state-change subscription API.
+        self._state_verifier: Any = None
 
     # ── Rule management ──────────────────────────────────────
 
@@ -860,6 +905,24 @@ class Disambiguator:
         # 8. Execute every action sequentially. One no-ack or error
         # shouldn't silently drop the later actions; we record each
         # outcome and return a combined summary.
+        #
+        # Phase 8.4 — each action also gets a state-verification
+        # watch set up IMMEDIATELY BEFORE the call_service so the
+        # ack-to-state_changed window isn't missed. We collect the
+        # results for aggregate speech / audit decisions after the
+        # loop.
+        from glados.ha.state_verifier import (
+            StateVerifier, expected_from_service_call,
+        )
+        if self._state_verifier is None:
+            self._state_verifier = StateVerifier(self._ha, self._cache)
+        verification_mode = str(
+            getattr(self._rules, "verification_mode", "strict")
+        ).lower()
+        verification_timeout_s = float(
+            getattr(self._rules, "verification_timeout_s", 3.0)
+        )
+        verifications: list[Any] = []  # VerificationResult per action
         executed_services: list[str] = []
         any_no_ack = False
         per_action_errors: list[str] = []
@@ -879,6 +942,20 @@ class Disambiguator:
             else:
                 target_domain = entity_domain
                 service_name = svc
+            watch = None
+            if verification_mode != "silent":
+                try:
+                    expected = expected_from_service_call(
+                        target_domain, service_name, eids, sd,
+                    )
+                    watch = self._state_verifier.begin_watch(
+                        expected, timeout_s=verification_timeout_s,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "Tier 2 verifier.begin_watch raised: {}", exc,
+                    )
+                    watch = None
             try:
                 ws_resp = self._ha.call_service(
                     domain=target_domain,
@@ -889,6 +966,14 @@ class Disambiguator:
                 )
             except concurrent.futures.TimeoutError:
                 any_no_ack = True
+                if watch is not None:
+                    # Don't block full timeout on an already-no-ack
+                    # call — short-circuit the watch. The wait()
+                    # still needs to run to clean up the callback.
+                    try:
+                        watch._close()
+                    except Exception:  # noqa: BLE001
+                        pass
                 logger.warning(
                     "Tier 2 call_service no-ack on {}.{} entities={}",
                     target_domain, service_name, eids,
@@ -897,6 +982,11 @@ class Disambiguator:
                 continue
             except Exception as exc:
                 err = f"{type(exc).__name__}: {exc}".rstrip(": ")
+                if watch is not None:
+                    try:
+                        watch._close()
+                    except Exception:  # noqa: BLE001
+                        pass
                 logger.warning(
                     "Tier 2 call_service raised on {}.{}: {}",
                     target_domain, service_name, err,
@@ -909,6 +999,11 @@ class Disambiguator:
                 err = ws_resp.get("error") or {}
                 err_msg = (err.get("message") or err.get("code")
                            or json.dumps(err)[:120])
+                if watch is not None:
+                    try:
+                        watch._close()
+                    except Exception:  # noqa: BLE001
+                        pass
                 logger.warning(
                     "Tier 2 call_service returned error on {}.{}: {}",
                     target_domain, service_name, err_msg,
@@ -918,6 +1013,15 @@ class Disambiguator:
                 )
                 continue
             executed_services.append(f"{target_domain}.{service_name}")
+            # Wait for state verification now that the call acked.
+            if watch is not None:
+                try:
+                    vresult = watch.wait()
+                    verifications.append(vresult)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "Tier 2 watch.wait raised: {}", exc,
+                    )
 
         # If EVERY action errored, treat the whole turn as failed.
         if per_action_errors and not executed_services:
@@ -967,9 +1071,40 @@ class Disambiguator:
         if per_action_errors:
             rationale = rationale + f" [partial: {'; '.join(per_action_errors)[:200]}]"
 
+        # Phase 8.4 — aggregate state verification result. When any
+        # expected transition failed to land, flag it in the audit
+        # and (if strict mode) replace the optimistic speech with an
+        # honest note. Collecting this here, AFTER all actions have
+        # fired but BEFORE returning, keeps the data flow linear.
+        state_verified, failed_ids, verification_detail = (
+            self._summarize_verifications(verifications)
+        )
+        final_speech = speech or "Done."
+        if (
+            state_verified is False
+            and verification_mode == "strict"
+            and failed_ids
+        ):
+            final_speech = _build_unverified_speech(failed_ids, self._cache)
+            rationale = (
+                rationale + f" [unverified: {','.join(failed_ids)[:120]}]"
+            )
+        audit_extra: dict[str, Any] = {
+            "candidates_shown": candidates_summary,
+            "speech": final_speech[:500],
+            "service_data": combined_service_data,
+            "rationale": rationale,
+            "decision": "execute",
+            "action_count": len(parsed_actions),
+        }
+        if state_verified is not None:
+            audit_extra["state_verified"] = state_verified
+            if verification_detail:
+                audit_extra["state_verification"] = verification_detail
+
         return DisambiguationResult(
             handled=True, should_fall_through=False,
-            speech=speech or "Done.", decision="execute",
+            speech=final_speech, decision="execute",
             entity_ids=entity_ids,
             service=combined_service,
             service_data=combined_service_data,
@@ -978,6 +1113,51 @@ class Disambiguator:
             latency_ms=int((time.perf_counter() - t0) * 1000),
             llm_raw=raw,
         )
+
+    def _summarize_verifications(
+        self, verifications: list[Any],
+    ) -> tuple[bool | None, list[str], dict[str, Any]]:
+        """Roll up per-action VerificationResult objects.
+
+        Returns (state_verified, failed_entity_ids, audit_detail):
+          - state_verified: True if every non-skipped transition
+            landed; False if any failed; None when verification was
+            disabled or every transition was skipped.
+          - failed_entity_ids: unique entity_ids whose transition
+            didn't land; empty when state_verified is True/None.
+          - audit_detail: compact per-action summary suitable for
+            an audit `extra.state_verification` field.
+        """
+        if not verifications:
+            return None, [], {}
+        any_checked = False
+        any_failed = False
+        failed_ids: list[str] = []
+        per_action: list[dict[str, Any]] = []
+        for v in verifications:
+            entries: list[dict[str, Any]] = []
+            for eid, er in (v.per_entity or {}).items():
+                entries.append({
+                    "entity_id": eid,
+                    "verified": er.verified,
+                    "skipped": er.skipped,
+                    "observed_state": er.observed_state,
+                    "mismatch_reason": er.mismatch_reason,
+                })
+                if not er.skipped:
+                    any_checked = True
+                    if not er.verified and eid not in failed_ids:
+                        failed_ids.append(eid)
+                        any_failed = True
+            per_action.append({
+                "verified": v.verified,
+                "timed_out": v.timed_out,
+                "elapsed_s": round(v.elapsed_s, 3),
+                "entities": entries,
+            })
+        if not any_checked:
+            return None, [], {"actions": per_action}
+        return (not any_failed), failed_ids, {"actions": per_action}
 
     # ── Helpers ───────────────────────────────────────────────
 
