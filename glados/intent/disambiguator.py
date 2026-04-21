@@ -39,6 +39,7 @@ from .rules import (
     IntentAllowlist,
     domain_filter_for_utterance,
     looks_like_home_command,
+    min_expected_action_count,
 )
 
 
@@ -788,6 +789,77 @@ class Disambiguator:
         # single-element list from the legacy top-level fields so the
         # downstream execute loop has one shape to handle.
         parsed_actions = _parse_actions(decision)
+
+        # Phase 8.6 — compound-command dropout recovery. The 14B LLM
+        # under a long-candidate-list prompt will sometimes silently
+        # collapse a compound utterance ("X and Y") into a single
+        # action, losing one of the two operations. When the utterance
+        # structurally demands ≥2 actions but the LLM emitted fewer,
+        # re-prompt once with an explicit reminder of what it missed.
+        # Only fires on execute decisions — clarify / refuse are fine
+        # with one or zero actions.
+        min_expected = min_expected_action_count(utterance)
+        if (
+            action == "execute"
+            and min_expected > 1
+            and len(parsed_actions) < min_expected
+        ):
+            logger.info(
+                "Tier 2 compound dropout: utterance expects ≥{} actions, "
+                "LLM returned {}. Retrying with reminder.",
+                min_expected, len(parsed_actions),
+            )
+            retry_messages = list(prompt_messages) + [
+                {"role": "assistant", "content": raw[:800]},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Your previous response contained "
+                        f"{len(parsed_actions)} action(s), but the "
+                        f"utterance \"{utterance}\" joins two or more "
+                        f"distinct verbs/direction particles with "
+                        f"'and' / 'then'. This is a SHAPE 2 compound "
+                        f"command. Return a new JSON object with a "
+                        f"top-level `actions` array containing ONE "
+                        f"entry per verb — do not collapse them. All "
+                        f"other rules (bare service names, non-empty "
+                        f"entity_ids per action, speech covering all "
+                        f"actions) still apply."
+                    ),
+                },
+            ]
+            try:
+                retry_raw = self._call_ollama(retry_messages)
+                retry_decision = _safe_parse_json(retry_raw)
+                if retry_decision is not None:
+                    retry_decision = _unwrap_llm_response(retry_decision)
+                    retry_actions = _parse_actions(retry_decision)
+                    if len(retry_actions) > len(parsed_actions):
+                        logger.success(
+                            "Tier 2 compound retry recovered "
+                            "{}-action plan (was {}).",
+                            len(retry_actions), len(parsed_actions),
+                        )
+                        parsed_actions = retry_actions
+                        decision = retry_decision
+                        raw = retry_raw
+                        # Re-extract speech + rationale from the retry.
+                        for key in ("speech", "message"):
+                            v = retry_decision.get(key)
+                            if isinstance(v, str) and v.strip():
+                                speech = strip_trailing_vocative(v.strip())
+                                break
+                        retry_rat = str(
+                            retry_decision.get("rationale", "")
+                        ).strip()
+                        if retry_rat:
+                            rationale = retry_rat
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Tier 2 compound retry raised {}: keeping original.",
+                    exc,
+                )
+
         # Back-compat aggregates for callers / audit that expect the
         # single-action fields.
         entity_ids = [
@@ -1689,6 +1761,38 @@ class Disambiguator:
             "- Each SHAPE 2 action must have a non-empty entity_ids.\n"
             "- For decision=clarify or refuse, entity_ids/service/"
             "  actions may be empty but speech is REQUIRED.\n"
+            "\n"
+            # Phase 8.6 — compound-command dropout fix. Concrete
+            # few-shot examples matter more than abstract rules when
+            # the 14B LLM is reasoning over a long candidate list.
+            # Showing the exact shape for a 2-action compound reduces
+            # the silent-drop-one-action failure mode.
+            "EXAMPLE — compound utterance with 2 verbs (MUST emit 2 actions):\n"
+            "User: \"Turn off the kitchen lights and turn on the living room lamp\"\n"
+            "{\n"
+            '  "decision": "execute",\n'
+            '  "actions": [\n'
+            '    {"service": "light.turn_off", "entity_ids": ["light.ceiling_lights"]},\n'
+            '    {"service": "light.turn_on",  "entity_ids": ["light.floor_lamp_one"]}\n'
+            "  ],\n"
+            '  "speech": "Kitchen extinguished. Living room lamp engaged.",\n'
+            '  "rationale": "Two distinct verbs, one action per verb."\n'
+            "}\n"
+            "\n"
+            "EXAMPLE — compound with direction particles (still 2 actions):\n"
+            "User: \"Turn the kitchen cabinet up and the lower hallway down\"\n"
+            "{\n"
+            '  "decision": "execute",\n'
+            '  "actions": [\n'
+            '    {"service": "light.turn_on", "entity_ids": ["light.counter_lights"], "service_data": {"brightness_pct": 80}},\n'
+            '    {"service": "light.turn_on", "entity_ids": ["light.hallway_lights"], "service_data": {"brightness_pct": 20}}\n'
+            "  ],\n"
+            '  "speech": "Kitchen cabinet brightened, lower hallway dimmed.",\n'
+            '  "rationale": "Two brightness adjustments, opposite directions."\n'
+            "}\n"
+            "CRITICAL: when the utterance contains 'and' / 'then' / 'plus' joining "
+            "two DIFFERENT verbs or direction particles, you MUST emit a SHAPE 2 "
+            "response with one action per verb. Do NOT collapse them into SHAPE 1.\n"
         )
 
         cand_lines = []

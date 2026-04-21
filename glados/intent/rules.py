@@ -205,6 +205,50 @@ def _has_command_verb(utterance: str) -> bool:
     return False
 
 
+# Phase 8.6 — compound-command dropout detection. The 14B LLM silently
+# emits fewer `actions` list entries than the utterance demands when
+# it's reasoning over a long candidate list; the planner should detect
+# this and re-prompt rather than execute a partial plan.
+_COMPOUND_CONJUNCTIONS = re.compile(
+    r"\b(?:and|then|also|plus)\b|;",
+    re.IGNORECASE,
+)
+# Direction particles that typically pair with "turn" — also serve as
+# standalone command signals ("the lights up", "the volume down").
+_DIRECTION_PARTICLES: frozenset[str] = frozenset({
+    "up", "down", "on", "off",
+})
+
+
+def min_expected_action_count(utterance: str) -> int:
+    """Lower bound on how many actions a plan for this utterance
+    must contain. Returns 2 for compound-looking utterances (chaining
+    conjunction plus two distinct command signals), otherwise 1.
+
+    The signals are counted loosely on purpose: a single-clause
+    utterance like "turn off the kitchen and living room lights"
+    chains with "and" but only has one verb+direction pair and is
+    NOT compound. "turn off X and turn on Y" has TWO distinct
+    direction particles and IS compound.
+
+    Only the lower bound is returned — the caller only needs to know
+    "should I have seen at least 2 actions back from the LLM" — so a
+    3-clause utterance still returns 2 and the planner's retry logic
+    still fires on dropout."""
+    if not utterance:
+        return 1
+    text = utterance.lower()
+    if not _COMPOUND_CONJUNCTIONS.search(text):
+        return 1
+    words = re.findall(r"\b\w+\b", text)
+    verbs = {w for w in words if w in _HOME_COMMAND_VERBS}
+    if _runtime_extra_verbs:
+        verbs |= {w for w in words if w in _runtime_extra_verbs}
+    directions = {w for w in words if w in _DIRECTION_PARTICLES}
+    signals = len(verbs) + len(directions)
+    return 2 if signals >= 2 else 1
+
+
 def _matches_ambient_pattern(utterance: str) -> bool:
     if not utterance:
         return False
