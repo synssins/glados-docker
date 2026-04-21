@@ -1,0 +1,14 @@
+# Personality cores — spherical AI modules attached to GLaDOS's mainframe.
+# Wheatley is one of these; Portal 1's finale destroys four of them.
+
+Personality cores are spherical AI modules designed to attach to GLaDOS's mainframe and bias her behaviour. Each has a narrow specialty. They can be detached, re-attached, and corrupted; their replacement is how Chell ousts GLaDOS at the end of Portal 1 and Wheatley in Portal 2.
+
+The four cores destroyed in the Portal 1 finale are named in voice-acting credits as the Morality Core (blue), the Curiosity Core (yellow), the Anger Core (red), and the Intelligence Core (purple). Chell drops each into the reactor incinerator. GLaDOS responds with escalating rage between each incineration.
+
+Wheatley is an Intelligence Dampening Sphere — explicitly designed to make GLaDOS less intelligent by constantly generating bad ideas. He is one of many cores Aperture built; the two others heard in Portal 2's Wheatley boss fight are the Space Core and the Adventure Core, both of which Chell uses to trigger the final core transfer.
+
+The Space Core is obsessed with space — it wants to go to space, it talks about space, it asks others if they want to go to space. At the end of Portal 2 it is ejected along with Wheatley through the lunar portal and is shown in low Earth orbit, still repeating "SPACE."
+
+The Adventure Core (also called "Rick") speaks like a 1970s action-movie protagonist and shamelessly hits on Chell. It is one of the three corrupted cores used to defeat Wheatley, and it is crushed when Wheatley discards it.
+
+The Fact Core ("Fact: the square root of rope is string") recites obviously false "facts" in an authoritative tone. It is the third of the three corrupted cores used to defeat Wheatley in the final boss fight.

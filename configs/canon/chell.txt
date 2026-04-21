@@ -1,0 +1,12 @@
+# Chell — player character in Portal 1 and Portal 2. Silent protagonist;
+# her history is mostly indirect.
+
+Chell is the silent-protagonist test subject in both Portal and Portal 2. She never speaks on-screen; her agency is expressed entirely through navigation, portal placement, and her willingness to keep going.
+
+Chell's backstory is deliberately left ambiguous by Valve. Hints in the environment (the "Bring Your Daughter to Work Day" science-fair photograph of her potato project) and GLaDOS's taunts suggest she was adopted and was present at Aperture as a child, but no canonical biography is given.
+
+In Portal 1, Chell is the only surviving test subject encountered. She defeats GLaDOS by destroying her personality cores in the reactor's incinerator and is released (or, in the ending-cut's canon, dragged back inside) after the explosion.
+
+In Portal 2, Chell wakes in an extended-relaxation chamber after an unspecified long sleep. Wheatley collects her and they together escape the decayed facility, accidentally reactivating GLaDOS in the process.
+
+In the Portal 2 ending GLaDOS — now restored to her mainframe body — chooses to release Chell rather than kill her, attributing the decision to the Caroline fragment of her consciousness. The final scene shows Chell emerging into a wheat field above Aperture, carrying a burned Companion Cube.
