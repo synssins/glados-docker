@@ -90,6 +90,35 @@ class TestClassify:
         assert r.handled is True
         assert "sunny" in r.speech.lower()
 
+    def test_empty_nop_action_done_falls_through(self) -> None:
+        """Regression for 2026-04-21: HA returned action_done with
+        all three data lists empty and speech="9:55 AM" (a time-
+        slot template fill) for "Tell me about the testing tracks".
+        Trust that no targets/success/failed means HA did nothing."""
+        r = classify(_wrap({
+            "response_type": "action_done",
+            "speech": _speech("9:55 AM"),
+            "speech_slots": {"time": "09:55:43"},
+            "data": {"targets": [], "success": [], "failed": []},
+        }))
+        assert r.handled is False
+        assert r.should_fall_through is True
+        assert r.error_code == "empty_nop_misclassify"
+
+    def test_action_done_with_targets_still_handled(self) -> None:
+        """Regular action_done with populated success list remains
+        the happy path — we only guard against the all-empty case."""
+        r = classify(_wrap({
+            "response_type": "action_done",
+            "speech": _speech("Turned off the kitchen light."),
+            "data": {
+                "targets": [{"type": "entity", "id": "light.kitchen"}],
+                "success": [{"id": "light.kitchen"}],
+                "failed": [],
+            },
+        }))
+        assert r.handled is True
+
     def test_non_weather_source_query_answer_still_handled(self) -> None:
         """A query_answer sourced from a non-weather entity (e.g.
         sensor.living_room_temperature) is legitimate regardless of
