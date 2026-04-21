@@ -18,16 +18,23 @@ from __future__ import annotations
 from glados.intent.rules import looks_like_home_command
 
 
-# Chitchat turns: no tool ran this turn, so the model must not claim
-# any device was changed or queried. No sample phrases listed — that
+# Chitchat turns: no tool ran this turn. The guard blocks fabricated
+# device actions and hallucinated sensor data, but explicitly permits
+# reporting facts supplied in preceding system messages (weather
+# cache, memory, canon RAG). Earlier wording read "do not invent
+# sensor readings or system status" and the 14B read that as "stay
+# silent" even when asked `"What's the weather?"` with a populated
+# weather_cache block. No sample forbidden phrases listed — that
 # seeds the model toward exactly those phrasings.
 CHITCHAT_GUARD = (
-    "No tools ran this turn. Do not claim any device, "
-    "thermostat, speaker, scene, or sensor was changed or "
-    "queried. Do not invent sensor readings, brightness "
-    "levels, room states, or system status. Respond to the "
-    "user's actual words in one to two sentences, then "
-    "stop. Do not append a self-status or sign-off line."
+    "No home-control tool ran this turn. Do not claim any "
+    "device, thermostat, scene, or switch was changed. Do "
+    "not fabricate sensor readings or room states that do "
+    "not appear in earlier system messages. You MAY quote "
+    "or paraphrase information that IS provided in earlier "
+    "system messages (weather cache, memory facts, canon "
+    "entries) — that is the intended use. Answer the user "
+    "in one or two sentences. No sign-off line."
 )
 
 

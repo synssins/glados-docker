@@ -61,12 +61,23 @@ def test_guard_constants_differ() -> None:
 
 def test_chitchat_guard_forbids_fake_device_state() -> None:
     """Phrasing assertions — these strings carry the behavioural
-    contract. A copy edit that accidentally drops "invent" or "do
-    not claim" would silently re-open the "hey you" hallucination
+    contract. A copy edit that accidentally drops the no-fabrication
+    rule would silently re-open the "hey you" hallucination
     regression."""
     text = CHITCHAT_GUARD.lower()
     assert "do not claim" in text
-    assert "do not invent" in text
+    # Any of these word-stems should cover the no-hallucination intent.
+    assert any(w in text for w in ("do not invent", "do not fabricate"))
+
+
+def test_chitchat_guard_permits_quoting_injected_context() -> None:
+    """Weather regression guard: when ``"What's the weather like?"``
+    hits the non-streaming path, weather_cache is already injected as
+    a preceding system message. Guard wording must allow citing that
+    content or the model stays silent. Earlier draft failed this."""
+    text = CHITCHAT_GUARD.lower()
+    assert "may" in text  # explicit permission word
+    assert "system messages" in text or "provided" in text
 
 
 def test_home_command_guard_forbids_inventory_narration() -> None:
