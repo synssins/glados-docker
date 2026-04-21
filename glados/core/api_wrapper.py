@@ -2284,9 +2284,25 @@ class APIHandler(BaseHTTPRequestHandler):
         (and direction-match flag) so the external scoring harness can
         pull them at the start of every run. No auth: the payload is
         trivially non-sensitive and the harness has no session cookie.
+
+        Reads ``test_harness.yaml`` straight from disk so UI edits made
+        on the WebUI process (tts_ui, separate PID) surface here
+        without having to round-trip a cross-process config reload
+        through ``/api/reload-engine``. The test-harness section does
+        not affect engine state so a full reload is unwarranted.
         """
         try:
-            th = cfg.test_harness
+            from glados.core.config_store import TestHarnessConfig
+            import yaml as _yaml
+
+            yaml_path = cfg._configs_dir / "test_harness.yaml"
+            if yaml_path.exists():
+                raw = _yaml.safe_load(
+                    yaml_path.read_text(encoding="utf-8"),
+                ) or {}
+                th = TestHarnessConfig.model_validate(raw)
+            else:
+                th = cfg.test_harness
             self._send_json({
                 "noise_entity_patterns": list(th.noise_entity_patterns),
                 "require_direction_match": bool(th.require_direction_match),

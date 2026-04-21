@@ -55,7 +55,7 @@ Work actually shipped in this session, in chronological order. Reference for Pha
 - **Phase 8.13 COMPLETE** (2026-04-21). Load-time config-drift reconciliation in `GladosConfig.from_yaml` — services.yaml wins over the duplicated Glados-block fields, every override logs a WARNING. Closes Change 15 open-issue #1. 837 tests pass (+13 new in `tests/test_glados_services_override.py`). Change 16 in `docs/CHANGES.md`.
 - **Phase 8.14 COMPLETE** (2026-04-21). Portal canon RAG shipped: `glados.memory.canon_loader` seeds 50 curated entries across 7 topic files into ChromaDB on boot (idempotent); `glados.core.canon_context.CanonContext` retrieves via `where={"source":"canon"}`; `needs_canon_context` gate keeps the ~400-token block off non-lore turns with hardcoded Portal trigger defaults + optional YAML extras. Both chat paths inject (SSE + ContextBuilder at priority=6). New WebUI Canon library card with tree / editor / dry-run, atomic save, and `POST /api/reload-canon` cross-process hot-reload. Closes Change 15 open-issue #2. 895 tests pass (+58 new across three files). Change 17 in `docs/CHANGES.md`.
 - **Phase 8.8 COMPLETE** (2026-04-21). Positive anaphora detector replaces the "no qualifiers = anaphoric" heuristic that silently missed every operator-reported follow-up failure case. New `glados.intent.anaphora.is_anaphoric_followup` checks pronouns / repetition markers / bare-intensity-with-no-content / short additives with a WH-question guard. `CommandResolver._looks_anaphoric` delegates. Configurable follow-up window via `MemoryConfig.session_idle_ttl_seconds`, auto-renders on the existing Memory page. 959 tests pass (+64 new). Change 18 in `docs/CHANGES.md`.
-- **Phase 8.9 NOT STARTED** — queued and unchanged.
+- **Phase 8.9 COMPLETE** (2026-04-21) — test-harness hardening + CI. `TestHarnessConfig` (noise-entity fnmatch globs + `require_direction_match`) on System tab (Advanced). Public `GET /api/test-harness/noise-patterns` read-from-YAML for the external harness. Harness-side `score()` now noise-filters + requires direction match on the target set (off-target flips no longer rescue FAILs; tier-ack rescue disabled when direction required). `hadatasets_adapter.py` converts `allenporter/home-assistant-datasets` scenario YAMLs to our tests.json row format. `.github/workflows/tests.yml` runs the 970-test container suite on every PR + push. Change 19 in `docs/CHANGES.md`. Self-hosted-runner-dependent lanes (nightly full battery + ha-datasets against live HA) deferred — waits on operator decision.
 
 Three new tracks surfaced during the session that weren't in the original plan:
 
@@ -424,15 +424,22 @@ Output grammar-constrained (Qwen3 native) to English only, no JSON wrapping.
 
 ---
 
-### Phase 8.9 — Test-harness hardening + CI wiring (ongoing, P2 in parallel)
+### Phase 8.9 — Test-harness hardening + CI wiring (COMPLETE, 2026-04-21)
 
-**Problems fixed:** inflated PASS counts from background-entity noise; no regression safety net.
+**Problems fixed:** inflated PASS counts from background-entity noise; off-target state changes rescuing FAILs; tier-ack fallback forgiving real-world miss-fires; no regression safety net on container code.
 
-**Work:**
-- Exclude known-noise entities (`midea_ac_*_display`, `sonos_*_*`, `wled_*_reverse`, any `_button_indication`, `_node_identify`) from the diff scorer by default. Editable list in a WebUI "Test harness" card (hidden under Advanced in the System page).
-- Harness verifies state actually changed to *match* the expected direction, not just "changed."
-- Adopt `home-assistant-datasets` as parallel benchmark (§0 requirement). Add the adapter layer that translates their YAML scenario format to our harness rows.
-- Wire CI: a 30-test sanity subset runs on every PR; full battery + `home-assistant-datasets` runs nightly.
+**Shipped:**
+- `TestHarnessConfig` section (`glados/core/config_store.py`) with `noise_entity_patterns` fnmatch globs (defaults cover Midea displays, Sonos, WLED reverse, zigbee button_indication / node_identify housekeeping) and a `require_direction_match` toggle. Public `GET /api/test-harness/noise-patterns` (no auth) reads YAML fresh so operator UI edits surface on the next harness run without a cross-process engine reload.
+- "Test Harness" card on the System tab, `data-advanced="true"` — textarea + checkbox, saves via `/api/config/test_harness`.
+- Harness `score()` noise-filters diffs before scoring and (when `require_direction_match=True`) restricts the "did anything change?" predicate to the operator-targeted entity set. `audit_ok_from_tier` fallback gated on direction-match being off — no more phantom PASSes on silent miss-fires.
+- `hadatasets_adapter.py` (harness scratch dir) translates upstream `home-assistant-datasets` `{category, tests: [{sentences, setup, expect_changes}]}` YAMLs into our tests.json rows. CLI with `--start-idx 10000` default so converted rows don't collide with the private battery.
+- `.github/workflows/tests.yml` — `pytest -q` on every PR and push, gating merges against the full 970-test container suite.
+
+**Tests:** +11 new container-side (`tests/test_test_harness_config.py`), +14 harness-side scoring, +13 adapter. 970 passed / 3 skipped on the container; 38/38 on harness side.
+
+**Deferred** (explicitly out of scope, require infra the operator doesn't yet have):
+- Nightly full-battery run against live HA — needs a self-hosted GitHub Actions runner on 192.168.1.x subnet. The private HA token + GLaDOS SSH creds in SESSION_STATE would have to live on that runner.
+- 30-test sanity subset on every PR — same constraint.
 
 ---
 

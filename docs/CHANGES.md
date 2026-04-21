@@ -2128,3 +2128,150 @@ original P0 #2: *"Follow-up turns without a device keyword
 bypass Tier 1/2"* — now they don't.
 
 ---
+
+## Change 19 — Phase 8.9: test-harness hardening + CI wiring (2026-04-21)
+
+**Problem.** The 2026-04-20 private 435-row battery ran an
+overly-permissive scorer: *any* entity in the house ending in the
+expected state during the test window counted as PASS. Three failure
+classes sneaked through as false positives:
+
+1. Background-noise entities — Midea AC displays cycle every ~60 s,
+   Sonos diagnostics flap, zigbee `*_button_indication` /
+   `*_node_identify` ping HA on their own schedules. If any of them
+   flipped during the test window and happened to match the expected
+   direction, the scorer logged a PASS even when GLaDOS's targeted
+   action did nothing.
+2. Off-target state changes — a miscast command flipping *a different*
+   real entity (say, living-room lamp instead of kitchen light) was
+   still a PASS because "something" ended up in the expected state.
+3. Tier-ack rescues — Tier 1/2 logged `result: ok` but no state
+   actually moved. The scorer trusted the ack.
+
+Plus there was no CI regression safety net: the 970-test container
+suite ran only locally, so a refactor could land that broke scoring
+semantics without catching it until next deploy.
+
+### Fix
+
+**Stage A — container-side: `TestHarnessConfig`.**
+
+- New pydantic section at `glados/core/config_store.py::TestHarnessConfig`.
+  Two fields:
+  - `noise_entity_patterns: list[str]` — fnmatch globs the harness
+    must strip from the diff set before scoring. Defaults ship the
+    operator-confirmed noisy families (`switch.midea_ac_*_display`,
+    `sensor.midea_ac_*_*`, `*_sonos_*`, `*_wled_*_reverse`,
+    `*_button_indication`, `*_node_identify`).
+  - `require_direction_match: bool = True` — when True, scoring only
+    credits entity-direction matches on the actual targeted entity
+    set. Operator can toggle to False for A/B against pre-8.9
+    scoring.
+- Registered in `GladosConfigStore` alongside the other sections —
+  auto-exposed via standard `GET/PUT /api/config/test_harness` for
+  operator edits.
+- **Public endpoint** `GET /api/test-harness/noise-patterns` in
+  `api_wrapper.py` (no auth): the external harness fetches the list
+  on every run, so operator edits take effect on the next battery
+  without file sync. Endpoint reads `test_harness.yaml` fresh from
+  disk on each call — avoids a cross-process `/api/reload-engine`
+  round-trip for a non-engine config.
+- **WebUI** — "Test Harness" card on the System tab, `data-advanced="true"`
+  (hidden behind the Show Advanced Settings toggle since it's a
+  benchmarking knob, not day-to-day). Textarea for the pattern list
+  (one glob per line) + a Require-direction-match checkbox. Saves
+  via `/api/config/test_harness`.
+
+**Stage B — harness-side: direction-verified scoring.**
+
+- `C:\src\glados-test-battery\harness.py::score()` now takes
+  `expected_entities` (the target set resolved from
+  `target_keywords`), `noise_patterns`, and `require_direction_match`.
+- On entry, strips diffs whose `entity_id` matches any noise glob.
+  When direction is required, restricts the "changed" set to
+  entities inside the target set before asking "is any of them in
+  the expected state?". Off-target real changes and noise flips
+  both stop rescuing FAILs.
+- `audit_ok_from_tier` fallback is gated on `require_direction=False` —
+  when direction is enforced, the harness demands state proof; when
+  disabled, the pre-8.9 ack-fallback is preserved for A/B.
+- `fetch_noise_patterns()` pulls the current list from the container
+  at run-start. Falls back to a hardcoded default list if the
+  container is unreachable.
+
+**Stage C — home-assistant-datasets adapter.**
+
+- New `C:\src\glados-test-battery\hadatasets_adapter.py` — converts
+  scenario YAMLs from `github.com/allenporter/home-assistant-datasets`
+  (assist/assist-mini format: `category` + `tests: [{sentences,
+  setup, expect_changes}]`) into harness tests.json rows. Each
+  sentence becomes one row. Mapping rules folded into `_expected_change`
+  (brightness deltas + rgb_color + state → our `on|off|brighter|
+  dimmer|color|any` enum) and `_infer_service` (domain+state →
+  HA service).
+- CLI: `python hadatasets_adapter.py --path <tree> --out tests_ha.json
+  --start-idx 10000`. Row indices start at 10000 by default so the
+  converted set can merge with the private 435-row battery without
+  collision.
+
+**Stage D — CI.**
+
+- New `.github/workflows/tests.yml` — runs `pytest -q --tb=short`
+  with `pip install -e '.[dev]'` on every PR and on every push to
+  main. 970-test container suite now gates merges. Battery itself
+  (which needs live HA + deployed container on 192.168.1.x) is not
+  runnable on a public runner; that would require a self-hosted
+  runner on the operator's network and is deferred — the plan's
+  "30-test sanity subset on PR" remains aspirational.
+
+### Tests
+
+- `tests/test_test_harness_config.py` — +11 cases: defaults cover
+  operator-known noise families, default globs don't match real
+  targets, YAML round-trip preserves field order, `to_dict` /
+  `update_section` / public-endpoint-shape contract locked.
+- `C:\src\glados-test-battery\test_score.py` — +14 cases: noise
+  filter strips Midea display flips, off-target changes FAIL under
+  direction-match, tier-ack no longer rescues when direction is
+  required (with back-compat when it's disabled), brighter /
+  dimmer / off paths all direction-gated, `state_query` path
+  unchanged by 8.9.
+- `C:\src\glados-test-battery\test_hadatasets_adapter.py` — +13
+  cases: all expected-change mappings including lock / cover /
+  media_player coercion, keyword extraction behaviour,
+  convert_tree aggregation + fixtures exclusion, JSON round-trip.
+
+Container-side full suite: **970 passed / 3 skipped** (was 959 / 3;
++11 new). Harness-side: 38/38.
+
+### Commits
+
+Container repo (landed and deployed):
+- `glados/core/config_store.py` — `TestHarnessConfig` + store
+  registration
+- `glados/core/api_wrapper.py` — public noise-patterns endpoint
+- `glados/webui/tts_ui.py` — System-tab Advanced card + JS
+- `.github/workflows/tests.yml` — CI pytest lane
+- `tests/test_test_harness_config.py` — unit tests
+- `docs/CHANGES.md` (this entry)
+- `docs/battery-findings-and-remediation-plan.md` — §8.9 marked
+  COMPLETE
+
+Harness scratch dir (not git-tracked; lives at
+`C:\src\glados-test-battery`):
+- `harness.py` — direction-verified scoring + noise fetch
+- `hadatasets_adapter.py` — new
+- `test_score.py` — new
+- `test_hadatasets_adapter.py` — new
+
+### Closes
+
+Phase 8.9 complete to the level the plan defined (scorer harden +
+home-assistant-datasets adapter + pytest CI). Outstanding follow-ups:
+
+- Self-hosted runner for the live battery — wait until operator
+  decides whether they want that always-on infra.
+- Nightly full-battery + ha-datasets benchmark wiring — waits on
+  self-hosted runner.
+
+---
