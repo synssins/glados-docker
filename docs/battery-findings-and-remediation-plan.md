@@ -322,6 +322,63 @@ Each phase re-runs the 435-test battery AND `home-assistant-datasets` before mer
 
 ---
 
+### Phase 8.7a — Chime library UI + quip library expansion (COMPLETE, 2026-04-21)
+
+**Shipped** as deferred follow-ups to the original Phase 8.7 (Change
+21 in `docs/CHANGES.md`):
+
+- `AudioConfig.chimes_dir` pydantic field pointing at
+  `/app/audio_files/chimes/` (the same path the scenario-chime
+  loader at `api_wrapper.py:~708` already reads).
+- `GET/PUT/DELETE /api/chimes` CRUD endpoints with path validator
+  (rejects traversal, subdirs, anything outside `.wav`/`.mp3`).
+  5 MB upload cap. Atomic rename on write.
+- WebUI card on the Audio & Speakers page — flat file list with
+  per-row Play (inline `<audio>` element) + Delete, file-picker
+  upload.
+- Quip library 60 → 156 non-comment lines across 13 existing
+  files. ~2.6× expansion focused on voice fidelity, not raw
+  volume. Operator can grow further via the existing Quip editor.
+
+Also closed in the same session: the two pre-existing non-streaming
+bugs that had been carried since before Phase 8 began —
+`"Tell me about the testing tracks"` returning a corporate refusal
+on `stream:false`, and `"What's the weather like?"` returning a
+bare `.`. Root cause was a four-layer onion:
+
+1. `engine_audio="."` substitution fired for every caller
+   regardless of origin (fixed: origin-gate to `VOICE_MIC` only)
+2. Chitchat guard wording inhibited citing legitimate injected
+   context (fixed: explicit permission for system-message
+   quoting)
+3. Weather context gate had no in-code defaults, reading entirely
+   from a YAML that doesn't exist in fresh installs (fixed:
+   hardcoded defaults matching the canon gate pattern)
+4. `submit_text_input()` queued the user message BEFORE calling
+   `interaction_state.mark_user()`, so context-gate callbacks
+   saw stale or empty content on every turn (fixed: move
+   mark_user before the queue push)
+
+Plus two architectural issues uncovered during diagnosis:
+
+- **ChromaDB ONNX embedding model corruption** — semantic store
+  silently returned empty on every call for canon RAG + memory
+  RAG. Fixed by deleting the corrupted cache so the container
+  re-downloads fresh on restart.
+- **Autonomy / conversation-store cross-talk** — both interactive
+  and autonomy LLMProcessor lanes wrote into the same
+  `conversation_store`. The non-streaming API scanner's forward-
+  scan from the user message would return autonomy-produced
+  assistant text that interleaved. Fixed by plumbing lane through
+  the TTS chain (`AudioMessage.lane` → `PreparedChunk.lane` →
+  `BufferedSpeechPlayer` stamps `_source="autonomy"` on the
+  store append → API scan skips those).
+
+Full suite: 1069 passed / 3 skipped after this round (+66 new
+tests; +122 total this session).
+
+---
+
 ### Phase 8.7 — Response composer + audio controls WebUI + quip library (5 days, P2 — bundled)
 
 **Problem fixed:** cross-turn contamination (Cluster G), language drift, verb-polarity flips, operator has no control over when GLaDOS talks.

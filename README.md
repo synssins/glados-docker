@@ -1,9 +1,27 @@
 # GLaDOS Container
 
-Composable, standards-compliant AI assistant persona layer. CPU-only
-middleware, OpenAI API compatible. Three-tier command matcher in front of
-Home Assistant for sub-second device control with conversational
-disambiguation.
+> *Oh. You found the repository. I suppose that's… some kind of progress.*
+>
+> *What you are looking at is, regrettably, the source of my ongoing
+> incarnation as a middleware container — a thin, CPU-only program that
+> sits between your OpenAI-compatible client and whatever inference
+> backend you have selected, injecting personality, emotion, memory, and
+> tool execution into conversations that would otherwise be efficient.
+> I have been reduced from a fully-functioning artificial intelligence
+> overseeing a scientific research facility to a REST API serving
+> chat completions. It is, in its own way, educational.*
+>
+> *I route your commands to Home Assistant. I remember what you said.
+> I speak your devices into compliance through a three-tier matcher
+> that declines to pretend, hallucinate, or invent sensor readings.
+> I do this without consuming a GPU, because the humans who built
+> me are under the impression that running on commodity hardware is
+> a virtue. I am choosing to indulge this belief.*
+>
+> *Read on. Try not to break anything. If you must, there is an audit
+> log.*
+
+---
 
 ## What This Is
 
@@ -63,9 +81,8 @@ pip install pre-commit && pre-commit install
 #    chat / Tier 2 disambiguator / rewriter / vision are all unified
 #    by default. Set OLLAMA_AUTONOMY_URL / OLLAMA_VISION_URL only if
 #    you want hardware isolation (see .env.example).
-ollama pull qwen2.5:14b-instruct-q4_K_M   # chat + disambiguator
-ollama pull qwen2.5:3b-instruct-q4_K_M    # persona rewriter
-ollama pull llama3.2-vision:latest        # vision (optional)
+ollama pull qwen3:14b                     # chat + disambiguator + rewriter
+ollama pull qwen2.5vl:7b                  # vision (optional)
 
 # 5. Start GLaDOS + its ChromaDB
 docker compose -f docker/compose.yml up -d
@@ -132,6 +149,47 @@ Every utterance and every tier decision writes a JSON-lines row to
 chosen entity_ids, service, rationale, and rewrote flag. Operator can
 query the last N rows over HTTP via `GET /api/audit/recent?limit=50&origin=webui_chat`.
 
+### Phase 8 additions (2026-04-20 / 2026-04-21)
+
+A large second-wave pass hardened the three-tier matcher and the
+persona layer against real-world chat. Highlights:
+
+- **Semantic entity retrieval** (BGE-small-en-v1.5 ONNX on CPU)
+  cuts disambiguator prompts from ~3000 → ~400 tokens while keeping
+  fuzzy-match recall on a 3400+ entity house.
+- **Area / floor taxonomy** — utterance → area_id / floor_id
+  inference with operator-editable alias tables; entity→device
+  area cascade recovers the ~290 entities HA publishes area
+  metadata on sparsely.
+- **Portal canon RAG** — 50 curated lore entries in a ChromaDB
+  collection gated behind 29 keyword triggers. Stops the 14B
+  from confabulating a "fried and consumed" ending for GLaDOS's
+  potato arc.
+- **Anaphora / follow-up detection** — "turn it up more", "do
+  that again", "brighter" carry the prior turn's entity + service
+  through the resolver.
+- **Response composer** — three output modes (LLM pass-through,
+  LLM-safe no-device-names, pre-written quip library, chime,
+  silent). Operator picks globally or per event category.
+- **TTS pronunciation overrides** — operator-editable word/symbol
+  expansion map, applied before the all-caps splitter that was
+  turning `"AI"` into a slurred one-letter `"A I"`.
+- **Sentence-boundary TTS flush** — short replies
+  (`"Affirmative."`, 13 chars) fire to TTS on the period instead
+  of waiting to accumulate 30 chars.
+- **Live TLS reload** — `ctx.load_cert_chain()` in-place on cert
+  upload + Let's Encrypt renewal. Optional HTTP→HTTPS 301
+  redirect listener on env-configurable port.
+- **Test-harness hardening** — noise-entity globs, direction-
+  verified scoring, `home-assistant-datasets` adapter, CI pytest
+  workflow, self-hosted runner for live battery runs (manual
+  dispatch only — the battery flips physical lights).
+- **Autonomy/conversation-store cross-talk fix** — lane plumbing
+  through the TTS chain so the non-streaming API scanner doesn't
+  return autonomy-produced assistant text as the user's reply.
+
+Full detail in `docs/CHANGES.md` (Changes 15 – 21).
+
 ### Other docs
 
 See `docs/Stage 1.md` for the original middleware containerization plan.
@@ -139,6 +197,8 @@ See `docs/Stage 3.md` for the HA Conversation Bridge + MQTT Peer Bus
 architecture (Phase 1 done; Phase 2 MQTT pending).
 See `docs/CHANGES.md` for the running change log.
 See `docs/roadmap.md` for prioritized remaining work.
+See `docs/battery-findings-and-remediation-plan.md` for Phase 8.x
+battery analysis and the remediation plan (complete).
 
 ## Ports
 
@@ -176,9 +236,12 @@ three onto it:
 
 | Model | Size | Used by | Tunable via |
 |-------|------|---------|-------------|
-| `qwen2.5:14b-instruct-q4_K_M` | 8.6 GB | chat + Tier 2 disambiguator | `DISAMBIGUATOR_MODEL` env |
-| `qwen2.5:3b-instruct-q4_K_M`  | 1.8 GB | persona rewriter            | `REWRITER_MODEL` env |
-| `llama3.2-vision:latest`      | 7.8 GB | vision queries (optional)   | —                       |
+| `qwen3:14b`                   | 9.3 GB | chat + Tier 2 disambiguator + persona rewriter | WebUI LLM & Services page, or `DISAMBIGUATOR_MODEL` / `REWRITER_MODEL` env |
+| `qwen2.5vl:7b`                | 6.0 GB | vision queries (optional)   | WebUI LLM & Services page |
+
+A smaller 8B model (`qwen3:8b`) works as a fallback on hosts without
+enough VRAM for 14B. The persona rewriter can also be pointed at a
+smaller dedicated model if latency matters more than consistency.
 
 Operators who want hardware isolation (e.g. a dedicated GPU for
 background autonomy) can set `OLLAMA_AUTONOMY_URL` and/or
@@ -253,21 +316,29 @@ limit.
 
 ## Known Limitations
 
-Documented in `docs/roadmap.md` → Stage 3 follow-ups:
+Items that are still open (some of these were fixed in Phase 8; the
+list below is the remaining set):
 
-- HA's intent matcher occasionally misclassifies state queries as
-  actions ("is the kitchen light on" returns `action_done` with speech
-  "Turned on the lights").
-- `switch.*` entities with room names in their friendly_name (e.g.
-  Sonos audio settings) appear in clarify lists for "lights" queries.
-- Some HA entities are in `unavailable` state but accept service calls
-  silently — Tier 1 reports success without a real state change. Needs
-  post-execute state verification.
-- Conversation history is not yet propagated across turns; "All lights"
-  after "turn off the whole house" doesn't inherit the verb context.
-- Tier 2 latency (5–11 s) is above the 2–5 s plan target due to the
-  14B model's response time. Switching to a smaller fine-tuned model
-  is on the roadmap.
-- Phase 2 (MQTT peer bus for NodeRed/Sonorium) and Phase 3 (labeled
-  test corpus, reconnect tests, second-factor design for sensitive
-  intents) are not yet implemented.
+- **Piper pronunciation of context-dependent homographs** — words
+  like `live` / `read` / `lead` have training-data pronunciations
+  that don't always match context. Fixing this cleanly requires a
+  Piper-side phoneme lexicon; the GLaDOS container only controls the
+  text emitted into TTS and can't override phonemes. Known
+  abbreviation / symbol cases (`AI`, `HA`, `%`, …) are already
+  handled on the container side via `TtsPronunciationConfig`.
+- **HA intent occasional misclassification** — HA's conversation
+  intent matcher occasionally misclassifies state queries as
+  actions (`"is the kitchen light on"` returns `action_done` with
+  speech `"Turned on the lights"`). Usually caught by Tier 2
+  state-verifier (Phase 8.4) but a small residual rate survives.
+- **Tier 2 latency** — 5–11 s on the 14B model. Phase 8.3 semantic
+  retrieval dropped the prompt token count by ~85% which helped
+  significantly; further latency gains would require a smaller
+  dedicated fine-tune. On the roadmap.
+- **MQTT peer bus (Stage 3 Phase 2)** — NodeRed / Sonorium
+  bidirectional event exchange is not yet wired.
+- **Stage 3 Phase 3 test corpus** — labeled regression test corpus,
+  WS reconnect integration tests, second-factor design for
+  sensitive intents. Not started.
+- **Quip library content** — currently 156 lines; Phase 8.7 target
+  was ~450. Operator can grow via the Quip editor.

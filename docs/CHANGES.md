@@ -2496,3 +2496,195 @@ Remaining items are follow-on polish, not plan-gated:
 - Harness scratch dir's eventual promotion to its own git repo.
 
 ---
+
+## Change 21 — Non-streaming bug fixes + Phase 8.7 completion + architectural cleanups (2026-04-21)
+
+Closes the two long-standing non-streaming bugs that had been
+carried in SESSION_STATE open-issues #3 and #4 since the pre-Phase-8
+era, ships the remaining Phase 8.7 deferred items, and fixes two
+pre-existing architectural issues that surfaced only when the non-
+streaming path started getting exercised at scale.
+
+### Phase 8.7 — chime library UI + quip library expansion
+
+**Chime library UI** (commit [`c2bcdec`](https://github.com/synssins/glados-docker/commit/c2bcdec)):
+
+- New `AudioConfig.chimes_dir` (defaults to `/app/audio_files/chimes`,
+  the same directory the scenario-chime loader at
+  `api_wrapper.py:~708` already reads).
+- `GET /api/chimes` (tree listing), `GET /api/chimes?path=<file>`
+  (binary fetch for play-test), `PUT /api/chimes` (JSON
+  `{name, data_b64}`, 5 MB cap), `DELETE /api/chimes?path=...`.
+  Path validator rejects traversal, subdirs, and any extension
+  outside `.wav`/`.mp3`.
+- WebUI card on the Audio & Speakers page: flat file list with
+  per-row Play (inline `<audio>` element) + Delete, file-picker
+  upload, size formatter. Honors the operator's existing "chime"
+  response mode without further plumbing.
+
+**Quip library expansion** (same commit): 60 → 156 non-comment
+lines across 13 existing files (~2.6× expansion). Voice-fidelity
+focus, not raw volume: clinical Portal phrasing, short lines, no
+device names (silent-mode guarantee), second-clause zingers used
+sparingly. Plan target of ~450 lines remains aspirational; the
+Quip editor + Chime UI now let the operator grow the library
+opportunistically.
+
+### Non-streaming bug fixes (the "four-layer onion")
+
+Both pre-existing non-streaming bugs closed end-to-end through a
+diagnostic-driven sequence of fixes:
+
+**Layer 1 — `engine_audio="."` substitution fired for every
+non-streaming caller** (commit [`ccf554c`](https://github.com/synssins/glados-docker/commit/ccf554c)):
+
+- `cfg.tuning.engine_audio_default` defaulted True, meant for HA
+  voice-satellite callers where HA speakers play the audio and
+  the response text should be silent. But the handler applied
+  this to every caller regardless of origin — direct API
+  `stream:false` POSTs from curl / WebUI / automations got
+  ``"."`` back instead of the real reply.
+- Fix: default `engine_audio` ON only for `Origin.VOICE_MIC`.
+  Chat / API / WebUI origins get the real reply. Explicit
+  `engine_audio` in the request body always wins.
+
+**Layer 2 — chitchat guard permits quoting injected context**
+(commit [`cddbbf2`](https://github.com/synssins/glados-docker/commit/cddbbf2)):
+
+- The original chitchat guard said "do not invent sensor readings
+  or system status" which the 14B read as blanket silence even
+  when an upstream system message contained real data. Rewrote
+  to explicitly permit: *"You MAY quote or paraphrase information
+  that IS provided in earlier system messages (weather cache,
+  memory facts, canon entries)"*.
+- Turned out this wasn't the actual cause of the empty-reply
+  regression — see Layer 3 — but the new wording is a net
+  improvement for legitimate context-cite cases and stays.
+
+**Layer 3 — weather gate had no in-code defaults**
+(commit [`5bc3f63`](https://github.com/synssins/glados-docker/commit/5bc3f63)):
+
+- `needs_weather_context()` read trigger / ambiguous /
+  indoor-override keyword lists entirely from
+  `configs/context_gates.yaml`. That YAML doesn't exist in
+  fresh installs, so the gate returned False for every message
+  and weather_cache was never injected on any path.
+- Fix: ship hardcoded defaults in-code (the pattern
+  `needs_canon_context` already uses). 13 trigger keywords,
+  8 ambiguous, 14 indoor-overrides. YAML extras still merge
+  additively. +33 regression tests in
+  `tests/test_weather_context_gate.py`.
+
+**Layer 4 — `mark_user()` race** (commit [`69d14ce`](https://github.com/synssins/glados-docker/commit/69d14ce)):
+
+- `submit_text_input()` queued the user message before calling
+  `interaction_state.mark_user(text)`. LLMProcessor could wake
+  up, dequeue, and call `context_builder.render()` before
+  mark_user ran — so weather / canon / turn-guard gates fired
+  on stale or empty content. Three consecutive API calls would
+  see the PREVIOUS turn's content.
+- Fix: move `mark_user()` BEFORE the queue push. Full suite
+  unchanged at 1059/3.
+
+### Pre-existing architectural issues (uncovered during diagnosis)
+
+**Issue #1 — ChromaDB ONNX model corruption.** The sentence-
+embedding model at `/home/glados/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx/model.onnx`
+was corrupted (`INVALID_PROTOBUF`). Memory RAG and Phase 8.14
+canon RAG were both silently returning empty — every call to
+the semantic store failed to load the model. Likely damaged
+when the `/data/media/glados/audio_files/` bind-mount was
+accidentally cleared earlier in the session and the cache's
+parent directory structure was disturbed.
+
+Fix: deleted the cache directory inside the container
+(`/home/glados/.cache/chroma/onnx_models/`), restarted. ChromaDB
+re-downloaded the model fresh (79.3 MB) on next use. Both RAG
+paths now functional again.
+
+**Issue #2 — autonomy / conversation-store cross-talk**
+(commit [`cc009c9`](https://github.com/synssins/glados-docker/commit/cc009c9)):
+
+The autonomy lane writes into the SAME `conversation_store`
+that the interactive lane uses. When `_get_engine_response`
+polled for its reply, it content-matched the user message then
+forward-scanned for the next `role="assistant"` message — which
+could be an autonomy-produced reply that interleaved. API callers
+got autonomy text back. Reproduced deterministically with three
+consecutive `stream:false` probes: probe 2 returned probe 1's
+content, probe 3 got a no-context refusal because autonomy
+compaction had wiped the weather_cache context between requests.
+
+Fix — plumb lane through the TTS chain:
+- `AudioMessage.lane: str = "priority"` field
+- `PreparedChunk.lane: str = "priority"` field
+- `LLMProcessor._process_sentence_for_tts` sends a 3-tuple
+  `(sentence, tts_params, self._lane)` on the TTS queue
+- `LLMProcessor` EOS flushes also carry lane
+- `TextToSpeechSynthesizer.run` accepts 2-tuple, 3-tuple, or
+  plain-string queue items for back-compat
+- `BufferedSpeechPlayer._accumulator_loop` preserves lane into
+  `PreparedChunk`
+- `BufferedSpeechPlayer._play_buffered_stream` EOS handler
+  stamps `_source="autonomy"` on the conversation-store append
+  when the flushing chunk's lane is `"autonomy"`. Both EOS and
+  interrupt paths handled.
+- `_get_engine_response` forward-scan skips messages whose
+  `_source == "autonomy"`.
+
+### Live verification (three-utterance probe with 15 s spacing)
+
+All three probes returned distinct, correct responses:
+
+- `"What's the weather like?"` → real weather_cache data
+  ("seventy-six degrees with a clear sky, wind blowing at nine
+  miles per hour, and humidity at a negligible seventeen percent…")
+- `"Tell me about the testing tracks"` → Portal canon content
+  via canon RAG ("the testing tracks were engineered with
+  clinical precision—reinforced concrete, non-slip polymer
+  coatings, and pressure sensors…")
+- `"Hello, how are you?"` → in-persona chitchat
+  ("I am functioning within acceptable parameters…")
+
+Uniqueness: 3/3 distinct responses. No cross-talk.
+
+### Tests
+
+- `tests/test_turn_guards.py` (+11, then +1 permission-wording
+  assertion) — origin gates, guard selection, behavioural
+  contract phrasing
+- `tests/test_weather_context_gate.py` (+33) — positive
+  triggers, ambiguous + indoor-override interaction, default-
+  list membership locks
+- `tests/test_autonomy_crosstalk.py` (+10) — lane fields on
+  AudioMessage / PreparedChunk, API scan predicate
+- `tests/test_chime_library.py` (+11) — path validator coverage
+
+**Full suite: 1069 passed / 3 skipped** (was 1003 / 3; +66
+this chunk).
+
+### Commits (in order)
+
+- [`ccf554c`](https://github.com/synssins/glados-docker/commit/ccf554c) — layer 1: engine_audio origin gate + `turn_guards.py`
+- [`c2bcdec`](https://github.com/synssins/glados-docker/commit/c2bcdec) — Phase 8.7: chime library UI + quip expansion
+- [`cddbbf2`](https://github.com/synssins/glados-docker/commit/cddbbf2) — layer 2: chitchat guard rewrite
+- [`5bc3f63`](https://github.com/synssins/glados-docker/commit/5bc3f63) — layer 3: weather gate defaults
+- [`69d14ce`](https://github.com/synssins/glados-docker/commit/69d14ce) — layer 4: mark_user race
+- [`cc009c9`](https://github.com/synssins/glados-docker/commit/cc009c9) — autonomy cross-talk fix + ChromaDB cache note
+
+### Closes
+
+SESSION_STATE open issues #3 and #4 (pre-existing non-streaming
+bugs) closed. Phase 8.7 deferred items (chime UI, quip
+expansion) shipped. The autonomy cross-talk architecture issue,
+surfaced during diagnosis, is now fixed. Phase 8.x remediation
+plan remains fully closed.
+
+Remaining open (noted, not urgent):
+
+- Piper-side phoneme overrides (Speaches scope).
+- Quip library content expansion to full ~450-line target.
+- Harness scratch dir promotion to its own git repo.
+- TTS pronunciation defaults as operators surface more cases.
+
+---
