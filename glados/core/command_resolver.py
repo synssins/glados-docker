@@ -132,6 +132,9 @@ class ResolverResult:
     # Phase 8.4 — post-execute state verification carry-through.
     state_verified: bool | None = None
     state_verification: dict[str, Any] | None = None
+    # Phase 8.6 — number of actions the planner executed; exposed so
+    # the audit log can record compound plans accurately.
+    action_count: int | None = None
 
 
 # ---- Injected collaborator protocols --------------------------------------
@@ -350,7 +353,8 @@ class CommandResolver:
                         result="ok" if not t2.needs_clarification else "clarify",
                         latency_ms=t2.latency_ms, rationale=t2.rationale,
                         state_verified=t2.state_verified,
-                        state_verification=t2.state_verification)
+                        state_verification=t2.state_verification,
+                        action_count=t2.action_count)
             return t2
 
         # A learned guess that we nominated but Tier 2 couldn't use is
@@ -581,6 +585,7 @@ class CommandResolver:
             learned_row_id=carryover.learned_row_id if carryover else None,
             state_verified=getattr(result, "state_verified", None),
             state_verification=getattr(result, "state_verification", None) or None,
+            action_count=getattr(result, "action_count", None),
         )
 
     # ---- Bookkeeping ---------------------------------------------------
@@ -651,7 +656,20 @@ class CommandResolver:
         if not plain or self._rewriter is None:
             return plain
         try:
-            return self._rewriter.rewrite(plain, context_hint=utterance_hint) or plain
+            # PersonaRewriter.rewrite returns a RewriteResult dataclass,
+            # not a string. Extracting `.text` here prevents the object
+            # from leaking into downstream speech fields (where it
+            # caused a JSON-serialization crash on Tier 1 replies —
+            # seen live on "turn off the basement lights" 2026-04-21).
+            out = self._rewriter.rewrite(plain, context_hint=utterance_hint)
+            text = getattr(out, "text", None) if out is not None else None
+            if isinstance(text, str):
+                return text or plain
+            if isinstance(out, str):
+                # PersonaRewriterProtocol advertises `str` too (line 172
+                # of this file); honour stub implementations.
+                return out or plain
+            return plain
         except Exception as exc:  # best-effort — persona failure never blocks the reply
             logger.debug("CommandResolver: persona rewrite raised: {}", exc)
             return plain
@@ -690,6 +708,7 @@ class CommandResolver:
         rationale: str | None,
         state_verified: bool | None = None,
         state_verification: dict[str, Any] | None = None,
+        action_count: int | None = None,
     ) -> None:
         try:
             extra = ctx.to_audit_fields()
@@ -699,6 +718,8 @@ class CommandResolver:
                 extra["state_verified"] = state_verified
             if state_verification:
                 extra["state_verification"] = state_verification
+            if action_count is not None:
+                extra["action_count"] = action_count
             audit(AuditEvent(
                 ts=audit_now(),
                 origin=ctx.origin,
