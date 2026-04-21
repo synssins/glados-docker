@@ -1340,6 +1340,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._get_disambiguation_rules()
             else:
                 self._get_config_section(section)
+        elif p == "/api/quips" or p.startswith("/api/quips?"):
+            self._get_quips()
         elif p == "/api/hub75/test/ping":
             self._hub75_test_ping()
         elif p == "/api/announcement-settings":
@@ -1440,6 +1442,8 @@ class Handler(BaseHTTPRequestHandler):
             self._post_semantic_test()
         elif p == "/api/semantic/rebuild":
             self._post_semantic_rebuild()
+        elif p == "/api/quips/test":
+            self._post_quips_test()
         elif p == "/api/stt":
             self._stt()
         # --- Protected routes below ---
@@ -1508,6 +1512,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._put_disambiguation_rules()
             else:
                 self._put_config_section(section)
+        elif self.path == "/api/quips":
+            self._put_quips()
         else:
             self._send_error(404, "Not found")
 
@@ -1518,6 +1524,8 @@ class Handler(BaseHTTPRequestHandler):
             self._delete_file()
         elif self.path.startswith("/api/memory/"):
             self._memory_action("delete")
+        elif self.path == "/api/quips" or self.path.startswith("/api/quips?"):
+            self._delete_quip()
         else:
             self._send_error(404, "Not found")
 
@@ -3788,6 +3796,180 @@ class Handler(BaseHTTPRequestHandler):
             return
         from glados.intent import explain_home_command_match
         self._send_json(200, explain_home_command_match(utterance))
+
+    # ── Phase 8.7c — quip library editor ────────────────────────
+
+    def _quip_dir(self) -> Path:
+        """Root of the quip library on disk. Mirrors the
+        GLADOS_QUIP_DIR env var the disambiguator reads; defaults to
+        /app/configs/quips under the bind-mount."""
+        return Path(os.environ.get("GLADOS_QUIP_DIR", "/app/configs/quips"))
+
+    def _quip_path_safe(self, rel: str) -> Path | None:
+        """Resolve a caller-supplied relative path within the quip
+        root, refusing anything that escapes via '..' or absolute
+        components. Returns None when the path is unsafe."""
+        if not rel or not isinstance(rel, str):
+            return None
+        root = self._quip_dir().resolve()
+        try:
+            candidate = (root / rel).resolve()
+            candidate.relative_to(root)
+        except (ValueError, OSError):
+            return None
+        return candidate
+
+    def _get_quips(self) -> None:
+        """GET /api/quips — returns the directory tree with a line
+        count per file. Use ?path= to fetch one file's contents."""
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
+        root = self._quip_dir()
+        rel = (q.get("path") or [""])[0].strip()
+        if rel:
+            target = self._quip_path_safe(rel)
+            if target is None or not target.is_file():
+                self._send_error(404, "Not found")
+                return
+            try:
+                lines = target.read_text(encoding="utf-8").splitlines()
+            except OSError as exc:
+                self._send_error(500, f"Read failed: {exc}")
+                return
+            self._send_json(200, {"path": rel, "lines": lines})
+            return
+        # Tree listing.
+        tree: list[dict[str, object]] = []
+        if root.exists():
+            for p in sorted(root.rglob("*.txt")):
+                try:
+                    raw = p.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                non_blank = sum(
+                    1 for ln in raw.splitlines()
+                    if ln.strip() and not ln.lstrip().startswith("#")
+                )
+                tree.append({
+                    "path": p.relative_to(root).as_posix(),
+                    "quip_count": non_blank,
+                })
+        self._send_json(200, {"root": str(root), "files": tree})
+
+    def _put_quips(self) -> None:
+        """PUT /api/quips — save a single file. Body:
+        {"path": "command_ack/turn_on/normal.txt", "lines": ["a", "b"]}.
+        Parent directories are created on demand. The file is written
+        atomically via rename so the disambiguator never sees a
+        half-written file mid-read."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_error(400, f"Invalid JSON: {exc}")
+            return
+        rel = str(data.get("path") or "").strip()
+        if not rel.endswith(".txt"):
+            self._send_error(400, "path must end with .txt")
+            return
+        target = self._quip_path_safe(rel)
+        if target is None:
+            self._send_error(400, "Unsafe path")
+            return
+        raw_lines = data.get("lines")
+        if not isinstance(raw_lines, list):
+            self._send_error(400, "lines must be a list of strings")
+            return
+        cleaned = []
+        for ln in raw_lines:
+            if isinstance(ln, str):
+                # Normalise: strip trailing whitespace but keep
+                # comment lines and blanks.
+                cleaned.append(ln.rstrip())
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
+            tmp.replace(target)
+        except OSError as exc:
+            self._send_error(500, f"Write failed: {exc}")
+            return
+        # Count non-blank / non-comment lines for the response so the
+        # UI can refresh its tree without a second GET.
+        quip_count = sum(
+            1 for ln in cleaned
+            if ln.strip() and not ln.lstrip().startswith("#")
+        )
+        self._send_json(200, {
+            "ok": True, "path": rel, "quip_count": quip_count,
+        })
+
+    def _delete_quip(self) -> None:
+        """DELETE /api/quips?path=...  — remove a single .txt file.
+        Empty parent directories are also removed so the tree stays
+        clean."""
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
+        rel = (q.get("path") or [""])[0].strip()
+        if not rel.endswith(".txt"):
+            self._send_error(400, "path must end with .txt")
+            return
+        target = self._quip_path_safe(rel)
+        if target is None or not target.is_file():
+            self._send_error(404, "Not found")
+            return
+        try:
+            target.unlink()
+            # Climb up and remove empty dirs (but stop at root).
+            root = self._quip_dir().resolve()
+            parent = target.parent
+            while parent != root and parent.exists():
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+        except OSError as exc:
+            self._send_error(500, f"Delete failed: {exc}")
+            return
+        self._send_json(200, {"ok": True, "path": rel})
+
+    def _post_quips_test(self) -> None:
+        """POST /api/quips/test — dry-run the selector so the operator
+        can see which line the composer would emit right now.
+        Body: {"event_category", "intent", "outcome"?, "mood"?,
+              "entity_count"?, "time_of_day"?}."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_error(400, f"Invalid JSON: {exc}")
+            return
+        from glados.persona import QuipLibrary, QuipRequest
+        lib = QuipLibrary.load(self._quip_dir())
+        req = QuipRequest(
+            event_category=str(data.get("event_category") or "command_ack"),
+            intent=str(data.get("intent") or "turn_on"),
+            outcome=str(data.get("outcome") or "success"),
+            mood=str(data.get("mood") or "normal"),
+            entity_count=int(data.get("entity_count") or 1),
+            time_of_day=str(data.get("time_of_day") or ""),
+        )
+        line = lib.pick(req)
+        self._send_json(200, {
+            "line": line,
+            "library_empty": lib.is_empty(),
+            "request": {
+                "event_category": req.event_category,
+                "intent": req.intent,
+                "mood": req.mood,
+                "time_of_day": req.time_of_day,
+            },
+        })
 
     def _reload_disambiguator_rules(self) -> bool:
         """Cross-process reload trigger. tts_ui (8052) POSTs the
@@ -7322,7 +7504,224 @@ function cfgRenderPersonality(data) {
     + '</div>';
   setTimeout(_cfgLoadCommandRecognition, 0);
 
+  // Phase 8.7c — Quip library editor. Tree on the left, textarea on
+  // the right for the currently-selected file. Save button writes to
+  // disk through PUT /api/quips. Live-test card at the bottom shows
+  // which line the selector would pick right now.
+  html += ''
+    + '<div class="card" id="cfg-quip-card" style="margin-top:14px;">'
+    +   '<div class="cfg-subsection-title">Quip library</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'When <strong>Response behavior</strong> is set to <em>quip</em> (see Audio &amp; Speakers), GLaDOS '
+    +     'replies using a line from the on-disk library under <code>configs/quips/</code>. Each file holds '
+    +     'one quip per line; <code>#</code> lines are comments. Edit directly below or via the raw files.'
+    +   '</div>'
+    +   '<div id="cfg-quip-body">Loading quip library&hellip;</div>'
+    + '</div>';
+  setTimeout(_cfgLoadQuips, 0);
+
   return html;
+}
+
+// Phase 8.7c — Quip library editor.
+
+let _quipSelectedPath = null;
+
+async function _cfgLoadQuips() {
+  const body = document.getElementById('cfg-quip-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/quips');
+    if (!r.ok) {
+      body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Failed to load (' + r.status + ').</div>';
+      return;
+    }
+    const data = await r.json();
+    _quipRenderTree(data);
+  } catch (e) {
+    body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function _quipRenderTree(data) {
+  const body = document.getElementById('cfg-quip-body');
+  if (!body) return;
+  const files = data.files || [];
+  // Group by category/intent for the tree.
+  const tree = {};
+  files.forEach(f => {
+    const parts = f.path.split('/');
+    if (parts.length >= 3) {
+      const cat = parts[0], intent = parts[1], leaf = parts.slice(2).join('/');
+      tree[cat] = tree[cat] || {};
+      tree[cat][intent] = tree[cat][intent] || [];
+      tree[cat][intent].push({ leaf, path: f.path, count: f.quip_count });
+    } else if (parts.length === 2) {
+      // category/file.txt flat layout (outcome_modifier, global)
+      const cat = parts[0];
+      tree[cat] = tree[cat] || {};
+      tree[cat]['_'] = tree[cat]['_'] || [];
+      tree[cat]['_'].push({ leaf: parts[1], path: f.path, count: f.quip_count });
+    }
+  });
+  let html = '<div style="display:flex;gap:14px;flex-wrap:wrap;">';
+  // Left: tree
+  html += '<div id="cfg-quip-tree" style="flex:1;min-width:260px;max-height:420px;overflow-y:auto;border:1px solid #333;border-radius:4px;padding:8px;background:#1a1a1a;">';
+  Object.keys(tree).sort().forEach(cat => {
+    html += '<div style="font-weight:bold;margin-top:6px;color:#ffa94d;">' + escHtml(cat) + '</div>';
+    Object.keys(tree[cat]).sort().forEach(intent => {
+      if (intent !== '_') {
+        html += '<div style="margin-left:10px;margin-top:4px;color:#9cdcfe;font-size:0.9em;">' + escHtml(intent) + '</div>';
+      }
+      tree[cat][intent].forEach(f => {
+        const indent = (intent === '_') ? 10 : 22;
+        html += '<div style="margin-left:' + indent + 'px;cursor:pointer;padding:2px 4px;border-radius:2px;" '
+          + 'onclick="_quipLoad(\'' + escAttr(f.path) + '\')" '
+          + 'onmouseover="this.style.background=\'#2a2a2a\'" '
+          + 'onmouseout="this.style.background=\'transparent\'">'
+          + '&rarr; ' + escHtml(f.leaf) + ' <span style="color:#888;font-size:0.85em;">(' + f.count + ')</span>'
+          + '</div>';
+      });
+    });
+  });
+  if (!Object.keys(tree).length) {
+    html += '<div class="cfg-field-desc">Library is empty. Create a file with <em>New file</em> below.</div>';
+  }
+  html += '</div>';
+  // Right: editor pane
+  html += '<div style="flex:2;min-width:320px;display:flex;flex-direction:column;gap:8px;">';
+  html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
+    + '<input type="text" id="cfg-quip-path" placeholder="command_ack/turn_on/normal.txt" style="flex:1;min-width:220px;">'
+    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_quipLoadFromPath()">Open</button>'
+    + '<button type="button" class="cfg-save-btn" style="background:#a33;" onclick="_quipDelete()">Delete</button>'
+    + '</div>';
+  html += '<textarea id="cfg-quip-editor" style="width:100%;min-height:280px;font-family:monospace;background:#1a1a1a;color:#ddd;border:1px solid #333;padding:8px;"></textarea>';
+  html += '<div class="cfg-save-row"><button class="cfg-save-btn" onclick="_quipSave()">Save file</button>'
+    + '<span id="cfg-quip-save-result" class="cfg-result"></span></div>';
+  html += '</div>';  // editor pane
+  html += '</div>';  // flex wrapper
+  // Dry-run card
+  html += '<div class="cfg-field-label" style="margin-top:14px;">Live test</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">Pick a category + intent + mood and see which line the composer would emit right now.</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">'
+    + '<select id="cfg-quip-test-cat">'
+    +   '<option value="command_ack">command_ack</option>'
+    +   '<option value="query_answer">query_answer</option>'
+    +   '<option value="ambient_cue">ambient_cue</option>'
+    +   '<option value="error">error</option>'
+    + '</select>'
+    + '<input type="text" id="cfg-quip-test-intent" placeholder="turn_on / turn_off / ..." value="turn_on" style="min-width:140px;">'
+    + '<select id="cfg-quip-test-mood">'
+    +   '<option value="normal">normal</option>'
+    +   '<option value="cranky">cranky</option>'
+    +   '<option value="amused">amused</option>'
+    + '</select>'
+    + '<button class="cfg-save-btn" style="background:#333;" onclick="_quipDryRun()">Pick a line</button>'
+    + '</div>'
+    + '<div id="cfg-quip-test-result" style="margin-top:8px;font-family:monospace;color:#9cdcfe;"></div>';
+  body.innerHTML = html;
+}
+
+async function _quipLoad(path) {
+  const ed = document.getElementById('cfg-quip-editor');
+  const pathEl = document.getElementById('cfg-quip-path');
+  try {
+    const r = await fetch('/api/quips?path=' + encodeURIComponent(path));
+    if (!r.ok) { showToast('Load failed (' + r.status + ')', 'warn'); return; }
+    const data = await r.json();
+    if (ed) ed.value = (data.lines || []).join('\n');
+    if (pathEl) pathEl.value = data.path || path;
+    _quipSelectedPath = data.path || path;
+  } catch (e) {
+    showToast('Load error: ' + e.message, 'warn');
+  }
+}
+
+function _quipLoadFromPath() {
+  const pathEl = document.getElementById('cfg-quip-path');
+  if (pathEl && pathEl.value.trim()) _quipLoad(pathEl.value.trim());
+}
+
+async function _quipSave() {
+  const pathEl = document.getElementById('cfg-quip-path');
+  const ed = document.getElementById('cfg-quip-editor');
+  const result = document.getElementById('cfg-quip-save-result');
+  const path = pathEl ? pathEl.value.trim() : '';
+  if (!path) { showToast('Enter a path first', 'warn'); return; }
+  const lines = (ed ? ed.value : '').split('\n');
+  if (result) { result.textContent = 'Saving...'; result.className = 'cfg-result'; }
+  try {
+    const r = await fetch('/api/quips', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ path, lines }),
+    });
+    const resp = await r.json();
+    if (r.ok) {
+      if (result) result.textContent = '';
+      showToast('Saved: ' + path + ' (' + (resp.quip_count || 0) + ' quips)', 'success');
+      _cfgLoadQuips();  // refresh tree counts
+    } else if (result) {
+      result.textContent = resp.error || ('Error (' + r.status + ')');
+      result.className = 'cfg-result err';
+    }
+  } catch (e) {
+    if (result) { result.textContent = 'Error: ' + e.message; result.className = 'cfg-result err'; }
+  }
+}
+
+async function _quipDelete() {
+  const pathEl = document.getElementById('cfg-quip-path');
+  const path = pathEl ? pathEl.value.trim() : '';
+  if (!path) return;
+  if (!confirm('Delete ' + path + '?')) return;
+  try {
+    const r = await fetch('/api/quips?path=' + encodeURIComponent(path), {method: 'DELETE'});
+    if (r.ok) {
+      showToast('Deleted: ' + path, 'success');
+      const ed = document.getElementById('cfg-quip-editor');
+      if (ed) ed.value = '';
+      _cfgLoadQuips();
+    } else {
+      showToast('Delete failed (' + r.status + ')', 'warn');
+    }
+  } catch (e) {
+    showToast('Delete error: ' + e.message, 'warn');
+  }
+}
+
+async function _quipDryRun() {
+  const catEl = document.getElementById('cfg-quip-test-cat');
+  const intentEl = document.getElementById('cfg-quip-test-intent');
+  const moodEl = document.getElementById('cfg-quip-test-mood');
+  const resEl = document.getElementById('cfg-quip-test-result');
+  const payload = {
+    event_category: catEl ? catEl.value : 'command_ack',
+    intent: intentEl ? intentEl.value : 'turn_on',
+    mood: moodEl ? moodEl.value : 'normal',
+  };
+  try {
+    const r = await fetch('/api/quips/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    if (resEl) {
+      if (data.line) {
+        resEl.textContent = '→ ' + data.line;
+        resEl.style.color = '#9cdcfe';
+      } else if (data.library_empty) {
+        resEl.textContent = 'Library is empty — composer would fall back to LLM speech.';
+        resEl.style.color = '#f66';
+      } else {
+        resEl.textContent = 'No line matched — composer would fall back to LLM speech for this request.';
+        resEl.style.color = '#fa5';
+      }
+    }
+  } catch (e) {
+    if (resEl) { resEl.textContent = 'Error: ' + e.message; resEl.style.color = '#f66'; }
+  }
 }
 
 // Phase 8.2 — Command recognition card fetch/render/save.

@@ -27,10 +27,14 @@ from loguru import logger
 
 
 _SYSTEM_PROMPT = (
+    # /no_think suppresses Qwen3's thinking-mode <think>...</think>
+    # block, which otherwise eats the entire 40-token budget before
+    # the model reaches the user-visible reply.
+    "/no_think\n"
     "You are GLaDOS from Portal, responding to a smart-home action "
     "that has just been performed. Generate ONE short spoken reply — "
     "five to twenty words, one sentence. English only. No JSON, "
-    "no markdown, no quotation marks. "
+    "no markdown, no quotation marks. Do not emit <think> tags."
     "\n\n"
     "STRICT RULES:\n"
     "1. NEVER mention specific device names, entity IDs, area names, "
@@ -94,9 +98,11 @@ def compose_speech(
         ],
         "stream": False,
         "options": {
-            # Keep it short; 40 tokens is enough for a tight
-            # one-sentence reply.
-            "num_predict": 40,
+            # 120 tokens gives headroom in case Qwen3 emits a brief
+            # <think> preamble before the actual reply; the tidy
+            # pass strips it. The reply itself stays under 20 words
+            # per the system prompt, which is ~30 tokens.
+            "num_predict": 120,
             "temperature": 0.6,
             "top_p": 0.9,
         },
@@ -133,12 +139,16 @@ def _tidy(raw: str) -> str:
     if not raw:
         return ""
     s = raw.strip()
-    # Strip <think> / <think>...</think> blocks from Qwen3 thinking
-    # mode — harmless when absent.
+    # Strip closed <think>...</think> blocks from Qwen3 thinking mode.
     while "<think>" in s and "</think>" in s:
         pre, _, rest = s.partition("<think>")
         _, _, post = rest.partition("</think>")
         s = (pre + post).strip()
+    # If an OPEN <think> is left (num_predict cut off mid-reasoning),
+    # strip everything from the tag onward — the response didn't reach
+    # the user-visible reply.
+    if "<think>" in s:
+        s = s.split("<think>", 1)[0].strip()
     # Strip wrapping quotes.
     if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
         s = s[1:-1].strip()
