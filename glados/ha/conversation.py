@@ -105,7 +105,45 @@ def _extract_speech(response: dict[str, Any]) -> str:
     return str(ssml)
 
 
-def classify(raw: dict[str, Any]) -> ConversationResult:
+# Weather-related tokens. If the user's utterance contains any of
+# these, a weather-sourced HA query_answer is credible. If not, HA
+# is almost certainly falling back to weather.openweathermap as a
+# last resort (observed 2026-04-21: "Hey, what was life like as a
+# potato?" returned "56 °F and sunny").
+_WEATHER_TOKENS: frozenset[str] = frozenset({
+    "weather", "temperature", "temp", "forecast", "rain", "raining",
+    "rainy", "snow", "snowing", "snowy", "sunny", "cloudy",
+    "cloud", "clouds", "wind", "windy", "humid", "humidity",
+    "hot", "cold", "warm", "cool", "freezing", "degrees",
+    "fahrenheit", "celsius", "precipitation", "storm", "stormy",
+    "overcast", "outside", "outdoors", "outdoor",
+})
+
+
+def _looks_like_weather_question(text: str) -> bool:
+    if not text:
+        return False
+    words = {w.strip(".,!?;:'\"").lower() for w in text.split()}
+    return bool(words & _WEATHER_TOKENS)
+
+
+def _response_source_is_weather_only(response: dict[str, Any]) -> bool:
+    """True iff every entry in response.data.success looks like a
+    weather entity. Used to detect HA's weather-fallback pattern."""
+    data = response.get("data") or {}
+    success = data.get("success") or []
+    if not isinstance(success, list) or not success:
+        return False
+    for s in success:
+        if not isinstance(s, dict):
+            return False
+        sid = str(s.get("id") or "")
+        if not sid.startswith("weather."):
+            return False
+    return True
+
+
+def classify(raw: dict[str, Any], utterance: str = "") -> ConversationResult:
     """Classify HA's WS response frame into a Tier 1 decision.
 
     Handles both the unwrapped `response` shape and the full WS
@@ -160,6 +198,23 @@ def classify(raw: dict[str, Any]) -> ConversationResult:
                 should_fall_through=True, speech=speech,
                 response_type=response_type,
                 error_code="garbage_speech",
+                conversation_id=conversation_id, raw=raw,
+            )
+        # HA's weather-fallback: when it can't parse the utterance, HA
+        # sometimes returns a weather-sourced query_answer with
+        # targets=[] even for pure chitchat ("Hey, what was life like
+        # as a potato?" → "56 °F and sunny", seen 2026-04-21). Detect
+        # this pattern and fall through so Tier 3 can handle the real
+        # question.
+        if (
+            _response_source_is_weather_only(response)
+            and not _looks_like_weather_question(utterance)
+        ):
+            return ConversationResult(
+                handled=False, should_disambiguate=False,
+                should_fall_through=True, speech=speech,
+                response_type=response_type,
+                error_code="weather_fallback_misclassify",
                 conversation_id=conversation_id, raw=raw,
             )
         return ConversationResult(
@@ -247,7 +302,7 @@ class ConversationBridge:
             return _fall_through(f"exception:{type(exc).__name__}")
         if not raw.get("success", True):
             return _fall_through("not_success")
-        return classify(raw)
+        return classify(raw, utterance=text)
 
 
 def _fall_through(reason: str) -> ConversationResult:
