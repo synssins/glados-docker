@@ -354,6 +354,102 @@ class TestRetrieve:
         assert hits[0].device_id == "dev_desk"
 
 
+# ──────────────────────────────────────────────────────────────
+# Phase 8.5 — area_id / floor_id filter hints on retrieve()
+# ──────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def _multi_floor_idx(tmp_path, monkeypatch):
+    """Build an index whose entities span two floors + outdoor,
+    so the area/floor filter actually discriminates."""
+    pytest.importorskip("numpy")
+    cache = _CacheWithEntities([
+        _Entity("light.office_desk_lamp", "Office Desk Lamp",
+                area_id="office"),
+        _Entity("light.kitchen_ceiling", "Kitchen Ceiling",
+                area_id="kitchen"),
+        _Entity("light.upstairs_bedroom", "Upstairs Bedroom",
+                area_id="bedroom"),
+        _Entity("light.outdoor_floodlight", "Backyard Spotlight",
+                area_id="yard"),
+    ])
+    idx = SemanticIndex(
+        cache,
+        model_path="/nonexistent/model.onnx",
+        tokenizer_path="/nonexistent/tok.json",
+        index_path=tmp_path / "entity_embeddings.npz",
+    )
+    idx.apply_area_registry([
+        {"area_id": "office",  "name": "Office",         "floor_id": "floor_main"},
+        {"area_id": "kitchen", "name": "Kitchen",        "floor_id": "floor_main"},
+        {"area_id": "bedroom", "name": "Master Bedroom", "floor_id": "floor_upper"},
+        {"area_id": "yard",    "name": "Backyard",       "floor_id": None},
+    ])
+    idx.apply_floor_registry([
+        {"floor_id": "floor_main",  "name": "Main Floor"},
+        {"floor_id": "floor_upper", "name": "Upper Floor"},
+    ])
+    monkeypatch.setattr(idx, "_ensure_embedder", lambda: _StubEmbedder())
+    return idx
+
+
+class TestAreaFloorFilter:
+    def test_floor_filter_excludes_other_floors(self, _multi_floor_idx) -> None:
+        _multi_floor_idx.build()
+        # Query matches "kitchen" + "office" + "bedroom" + "yard"
+        # all weakly; we don't care about ranking, only that
+        # non-main-floor entities are excluded.
+        hits = _multi_floor_idx.retrieve("lamp", k=10, floor_id="floor_main")
+        returned = {h.entity_id for h in hits}
+        assert "light.upstairs_bedroom" not in returned
+        assert "light.outdoor_floodlight" not in returned
+        assert any(e in returned for e in (
+            "light.office_desk_lamp", "light.kitchen_ceiling",
+        ))
+
+    def test_floor_filter_upper_only_returns_upper_entities(
+        self, _multi_floor_idx,
+    ) -> None:
+        _multi_floor_idx.build()
+        hits = _multi_floor_idx.retrieve(
+            "lamp", k=10, floor_id="floor_upper",
+        )
+        returned = {h.entity_id for h in hits}
+        assert returned <= {"light.upstairs_bedroom"}
+
+    def test_area_filter_pins_specific_area(self, _multi_floor_idx) -> None:
+        _multi_floor_idx.build()
+        hits = _multi_floor_idx.retrieve(
+            "kitchen", k=10, area_id="kitchen",
+        )
+        assert {h.entity_id for h in hits} == {"light.kitchen_ceiling"}
+
+    def test_hit_carries_area_and_floor_ids(self, _multi_floor_idx) -> None:
+        _multi_floor_idx.build()
+        hits = _multi_floor_idx.retrieve("kitchen", k=1)
+        h = hits[0]
+        assert h.area_id == "kitchen"
+        assert h.floor_id == "floor_main"
+
+    def test_floor_filter_excludes_entities_with_no_floor(
+        self, _multi_floor_idx,
+    ) -> None:
+        """Backyard has area_id but no floor — it must not surface
+        when the operator asks for a specific floor."""
+        _multi_floor_idx.build()
+        hits = _multi_floor_idx.retrieve(
+            "spotlight", k=10, floor_id="floor_main",
+        )
+        assert "light.outdoor_floodlight" not in {h.entity_id for h in hits}
+
+    def test_registry_accessors_expose_maps(self, _multi_floor_idx) -> None:
+        """area_names() / floor_names() are how the utterance-side
+        inference resolves keywords to ids."""
+        _multi_floor_idx.build()
+        assert _multi_floor_idx.area_names()["kitchen"] == "Kitchen"
+        assert _multi_floor_idx.floor_names()["floor_upper"] == "Upper Floor"
+
+
 class TestPersistLoad:
     def test_persist_then_load_round_trip(self, _stub_idx) -> None:
         _stub_idx.build()

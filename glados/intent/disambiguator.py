@@ -1207,10 +1207,44 @@ class Disambiguator:
                     )
                     extras = tuple(self._rules.extra_segment_tokens or ())
                     tokens = DEFAULT_SEGMENT_TOKENS + extras
+                    # Phase 8.5 — infer area / floor scope from the
+                    # utterance ("downstairs", "outside") and pass
+                    # as filter hints. When inference misses or the
+                    # registry has no matching entry, hints stay None
+                    # and retrieval is unchanged from 8.3.5.
+                    area_hint: str | None = None
+                    floor_hint: str | None = None
+                    try:
+                        from glados.intent.area_inference import (
+                            infer_area_floor,
+                        )
+                        hint = infer_area_floor(
+                            utterance,
+                            area_names=sem.area_names(),
+                            floor_names=sem.floor_names(),
+                            floor_aliases=self._rules.floor_aliases,
+                            area_aliases=self._rules.area_aliases,
+                        )
+                        area_hint = hint.area_id
+                        floor_hint = hint.floor_id
+                        if area_hint or floor_hint:
+                            logger.debug(
+                                "Tier 2 area/floor inference: "
+                                "kw={!r} src={} area={} floor={}",
+                                hint.matched_keyword, hint.source,
+                                area_hint, floor_hint,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "area_inference raised; proceeding "
+                            "without hints: {}", exc,
+                        )
                     hits = sem.retrieve_for_planner(
                         utterance,
                         k=cand_limit,
                         domain_filter=domain_hint,
+                        area_id=area_hint,
+                        floor_id=floor_hint,
                         segment_tokens=tokens,
                         ignore_segments=self._rules.ignore_segments,
                     )

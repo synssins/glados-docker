@@ -183,6 +183,33 @@ opposing_token_pairs:
         assert loaded.opposing_token_pairs == [["left", "right"]]
         assert loaded.twin_dedup is False
 
+    def test_phase_85_alias_roundtrip(self, tmp_path: Path) -> None:
+        """Phase 8.5 — floor/area alias maps survive a YAML round-trip."""
+        from glados.intent.rules import save_rules_to_yaml
+        rules = DisambiguationRules()
+        rules.floor_aliases = {"main level": "Main Floor"}
+        rules.area_aliases = {"mom's room": "Master Bedroom"}
+        p = tmp_path / "out.yaml"
+        save_rules_to_yaml(p, rules)
+        loaded = load_rules_from_yaml(p)
+        assert loaded.floor_aliases == {"main level": "Main Floor"}
+        assert loaded.area_aliases == {"mom's room": "Master Bedroom"}
+
+    def test_phase_85_alias_keys_lowercased_and_stripped(self, tmp_path: Path) -> None:
+        """Operator typed mixed-case keys; loader normalises them so
+        the inference module's lowercase lookup matches."""
+        p = tmp_path / "aliases.yaml"
+        p.write_text(
+            "floor_aliases:\n"
+            "  '  Main Level  ': 'Main Floor'\n"
+            "area_aliases:\n"
+            "  PATIO: 'Patio'\n",
+            encoding="utf-8",
+        )
+        loaded = load_rules_from_yaml(p)
+        assert loaded.floor_aliases == {"main level": "Main Floor"}
+        assert loaded.area_aliases == {"patio": "Patio"}
+
 
 # ──────────────────────────────────────────────────────────────
 # Phase 8.2 — Command verbs, ambient patterns, precheck extras

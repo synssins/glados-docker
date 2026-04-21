@@ -1167,24 +1167,38 @@ class _StubSemanticIndex:
     hit list. Used to verify the disambiguator wiring without
     loading the real BGE-small model."""
 
-    def __init__(self, hits_by_query=None, ready=True, raises=False):
+    def __init__(self, hits_by_query=None, ready=True, raises=False,
+                 area_names=None, floor_names=None):
         from glados.ha.semantic_index import SemanticHit
         self._hits = hits_by_query or {}
         self._ready = ready
         self._raises = raises
         self.SemanticHit = SemanticHit
         self.calls: list[str] = []
+        self.call_kwargs: list[dict] = []  # Phase 8.5 — capture area/floor filters
+        self._area_names = area_names or {}
+        self._floor_names = floor_names or {}
 
     def is_ready(self) -> bool:
         return self._ready
 
     def retrieve_for_planner(self, query, *, k=8, domain_filter=None,
+                             area_id=None, floor_id=None,
                              segment_tokens=None,
                              ignore_segments=True):  # noqa: ARG002
         self.calls.append(query)
+        self.call_kwargs.append({"area_id": area_id, "floor_id": floor_id})
         if self._raises:
             raise RuntimeError("simulated retriever explosion")
         return self._hits.get(query, [])
+
+    # Phase 8.5 — the disambiguator calls these to resolve
+    # utterance keywords into registry ids before retrieval.
+    def area_names(self) -> dict[str, str]:
+        return dict(self._area_names)
+
+    def floor_names(self) -> dict[str, str]:
+        return dict(self._floor_names)
 
 
 class TestSemanticIndexIntegration:
@@ -1336,6 +1350,71 @@ class TestSemanticIndexIntegration:
         # cache), then fuzzy ran.
         assert semantic.calls == ["desk lamp"]
         assert r.decision == "execute"
+
+    def test_phase_85_floor_keyword_forwards_floor_id_to_retriever(self) -> None:
+        """Phase 8.5 — when the utterance says "downstairs", the
+        disambiguator resolves it via the area_inference module
+        against the stub index's registry and passes floor_id to
+        retrieve_for_planner."""
+        from glados.ha.semantic_index import SemanticHit
+
+        cache_states = [
+            _state("light.kitchen_ceiling", "Kitchen Ceiling"),
+        ]
+        semantic = _StubSemanticIndex(
+            hits_by_query={"turn off the downstairs lights": [
+                SemanticHit(
+                    entity_id="light.kitchen_ceiling",
+                    score=0.9, document="doc",
+                    area_id="kitchen", floor_id="floor_main",
+                ),
+            ]},
+            floor_names={"floor_main": "Main Floor",
+                         "floor_upper": "Upper Floor"},
+        )
+        disambig, _ha, _cache = _make(
+            cache_states=cache_states,
+            llm_response=(
+                '{"decision":"execute",'
+                '"entity_ids":["light.kitchen_ceiling"],'
+                '"service":"turn_off","speech":"ok","rationale":"fb"}'
+            ),
+        )
+        disambig._semantic_index = semantic
+        disambig.run(
+            "turn off the downstairs lights", source="webui_chat",
+        )
+        # Single retrieve_for_planner call with floor_id hint.
+        assert len(semantic.call_kwargs) == 1
+        assert semantic.call_kwargs[0]["floor_id"] == "floor_main"
+
+    def test_phase_85_no_keyword_sends_no_filter(self) -> None:
+        """Utterances without an area/floor keyword must NOT pass
+        filters — otherwise plain 'turn on the lights' would get
+        silently scoped and regress candidate recall."""
+        from glados.ha.semantic_index import SemanticHit
+
+        cache_states = [
+            _state("light.office_desk", "Office Desk"),
+        ]
+        semantic = _StubSemanticIndex(
+            hits_by_query={"turn on the desk lamp": [
+                SemanticHit(entity_id="light.office_desk",
+                            score=0.9, document="d"),
+            ]},
+            floor_names={"floor_main": "Main Floor"},
+        )
+        disambig, _ha, _cache = _make(
+            cache_states=cache_states,
+            llm_response=(
+                '{"decision":"execute","entity_ids":["light.office_desk"],'
+                '"service":"turn_on","speech":"ok","rationale":"r"}'
+            ),
+        )
+        disambig._semantic_index = semantic
+        disambig.run("turn on the desk lamp", source="webui_chat")
+        assert semantic.call_kwargs[0]["floor_id"] is None
+        assert semantic.call_kwargs[0]["area_id"] is None
 
 
 # ---------------------------------------------------------------------------
