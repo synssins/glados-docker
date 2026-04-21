@@ -52,6 +52,7 @@ Work actually shipped in this session, in chronological order. Reference for Pha
 - **Phase 8.5 COMPLETE** (2026-04-21). Utterance → area/floor inference via `area_inference.py`; 4-floor split-level house keyword table; SemanticIndex `_entity_area_ids`/`_entity_floor_ids` parallel arrays with persist/load (schema v2); entity→device area cascade resolves ~290 entities HA publishes area_id sparsely on. Operator-editable `floor_aliases`/`area_aliases` on the Disambiguation rules card. Live-verified: `downstairs → ground_level`, `upstairs → bedroom_level`, `backyard → back_yard`. 727 tests pass.
 - **Phase 8.6 COMPLETE** (2026-04-21, reframed). Scoping showed all 9 compound battery FAILs had "0 state changes" — the LLM silently dropped actions before emission, not a loop issue. Pure planner/executor rename would not have helped. Fixed at two layers: (a) two concrete compound few-shots in the disambiguator system prompt + "CRITICAL: one action per verb" directive, (b) `min_expected_action_count()` helper + retry-once-on-dropout when `len(parsed_actions) < expected`. Live-probe of 5 compound utterances showed all 5 emit the correct action count; no retries fired because few-shots alone fixed it. 740 tests pass.
 - **Phase 8.7 COMPLETE** (2026-04-21). Quip library + composer + three response modes replacing LLM-pass-through: `quip` (pick a Portal-voice line from `configs/quips/`, never leaks device names), `LLM_safe` (dedicated narrow Qwen3 call that sees only intent + outcome + mood), and `chime`/`silent` (audio-side hooks). WebUI Response behavior card under Audio & Speakers + Quip editor card under Personality (GET/PUT/DELETE/test API with path-escape protection). Live-verified: quip mode (`"Off. Efficient."`), LLM_safe mode (`"The device has been activated."`, `"Three of your lighting systems have been dimmed, but the fourth remains unchanged."`), all device-name-free. 788 tests pass. Seed content ~60 lines; content expansion to ~450 lines is a deferred follow-up.
+- **Phase 8.13 COMPLETE** (2026-04-21). Load-time config-drift reconciliation in `GladosConfig.from_yaml` — services.yaml wins over the duplicated Glados-block fields, every override logs a WARNING. Closes Change 15 open-issue #1. 837 tests pass (+13 new in `tests/test_glados_services_override.py`). Change 16 in `docs/CHANGES.md`.
 - **Phase 8.8–8.9 NOT STARTED** — queued and unchanged.
 
 Three new tracks surfaced during the session that weren't in the original plan:
@@ -478,6 +479,54 @@ Output grammar-constrained (Qwen3 native) to English only, no JSON wrapping.
 **Success:** operator uploads cert → toast "Certificate applied." → visiting `http://host:8052/` returns 301 → browser lands on `https://host:8053/` with the new cert. No container restart needed.
 
 **Cost:** ~200 LOC (reload + redirect listener + small WebUI copy updates).
+
+---
+
+### Phase 8.13 — Config-sync fix: services block is source of truth (COMPLETE, 2026-04-21)
+
+**Problem fixed:** Operator's UI showed `services.ollama_interactive.model = qwen3:14b` but a hand-edit to the legacy `Glados.llm_model` field left it at `qwen3:8b`. Engine read the Glados-block field directly at boot, so the engine ran 8B while the UI advertised 14B. Violated §0 rule: every operator-facing setting must surface through the WebUI as the authoritative source.
+
+**Shipped:**
+
+- `glados/core/engine.py::GladosConfig.from_yaml` now runs a pure-dict reconciliation pass (`_reconcile_glados_with_services`) over the raw Glados block before pydantic validation. Services values from `services.yaml` win whenever they are non-empty and disagree with the Glados block, across all four fields: `llm_model`, `completion_url`, `autonomy.llm_model`, `autonomy.completion_url`. Each override emits a WARNING log naming the field, old value, new value, and "UI is source of truth".
+- A `_ollama_as_chat_url` helper mirrors `tts_ui._ollama_chat_url` so the bare-base URL stored in `services.yaml` matches the `/api/chat`-suffixed URL stored in `glados_config.yaml` without false positives. Duplicated on purpose to avoid a `core/` → `webui/` inbound import.
+- Reconciliation is guarded by the presence of `services.yaml`: dev / test runs without a services file skip reconciliation entirely so pydantic defaults don't pretend to be operator-authoritative.
+- Empty services values (blank model, blank URL) are never written back over a working Glados field.
+
+**Tests:** `tests/test_glados_services_override.py` — 13 cases, all passing. Full suite: 837 passed / 3 skipped.
+
+**Note on future simplification (deliberately deferred):** We could drop the duplicated fields from `glados_config.yaml` entirely and have the engine read directly from `services.ollama_interactive.*`. That removes the second source of truth instead of reconciling it. Out of scope for 8.13 — costs a larger config migration + operator comms; reconciliation + warnings is sufficient and lets us measure drift in the wild before committing.
+
+**Success verified:** No path where the UI's displayed model differs from the engine's runtime model without a WARNING log announcing the override.
+
+---
+
+### Phase 8.14 — Portal canon RAG (surfaced 2026-04-21, P2)
+
+**Problem observed:** Operator asked "How did you cope with being a potato?" → 14B produced an in-persona but factually wrong answer ("I was harvested, fried, and consumed"). GLaDOS was never eaten — Portal 2 canon: Wheatley plugs her into the potato battery, Chell retrieves the potato after the bird drops it, stabs it onto the Portal Device / management rail, they return to the main facility, GLaDOS is restored to her mainframe. The preprompt lists fragment anchors (bird, rail, less-than-a-volt) but no middle or end. The model completes the arc from its strongest prior (biological-culinary potato lifecycle).
+
+Same failure class applies to any niche-canon Portal question (Cave Johnson's full arc, the turret opera, moon-rock origins, Caroline-linked details). Static preprompt stuffing doesn't scale — more facts dilute attention and still leave narrative gaps.
+
+**Why not patch with more facts:** Operator's explicit instruction, and architecturally correct. Preprompt attention is finite; each added canonical fact reduces signal on the operational rules (tool use, response style, forbidden endings). Scaling canon coverage via preprompt is a dead end.
+
+**Work:**
+
+1. **Seed content.** Curate ~40–60 short canonical event summaries (2–3 sentences each) covering:
+   - GLaDOS's own arc: creation, Caroline-to-GLaDOS transition, neurotoxin incident with Chell, reactor meltdown / morality core, PotatOS arc with Wheatley (including the correct ending), post-Portal-2 restoration.
+   - Cave Johnson: founding Aperture, monetised asbestos, combustible lemon speech, moon-rock poisoning, Caroline era.
+   - Wheatley: personality core origin, escape with Chell, coup, overthrow, stranded in space.
+   - Chell: testing history, survival, role in PotatOS recovery (no speculation beyond canon).
+   - Worldbuilding: Aperture Science Enrichment Center layout, Old Aperture sub-levels, Thermal Discouragement Beams / Aerial Faith Plates / Excursion Funnels / repulsion + propulsion gels / moon-rock portal conduit, turret opera aria.
+2. **Storage.** Use the existing `memory_store` (ChromaDB). Seed a new collection `portal_canon` or tag entries with `kind=canon` on the existing collection. Keep metadata (topic, characters mentioned) for filter hints.
+3. **Retrieval at query time.** Extend `memory_context.as_prompt()` (or add a sibling `canon_context.as_prompt()`) that runs on the same utterance as the existing user-memory retrieval. Keyword-triggered: if the utterance mentions any of {potato, Wheatley, Caroline, Cave, Aperture, turret, moon, neurotoxin, Old Aperture, test subject, …}, retrieve top-k canon entries and inject as a system message just before the user turn — same pattern as `weather_cache.as_prompt()` already uses.
+4. **Both chat paths.** SSE (`_stream_chat_sse_impl`) and non-streaming (`llm_processor._build_messages`) need the injection. The existing memory injection already runs on both — piggyback on it.
+5. **WebUI.** New "Canon library" card under Personality, similar to the Quip editor: tree view of canon entries, textarea to edit, dry-run "what would retrieve on this utterance" panel. Bind-mounted under `configs/canon/` so operators can edit directly.
+
+**Success:** "How did you cope with being a potato?" returns canon-accurate content (rescue by Chell, restoration to mainframe, or honest refusal to summarise — but NOT the invented culinary ending). Same test applies for Wheatley's fate, Caroline deflection, Cave Johnson trivia. Operator-editable — no preprompt changes required for new canon topics.
+
+**Cost:** ~300 LOC code + ~60 curated canon snippets + a small WebUI card.
+
+**Dependencies:** Existing `memory_store` (ChromaDB), `memory_context`, `_stream_chat_sse_impl` memory injection — all already in place.
 
 ---
 
