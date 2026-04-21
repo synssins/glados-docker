@@ -2259,19 +2259,69 @@ Container repo (landed and deployed):
 
 Harness scratch dir (not git-tracked; lives at
 `C:\src\glados-test-battery`):
-- `harness.py` — direction-verified scoring + noise fetch
+- `harness.py` — direction-verified scoring + noise fetch +
+  idempotent-PASS via ``post_snap`` (Phase 8.9.1 amendment, see
+  below) + env-var reads for secrets
 - `hadatasets_adapter.py` — new
-- `test_score.py` — new
+- `test_score.py` — 19 cases including idempotent path
 - `test_hadatasets_adapter.py` — new
+
+### Follow-on: self-hosted runner on AIBox
+
+Shipped in the same session once the scorer surface landed.
+Operator opted in with "single-admin private LAN, I own the
+trust surface — install it." Runner on AIBox at
+`10.0.0.10` as the Windows service
+`actions.runner.synssins-glados-docker.aibox-glados-lan`
+(delayed auto-start, runs as ``NT AUTHORITY\NETWORK SERVICE``).
+Labels: ``self-hosted, glados-lan, windows, x64``. Secrets
+``HA_TOKEN`` and ``GLADOS_SSH_PASSWORD`` pushed to repo Actions
+secrets, harness re-reads them from env. New nightly workflow
+`.github/workflows/battery-nightly.yml` (commits
+[`838f01c`](https://github.com/synssins/glados-docker/commit/838f01c),
+[`362d4d7`](https://github.com/synssins/glados-docker/commit/362d4d7)):
+fires at 07:00 UTC (02:00 America/Chicago) with a 50-test sanity
+subset, or a manual Run-workflow button with ``max_tests`` and
+``start_idx`` inputs. Helper scripts under `scripts/ci/`
+(`run_battery.py`, `summarise_battery.py`, `tripwire_battery.py`)
+keep the YAML thin and are unit-testable outside CI. 45% pass-
+rate tripwire; 30-day artefact retention on
+``results.json`` + ``harness.log``. `icacls` grants
+``NT AUTHORITY\NETWORK SERVICE:(OI)(CI)M`` on
+`C:\src\glados-test-battery` so rotation writes don't `ERROR_ACCESS_DENIED`.
+
+### Phase 8.9.1 — idempotent-tier-ack PASS (same-session patch)
+
+The first 3-test dispatch on the new runner revealed a direction-
+match false-negative: "turn on the kitchen lights" acked by Tier 1
+but with no ``state_changed`` from HA (the lights were already on
+— HA correctly emits no event). Pre-patch the scorer FAILed these
+because `require_direction_match=True` disabled the
+`audit_ok_from_tier` fallback wholesale.
+
+Patched `score()` to take an optional ``post_snap`` kwarg. When the
+diff set is empty AND Tier 1 acked ok AND the target's post-state
+matches the expected direction, that's a PASS with rationale
+``"target already on (idempotent tier-ack)"``. The rescue requires
+BOTH the tier ack AND the final-state check — missing either still
+fails, so "tier lied" and "ambient state happened to match" remain
+correctly classified as FAIL.
+
+Added 5 tests to `test_score.py` (19 total). Verified on a repeat
+3-test dispatch — all three passed with the idempotent rationale.
 
 ### Closes
 
-Phase 8.9 complete to the level the plan defined (scorer harden +
-home-assistant-datasets adapter + pytest CI). Outstanding follow-ups:
+Phase 8.9 complete including the self-hosted runner and the
+idempotent-scorer patch. Outstanding follow-ups:
 
-- Self-hosted runner for the live battery — wait until operator
-  decides whether they want that always-on infra.
-- Nightly full-battery + ha-datasets benchmark wiring — waits on
-  self-hosted runner.
+- Harness scratch dir should eventually land in its own git repo
+  (currently lives in a non-tracked dir on AIBox). Not urgent
+  since the CI runner reads from that location directly.
+- If a future phase introduces idempotent commands on non-binary
+  domains (e.g. "make it brighter" when already at max), the
+  idempotent-PASS logic should extend to brightness / color.
+  Not in scope today — operator's dispatch surfaced only the
+  on/off case.
 
 ---
