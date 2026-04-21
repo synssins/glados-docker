@@ -35,6 +35,71 @@ _AUTONOMY_NOISE_PREFIXES: tuple[str, ...] = (
 )
 
 
+def _drop_parrot_anchors(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Anti-parrot guard for the non-streaming chat path. Mirrors
+    the SSE-path version in api_wrapper._drop_parrot_anchors but
+    detects the current question from the LAST user turn in
+    `messages` (the one just appended by the engine via
+    submit_text_input). Removes earlier (user, assistant) pairs
+    whose user content matches the current question after
+    whitespace / trailing-punctuation / case normalisation.
+
+    Preprompt few-shots at indices 1..N are protected — we skip
+    matches at index < 2. Without this guard, qwen3:8b copies its
+    own prior replies verbatim when the same question repeats
+    (2026-04-21 live bug; full regression detail in
+    api_wrapper._drop_parrot_anchors)."""
+    # Find the current (most recent) user message. The engine writes
+    # the user turn to the store just before calling _build_messages.
+    current: str | None = None
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user":
+            content = m.get("content")
+            if isinstance(content, str) and content.strip():
+                current = content
+            break
+    if not current:
+        return messages
+    cur_norm = current.strip().strip(".,!?;:").lower()
+    if not cur_norm:
+        return messages
+
+    out: list[dict[str, Any]] = []
+    last_user_kept = False  # Keep the LATEST user turn (index depends on prior drops)
+    # Walk messages and drop earlier user turns that match cur_norm
+    # along with the assistant reply that follows each. The latest
+    # user turn (which IS the current question) must be kept.
+    dropped_indices: set[int] = set()
+    user_indices: list[int] = [
+        i for i, m in enumerate(messages)
+        if isinstance(m, dict) and m.get("role") == "user"
+    ]
+    if not user_indices:
+        return messages
+    latest_user_idx = user_indices[-1]
+    for idx in user_indices[:-1]:
+        if idx < 2:
+            continue  # protect preprompt few-shots
+        m = messages[idx]
+        content = (m.get("content") or "") if isinstance(m, dict) else ""
+        if not isinstance(content, str):
+            continue
+        if content.strip().strip(".,!?;:").lower() == cur_norm:
+            dropped_indices.add(idx)
+            # Also drop the assistant reply that immediately follows, if any.
+            if (
+                idx + 1 < len(messages)
+                and isinstance(messages[idx + 1], dict)
+                and messages[idx + 1].get("role") == "assistant"
+            ):
+                dropped_indices.add(idx + 1)
+    if not dropped_indices:
+        return messages
+    return [m for i, m in enumerate(messages) if i not in dropped_indices]
+
+
 def _strip_autonomy_noise(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -646,6 +711,7 @@ class LanguageModelProcessor:
         # instead of the configured persona (2026-04-21 live bug).
         if not autonomy_mode:
             messages = _strip_autonomy_noise(messages)
+            messages = _drop_parrot_anchors(messages)
         # Chitchat gate: detect whether the CURRENT user turn is a
         # home command. If not, suppress the MCP context-resource
         # dump (entity lists, device catalogs, etc.) — those

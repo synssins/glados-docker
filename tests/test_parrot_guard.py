@@ -127,3 +127,85 @@ class TestDropParrotAnchors:
         users = [m.get("content") for m in out if m.get("role") == "user"]
         assert "repeated" not in users
         assert users == ["seed", "something else"]
+
+
+class TestDropParrotAnchorsNonStreaming:
+    """The non-streaming engine path has its own copy of the guard
+    that reads the current question from the LAST user turn in the
+    message list (since the engine appends before calling into the
+    processor). Same logic, different entry point."""
+
+    def test_drops_prior_pair_when_latest_user_repeats(self) -> None:
+        from glados.core.llm_processor import _drop_parrot_anchors as _nsdrop
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Tell me about this house"},   # few-shot
+            {"role": "assistant", "content": "This facility..."},       # few-shot
+            {"role": "user", "content": "What was life like as a potato?"},
+            {"role": "assistant", "content": "Old verbatim answer."},
+            {"role": "user", "content": "What was life like as a potato?"},
+        ]
+        out = _nsdrop(msgs)
+        users = [m.get("content") for m in out if m.get("role") == "user"]
+        # Only ONE potato question remains — the latest. Prior pair gone.
+        potato_count = sum(
+            1 for u in users
+            if u == "What was life like as a potato?"
+        )
+        assert potato_count == 1
+
+    def test_keeps_the_latest_user_turn(self) -> None:
+        from glados.core.llm_processor import _drop_parrot_anchors as _nsdrop
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "seed"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "X"},
+            {"role": "assistant", "content": "first X answer"},
+            {"role": "user", "content": "X"},  # the current question
+        ]
+        out = _nsdrop(msgs)
+        # The last "X" must still be present.
+        assert out[-1] == {"role": "user", "content": "X"}
+        # The first "X" + its reply should be gone.
+        kept_roles_contents = [(m.get("role"), m.get("content")) for m in out]
+        assert ("user", "X") in kept_roles_contents
+        assert kept_roles_contents.count(("user", "X")) == 1
+
+    def test_preserves_few_shot_at_index_1(self) -> None:
+        from glados.core.llm_processor import _drop_parrot_anchors as _nsdrop
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Tell me about this house"},  # few-shot
+            {"role": "assistant", "content": "This facility..."},
+            {"role": "user", "content": "Tell me about this house"},  # repeat
+        ]
+        out = _nsdrop(msgs)
+        # Few-shot at index 1 must stay. The latest at index 3 is the
+        # current question and must also stay.
+        assert out[1]["content"] == "Tell me about this house"
+        assert out[-1]["content"] == "Tell me about this house"
+        # Length unchanged — nothing got dropped because index 1 is
+        # protected and the latest can't be dropped.
+        assert len(out) == 4
+
+    def test_no_prior_match_returns_unchanged(self) -> None:
+        from glados.core.llm_processor import _drop_parrot_anchors as _nsdrop
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "r1"},
+            {"role": "user", "content": "b"},
+        ]
+        out = _nsdrop(msgs)
+        assert out == msgs
+
+    def test_empty_current_returns_unchanged(self) -> None:
+        from glados.core.llm_processor import _drop_parrot_anchors as _nsdrop
+        # No user messages → no current question → no change
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "r"},
+        ]
+        out = _nsdrop(msgs)
+        assert out == msgs
