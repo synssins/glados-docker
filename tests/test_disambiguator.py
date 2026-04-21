@@ -1030,6 +1030,95 @@ class TestStateVerification:
         assert "Evening scene, engaged." in r.speech
 
 
+# ──────────────────────────────────────────────────────────────
+# Phase 8.6 — compound-command dropout recovery
+# ──────────────────────────────────────────────────────────────
+
+class TestCompoundDropoutRetry:
+    """When the utterance structurally demands ≥2 actions but the
+    LLM emits fewer, the planner re-prompts once with a reminder
+    rather than executing a partial plan."""
+
+    def test_dropout_triggers_retry_that_recovers_second_action(self) -> None:
+        states = [
+            _state("light.kitchen_lamp", "Kitchen Lamp",
+                   state="on", area="kitchen"),
+            _state("light.living_room_lamp", "Living Room Lamp",
+                   state="off", area="living_room"),
+        ]
+        # First call drops one action; retry returns both.
+        first = (
+            '{"decision":"execute","actions":['
+            '{"service":"light.turn_off","entity_ids":["light.kitchen_lamp"]}],'
+            '"speech":"kitchen off","rationale":"partial"}'
+        )
+        retry = (
+            '{"decision":"execute","actions":['
+            '{"service":"light.turn_off","entity_ids":["light.kitchen_lamp"]},'
+            '{"service":"light.turn_on","entity_ids":["light.living_room_lamp"]}],'
+            '"speech":"both done","rationale":"compound"}'
+        )
+        disambig, ha, _ = _make(
+            cache_states=states,
+            llm_response=first,  # overridden below with side_effect
+        )
+        disambig._call_ollama = MagicMock(side_effect=[first, retry])
+        r = disambig.run(
+            "turn off the kitchen lamp and turn on the living room lamp",
+            source="webui_chat", assume_home_command=True,
+        )
+        # Both actions fired after retry.
+        assert r.decision == "execute"
+        assert len(ha.calls) == 2
+        services = [c["service"] for c in ha.calls]
+        assert services == ["turn_off", "turn_on"]
+        # _call_ollama was invoked twice (original + retry).
+        assert disambig._call_ollama.call_count == 2
+
+    def test_single_action_utterance_skips_retry(self) -> None:
+        states = [
+            _state("light.kitchen_lamp", "Kitchen Lamp", state="on"),
+        ]
+        llm = (
+            '{"decision":"execute","actions":['
+            '{"service":"light.turn_off","entity_ids":["light.kitchen_lamp"]}],'
+            '"speech":"done","rationale":"single"}'
+        )
+        disambig, ha, _ = _make(cache_states=states, llm_response=llm)
+        disambig._call_ollama = MagicMock(return_value=llm)
+        r = disambig.run(
+            "turn off the kitchen lamp",  # no conjunction, no retry
+            source="webui_chat", assume_home_command=True,
+        )
+        assert r.decision == "execute"
+        assert disambig._call_ollama.call_count == 1
+
+    def test_retry_with_no_improvement_keeps_original(self) -> None:
+        """If the retry ALSO returns a short action list, the planner
+        must NOT loop forever — it executes with what it has. Retry
+        fires at most once per turn."""
+        states = [
+            _state("light.a", "A", state="on", area="x"),
+            _state("light.b", "B", state="on", area="y"),
+        ]
+        one_action = (
+            '{"decision":"execute","actions":['
+            '{"service":"light.turn_off","entity_ids":["light.a"]}],'
+            '"speech":"a off","rationale":"still one"}'
+        )
+        disambig, ha, _ = _make(cache_states=states, llm_response=one_action)
+        # Both attempts return the same 1-action plan.
+        disambig._call_ollama = MagicMock(side_effect=[one_action, one_action])
+        r = disambig.run(
+            "turn off a and turn on b", source="webui_chat",
+            assume_home_command=True,
+        )
+        # Executes with the one action it has; retry fired once.
+        assert r.decision == "execute"
+        assert len(ha.calls) == 1
+        assert disambig._call_ollama.call_count == 2
+
+
 class TestExecute:
     def test_executes_single_entity(self) -> None:
         disambig, ha, _ = _make(

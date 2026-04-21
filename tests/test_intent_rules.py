@@ -15,6 +15,7 @@ from glados.intent.rules import (
     explain_home_command_match,
     load_rules_from_yaml,
     looks_like_home_command,
+    min_expected_action_count,
 )
 
 
@@ -255,6 +256,58 @@ class TestCommandVerbPrecheck:
         apply_precheck_overrides(rules)
         assert looks_like_home_command("nudge it")
         assert looks_like_home_command("Nudge it")
+
+
+# ──────────────────────────────────────────────────────────────
+# Phase 8.6 — compound-command expected-action-count helper
+# ──────────────────────────────────────────────────────────────
+
+class TestMinExpectedActionCount:
+    def test_no_conjunction_returns_one(self) -> None:
+        assert min_expected_action_count("dim the bedroom") == 1
+        assert min_expected_action_count("turn off the kitchen lights") == 1
+        assert min_expected_action_count("") == 1
+
+    def test_single_verb_across_multiple_entities_returns_one(self) -> None:
+        # "turn off the kitchen AND the living room" is still ONE
+        # action with two entity_ids. Only one direction particle
+        # ('off') + no additional verb = not compound.
+        assert min_expected_action_count(
+            "turn off the kitchen and the living room"
+        ) == 1
+
+    def test_two_different_verbs_returns_two(self) -> None:
+        assert min_expected_action_count(
+            "brighten the office and dim the basement"
+        ) == 2
+
+    def test_two_direction_particles_returns_two(self) -> None:
+        # "turn X up AND Y down" — two distinct direction particles
+        # signal a compound command.
+        assert min_expected_action_count(
+            "turn the kitchen cabinet up and the lower hallway down"
+        ) == 2
+
+    def test_kill_and_light_up_returns_two(self) -> None:
+        assert min_expected_action_count(
+            "kill the office wall wash lights and light up the living room cabinets"
+        ) == 2
+
+    def test_semicolon_also_counts_as_conjunction(self) -> None:
+        assert min_expected_action_count(
+            "dim the office; brighten the hallway"
+        ) == 2
+
+    def test_then_counts_as_conjunction(self) -> None:
+        assert min_expected_action_count(
+            "close the shades then turn on the reading lamp"
+        ) == 2
+
+    def test_conjunction_without_enough_signals_stays_one(self) -> None:
+        # "and" joining two non-command phrases doesn't mean compound.
+        assert min_expected_action_count(
+            "the office is dark and cold"
+        ) == 1
 
 
 class TestAmbientPatternPrecheck:
