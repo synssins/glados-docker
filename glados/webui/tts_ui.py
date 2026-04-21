@@ -3715,10 +3715,11 @@ class Handler(BaseHTTPRequestHandler):
                 rules.area_aliases = cleaned_aa
             if "response_mode" in data:
                 rm = str(data["response_mode"] or "").strip()
-                if rm not in {"LLM", "quip", "chime", "silent"}:
+                if rm not in {"LLM", "LLM_safe", "quip", "chime", "silent"}:
                     self._send_error(
                         400,
-                        "response_mode must be one of: LLM, quip, chime, silent",
+                        "response_mode must be one of: "
+                        "LLM, LLM_safe, quip, chime, silent",
                     )
                     return
                 rules.response_mode = rm
@@ -3728,7 +3729,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_error(400, "response_mode_per_event must be an object")
                     return
                 valid_events = {"command_ack", "query_answer", "ambient_cue", "error"}
-                valid_modes = {"LLM", "quip", "chime", "silent"}
+                valid_modes = {"LLM", "LLM_safe", "quip", "chime", "silent"}
                 cleaned_rmp: dict[str, str] = {}
                 for k, v in rmp_raw.items():
                     ks = str(k).strip()
@@ -6868,10 +6869,11 @@ function _responseBehaviorPopulate(data) {
   const perEvent = (data.response_mode_per_event && typeof data.response_mode_per_event === 'object')
     ? data.response_mode_per_event : {};
   const MODES = [
-    { value: 'LLM',    label: 'LLM (language model writes)' },
-    { value: 'quip',   label: 'Quip (pre-written library)' },
-    { value: 'chime',  label: 'Chime (sound file)' },
-    { value: 'silent', label: 'Silent (no reply)' },
+    { value: 'LLM',      label: 'LLM (planner speech, pass-through)' },
+    { value: 'LLM_safe', label: 'LLM (safe, no device names)' },
+    { value: 'quip',     label: 'Quip (pre-written library)' },
+    { value: 'chime',    label: 'Chime (sound file)' },
+    { value: 'silent',   label: 'Silent (no reply)' },
   ];
   const EVENT_ROWS = [
     { key: 'command_ack',  label: 'Command acknowledgement',  desc: 'Replies after a light / switch / scene command fires.' },

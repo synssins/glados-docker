@@ -7,6 +7,7 @@ from .composer import (
     classify_intent,
     compose,
 )
+from .llm_composer import LLMComposeRequest, compose_speech
 from .quip_selector import (
     QuipLibrary,
     QuipRequest,
@@ -25,6 +26,7 @@ __all__ = [
     "CHIME_SENTINEL",
     "ComposeRequest",
     "ComposedSpeech",
+    "LLMComposeRequest",
     "PersonaRewriter",
     "QuipLibrary",
     "QuipRequest",
@@ -34,6 +36,7 @@ __all__ = [
     "VALID_MODES",
     "classify_intent",
     "compose",
+    "compose_speech",
     "format_entity_count",
     "get_rewriter",
     "init_rewriter",

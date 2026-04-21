@@ -1563,6 +1563,11 @@ class Disambiguator:
             outcome=outcome,
             entity_count=entity_count,
             mode=mode,  # type: ignore[arg-type]
+            # Phase 8.7d — LLM_safe routes through a dedicated
+            # narrow LLM call that never sees device names. Reuse
+            # the disambiguator's Ollama URL + rewriter model.
+            llm_safe_url=self._ollama_url or "",
+            llm_safe_model=self._model or "",
         )
         out = compose(req, library)
         return out.mode, out.text

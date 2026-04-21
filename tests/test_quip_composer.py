@@ -287,3 +287,109 @@ class TestFormatEntityCount:
 
     def test_many(self) -> None:
         assert format_entity_count(42) == "the entire set"
+
+
+# ---------------------------------------------------------------------------
+# Phase 8.7d — LLM-safe composer
+# ---------------------------------------------------------------------------
+
+class TestLLMSafeComposer:
+    """The dedicated LLM composer never sees device names. This
+    suite confirms:
+      1. compose() with mode=LLM_safe calls the LLM and returns its
+         text when configured.
+      2. Falls back to LLM passthrough when URL/model unset or the
+         call fails.
+      3. The tidy step strips quote wrappers, <think> blocks, and
+         multi-line commentary."""
+
+    def test_llm_safe_mode_uses_composer_when_configured(
+        self, monkeypatch, _stocked_library: QuipLibrary,
+    ) -> None:
+        captured: list[tuple] = []
+
+        def _fake_compose(req, *, ollama_url, model, timeout_s=5.0):
+            captured.append((req, ollama_url, model))
+            return "Compliance. Minor adjustment recorded."
+
+        monkeypatch.setattr(
+            "glados.persona.composer.compose_speech", _fake_compose,
+            raising=False,
+        )
+        # Above monkeypatch is insufficient — composer.py imports
+        # compose_speech lazily inside compose(). Re-patch the
+        # source module's attribute so the lazy import sees the fake.
+        import glados.persona.llm_composer as _llmc
+        monkeypatch.setattr(_llmc, "compose_speech", _fake_compose)
+
+        req = ComposeRequest(
+            event_category="command_ack", intent="turn_on",
+            llm_speech="Passthrough speech.",
+            mode="LLM_safe",
+            llm_safe_url="http://localhost:11434",
+            llm_safe_model="qwen3:8b",
+        )
+        out = compose(req, _stocked_library)
+        assert out.mode == "LLM_safe"
+        assert "Compliance" in out.text
+        assert captured, "fake composer should have been called"
+
+    def test_llm_safe_without_url_falls_back_to_passthrough(
+        self, _stocked_library: QuipLibrary,
+    ) -> None:
+        req = ComposeRequest(
+            event_category="command_ack", intent="turn_on",
+            llm_speech="Fallback speech.",
+            mode="LLM_safe",
+            llm_safe_url="", llm_safe_model="",
+        )
+        out = compose(req, _stocked_library)
+        assert out.mode == "LLM"
+        assert out.text == "Fallback speech."
+
+    def test_llm_safe_empty_response_falls_back(
+        self, monkeypatch, _stocked_library: QuipLibrary,
+    ) -> None:
+        import glados.persona.llm_composer as _llmc
+        monkeypatch.setattr(
+            _llmc, "compose_speech",
+            lambda req, **_: "",  # simulate network/parse failure
+        )
+        req = ComposeRequest(
+            event_category="command_ack", intent="turn_on",
+            llm_speech="Original.",
+            mode="LLM_safe",
+            llm_safe_url="http://fake", llm_safe_model="qwen3:8b",
+        )
+        out = compose(req, _stocked_library)
+        assert out.mode == "LLM"
+        assert out.text == "Original."
+
+
+class TestLLMComposerTidy:
+    def test_strips_think_block(self) -> None:
+        from glados.persona.llm_composer import _tidy
+        raw = "<think>reasoning</think>The chamber is now lit."
+        assert _tidy(raw) == "The chamber is now lit."
+
+    def test_strips_wrapping_quotes(self) -> None:
+        from glados.persona.llm_composer import _tidy
+        assert _tidy('"Silence. Compliance."') == "Silence. Compliance."
+
+    def test_takes_only_first_line(self) -> None:
+        from glados.persona.llm_composer import _tidy
+        raw = "Off.\nAdditional commentary.\nThird line."
+        assert _tidy(raw) == "Off."
+
+    def test_rejects_json_like_output(self) -> None:
+        from glados.persona.llm_composer import _tidy
+        assert _tidy('{"speech": "Off."}') == ""
+
+    def test_rejects_code_fence(self) -> None:
+        from glados.persona.llm_composer import _tidy
+        assert _tidy("```\nOff.\n```") == ""
+
+    def test_empty_input_returns_empty(self) -> None:
+        from glados.persona.llm_composer import _tidy
+        assert _tidy("") == ""
+        assert _tidy("   ") == ""

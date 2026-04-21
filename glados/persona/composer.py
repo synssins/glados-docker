@@ -35,8 +35,10 @@ from .quip_selector import (
 )
 
 
-ResponseMode = Literal["silent", "chime", "quip", "LLM"]
-VALID_MODES: frozenset[str] = frozenset({"silent", "chime", "quip", "LLM"})
+ResponseMode = Literal["silent", "chime", "quip", "LLM", "LLM_safe"]
+VALID_MODES: frozenset[str] = frozenset({
+    "silent", "chime", "quip", "LLM", "LLM_safe",
+})
 
 
 _BRIGHTEN_TOKENS: frozenset[str] = frozenset({
@@ -87,8 +89,9 @@ class ComposeRequest:
 
     `llm_speech` is the optimistic line the planner produced via the
     LLM. The composer either uses it (LLM mode), replaces it with a
-    quip (quip mode), emits a chime sentinel (chime mode), or emits
-    nothing (silent mode)."""
+    quip (quip mode), emits a chime sentinel (chime mode), emits
+    nothing (silent mode), or calls a dedicated narrow LLM that
+    never sees device names (LLM_safe mode)."""
     event_category: str           # "command_ack" | "query_answer" | ...
     intent: str                   # "turn_on", "turn_off", "brightness_up", ...
     llm_speech: str = ""
@@ -97,6 +100,10 @@ class ComposeRequest:
     affect: dict[str, float] | None = None
     time_of_day: str = ""
     mode: ResponseMode = "LLM"
+    # Phase 8.7d — only consulted when mode == "LLM_safe". None
+    # disables the path (falls back to LLM passthrough).
+    llm_safe_url: str = ""
+    llm_safe_model: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,6 +154,29 @@ def compose(req: ComposeRequest, library: QuipLibrary | None) -> ComposedSpeech:
         picked = library.pick(quip_req)
         if picked:
             return ComposedSpeech(text=picked, mode="quip")
+        return ComposedSpeech(text=req.llm_speech or "", mode="LLM")
+
+    if req.mode == "LLM_safe":
+        # Dedicated narrow LLM call — never sees device names.
+        # Import locally so composer doesn't force urllib imports on
+        # paths that never use it.
+        if not req.llm_safe_url or not req.llm_safe_model:
+            return ComposedSpeech(text=req.llm_speech or "", mode="LLM")
+        from .llm_composer import LLMComposeRequest, compose_speech
+        safe_req = LLMComposeRequest(
+            intent=req.intent,
+            outcome=req.outcome,
+            mood=mood_from_affect(req.affect),
+            entity_count=req.entity_count,
+        )
+        text = compose_speech(
+            safe_req,
+            ollama_url=req.llm_safe_url,
+            model=req.llm_safe_model,
+        )
+        if text:
+            return ComposedSpeech(text=text, mode="LLM_safe")
+        # Composer failed — fall back to whatever the planner said.
         return ComposedSpeech(text=req.llm_speech or "", mode="LLM")
 
     # LLM mode — pass the optimistic speech through unchanged.
