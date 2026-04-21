@@ -135,6 +135,9 @@ class ResolverResult:
     # Phase 8.6 — number of actions the planner executed; exposed so
     # the audit log can record compound plans accurately.
     action_count: int | None = None
+    # Phase 8.7 — which response mode produced the spoken reply
+    # (LLM | quip | chime | silent). Propagated to the audit log.
+    response_mode: str | None = None
 
 
 # ---- Injected collaborator protocols --------------------------------------
@@ -354,7 +357,8 @@ class CommandResolver:
                         latency_ms=t2.latency_ms, rationale=t2.rationale,
                         state_verified=t2.state_verified,
                         state_verification=t2.state_verification,
-                        action_count=t2.action_count)
+                        action_count=t2.action_count,
+                        response_mode=t2.response_mode)
             return t2
 
         # A learned guess that we nominated but Tier 2 couldn't use is
@@ -586,6 +590,7 @@ class CommandResolver:
             state_verified=getattr(result, "state_verified", None),
             state_verification=getattr(result, "state_verification", None) or None,
             action_count=getattr(result, "action_count", None),
+            response_mode=getattr(result, "response_mode", None),
         )
 
     # ---- Bookkeeping ---------------------------------------------------
@@ -709,6 +714,7 @@ class CommandResolver:
         state_verified: bool | None = None,
         state_verification: dict[str, Any] | None = None,
         action_count: int | None = None,
+        response_mode: str | None = None,
     ) -> None:
         try:
             extra = ctx.to_audit_fields()
@@ -720,6 +726,8 @@ class CommandResolver:
                 extra["state_verification"] = state_verification
             if action_count is not None:
                 extra["action_count"] = action_count
+            if response_mode is not None:
+                extra["response_mode"] = response_mode
             audit(AuditEvent(
                 ts=audit_now(),
                 origin=ctx.origin,
