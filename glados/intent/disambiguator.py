@@ -582,24 +582,27 @@ class Disambiguator:
         # fuzzy limit: scan the full cache for every entity that
         # matches, ALL-qualifier first and ANY-qualifier as fallback.
         # Uncapped — tokens are cheap, wrong targets are not.
+        # 2026-04-20 — qualifier-scan gating. This scan was written
+        # before Phase 8.3 semantic retrieval existed, as a hack
+        # around the fuzzy matcher's per-domain limit that could
+        # drown the correct target in generic-name noise. Now that
+        # semantic retrieval produces meaning-ranked top-K lists,
+        # this second pass is redundant AND harmful: for a query
+        # like "I would like to read in the living room" it grabs
+        # every entity whose name contains "living", "room", or
+        # "read" (243 in a real house), OVERWRITING the clean
+        # semantic hits with a noisy flood that overwhelms the
+        # LLM. Only run it when the primary candidate list is
+        # empty or tiny — i.e. when semantic AND fuzzy both came
+        # up short. A hard cap stays as a last-resort guard for
+        # the still-broken fuzzy-only deployments.
+        QUALIFIER_SCAN_FLOOR = 3
         qualifiers = _extract_qualifiers(utterance)
-        if qualifiers:
+        if qualifiers and len(candidates) < QUALIFIER_SCAN_FLOOR:
             scan_matches = _find_qualifier_matches(
                 self._cache, qualifiers, domain_hint,
             )
             if scan_matches:
-                # 2026-04-20 — hard cap on candidates sent to the
-                # LLM. Live bug: "I would like to read in the
-                # living room" had qualifiers {read, living, room}
-                # and the scan returned 243 matches. The resulting
-                # prompt was so large qwen3:14b abandoned JSON
-                # discipline and emitted thinking-mode prose
-                # ("Okay, let's see. The user provided..."). A
-                # prompt that overwhelms the model is strictly
-                # worse than a tight prompt that truncates some
-                # fringe candidates. 20 is enough for every real
-                # disambiguation case (Phase 8.3 retrieval trims
-                # to ≤8 already; this is the fuzzy-fallback cap).
                 cap = max(self._rules.candidate_limit, 20)
                 if len(scan_matches) > cap:
                     logger.debug(
@@ -609,8 +612,8 @@ class Disambiguator:
                     )
                     scan_matches = scan_matches[:cap]
                 logger.debug(
-                    "Tier 2 qualifier scan: fuzzy={} → scan={} "
-                    "(qualifiers={}, first={})",
+                    "Tier 2 qualifier scan (primary short): "
+                    "fuzzy={} → scan={} (qualifiers={}, first={})",
                     len(candidates), len(scan_matches), qualifiers,
                     [c.entity.entity_id for c in scan_matches][:6],
                 )
