@@ -129,6 +129,9 @@ class ResolverResult:
     latency_ms: int = 0
     learned_row_id: int | None = None
     ha_conversation_id: str | None = None
+    # Phase 8.4 — post-execute state verification carry-through.
+    state_verified: bool | None = None
+    state_verification: dict[str, Any] | None = None
 
 
 # ---- Injected collaborator protocols --------------------------------------
@@ -345,7 +348,9 @@ class CommandResolver:
                 )
             self._audit(ctx, utterance, tier=2, action=t2.action,
                         result="ok" if not t2.needs_clarification else "clarify",
-                        latency_ms=t2.latency_ms, rationale=t2.rationale)
+                        latency_ms=t2.latency_ms, rationale=t2.rationale,
+                        state_verified=t2.state_verified,
+                        state_verification=t2.state_verification)
             return t2
 
         # A learned guess that we nominated but Tier 2 couldn't use is
@@ -574,6 +579,8 @@ class CommandResolver:
             rationale=str(getattr(result, "rationale", "")) or decision or None,
             latency_ms=self._elapsed_ms(start),
             learned_row_id=carryover.learned_row_id if carryover else None,
+            state_verified=getattr(result, "state_verified", None),
+            state_verification=getattr(result, "state_verification", None) or None,
         )
 
     # ---- Bookkeeping ---------------------------------------------------
@@ -681,11 +688,17 @@ class CommandResolver:
         result: str,
         latency_ms: int,
         rationale: str | None,
+        state_verified: bool | None = None,
+        state_verification: dict[str, Any] | None = None,
     ) -> None:
         try:
             extra = ctx.to_audit_fields()
             if rationale:
                 extra["rationale"] = rationale
+            if state_verified is not None:
+                extra["state_verified"] = state_verified
+            if state_verification:
+                extra["state_verification"] = state_verification
             audit(AuditEvent(
                 ts=audit_now(),
                 origin=ctx.origin,

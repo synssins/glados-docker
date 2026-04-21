@@ -66,6 +66,11 @@ class DisambiguationResult:
     candidates_shown: list[dict[str, Any]] = field(default_factory=list)
     latency_ms: int = 0
     llm_raw: str = ""                   # For audit trace
+    # Phase 8.4 — post-execute state verification outcome. None means
+    # verification was disabled (silent mode) or every transition was
+    # skipped (scene.turn_on, etc).
+    state_verified: bool | None = None
+    state_verification: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -1112,6 +1117,8 @@ class Disambiguator:
             candidates_shown=candidates_summary,
             latency_ms=int((time.perf_counter() - t0) * 1000),
             llm_raw=raw,
+            state_verified=state_verified,
+            state_verification=verification_detail,
         )
 
     def _summarize_verifications(
