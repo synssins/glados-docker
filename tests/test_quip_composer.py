@@ -372,6 +372,23 @@ class TestLLMComposerTidy:
         raw = "<think>reasoning</think>The chamber is now lit."
         assert _tidy(raw) == "The chamber is now lit."
 
+    def test_strips_orphan_open_think_tag(self) -> None:
+        """Regression: Qwen3:8b sometimes opens <think> but runs out
+        of token budget before closing it, so we see just the raw
+        tag and reasoning. Everything from <think> onward is
+        reasoning and should be discarded."""
+        from glados.persona.llm_composer import _tidy
+        raw = "Compliance. <think>the user wants me to"
+        assert _tidy(raw) == "Compliance."
+
+    def test_bare_open_think_returns_empty(self) -> None:
+        """When the reply IS only '<think>' with no prefix, there's
+        no user-visible speech to salvage — return empty so the
+        caller falls back to passthrough."""
+        from glados.persona.llm_composer import _tidy
+        assert _tidy("<think>") == ""
+        assert _tidy("<think>reasoning but no reply") == ""
+
     def test_strips_wrapping_quotes(self) -> None:
         from glados.persona.llm_composer import _tidy
         assert _tidy('"Silence. Compliance."') == "Silence. Compliance."
