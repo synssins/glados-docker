@@ -365,6 +365,17 @@ class DisambiguationRules:
     # Default strict per plan.
     verification_mode: str = "strict"
     verification_timeout_s: float = 3.0
+    # Phase 8.5 — operator-editable keyword → registry-name aliases
+    # for utterance-side area / floor inference. Shipped defaults
+    # live in glados/intent/area_inference.py (_FLOOR_KEYWORDS,
+    # _AREA_KEYWORDS); these dicts extend and override them.
+    # Format: {keyword (lowercase): target registry name (case-
+    # insensitive match against the live area/floor registry)}.
+    # Example: {"mom's room": "Master Bedroom"} to route spoken
+    # keywords to a specific area. Edited via the Integrations →
+    # Home Assistant → Area / floor aliases WebUI card.
+    floor_aliases: dict[str, str] = field(default_factory=dict)
+    area_aliases: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +518,23 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
     vt = raw.get("verification_timeout_s")
     if isinstance(vt, (int, float)) and 0 < vt <= 30:
         rules.verification_timeout_s = float(vt)
+    # Phase 8.5 — area / floor alias maps. Operators drop in house-
+    # specific keywords via the WebUI; YAML values are
+    # keyword → registry-name strings.
+    fa = raw.get("floor_aliases")
+    if isinstance(fa, dict):
+        rules.floor_aliases = {
+            str(k).strip().lower(): str(v).strip()
+            for k, v in fa.items()
+            if str(k).strip() and str(v).strip()
+        }
+    aa = raw.get("area_aliases")
+    if isinstance(aa, dict):
+        rules.area_aliases = {
+            str(k).strip().lower(): str(v).strip()
+            for k, v in aa.items()
+            if str(k).strip() and str(v).strip()
+        }
     return rules
 
 
@@ -531,6 +559,8 @@ def rules_to_dict(rules: DisambiguationRules) -> dict[str, Any]:
         "ignore_segments": bool(rules.ignore_segments),
         "verification_mode": str(rules.verification_mode),
         "verification_timeout_s": float(rules.verification_timeout_s),
+        "floor_aliases": dict(rules.floor_aliases),
+        "area_aliases": dict(rules.area_aliases),
     }
 
 

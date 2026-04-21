@@ -526,6 +526,11 @@ class SemanticHit:
     score: float
     document: str = ""
     device_id: str | None = None
+    # Phase 8.5 — area / floor metadata so the disambiguator's
+    # area-scoped inference can narrow the candidate set without
+    # re-hitting the cache.
+    area_id: str | None = None
+    floor_id: str | None = None
 
 
 class SemanticIndex:
@@ -555,6 +560,12 @@ class SemanticIndex:
         self._entity_ids: list[str] = []
         self._documents: list[str] = []
         self._device_ids: list[str | None] = []
+        # Phase 8.5 — parallel arrays so retrieve() can filter by
+        # area / floor without re-hitting the cache. Populated from
+        # build() using the registries loaded via apply_area_registry
+        # / apply_floor_registry.
+        self._entity_area_ids: list[str | None] = []
+        self._entity_floor_ids: list[str | None] = []
         self._embeddings = None  # np.ndarray | None
         # Registry joins. Populated via apply_* methods; missing
         # entries leave the field None and the document omits it.
@@ -670,18 +681,18 @@ class SemanticIndex:
         ids: list[str] = []
         documents: list[str] = []
         device_ids: list[str | None] = []
+        area_ids: list[str | None] = []
+        floor_ids: list[str | None] = []
         for entity in snap:
+            area_id = entity.area_id or None
             area_name = (
-                self._area_names.get(entity.area_id or "")
-                if entity.area_id else None
+                self._area_names.get(area_id or "") if area_id else None
             )
             floor_id = (
-                self._area_floor.get(entity.area_id or "")
-                if entity.area_id else None
+                self._area_floor.get(area_id or "") if area_id else None
             )
             floor_name = (
-                self._floor_names.get(floor_id or "")
-                if floor_id else None
+                self._floor_names.get(floor_id or "") if floor_id else None
             )
             device_id = getattr(entity, "device_id", None)
             device_name = (
@@ -701,6 +712,8 @@ class SemanticIndex:
             ids.append(entity.entity_id)
             documents.append(doc)
             device_ids.append(device_id if device_id else None)
+            area_ids.append(area_id)
+            floor_ids.append(floor_id)
 
         # Batch to keep peak memory bounded on large houses.
         chunks: list[Any] = []
@@ -715,6 +728,8 @@ class SemanticIndex:
             self._entity_ids = ids
             self._documents = documents
             self._device_ids = device_ids
+            self._entity_area_ids = area_ids
+            self._entity_floor_ids = floor_ids
             self._embeddings = embeddings
         # logger.success so this ops-relevant signal survives the
         # engine's loguru sink filter (level=SUCCESS) — logger.info
@@ -731,6 +746,8 @@ class SemanticIndex:
         *,
         k: int = 8,
         domain_filter: list[str] | None = None,
+        area_id: str | None = None,
+        floor_id: str | None = None,
     ) -> list[SemanticHit]:
         """Return the top-k semantically-closest entity hits.
 
@@ -738,7 +755,13 @@ class SemanticIndex:
         in Phase 8.3.3 wraps this to enforce the operator's
         non-negotiable gates before the results reach the planner.
         Callers that want the full "safe" retrieval should use
-        `retrieve_for_planner` (added in 8.3.3) instead."""
+        `retrieve_for_planner` (added in 8.3.3) instead.
+
+        Phase 8.5 — optional `area_id` / `floor_id` filter hints.
+        When set, only entities matching the hint are considered; the
+        filter is AND-composed with `domain_filter` so a query can
+        say "dim the downstairs lights" → domain=light AND
+        floor_id=floor_main."""
         if not query or not query.strip():
             return []
         with self._lock:
@@ -746,6 +769,8 @@ class SemanticIndex:
             ids = list(self._entity_ids)
             documents = list(self._documents)
             device_ids = list(self._device_ids)
+            entity_area_ids = list(self._entity_area_ids)
+            entity_floor_ids = list(self._entity_floor_ids)
         if embeddings is None or len(ids) == 0:
             return []
         embedder = self._ensure_embedder()
@@ -768,6 +793,24 @@ class SemanticIndex:
             # surface; doesn't mutate the stored embeddings.
             sims = np.where(mask, sims, -np.inf)
 
+        # Phase 8.5 — area_id / floor_id filter. Entities missing
+        # the relevant registry tag (area_id=None on the entity) are
+        # excluded from a filtered query: if the operator asked for
+        # "downstairs" and an entity has no floor info, it's not
+        # credibly "downstairs" either.
+        if area_id:
+            mask = np.array(
+                [aid == area_id for aid in entity_area_ids],
+                dtype=bool,
+            )
+            sims = np.where(mask, sims, -np.inf)
+        if floor_id:
+            mask = np.array(
+                [fid == floor_id for fid in entity_floor_ids],
+                dtype=bool,
+            )
+            sims = np.where(mask, sims, -np.inf)
+
         # Argpartition for top-k; final sort orders by score desc.
         # Clamp k to the filtered size.
         available = int(np.isfinite(sims).sum())
@@ -782,6 +825,8 @@ class SemanticIndex:
                 score=float(sims[i]),
                 document=documents[i],
                 device_id=device_ids[i],
+                area_id=entity_area_ids[i],
+                floor_id=entity_floor_ids[i],
             )
             for i in top_idx
         ]
@@ -883,6 +928,8 @@ class SemanticIndex:
         *,
         k: int = 8,
         domain_filter: list[str] | None = None,
+        area_id: str | None = None,
+        floor_id: str | None = None,
         raw_pool: int = 30,
         segment_tokens: tuple[str, ...] = DEFAULT_SEGMENT_TOKENS,
         ignore_segments: bool = True,
@@ -899,10 +946,15 @@ class SemanticIndex:
         `ignore_segments` defaults to True per operator request:
         entities matching the segment-token pattern are dropped
         entirely, since operators control whole lamps or scenes
-        rather than individual segments."""
+        rather than individual segments.
+
+        Phase 8.5 — optional `area_id` / `floor_id` filter hints get
+        passed through to the base retrieve()."""
         raw = self.retrieve(
             query, k=max(raw_pool, k),
             domain_filter=domain_filter,
+            area_id=area_id,
+            floor_id=floor_id,
         )
         return apply_device_diversity(
             raw,
@@ -912,6 +964,20 @@ class SemanticIndex:
             cache=self._cache,
             ignore_segments=ignore_segments,
         )
+
+    # -- Phase 8.5 — registry accessors for utterance-side inference ----
+
+    def area_names(self) -> dict[str, str]:
+        """Snapshot of {area_id: name} from the area registry. Used
+        by the utterance-side inference module to resolve spoken
+        keywords into concrete ids."""
+        with self._lock:
+            return dict(self._area_names)
+
+    def floor_names(self) -> dict[str, str]:
+        """Snapshot of {floor_id: name} from the floor registry."""
+        with self._lock:
+            return dict(self._floor_names)
 
 
 __all__ = [
