@@ -568,6 +568,27 @@ class Glados:
 
         self.context_builder.register("canon", _canon_prompt_for_turn, priority=6)
 
+        # Phase 8.x bugfix — chitchat / home-command guard per turn.
+        # SSE builds these inline into its messages array; non-streaming
+        # and voice paths go through the engine queue and need the same
+        # guard injected via ContextBuilder or the 14B hallucinates
+        # tool calls ("testing_tracks") or narrates fake device actions
+        # on chitchat turns. Priority 7 = after canon/memory so the
+        # guard sits closest to the user turn.
+        def _turn_guard_for_turn() -> str | None:
+            from glados.core.turn_guards import guard_for_message
+            msg = (
+                self.interaction_state.last_user_message
+                if self.interaction_state else ""
+            )
+            if not msg:
+                return None
+            return guard_for_message(msg)
+
+        self.context_builder.register(
+            "turn_guard", _turn_guard_for_turn, priority=7,
+        )
+
         # Load attitude directives for response variety
         from .attitude import load_attitudes
         personality_path = Path("configs/personality.yaml")

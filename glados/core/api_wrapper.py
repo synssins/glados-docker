@@ -1524,43 +1524,14 @@ def _stream_chat_sse_impl(
     # message just before the user turn so it's the most recent
     # instruction the model sees — matches the emotion-directive
     # placement below so both ride together.
+    # SSE turn-guard: the canonical guard text lives in
+    # `glados/core/turn_guards.py` so the engine's ContextBuilder
+    # registration and this SSE block can't drift apart.
+    from glados.core.turn_guards import CHITCHAT_GUARD, HOME_COMMAND_GUARD
     if not is_home_command:
-        # No sample phrases listed here on purpose — enumerating
-        # banned wording seeds the model and makes it more likely
-        # to reach for exactly those phrasings. The rules are
-        # described by behaviour, not by example text.
-        _chitchat_guard = (
-            "No tools ran this turn. Do not claim any device, "
-            "thermostat, speaker, scene, or sensor was changed or "
-            "queried. Do not invent sensor readings, brightness "
-            "levels, room states, or system status. Respond to the "
-            "user's actual words in one to two sentences, then "
-            "stop. Do not append a self-status or sign-off line."
-        )
-        messages.append({"role": "system", "content": _chitchat_guard})
+        messages.append({"role": "system", "content": CHITCHAT_GUARD})
     else:
-        # Home-command turn with tools available. 2026-04-20 bug:
-        # "What level is the desk lamp set to?" came back as a
-        # 1161-token markdown summary of EVERY HA entity —
-        # because the model called a broad state-dump tool and
-        # then narrated the output instead of extracting the one
-        # entity the user asked about. Steer the agentic loop
-        # toward the targeted in-process tools, forbid inventory
-        # narration, and cap the answer length.
-        _home_command_guard = (
-            "Tools are available this turn. For a query about ONE "
-            "specific device or entity: call `search_entities` "
-            "with the user's phrasing to get matching entity_ids, "
-            "then `get_entity_details` on the best match. For an "
-            "action on ONE device: same resolution path, then the "
-            "appropriate HA tool. Do NOT call tools that dump the "
-            "full entity list. Do NOT narrate an inventory of "
-            "devices or their states. Do NOT use markdown headers, "
-            "bullets, or bold. Answer the user's specific question "
-            "with the specific value in one or two sentences, then "
-            "stop."
-        )
-        messages.append({"role": "system", "content": _home_command_guard})
+        messages.append({"role": "system", "content": HOME_COMMAND_GUARD})
 
     messages.append({"role": "user", "content": user_message})
 
@@ -3141,10 +3112,19 @@ class APIHandler(BaseHTTPRequestHandler):
         # muting TTS and waiting for the full response.  First audio arrives in
         # ~2-3s instead of 10+s.  Return "." so HA voice pipeline doesn't also
         # TTS the response on the satellite speaker.
-        # Default comes from config: tuning.engine_audio_default (true by default).
-        engine_audio = data.get(
-            "engine_audio", cfg.tuning.engine_audio_default,
-        )
+        #
+        # Only default ON for voice origins (HA satellite mic). For chat / API
+        # origins (WebUI, curl, /stream:false from an automation) the caller
+        # expects the actual reply text in the response body — returning "."
+        # left direct API testers with a bare period and no way to see what
+        # the engine said. Explicit `engine_audio` in the request body always
+        # wins.
+        if "engine_audio" in data:
+            engine_audio = bool(data.get("engine_audio"))
+        elif origin == Origin.VOICE_MIC:
+            engine_audio = bool(cfg.tuning.engine_audio_default)
+        else:
+            engine_audio = False
 
         # Serialize API requests to prevent mute/unmute races
         with _api_lock:
