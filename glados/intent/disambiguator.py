@@ -1488,27 +1488,38 @@ class Disambiguator:
         ]
 
     def _call_ollama(self, messages: list[dict[str, str]]) -> str:
-        """POST to /api/chat with format=json, return assistant content."""
-        # Phase 8.0.1 — suppress Qwen3 thinking mode on the structured-
-        # JSON prompt. Without this, Qwen3 emits 500+ tokens of <think>
-        # prose before the JSON, often blowing the token budget before
-        # the JSON ever arrives → `fall_through:unknown_decision`.
-        from glados.core.llm_directives import apply_model_family_directives
+        """POST to /api/chat, return assistant content (think-tags
+        stripped).
+
+        2026-04-20: `format: "json"` used to be set on this call.
+        Live probe against qwen3:14b under Ollama proved it returns
+        '{}' on every invocation regardless of the prompt when
+        `format=json` is on — three configurations tested:
+          A) /no_think + format=json → '{}'  (0.5 s)
+          B) plain system + format=json → '{}'  (0.4 s)
+          C) /no_think + NO format=json → clean JSON body (2.0 s)
+        Ollama's JSON mode is broken for this model on the current
+        build; removing the constraint restores correctness. The
+        prompt itself says "first char '{', last char '}', no prose"
+        and `_safe_parse_json` tolerates /no_think's leading empty
+        think-block and any code fences, so JSON discipline survives.
+        """
+        from glados.core.llm_directives import (
+            apply_model_family_directives,
+            strip_thinking_response,
+        )
         messages = apply_model_family_directives(messages, self._model)
         body = json.dumps({
             "model": self._model,
             "messages": messages,
             "stream": False,
-            "format": "json",
+            # NOTE: no format=json — see docstring.
             "options": {
                 "temperature": 0.2,    # deterministic JSON
                 "top_p": 0.9,
                 "num_ctx": 4096,
-                # Phase 8.0.2 — cap runaway JSON. A full SHAPE 2
-                # compound response plus a two-sentence GLaDOS speech
-                # fits comfortably in 512 tokens; bound it so a
-                # malformed model response can't eat the entire budget
-                # and time out at 45 s.
+                # Cap runaway JSON so a malformed response can't
+                # eat the entire timeout budget.
                 "num_predict": 512,
             },
         }).encode("utf-8")
@@ -1519,7 +1530,11 @@ class Disambiguator:
         )
         with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
             data = json.loads(resp.read())
-        return (data.get("message") or {}).get("content", "") or ""
+        content = (data.get("message") or {}).get("content", "") or ""
+        # Strip qwen3's <think>\n\n</think> wrapper before the parser
+        # sees it — _safe_parse_json is tolerant but we remove the
+        # noise to make llm_raw audit rows actually readable.
+        return strip_thinking_response(content)
 
 
 # ---------------------------------------------------------------------------
