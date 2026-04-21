@@ -5890,6 +5890,29 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
     <div id="logSizeInfo" style="font-size:0.7rem;color:var(--text-dim);margin:6px 0;"></div>
     <pre id="logPanel" style="background:#0d0d0d;border:1px solid #333;border-radius:4px;padding:10px;max-height:400px;overflow:auto;font-size:0.72rem;color:#ccc;white-space:pre-wrap;word-break:break-all;margin-top:6px;">Select a service to view logs</pre>
   </div>
+
+  <!-- Phase 8.9 — Test harness (Advanced). External battery-scoring knobs:
+       noise-entity globs the harness must ignore, and whether direction
+       matching is required. Exposed publicly at
+       /api/test-harness/noise-patterns for the external harness to pull. -->
+  <div class="card" data-advanced="true">
+    <div class="section-title">Test Harness</div>
+    <div class="mode-desc" style="margin-bottom:10px;">
+      Battery-scoring knobs consumed by the external test harness
+      (<code>C:\\src\\glados-test-battery\\harness.py</code>). Noise-entity globs
+      list entities that flip in the background (AC displays, Sonos diagnostics,
+      <code>*_button_indication</code>, <code>*_node_identify</code>) and must not
+      count toward PASS. Direction-match requires the targeted entity to end in
+      the expected state ('on' for "turn on", etc.), not merely "something changed."
+      Harness fetches these on run-start from <code>/api/test-harness/noise-patterns</code>
+      (public endpoint, no auth).
+    </div>
+    <div id="testHarnessForm"></div>
+    <div class="cfg-save-row">
+      <button class="cfg-save-btn" onclick="cfgSaveTestHarness()">Save Test Harness</button>
+      <span id="cfg-save-result-test-harness" class="cfg-result"></span>
+    </div>
+  </div>
 </div>
 </div>
 
@@ -7055,9 +7078,76 @@ function loadSystemConfigCards() {
   const run = () => {
     _cfgRenderSystemMaintForm();
     _cfgRenderSystemAuthAuditForm();
+    _cfgRenderTestHarnessForm();
   };
   if (have) { run(); }
   else if (typeof cfgLoadAll === 'function') { cfgLoadAll().then(run); }
+}
+
+// Phase 8.9 — Test harness card. Simple two-field editor: patterns
+// (textarea, one glob per line) + direction-match toggle. Saves to
+// /api/config/test_harness.
+function _cfgRenderTestHarnessForm() {
+  const host = document.getElementById('testHarnessForm');
+  if (!host) return;
+  const th = _cfgData.test_harness || {};
+  const patterns = Array.isArray(th.noise_entity_patterns)
+    ? th.noise_entity_patterns.join('\n') : '';
+  const require = th.require_direction_match !== false;
+  host.innerHTML =
+    '<div class="cfg-field">'
+    + '<label class="cfg-label" for="th-patterns">Noise entity patterns'
+    + ' <span style="color:var(--text-dim);font-weight:normal;">'
+    + '(fnmatch globs, one per line — e.g. <code>switch.midea_ac_*_display</code>)'
+    + '</span></label>'
+    + '<textarea id="th-patterns" rows="8" style="width:100%;background:var(--bg-input);'
+    + 'color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;'
+    + 'font-family:monospace;font-size:0.82rem;">'
+    + escHtml(patterns) + '</textarea>'
+    + '</div>'
+    + '<div class="cfg-field" style="margin-top:10px;">'
+    + '<label style="display:flex;align-items:center;gap:8px;">'
+    + '<input type="checkbox" id="th-direction"' + (require ? ' checked' : '') + '>'
+    + '<span>Require direction match (recommended)</span>'
+    + '</label>'
+    + '<div class="mode-desc" style="margin-top:4px;">'
+    + 'When on, harness requires the targeted entity to end in the expected state. '
+    + 'When off, any state change counts — use only for A/B comparison against the pre-8.9 scorer.'
+    + '</div>'
+    + '</div>';
+}
+
+async function cfgSaveTestHarness() {
+  const resultEl = document.getElementById('cfg-save-result-test-harness');
+  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
+  const raw = document.getElementById('th-patterns');
+  const dir = document.getElementById('th-direction');
+  if (!raw || !dir) return;
+  const patterns = raw.value.split('\n').map(s => s.trim()).filter(Boolean);
+  const body = {
+    noise_entity_patterns: patterns,
+    require_direction_match: !!dir.checked,
+  };
+  try {
+    const r = await fetch('/api/config/test_harness', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const txt = await r.text();
+    let resp = {};
+    try { resp = JSON.parse(txt); } catch (_) { resp = { error: txt }; }
+    if (r.ok) {
+      _cfgData.test_harness = body;
+      if (resultEl) resultEl.textContent = '';
+      showToast('Test-harness config saved.', 'success');
+    } else if (resultEl) {
+      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
+      resultEl.className = 'cfg-result err';
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
+  }
 }
 
 function _cfgRenderSystemMaintForm() {

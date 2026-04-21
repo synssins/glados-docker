@@ -453,6 +453,52 @@ class MemoryConfig(BaseModel):
     passive_importance_cap: float = 0.95
 
 
+class TestHarnessConfig(BaseModel):
+    """Phase 8.9 — external test-battery scoring knobs.
+
+    The GLaDOS container does not run the battery itself; the harness
+    lives in a separate scratch dir. But the harness needs two things
+    from the operator-editable config surface here so that its scoring
+    matches the production install's reality:
+
+    1. ``noise_entity_patterns`` — fnmatch-style globs on ``entity_id``
+       for entities whose state flips randomly in the background
+       (Midea AC displays cycling every 60 s, Sonos diagnostics, WLED
+       "reverse" toggles, zigbee ``*_button_indication`` /
+       ``*_node_identify`` housekeeping entities). If any of those
+       entities flip during a test window the diff scorer was counting
+       the test as a PASS even when nothing GLaDOS-commanded actually
+       moved. Harness filters ``changed_entities`` against these globs
+       before scoring.
+    2. ``require_direction_match`` — when True the harness demands the
+       targeted entity (matched by ``target_keywords`` on the test row)
+       finished in the expected state ('on', 'off', or a brightness /
+       colour delta matching the verb's direction). When False the
+       pre-8.9 "any change counts" scoring is preserved, for
+       back-compat A/B.
+
+    Public read-only retrieval at ``GET /api/test-harness/noise-patterns``
+    — the external harness pulls this before every run so operators
+    don't keep two copies of the noise list in sync.
+    """
+
+    # Opt out of pytest collection — the class name starts with "Test"
+    # which pytest treats as a test class absent this hint.
+    __test__ = False
+
+    # fnmatch globs — leading/trailing ``*`` wildcards OK.
+    noise_entity_patterns: list[str] = [
+        "switch.midea_ac_*_display",
+        "sensor.midea_ac_*_*",
+        "*_sonos_*",
+        "*_wled_*_reverse",
+        "*_button_indication",
+        "*_node_identify",
+    ]
+
+    require_direction_match: bool = True
+
+
 class ObserverEntityRule(BaseModel):
     entity_id: str
     category: str = "notable"
@@ -543,6 +589,7 @@ class GladosConfigStore:
         self._observer: ObserverConfig = ObserverConfig()
         self._hub75: Hub75DisplayConfig = Hub75DisplayConfig()
         self._robots: RobotsConfig = RobotsConfig()
+        self._test_harness: TestHarnessConfig = TestHarnessConfig()
 
     @staticmethod
     def _resolve_config_dir() -> Path:
@@ -577,6 +624,9 @@ class GladosConfigStore:
         self._observer = self._load_model(d / "observer.yaml", ObserverConfig)
         self._hub75 = self._load_model(d / "hub75.yaml", Hub75DisplayConfig)
         self._robots = self._load_model(d / "robots.yaml", RobotsConfig)
+        self._test_harness = self._load_model(
+            d / "test_harness.yaml", TestHarnessConfig,
+        )
         logger.info("Config store loaded from {}", d)
 
     @staticmethod
@@ -739,6 +789,11 @@ class GladosConfigStore:
         return self._robots
 
     @property
+    def test_harness(self) -> TestHarnessConfig:
+        self._ensure_loaded()
+        return self._test_harness
+
+    @property
     def global_(self) -> GlobalConfig:
         self._ensure_loaded()
         return self._global
@@ -758,6 +813,7 @@ class GladosConfigStore:
             "observer": self._observer.model_dump(),
             "hub75": self._hub75.model_dump(),
             "robots": self._robots.model_dump(),
+            "test_harness": self._test_harness.model_dump(),
         }
 
     def update_section(self, section: str, data: dict) -> None:
@@ -772,6 +828,7 @@ class GladosConfigStore:
             "observer": (ObserverConfig, "observer.yaml"),
             "hub75": (Hub75DisplayConfig, "hub75.yaml"),
             "robots": (RobotsConfig, "robots.yaml"),
+            "test_harness": (TestHarnessConfig, "test_harness.yaml"),
         }
         if section not in model_map:
             raise KeyError(f"Unknown config section: {section!r}")
