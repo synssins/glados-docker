@@ -1415,15 +1415,18 @@ def _stream_chat_sse_impl(
     messages = store.snapshot()
 
     # Self-heal history pollution before sending to Ollama.
-    # Chitchat gets the autonomy-noise filter on top of the shape
-    # repairs: "Autonomy update." messages from the engine loop would
-    # otherwise bleed into chat context and make chitchat responses
-    # slow, timestamp-y, and off-topic. Home-command turns keep the
-    # full history because MCP tool reasoning sometimes references
-    # prior device actions.
+    # Autonomy-loop writes ("Autonomy update. Time: … Weather: …")
+    # bleed into chat context from the shared conversation_store
+    # and poison every chat turn. Previously we only stripped them
+    # on chitchat turns because "MCP tool reasoning sometimes
+    # references prior device actions" — but autonomy writes are
+    # NOT device actions the user took; they're background chatter
+    # that makes the model regurgitate weather data when asked
+    # about a desk lamp (2026-04-20 live bug). Strip them on EVERY
+    # turn regardless of is_home_command.
     messages = _sanitize_message_history(
         messages, request_id,
-        strip_autonomy_noise=not is_home_command,
+        strip_autonomy_noise=True,
     )
 
     # When tools are available AND we're in home-command mode, strip
@@ -1510,12 +1513,17 @@ def _stream_chat_sse_impl(
                     insert_idx,
                     {"role": "system", "content": memory_prompt},
                 )
-                logger.debug(
-                    "[{}] Memory context injected: {:.80}",
-                    request_id, memory_prompt,
+                # logger.success — INFO is filtered out by the
+                # engine's loguru sink (level=SUCCESS), so notable
+                # ops signals that ARE worth seeing ride at this
+                # level. Same convention the rest of the codebase
+                # uses for "visible, not a warning."
+                logger.success(
+                    "[{}] memory_context injected ({} chars)",
+                    request_id, len(memory_prompt),
                 )
     except Exception as _mem_exc:
-        logger.debug("[{}] Memory context skipped: {}", request_id, _mem_exc)
+        logger.warning("[{}] memory_context skipped: {}", request_id, _mem_exc)
 
     # Inject emotional state directive as the LAST system message before the user turn
     # This ensures it's the most recent context GLaDOS reads before generating
@@ -1630,11 +1638,20 @@ def _stream_chat_sse_impl(
     # "It's too bright in the office" investigation in Change 14.3).
     from glados.core.llm_directives import apply_model_family_directives
     messages = apply_model_family_directives(messages, glados.llm_model)
+    # 2026-04-20 — cap num_predict on Tier 3 so a confused model
+    # can't produce a 2000+ token essay when it mis-reads context
+    # (observed live: "What level is the desk lamp set to?" came
+    # back as a 2430-token markdown summary of the weather data
+    # that had bled in from autonomy writes). The preprompt asks
+    # for 1–2 sentences; 512 tokens is a 4x safety margin that
+    # still prevents runaway generation.
+    _streaming_options = dict(cfg.personality.model_options.to_ollama_options())
+    _streaming_options.setdefault("num_predict", 512)
     payload: dict[str, Any] = {
         "model": glados.llm_model,
         "stream": True,
         "messages": messages,
-        "options": cfg.personality.model_options.to_ollama_options(),
+        "options": _streaming_options,
     }
     if tools:
         payload["tools"] = tools

@@ -716,7 +716,10 @@ class SemanticIndex:
             self._documents = documents
             self._device_ids = device_ids
             self._embeddings = embeddings
-        logger.info(
+        # logger.success so this ops-relevant signal survives the
+        # engine's loguru sink filter (level=SUCCESS) — logger.info
+        # gets dropped and made prior bootstrap runs look silent.
+        logger.success(
             "SemanticIndex.build: embedded {} entities (dim={})",
             len(ids), _EMBED_DIM,
         )
@@ -812,7 +815,7 @@ class SemanticIndex:
                 device_ids=np.array(device_ids, dtype=object),
             )
             tmp.replace(self._index_path)
-            logger.info(
+            logger.success(
                 "SemanticIndex.persist: wrote {} entities to {}",
                 len(ids), self._index_path,
             )
@@ -858,7 +861,7 @@ class SemanticIndex:
                 self._entity_ids = ids
                 self._documents = documents
                 self._device_ids = device_ids
-            logger.info(
+            logger.success(
                 "SemanticIndex.load: restored {} entities from {}",
                 len(ids), self._index_path,
             )
