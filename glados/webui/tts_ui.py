@@ -82,6 +82,38 @@ _ssl_enabled = _cfg.ssl.enabled
 SSL_CERT = Path(_cfg.ssl.cert_path) if hasattr(_cfg.ssl, "cert_path") else Path("/app/certs/cert.pem")
 SSL_KEY  = Path(_cfg.ssl.key_path)  if hasattr(_cfg.ssl, "key_path")  else Path("/app/certs/key.pem")
 
+# Phase 8.12 — live TLS reload. The HTTPS listener stores its
+# ``SSLContext`` here at startup; ``reload_tls_certs()`` calls
+# ``load_cert_chain`` on the same context to swap cert material
+# without restarting the socket. Subsequent TLS handshakes pick
+# up the new cert; existing connections keep theirs.
+_tls_context: "ssl.SSLContext | None" = None
+
+
+def reload_tls_certs() -> tuple[bool, str]:
+    """Reload cert/key from ``SSL_CERT``/``SSL_KEY`` into the live
+    ``_tls_context``. Returns ``(ok, message)``. Safe to call when
+    the server runs plaintext (returns False with explanatory msg).
+    Called after a successful upload or Let's Encrypt issue/renew so
+    the operator sees "Certificate applied." instead of "Restart
+    container to activate."
+    """
+    if _tls_context is None:
+        return False, "server is plaintext; no live TLS context"
+    if not (SSL_CERT.exists() and SSL_KEY.exists()):
+        return False, f"cert or key missing ({SSL_CERT}, {SSL_KEY})"
+    try:
+        _tls_context.load_cert_chain(
+            certfile=str(SSL_CERT), keyfile=str(SSL_KEY),
+        )
+        logger.info(
+            "TLS cert reloaded from {} + {}", SSL_CERT, SSL_KEY,
+        )
+        return True, "certificate reloaded"
+    except (ssl.SSLError, OSError) as exc:
+        logger.error("TLS reload failed: {}", exc)
+        return False, f"load_cert_chain failed: {exc}"
+
 SPEAKER_BLACKLIST = set(_cfg.speakers.blacklist)
 
 # Container service management -- services are Docker containers, not NSSM services.
@@ -3224,7 +3256,26 @@ class Handler(BaseHTTPRequestHandler):
             SSL_KEY.write_text(key_pem if key_pem.endswith("\n") else key_pem + "\n")
             import os as _os
             _os.chmod(str(SSL_KEY), 0o600)
-            self._send_json(200, {"ok": True, "message": "Certificate uploaded. Restart container to activate HTTPS."})
+            # Phase 8.12: try live reload before falling back to the
+            # restart-required message. Reload fails gracefully if the
+            # server is plaintext (no live context) or if the new cert
+            # chain is malformed.
+            ok, msg = reload_tls_certs()
+            if ok:
+                self._send_json(200, {
+                    "ok": True,
+                    "message": "Certificate applied.",
+                    "live_reload": True,
+                })
+            else:
+                self._send_json(200, {
+                    "ok": True,
+                    "message": (
+                        f"Certificate uploaded. Live reload not available "
+                        f"({msg}); restart container to activate."
+                    ),
+                    "live_reload": False,
+                })
         except Exception as e:
             self._send_json(500, {"error": f"Failed to write cert: {e}"})
 
@@ -3288,7 +3339,25 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._send_json(500, {"error": f"Cert issued but copy failed: {e}", "log": combined})
                     return
-                self._send_json(200, {"ok": True, "message": "Certificate issued/renewed successfully. Restart container to activate.", "log": combined})
+                ok, reload_msg = reload_tls_certs()
+                if ok:
+                    self._send_json(200, {
+                        "ok": True,
+                        "message": "Certificate issued/renewed and applied.",
+                        "live_reload": True,
+                        "log": combined,
+                    })
+                else:
+                    self._send_json(200, {
+                        "ok": True,
+                        "message": (
+                            f"Certificate issued/renewed. Live reload not "
+                            f"available ({reload_msg}); restart container "
+                            f"to activate."
+                        ),
+                        "live_reload": False,
+                        "log": combined,
+                    })
             else:
                 not_due = "not yet due for renewal" in combined.lower() or "no renewals were attempted" in combined.lower()
                 if not_due and fullchain.exists():
@@ -10883,6 +10952,72 @@ async function trainingStop() {
 
 # â”€â”€ Main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+# Phase 8.12 — HTTP→HTTPS 301 redirect listener. Tiny ThreadingHTTPServer
+# on a separate port that answers every request with a 301 to the
+# HTTPS port. Disabled when ``WEBUI_HTTP_REDIRECT_PORT`` env var is
+# unset or set to 0 — so nothing changes for existing deployments
+# unless the operator opts in.
+from http.server import BaseHTTPRequestHandler as _BaseHTTPHandler
+
+
+def _http_redirect_port() -> int:
+    raw = os.environ.get("WEBUI_HTTP_REDIRECT_PORT", "0")
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def _make_redirect_handler(https_port: int) -> type[_BaseHTTPHandler]:
+    class _RedirectHandler(_BaseHTTPHandler):
+        def _redirect(self) -> None:
+            host = self.headers.get("Host", "").split(":")[0] or "localhost"
+            location = f"https://{host}:{https_port}{self.path}"
+            self.send_response(301)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self) -> None: self._redirect()
+        def do_POST(self) -> None: self._redirect()
+        def do_HEAD(self) -> None: self._redirect()
+        def do_PUT(self) -> None: self._redirect()
+        def do_DELETE(self) -> None: self._redirect()
+        def do_OPTIONS(self) -> None: self._redirect()
+
+        def log_message(self, fmt: str, *args) -> None:  # silence access log
+            return
+
+    return _RedirectHandler
+
+
+def _start_http_redirect_thread(
+    redirect_port: int, https_port: int, host: str = "0.0.0.0",
+) -> None:
+    """Start the redirect listener on a daemon thread. Swallows
+    ``OSError`` (port in use) with a WARN log — the HTTPS listener
+    is the primary, a missing redirect is non-fatal."""
+    handler_cls = _make_redirect_handler(https_port)
+    try:
+        srv = ThreadingHTTPServer((host, redirect_port), handler_cls)
+    except OSError as exc:
+        logger.warning(
+            "HTTP redirect listener failed to bind {}:{}: {}",
+            host, redirect_port, exc,
+        )
+        return
+    t = threading.Thread(
+        target=srv.serve_forever,
+        name="http-redirect",
+        daemon=True,
+    )
+    t.start()
+    logger.info(
+        "HTTP redirect listener on {}:{} → https://<host>:{}/",
+        host, redirect_port, https_port,
+    )
+
+
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
 
@@ -10892,6 +11027,7 @@ if __name__ == "__main__":
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile=str(SSL_CERT), keyfile=str(SSL_KEY))
         server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        _tls_context = ctx  # Phase 8.12: expose for live reload
         proto = "https"
         print(f"  SSL cert:    {SSL_CERT}")
     else:
@@ -10903,6 +11039,14 @@ if __name__ == "__main__":
     print(f"  TTS output:  {OUTPUT_DIR}")
     print(f"  Chat audio:  {CHAT_AUDIO_DIR}")
     print(f"  HA URL:      {HA_URL}")
+
+    # Phase 8.12: optional HTTP→HTTPS 301 redirect listener. Only starts
+    # if the env var is set AND TLS is actually enabled (no point
+    # redirecting to HTTPS when the main listener is plaintext).
+    rp = _http_redirect_port()
+    if rp and use_ssl:
+        _start_http_redirect_thread(rp, PORT)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -10916,6 +11060,7 @@ def run_webui(host: str = "0.0.0.0", port: int = 8052) -> None:
     Blocks until the server is stopped. Designed to run in a daemon thread
     alongside the API server.
     """
+    global _tls_context
     server = ThreadingHTTPServer((host, port), Handler)
 
     use_ssl = SSL_CERT and SSL_KEY and SSL_CERT.exists() and SSL_KEY.exists()
@@ -10923,12 +11068,19 @@ def run_webui(host: str = "0.0.0.0", port: int = 8052) -> None:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile=str(SSL_CERT), keyfile=str(SSL_KEY))
         server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        _tls_context = ctx  # Phase 8.12: live-reload hook
         proto = "https"
     else:
         proto = "http"
 
-    from loguru import logger
     logger.info("GLaDOS WebUI listening on {}://{}:{}", proto, host, port)
+
+    # Phase 8.12: start HTTP redirect listener if env var set AND TLS
+    # active. Cheap and safe — silently skipped if plaintext.
+    rp = _http_redirect_port()
+    if rp and use_ssl:
+        _start_http_redirect_thread(rp, port, host=host)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
