@@ -216,3 +216,37 @@ class TestStripClosingBoilerplate:
         out = strip_closing_boilerplate(raw)
         assert "thanks you" not in out.lower()
         assert "enrichment center" not in out.lower()
+
+    # 2026-04-21 additions — patterns seen live on Portal-lore
+    # questions.
+
+    def test_removes_you_are_welcome_to_speculate(self) -> None:
+        raw = (
+            "It was a brief, unremarkable existence. "
+            "You are welcome to speculate on what came next."
+        )
+        out = strip_closing_boilerplate(raw)
+        assert "welcome to" not in out.lower()
+        assert "speculate" not in out.lower()
+        assert out.startswith("It was a brief, unremarkable existence.")
+
+    def test_removes_i_leave_that_to_you(self) -> None:
+        raw = "A cautionary tale. I leave that to you."
+        out = strip_closing_boilerplate(raw)
+        assert "leave that to you" not in out.lower()
+
+    def test_removes_how_may_i_assist(self) -> None:
+        raw = "Hello. How may I assist you today?"
+        out = strip_closing_boilerplate(raw)
+        assert "assist" not in out.lower()
+        assert out.startswith("Hello.")
+
+    def test_removes_is_there_anything_else(self) -> None:
+        raw = "Done. Is there anything else I can help you with?"
+        out = strip_closing_boilerplate(raw)
+        assert "anything else" not in out.lower()
+
+    def test_removes_draw_your_own_conclusions(self) -> None:
+        raw = "The facility fell into his hands. You may draw your own conclusions."
+        out = strip_closing_boilerplate(raw)
+        assert "draw your own" not in out.lower()

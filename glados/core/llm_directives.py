@@ -91,6 +91,24 @@ _CLOSING_BOILERPLATE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         # "This concludes the current interaction."
         r"(?:\s|^)this\s+concludes\s+the\s+(?:current\s+)?"
         r"(?:interaction|exchange|session)[.!?]?\s*$",
+        # "You are welcome to speculate on what came next."
+        # 2026-04-21 live-observed on the potato answer. Soft
+        # invitation-to-continue is exactly what the preprompt forbids.
+        r"(?:\s|^)you(?:'re|\s+are)?\s+welcome\s+to\s+[^.!?]{0,60}[.!?]?\s*$",
+        # "I leave that to you." / "The rest is up to you."
+        r"(?:\s|^)(?:i\s+leave\s+(?:that|it|the\s+rest)\s+to\s+you|"
+        r"the\s+rest\s+is\s+up\s+to\s+you)[.!?]?\s*$",
+        # "You may draw your own conclusions." and variants.
+        r"(?:\s|^)you\s+may\s+draw\s+your\s+own\s+"
+        r"(?:conclusions?|inferences?)[.!?]?\s*$",
+        # "How may I assist you today?" / "How can I help you?"
+        # Generic AI-assistant closers the persona forbids — appeared
+        # 2026-04-21 on "Hello GLaDOS".
+        r"(?:\s|^)how\s+(?:may|can)\s+i\s+"
+        r"(?:assist|help)\s+you(?:\s+today)?[.!?]?\s*$",
+        # "is there something else I can..." / "let me know if..."
+        r"(?:\s|^)is\s+there\s+(?:anything|something)\s+else\s+"
+        r"i\s+can\s+(?:assist|help|do)[^.!?]*[.!?]?\s*$",
     )
 )
 

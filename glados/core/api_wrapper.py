@@ -1233,6 +1233,66 @@ def _is_autonomy_noise(msg: dict[str, Any]) -> bool:
     return False
 
 
+def _drop_parrot_anchors(
+    messages: list[dict[str, Any]],
+    current_user_message: str,
+    request_id: str,
+) -> list[dict[str, Any]]:
+    """Remove prior user/assistant pairs whose user turn matches the
+    current question verbatim. Keeps the model from copying its own
+    previous reply.
+
+    Matches case-insensitively after stripping whitespace + trailing
+    punctuation, so minor variations ("Hi!" vs "hi") don't defeat the
+    check. Preprompt few-shots (those whose index is below
+    store.preprompt_count) are NEVER dropped — they're the intended
+    anchors and the persona instructions explicitly call out that
+    they're examples, not canned answers."""
+    cur = _normalize_for_parrot(current_user_message)
+    if not cur:
+        return messages
+    # We don't have preprompt_count here — guard by matching only on
+    # (user, assistant) PAIRS that appear deeper than 2 messages into
+    # the list, which preserves any leading system+few-shot prefix.
+    out: list[dict[str, Any]] = []
+    i = 0
+    dropped = 0
+    while i < len(messages):
+        m = messages[i]
+        if (
+            isinstance(m, dict)
+            and m.get("role") == "user"
+            and i >= 2
+            and _normalize_for_parrot(m.get("content") or "") == cur
+        ):
+            # Drop this user turn plus its following assistant reply
+            # (if present). The few-shot pairs sit at indices 1..N
+            # right after the system prompt; i >= 2 keeps index 1
+            # (the first few-shot user) safe regardless of exact
+            # store.preprompt_count bookkeeping.
+            if i + 1 < len(messages) and messages[i + 1].get("role") == "assistant":
+                i += 2
+                dropped += 1
+                continue
+            i += 1
+            dropped += 1
+            continue
+        out.append(m)
+        i += 1
+    if dropped:
+        logger.info(
+            "[{}] anti-parrot: dropped {} prior identical Q/A pair(s)",
+            request_id, dropped,
+        )
+    return out
+
+
+def _normalize_for_parrot(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    return s.strip().strip(".,!?;:").lower()
+
+
 def _sanitize_message_history(
     messages: list[dict[str, Any]],
     request_id: str,
@@ -1428,6 +1488,18 @@ def _stream_chat_sse_impl(
         messages, request_id,
         strip_autonomy_noise=True,
     )
+
+    # Anti-parrot: when the current user message exactly matches a
+    # prior user turn in history, drop that prior pair (user + the
+    # assistant reply that followed it). qwen3:8b otherwise produces
+    # a word-for-word copy of its own previous answer when the same
+    # question is asked twice (live bug 2026-04-21: two consecutive
+    # "What was life like as a potato?" turns returned identical
+    # replies down to the trailing sentence, including a forbidden
+    # closing phrase). By removing the prior pair, the model has no
+    # verbatim anchor to copy. The persona's "never parrot" rule in
+    # the preprompt isn't reliably followed by 8b alone.
+    messages = _drop_parrot_anchors(messages, user_message, request_id)
 
     # When tools are available AND we're in home-command mode, strip
     # few-shot user/assistant examples from the personality preprompt.
