@@ -8,6 +8,12 @@ name: Battery (self-hosted, nightly)
 # Schedule: 07:00 UTC = 02:00 America/Chicago (post-midnight, pre-morning).
 # Also exposes a manual dispatch button so the operator can kick a run
 # on demand from the Actions tab.
+#
+# All steps use `shell: powershell` (Windows PowerShell 5.1, always
+# present on AIBox). `shell: bash` maps to WSL on Windows and WSL
+# isn't installed on AIBox. Complex logic lives in helper Python
+# scripts under `scripts/ci/` so the YAML stays readable and the
+# logic is unit-testable outside of CI.
 
 on:
   schedule:
@@ -15,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       max_tests:
-        description: 'Max tests (default 50 sanity subset; leave blank for full 435)'
+        description: 'Max tests (default 50 sanity subset; 0 or blank for full 435)'
         required: false
         default: '50'
       start_idx:
@@ -28,7 +34,7 @@ permissions:
 
 jobs:
   battery:
-    name: Run battery (${{ inputs.max_tests || '50 (scheduled)' }})
+    name: Run battery
     runs-on: [self-hosted, glados-lan]
     timeout-minutes: 60
 
@@ -41,77 +47,46 @@ jobs:
       GLADOS_SSH_USER: root
       GLADOS_SSH_PASSWORD: ${{ secrets.GLADOS_SSH_PASSWORD }}
       PYTHONIOENCODING: utf-8
+      MAX_TESTS: ${{ inputs.max_tests || '50' }}
+      START_IDX: ${{ inputs.start_idx || '0' }}
+      HARNESS_DIR: C:\src\glados-test-battery
 
     steps:
       - name: Checkout container repo
         uses: actions/checkout@v4
 
       - name: Check deploy is reachable
-        shell: bash
+        shell: powershell
         run: |
-          curl -sSf --max-time 10 http://10.0.0.50:8015/api/test-harness/noise-patterns > /tmp/noise.json
-          cat /tmp/noise.json
-          curl -sSf --max-time 10 -H "Authorization: Bearer $HA_TOKEN" http://10.0.0.20:8123/api/ > /dev/null && echo "HA reachable"
+          $ErrorActionPreference = 'Stop'
+          Write-Host "--- noise-patterns endpoint ---"
+          $resp = Invoke-RestMethod -Uri $env:GLADOS_TEST_HARNESS_URL -TimeoutSec 10
+          $resp | ConvertTo-Json
+          Write-Host "--- HA reachable ---"
+          $headers = @{ "Authorization" = "Bearer $env:HA_TOKEN" }
+          Invoke-RestMethod -Uri "$env:HA_URL/api/" -Headers $headers -TimeoutSec 10 | Out-Null
+          Write-Host "HA reachable: OK"
 
       - name: Install harness deps
-        shell: bash
+        shell: powershell
         run: |
           python -m pip install --upgrade pip
           pip install paramiko pyyaml
 
       - name: Run battery subset
-        id: battery
-        shell: bash
-        working-directory: C:\src\glados-test-battery
+        shell: powershell
         run: |
-          MAX_ARG=""
-          if [ -n "${{ inputs.max_tests }}" ]; then
-            MAX_ARG="--max ${{ inputs.max_tests }}"
-          fi
-          START_ARG=""
-          if [ -n "${{ inputs.start_idx }}" ]; then
-            START_ARG="--start-idx ${{ inputs.start_idx }}"
-          fi
-          # Rotate results to a per-run file so nightly doesn't clobber
-          # the operator's on-disk history.
-          python -c "
-          import json, os, sys, time
-          sys.path.insert(0, '.')
-          from harness import run
-          run(max_tests=int('${{ inputs.max_tests }}' or '50'),
-              start_idx=int('${{ inputs.start_idx }}' or '0'))
-          "
+          python scripts\ci\run_battery.py `
+            --harness-dir "$env:HARNESS_DIR" `
+            --max-tests $env:MAX_TESTS `
+            --start-idx $env:START_IDX
 
       - name: Summarise results
         if: always()
-        shell: bash
-        working-directory: C:\src\glados-test-battery
+        shell: powershell
         run: |
-          python -c "
-          import json
-          with open('results.json', encoding='utf-8') as f:
-              data = json.load(f)
-          rows = data.get('rows', [])
-          by = {}
-          for r in rows:
-              by[r['pass_fail']] = by.get(r['pass_fail'], 0) + 1
-          total = len(rows)
-          print(f'Total: {total}')
-          for k, v in sorted(by.items()):
-              pct = (v / total * 100) if total else 0
-              print(f'  {k}: {v} ({pct:.1f}%)')
-          # Emit GitHub step summary
-          import os
-          summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
-          if summary_path:
-              with open(summary_path, 'a', encoding='utf-8') as f:
-                  f.write(f'## Battery Results\n\n')
-                  f.write(f'| Disposition | Count | % |\n|---|---:|---:|\n')
-                  for k, v in sorted(by.items()):
-                      pct = (v / total * 100) if total else 0
-                      f.write(f'| {k} | {v} | {pct:.1f}% |\n')
-                  f.write(f'\n**Total:** {total} tests\n')
-          "
+          python scripts\ci\summarise_battery.py `
+            --results "$env:HARNESS_DIR\results.json"
 
       - name: Upload results artefact
         if: always()
@@ -124,24 +99,7 @@ jobs:
           retention-days: 30
 
       - name: Fail on low pass rate
-        shell: bash
-        working-directory: C:\src\glados-test-battery
+        shell: powershell
         run: |
-          python -c "
-          import json, sys
-          with open('results.json', encoding='utf-8') as f:
-              data = json.load(f)
-          rows = data.get('rows', [])
-          if not rows:
-              print('::warning ::no rows in results.json')
-              sys.exit(0)
-          passed = sum(1 for r in rows if r['pass_fail'] in ('PASS', 'QUERY_OK'))
-          rate = passed / len(rows)
-          print(f'pass rate: {rate:.2%}')
-          # Baseline 2026-04-20: 55.9%. Phase 8.x improvements should
-          # have lifted this. Tripwire set conservatively at 45% so
-          # normal fluctuations don't alarm; catastrophic regressions do.
-          if rate < 0.45:
-              print(f'::error ::pass rate {rate:.1%} below 45% tripwire')
-              sys.exit(1)
-          "
+          python scripts\ci\tripwire_battery.py `
+            --results "$env:HARNESS_DIR\results.json"
