@@ -24,6 +24,49 @@ from ..observability import ObservabilityBus, trim_message
 from ..tools import tool_definitions
 from ..vision.vision_state import VisionState
 
+
+# Prefixes written by the autonomy loop to the shared conversation
+# store as user-role messages. The chat path (non-autonomy lane)
+# must never feed these back to the LLM — they drift the model from
+# the configured persona into a telemetry-summariser stance.
+_AUTONOMY_NOISE_PREFIXES: tuple[str, ...] = (
+    "Autonomy update.",
+    "[summary]",
+)
+
+
+def _strip_autonomy_noise(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop autonomy-loop chatter from a message list. Kept local to
+    avoid a circular import from api_wrapper, which has its own copy
+    of the same rule for the SSE streaming path."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        # Drop tool-role turns — the chat path has no tool context.
+        if role == "tool":
+            continue
+        # Drop empty-content assistant stubs paired with tool_calls.
+        if (
+            role == "assistant"
+            and (not isinstance(content, str) or not content.strip())
+            and m.get("tool_calls")
+        ):
+            continue
+        # Drop autonomy-prefixed user/assistant turns.
+        if isinstance(content, str):
+            head = content.lstrip()
+            if any(head.startswith(p) for p in _AUTONOMY_NOISE_PREFIXES):
+                continue
+        out.append(m)
+    return out
+
+
 class LanguageModelProcessor:
     """
     A thread that processes text input for a language model, streaming responses and sending them to TTS.
@@ -567,6 +610,15 @@ class LanguageModelProcessor:
     def _build_messages(self, autonomy_mode: bool) -> list[dict[str, Any]]:
         """Build the message list for the LLM request, injecting context from registered sources."""
         messages = self._conversation_store.snapshot()
+        # Strip autonomy-loop pollution on user-facing turns (not on the
+        # autonomy lane itself, which expects to see its own prior
+        # updates). The autonomy loop writes "Autonomy update. Time:
+        # ..." as user-role messages to the shared conversation store,
+        # which — without this filter — poisons every chat turn and
+        # drifts the model into a telemetry/tool-assistant framing
+        # instead of the configured persona (2026-04-21 live bug).
+        if not autonomy_mode:
+            messages = _strip_autonomy_noise(messages)
         extra_messages: list[dict[str, Any]] = []
 
         if autonomy_mode and self.autonomy_system_prompt:
