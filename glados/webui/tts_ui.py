@@ -6824,7 +6824,137 @@ function _cfgRenderAudioSpeakers() {
     + '<span id="cfg-save-result-audio" class="cfg-result"></span>'
     + '</div>';
 
+  // Phase 8.7a — Response behavior card. Picks whether speech comes
+  // from the LLM (default), a pre-written Portal-voice quip from
+  // configs/quips/, a sound chime, or nothing at all. Configurable
+  // globally OR per event category.
+  html += ''
+    + '<div class="card" id="cfg-response-behavior-card" style="margin-top:18px;">'
+    +   '<div class="cfg-subsection-title">Response behavior</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Choose how GLaDOS acknowledges commands. '
+    +     '<strong>LLM</strong> (default) has the language model write each reply &mdash; expressive but can drift. '
+    +     '<strong>Quip</strong> picks a pre-written line from <code>configs/quips/</code> &mdash; never leaks device names, no drift. '
+    +     '<strong>Chime</strong> plays a sound file. '
+    +     '<strong>Silent</strong> makes no audible reply at all.'
+    +   '</div>'
+    +   '<div id="cfg-response-behavior-body">Loading&hellip;</div>'
+    + '</div>';
+
   document.getElementById('cfg-form-area').innerHTML = html;
+  setTimeout(_cfgLoadResponseBehavior, 0);
+}
+
+async function _cfgLoadResponseBehavior() {
+  const body = document.getElementById('cfg-response-behavior-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/config/disambiguation');
+    if (!r.ok) {
+      body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Failed to load (' + r.status + ').</div>';
+      return;
+    }
+    const data = await r.json();
+    _responseBehaviorPopulate(data);
+  } catch (e) {
+    body.innerHTML = '<div class="cfg-field-desc" style="color:#d66;">Error: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function _responseBehaviorPopulate(data) {
+  const body = document.getElementById('cfg-response-behavior-body');
+  if (!body) return;
+  const globalMode = (typeof data.response_mode === 'string') ? data.response_mode : 'LLM';
+  const perEvent = (data.response_mode_per_event && typeof data.response_mode_per_event === 'object')
+    ? data.response_mode_per_event : {};
+  const MODES = [
+    { value: 'LLM',    label: 'LLM (language model writes)' },
+    { value: 'quip',   label: 'Quip (pre-written library)' },
+    { value: 'chime',  label: 'Chime (sound file)' },
+    { value: 'silent', label: 'Silent (no reply)' },
+  ];
+  const EVENT_ROWS = [
+    { key: 'command_ack',  label: 'Command acknowledgement',  desc: 'Replies after a light / switch / scene command fires.' },
+    { key: 'query_answer', label: 'Query answer',             desc: 'Replies to "is the kitchen on?" and similar.' },
+    { key: 'ambient_cue',  label: 'Ambient cue',              desc: 'Replies to "it\'s too dark", "time to read".' },
+    { key: 'error',        label: 'Error / failure',          desc: 'Replies when a transition did not land.' },
+  ];
+  function modeSelect(id, value) {
+    let h = '<select id="' + id + '">';
+    h += '<option value="">&mdash; inherit global &mdash;</option>';
+    MODES.forEach(m => {
+      const sel = (m.value === value) ? ' selected' : '';
+      h += '<option value="' + m.value + '"' + sel + '>' + escHtml(m.label) + '</option>';
+    });
+    h += '</select>';
+    return h;
+  }
+  let html = '';
+  html += '<div class="cfg-field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">'
+    +   '<label class="cfg-field-label" for="cfg-rb-global" style="margin:0;min-width:140px;">Global mode</label>'
+    +   '<select id="cfg-rb-global" style="flex:1;min-width:200px;">';
+  MODES.forEach(m => {
+    const sel = (m.value === globalMode) ? ' selected' : '';
+    html += '<option value="' + m.value + '"' + sel + '>' + escHtml(m.label) + '</option>';
+  });
+  html += '</select></div>';
+  html += '<div class="cfg-field-label" style="margin-top:12px;">Per-event override</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
+    +   'Leave rows at <em>inherit global</em> unless you want a specific category to behave differently (for example, '
+    +   'silent command acknowledgements but LLM replies for queries).'
+    + '</div>';
+  EVENT_ROWS.forEach(row => {
+    const current = perEvent[row.key] || '';
+    html += '<div class="cfg-field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px;">'
+      +   '<label class="cfg-field-label" style="margin:0;min-width:180px;flex-shrink:0;" for="cfg-rb-ev-' + row.key + '">'
+      +     escHtml(row.label)
+      +   '</label>'
+      +   modeSelect('cfg-rb-ev-' + row.key, current)
+      + '</div>'
+      + '<div class="cfg-field-desc" style="margin:-4px 0 4px 190px;">' + escHtml(row.desc) + '</div>';
+  });
+  html += '<div class="cfg-save-row" style="margin-top:14px;">'
+    + '<button class="cfg-save-btn" onclick="cfgSaveResponseBehavior()">Save Response behavior</button>'
+    + '<span id="cfg-save-result-rb" class="cfg-result"></span>'
+    + '</div>';
+  body.innerHTML = html;
+}
+
+async function cfgSaveResponseBehavior() {
+  const resultEl = document.getElementById('cfg-save-result-rb');
+  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
+  const globalEl = document.getElementById('cfg-rb-global');
+  const globalMode = globalEl ? String(globalEl.value || 'LLM') : 'LLM';
+  const perEvent = {};
+  ['command_ack', 'query_answer', 'ambient_cue', 'error'].forEach(k => {
+    const el = document.getElementById('cfg-rb-ev-' + k);
+    const v = el ? String(el.value || '') : '';
+    if (v) perEvent[k] = v;
+  });
+  try {
+    const r = await fetch('/api/config/disambiguation', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        response_mode: globalMode,
+        response_mode_per_event: perEvent,
+      }),
+    });
+    const resp = await r.json();
+    if (r.ok) {
+      if (resultEl) resultEl.textContent = '';
+      if (resp.applied === false) {
+        showToast('Saved, but live apply failed. Check container logs.', 'warn');
+      } else {
+        showToast('Response behavior saved.', 'success');
+      }
+    } else if (resultEl) {
+      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
+      resultEl.className = 'cfg-result err';
+    }
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
+  }
 }
 
 function cfgBuildForm(obj, section, prefix, skipKeys) {
