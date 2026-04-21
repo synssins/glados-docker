@@ -449,6 +449,69 @@ class TestAreaFloorFilter:
         assert _multi_floor_idx.area_names()["kitchen"] == "Kitchen"
         assert _multi_floor_idx.floor_names()["floor_upper"] == "Upper Floor"
 
+    def test_entity_area_inherits_from_device_when_entity_has_none(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """Phase 8.5 — most HA entities carry no direct area_id; their
+        area lives on the device. build() must resolve via the cascade
+        entity.area_id -> entity_registry.area_id -> device.area_id.
+        Without this the filter misses the bulk of a real house."""
+        pytest.importorskip("numpy")
+        cache = _CacheWithEntities([
+            _Entity("light.x", "X", area_id=None, device_id="dev_1"),
+        ])
+        idx = SemanticIndex(
+            cache,
+            model_path="/nonexistent/model.onnx",
+            tokenizer_path="/nonexistent/tok.json",
+            index_path=tmp_path / "e.npz",
+        )
+        idx.apply_area_registry([
+            {"area_id": "kitchen", "name": "Kitchen", "floor_id": "floor_main"},
+        ])
+        idx.apply_floor_registry([
+            {"floor_id": "floor_main", "name": "Main Floor"},
+        ])
+        idx.apply_device_registry([
+            {"id": "dev_1", "name": "Device 1", "area_id": "kitchen"},
+        ])
+        monkeypatch.setattr(idx, "_ensure_embedder", lambda: _StubEmbedder())
+        idx.build()
+        hits = idx.retrieve("kitchen", k=5, area_id="kitchen")
+        assert {h.entity_id for h in hits} == {"light.x"}
+
+    def test_entity_registry_area_overrides_device_area(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """Entity-registry area beats device area — an entity moved
+        out of its device's default area must follow the override."""
+        pytest.importorskip("numpy")
+        cache = _CacheWithEntities([
+            _Entity("light.x", "X", area_id=None, device_id="dev_1"),
+        ])
+        idx = SemanticIndex(
+            cache,
+            model_path="/nonexistent/model.onnx",
+            tokenizer_path="/nonexistent/tok.json",
+            index_path=tmp_path / "e.npz",
+        )
+        idx.apply_area_registry([
+            {"area_id": "office",  "name": "Office",  "floor_id": "f1"},
+            {"area_id": "kitchen", "name": "Kitchen", "floor_id": "f1"},
+        ])
+        idx.apply_device_registry([
+            {"id": "dev_1", "name": "Device 1", "area_id": "office"},
+        ])
+        idx.apply_entity_registry([
+            {"entity_id": "light.x", "area_id": "kitchen"},
+        ])
+        monkeypatch.setattr(idx, "_ensure_embedder", lambda: _StubEmbedder())
+        idx.build()
+        hits = idx.retrieve("anything", k=5, area_id="kitchen")
+        assert {h.entity_id for h in hits} == {"light.x"}
+        hits = idx.retrieve("anything", k=5, area_id="office")
+        assert hits == []
+
 
 class TestPersistLoad:
     def test_persist_then_load_round_trip(self, _stub_idx) -> None:

@@ -573,6 +573,13 @@ class SemanticIndex:
         self._device_names: dict[str, str] = {}
         self._floor_names: dict[str, str] = {}
         self._area_floor: dict[str, str] = {}  # area_id → floor_id
+        # Phase 8.5 — entity-level and device-level area registry joins.
+        # Many entities in HA have no direct `area_id` attribute on the
+        # state object; their effective area comes from the device.
+        # We resolve both at build() time: entity_area_id falls back to
+        # device_area_id when the entity doesn't have its own.
+        self._entity_reg_areas: dict[str, str] = {}  # entity_id → area_id
+        self._device_areas: dict[str, str] = {}      # device_id → area_id
         self._lock = threading.RLock()
 
     def is_ready(self) -> bool:
@@ -595,21 +602,42 @@ class SemanticIndex:
         return n
 
     def apply_device_registry(self, entries: list[dict[str, Any]]) -> int:
-        """Cache device_id → human-readable name. Returns rows accepted."""
+        """Cache device_id → human-readable name AND device_id →
+        area_id so entities without their own area_id can inherit
+        from the device at build() time. Returns rows accepted."""
         n = 0
         with self._lock:
             for e in entries:
                 did = e.get("id") or e.get("device_id")
                 if not did:
                     continue
+                did = str(did)
                 # Prefer name_by_user when operator has relabeled.
                 name = (
                     e.get("name_by_user")
                     or e.get("name")
-                    or str(did)
+                    or did
                 )
-                self._device_names[str(did)] = str(name)
+                self._device_names[did] = str(name)
+                area = e.get("area_id")
+                if area:
+                    self._device_areas[did] = str(area)
                 n += 1
+        return n
+
+    def apply_entity_registry(self, entries: list[dict[str, Any]]) -> int:
+        """Capture entity-level area_id from HA's entity_registry. The
+        state API doesn't put area_id on most entities — it lives on
+        the registry entry (or on the device the entity belongs to).
+        Returns rows with an area_id found."""
+        n = 0
+        with self._lock:
+            for e in entries:
+                eid = e.get("entity_id")
+                aid = e.get("area_id")
+                if eid and aid:
+                    self._entity_reg_areas[str(eid)] = str(aid)
+                    n += 1
         return n
 
     def apply_floor_registry(self, entries: list[dict[str, Any]]) -> int:
@@ -684,7 +712,15 @@ class SemanticIndex:
         area_ids: list[str | None] = []
         floor_ids: list[str | None] = []
         for entity in snap:
-            area_id = entity.area_id or None
+            # Phase 8.5 — resolve effective area via the cascade:
+            # entity.area_id (state attr) → entity_registry.area_id
+            # → device_registry.area_id. HA uses the same order.
+            area_id = (
+                entity.area_id
+                or self._entity_reg_areas.get(entity.entity_id)
+                or self._device_areas.get(getattr(entity, "device_id", "") or "")
+                or None
+            )
             area_name = (
                 self._area_names.get(area_id or "") if area_id else None
             )
