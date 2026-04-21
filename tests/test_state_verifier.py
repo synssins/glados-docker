@@ -92,13 +92,28 @@ class TestInferExpected:
         )
         assert out[0].skip_verification
 
-    def test_brightness_pct_creates_expected_attr_with_tolerance(self) -> None:
+    def test_brightness_pct_translated_to_brightness_0_255(self) -> None:
+        """HA state reports the light's `brightness` attribute on the
+        0-255 scale — the `brightness_pct` name only exists in service
+        calls. The verifier must translate or every % command will
+        spuriously fail."""
         out = expected_from_service_call(
             "light", "turn_on", ["light.x"],
             service_data={"brightness_pct": 50},
         )
-        assert out[0].expected_attrs.get("brightness_pct") == 50
-        assert out[0].attr_tolerance.get("brightness_pct", 0) > 0
+        # 50% ≈ 128 on the 0-255 scale.
+        assert out[0].expected_attrs.get("brightness") == 128
+        assert "brightness_pct" not in out[0].expected_attrs
+        assert out[0].attr_tolerance.get("brightness", 0) > 0
+
+    def test_brightness_pct_10_translates_to_brightness_26(self) -> None:
+        # Regression for the live incident where "Set the desk lamp to
+        # 10%" produced mismatch_reason="brightness_pct=None (want 10)".
+        out = expected_from_service_call(
+            "light", "turn_on", ["light.x"],
+            service_data={"brightness_pct": 10},
+        )
+        assert out[0].expected_attrs.get("brightness") == 26  # round(10*255/100)
 
     def test_color_temp_tolerance_is_generous(self) -> None:
         out = expected_from_service_call(

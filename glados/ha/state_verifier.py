@@ -360,8 +360,18 @@ def expected_from_service_call(
     attr_expected: dict[str, Any] = {}
     tolerance: dict[str, float] = {}
     sd = service_data or {}
+    # `brightness_pct` is service-call-only — HA reports the resulting
+    # state under the 0-255 `brightness` attribute. Translate so the
+    # verifier can find the attribute in state_changed payloads.
+    # 5% on 100-scale ≈ 12.75 on 255-scale; use 15 for a little headroom
+    # around bulbs that bucket brightness to discrete levels.
+    if "brightness_pct" in sd:
+        try:
+            attr_expected["brightness"] = round(float(sd["brightness_pct"]) * 255 / 100)
+            tolerance["brightness"] = 15.0
+        except (TypeError, ValueError):
+            pass
     for numeric_key, tol in (
-        ("brightness_pct", 5.0),
         ("brightness", 15.0),
         ("color_temp_kelvin", 200.0),
         ("color_temp", 20.0),
@@ -369,7 +379,7 @@ def expected_from_service_call(
         ("temperature", 1.0),
         ("percentage", 5.0),
     ):
-        if numeric_key in sd:
+        if numeric_key in sd and numeric_key not in attr_expected:
             attr_expected[numeric_key] = sd[numeric_key]
             tolerance[numeric_key] = tol
     # Non-numeric attribute expectations — colour names, presets,
