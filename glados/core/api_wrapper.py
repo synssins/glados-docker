@@ -897,26 +897,41 @@ def _get_engine_response(
                     if msg.get("role") == "user" and msg.get("content", "").strip() == text.strip():
                         # Found our user message — look forward for assistant reply with actual text content
                         # Skip tool_call-only assistant messages (role=assistant but no content, has tool_calls)
+                        # Cross-talk fix: skip autonomy-generated assistant
+                        # messages. The `BufferedSpeechPlayer` stamps
+                        # `_source="autonomy"` on EOS flushes that came
+                        # from the autonomy-lane `LLMProcessor`. Without
+                        # this skip, an autonomy reply that lands between
+                        # our user message and our actual reply is
+                        # returned to the API caller as if it were the
+                        # reply.
                         for j in range(i + 1, len(messages)):
-                            if messages[j].get("role") == "assistant" and messages[j].get("content"):
-                                elapsed = time.monotonic() - start_time
-                                response_text = messages[j]["content"]
-                                logger.info(
-                                    f"[{request_id}] Response in {elapsed:.1f}s "
-                                    f"({len(response_text)} chars)"
+                            mj = messages[j]
+                            if mj.get("role") != "assistant" or not mj.get("content"):
+                                continue
+                            if mj.get("_source") == "autonomy":
+                                logger.debug(
+                                    f"[{request_id}] Skipping autonomy assistant message at idx {j}"
                                 )
-                                if not engine_audio:
-                                    # Notify HUB75 display that HA audio is about to play.
-                                    # TTS is muted during API calls (HA handles audio externally),
-                                    # so the speech player's tts.play events are useless (muted,
-                                    # audio_samples=0).  Emit an ha_audio event so the panel knows
-                                    # to stay lit for the estimated duration of the HA playback.
-                                    _emit_ha_audio_event(
-                                        glados, response_text, source="api_chat",
-                                    )
-                                # else: engine's streaming TTS already played audio and
-                                # emitted real tts.play events for the HUB75 display.
-                                return response_text, request_id
+                                continue
+                            elapsed = time.monotonic() - start_time
+                            response_text = messages[j]["content"]
+                            logger.info(
+                                f"[{request_id}] Response in {elapsed:.1f}s "
+                                f"({len(response_text)} chars)"
+                            )
+                            if not engine_audio:
+                                # Notify HUB75 display that HA audio is about to play.
+                                # TTS is muted during API calls (HA handles audio externally),
+                                # so the speech player's tts.play events are useless (muted,
+                                # audio_samples=0).  Emit an ha_audio event so the panel knows
+                                # to stay lit for the estimated duration of the HA playback.
+                                _emit_ha_audio_event(
+                                    glados, response_text, source="api_chat",
+                                )
+                            # else: engine's streaming TTS already played audio and
+                            # emitted real tts.play events for the HUB75 display.
+                            return response_text, request_id
                         break  # Found our message but no text reply yet
                 version_before = store.version
             time.sleep(0.1)

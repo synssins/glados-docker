@@ -55,9 +55,26 @@ class TextToSpeechSynthesizer:
             try:
                 item = self.tts_input_queue.get(timeout=self.pause_time)
 
-                # Unpack attitude TTS params if present: (text, params) tuple or plain str
+                # Queue item forms:
+                #   3-tuple (text, params, lane) — modern LLMProcessor
+                #     including EOS flushes
+                #   2-tuple (text, params) — legacy callers
+                #   plain string — legacy EOS or announcement path
+                # Lane defaults to "priority" when absent so the only
+                # messages tagged as autonomy are those explicitly put
+                # by an autonomy-lane LLMProcessor.
+                lane = "priority"
                 if isinstance(item, tuple):
-                    text_to_speak, tts_params = item
+                    if len(item) == 3:
+                        text_to_speak, tts_params, lane = item
+                        lane = str(lane or "priority")
+                        tts_params = tts_params or {}
+                    elif len(item) == 2:
+                        text_to_speak, tts_params = item
+                        tts_params = tts_params or {}
+                    else:
+                        text_to_speak = item[0] if item else ""
+                        tts_params = {}
                 else:
                     text_to_speak = item
                     tts_params = {}
@@ -65,7 +82,10 @@ class TextToSpeechSynthesizer:
                 if text_to_speak == "<EOS>":
                     logger.debug("TTS Synthesizer: Received EOS token.")
                     self.audio_output_queue.put(
-                        AudioMessage(audio=np.array([], dtype=np.float32), text="", is_eos=True)
+                        AudioMessage(
+                            audio=np.array([], dtype=np.float32),
+                            text="", is_eos=True, lane=lane,
+                        )
                     )
 
                 elif not text_to_speak.strip():  # Check for empty or whitespace-only strings
@@ -107,7 +127,14 @@ class TextToSpeechSynthesizer:
                         )
 
                     # Even if audio_data is empty, send the message so AudioPlayer can log/handle it
-                    self.audio_output_queue.put(AudioMessage(audio=audio_data, text=spoken_text_variant, is_eos=False))
+                    self.audio_output_queue.put(
+                        AudioMessage(
+                            audio=audio_data,
+                            text=spoken_text_variant,
+                            is_eos=False,
+                            lane=lane,
+                        )
+                    )
             except queue.Empty:
                 pass  # Normal, no text to process
             except Exception as e:
