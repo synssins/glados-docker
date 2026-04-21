@@ -474,8 +474,24 @@ class Glados:
             self.tts_muted_event.set()
         self.streaming_tts = streaming_tts
         self.streaming_tts_buffer_seconds = streaming_tts_buffer_seconds
-        self.streaming_tts_chunk_chars = streaming_tts_chunk_chars
-        self.streaming_tts_first_chunk_chars = streaming_tts_first_chunk_chars
+        # Phase 8.11: prefer AudioConfig knobs when they differ from
+        # the legacy Glados-block defaults. AudioConfig is the new
+        # source of truth per §0.2 (every operator knob on a WebUI
+        # card); the Glados block is preserved for back-compat and
+        # older YAML files.
+        from glados.core.config_store import cfg as _p811_cfg
+        _a = _p811_cfg.audio
+        self.streaming_tts_chunk_chars = (
+            _a.min_tts_flush_chars
+            if _a.min_tts_flush_chars and _a.min_tts_flush_chars > 0
+            else streaming_tts_chunk_chars
+        )
+        self.streaming_tts_first_chunk_chars = (
+            _a.first_tts_flush_chars
+            if _a.first_tts_flush_chars and _a.first_tts_flush_chars > 0
+            else streaming_tts_first_chunk_chars
+        )
+        self._sentence_boundary_flush = bool(_a.sentence_boundary_flush)
         self.audio_state = AudioState()
         self.knowledge_store = KnowledgeStore(resource_path("data/knowledge.json"))
         self.preferences_store = Store[Any](
@@ -730,6 +746,7 @@ class Glados:
             lane="priority",
             streaming_tts_chunk_chars=self.streaming_tts_chunk_chars if self.streaming_tts else None,
             streaming_tts_first_chunk_chars=self.streaming_tts_first_chunk_chars if self.streaming_tts else None,
+            sentence_boundary_flush=self._sentence_boundary_flush,
         )
         self.autonomy_llm_processors: list[LanguageModelProcessor] = []
         autonomy_parallel_calls = 0
@@ -764,6 +781,7 @@ class Glados:
                     inflight_counter=self._autonomy_inflight,
                     streaming_tts_chunk_chars=self.streaming_tts_chunk_chars if self.streaming_tts else None,
                     streaming_tts_first_chunk_chars=self.streaming_tts_first_chunk_chars if self.streaming_tts else None,
+                    sentence_boundary_flush=self._sentence_boundary_flush,
                 )
             )
 

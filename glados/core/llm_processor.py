@@ -187,6 +187,7 @@ class LanguageModelProcessor:
         inflight_counter: InFlightCounter | None = None,
         streaming_tts_chunk_chars: int | None = None,
         streaming_tts_first_chunk_chars: int | None = None,
+        sentence_boundary_flush: bool = True,
     ) -> None:
         self.llm_input_queue = llm_input_queue
         self.tool_calls_queue = tool_calls_queue
@@ -219,6 +220,11 @@ class LanguageModelProcessor:
         self._first_tts_flush_chars: int = (
             streaming_tts_first_chunk_chars or self.FIRST_TTS_FLUSH_CHARS
         )
+        # Phase 8.11: flush whenever accumulated text hits a sentence
+        # terminator (``.?!``). Bypasses the char-threshold check so a
+        # complete short reply fires to TTS immediately instead of
+        # stalling for a second sentence to hit the flush size.
+        self._sentence_boundary_flush: bool = sentence_boundary_flush
 
         # HTTP timeouts from centralized config (fallback to hardcoded defaults)
         try:
@@ -977,17 +983,22 @@ class LanguageModelProcessor:
                                                             or not sentence_buffer[-2].strip().isdigit()
                                                         ):
                                                             # Batch sentences to reduce gaps between HA play_media calls.
-                                                            # Only flush when we've accumulated enough text for smooth playback.
-                                                            # First flush uses FIRST_TTS_FLUSH_CHARS for fastest first-audio;
-                                                            # subsequent flushes use _tts_flush_chars (80 streaming / 150 batch)
-                                                            # to keep TTS-call overhead low for the rest of the response.
+                                                            # Phase 8.11: when ``sentence_boundary_flush`` is on
+                                                            # (default), flush at every sentence terminator so short
+                                                            # replies ("Affirmative.") fire immediately instead of
+                                                            # waiting for a second sentence to hit the char threshold.
+                                                            # Pre-8.11 short replies stalled because 13 chars < 30.
                                                             accumulated = "".join(sentence_buffer)
                                                             threshold = (
                                                                 self._first_tts_flush_chars
                                                                 if not first_flush_done
                                                                 else self._tts_flush_chars
                                                             )
-                                                            if len(accumulated) >= threshold:
+                                                            should_flush = (
+                                                                self._sentence_boundary_flush
+                                                                or len(accumulated) >= threshold
+                                                            )
+                                                            if should_flush:
                                                                 self._process_sentence_for_tts(sentence_buffer)
                                                                 sentence_buffer = []
                                                                 first_flush_done = True
