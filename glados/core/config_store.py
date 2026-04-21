@@ -293,6 +293,24 @@ class AudioConfig(BaseModel):
     silence_between_sentences_ms: int = 400
     sample_rate: int = 24000
 
+    # Phase 8.11 — streaming-TTS pacing knobs. ``first_tts_flush_chars``
+    # sets the char threshold before the FIRST sentence fires to TTS —
+    # low enough that short greetings (``"Affirmative."``) don't stall
+    # waiting to accumulate more text. ``min_tts_flush_chars`` sets the
+    # threshold for every subsequent batch. Both are upper bounds: the
+    # sentence-boundary detector in ``LLMProcessor`` flushes on the
+    # first ``.?!`` regardless of count, so a complete short sentence
+    # never waits. The legacy ``streaming_tts_chunk_chars`` field on
+    # the ``Glados`` YAML block is kept for back-compat; the engine
+    # reconciliation prefers these AudioConfig values when present.
+    first_tts_flush_chars: int = 30
+    min_tts_flush_chars: int = 80
+    # Enable flushing whenever the accumulated text ends in a sentence-
+    # terminator (``. ! ? ?!``). Disable for an A/B with the pre-8.11
+    # char-threshold-only behaviour. Rarely needed, but operators
+    # debugging choppy TTS can toggle it from the Audio page.
+    sentence_boundary_flush: bool = True
+
 
 class TTSParams(BaseModel):
     length_scale: float = 1.0
