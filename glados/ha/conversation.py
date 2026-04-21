@@ -143,6 +143,28 @@ def _response_source_is_weather_only(response: dict[str, Any]) -> bool:
     return True
 
 
+def _response_is_empty_nop(response: dict[str, Any]) -> bool:
+    """True iff the response claims action_done or query_answer but
+    has empty targets AND empty success AND empty failed lists —
+    meaning HA's conversation pipeline matched the utterance to a
+    speech-slot template (e.g. current time, weather) without
+    actually touching or reading any entity. Observed pattern:
+    "Tell me about the testing tracks" → response_type=action_done,
+    speech="9:55 AM", speech_slots={"time": ...}, all three data
+    lists empty. This is HA guessing, not answering."""
+    data = response.get("data") or {}
+    if not isinstance(data, dict):
+        return False
+    targets = data.get("targets")
+    success = data.get("success")
+    failed = data.get("failed")
+    return (
+        isinstance(targets, list) and not targets
+        and isinstance(success, list) and not success
+        and isinstance(failed, list) and not failed
+    )
+
+
 def classify(raw: dict[str, Any], utterance: str = "") -> ConversationResult:
     """Classify HA's WS response frame into a Tier 1 decision.
 
@@ -174,6 +196,21 @@ def classify(raw: dict[str, Any], utterance: str = "") -> ConversationResult:
                 should_fall_through=True, speech=speech,
                 response_type=response_type,
                 error_code="garbage_speech",
+                conversation_id=conversation_id, raw=raw,
+            )
+        # HA's empty-nop pattern: action_done with all three data
+        # lists empty means HA filled a speech-slot template (time,
+        # date, weather summary) without actually touching any
+        # entity. Seen 2026-04-21: "Tell me about the testing
+        # tracks" → action_done, speech="9:55 AM", targets/success/
+        # failed all []. Trust the fact that HA did nothing over
+        # the claim that it did.
+        if _response_is_empty_nop(response):
+            return ConversationResult(
+                handled=False, should_disambiguate=False,
+                should_fall_through=True, speech=speech,
+                response_type=response_type,
+                error_code="empty_nop_misclassify",
                 conversation_id=conversation_id, raw=raw,
             )
         return ConversationResult(
