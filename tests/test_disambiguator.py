@@ -41,11 +41,26 @@ def _state(eid, name, state="on", domain=None, dc=None, area=None,
 
 
 class _FakeHAClient:
-    """Captures call_service invocations. No network."""
+    """Captures call_service invocations. No network.
 
-    def __init__(self, fail=False):
+    Extended for Phase 8.4: accepts state-changed callback
+    registrations so StateVerifier can attach. Tests that need
+    verification to SUCCEED can call `emit_state_changed()` to
+    simulate the entity transition landing. Tests that want
+    verification to FAIL simply don't emit — the watch times out.
+    """
+
+    def __init__(self, fail=False, autoemit: bool = True):
         self.calls: list[dict] = []
         self.fail = fail
+        self._state_cbs: list = []
+        # When True (default), call_service auto-emits a state_changed
+        # event for each targeted entity inferred from the service,
+        # emulating a responsive HA. Tests that want verification to
+        # FAIL (timeout) should set autoemit=False.
+        self.autoemit = autoemit
+        # When set, overrides auto-derivation — fires these exact events.
+        self.autoemit_on_call: list[dict] | None = None
 
     def call_service(self, domain, service, target=None,
                      service_data=None, timeout_s=None):
@@ -55,7 +70,46 @@ class _FakeHAClient:
         })
         if self.fail:
             raise RuntimeError("simulated HA failure")
-        return {"success": True, "result": {"context": {"id": "ctx-fake"}}}
+        resp = {"success": True, "result": {"context": {"id": "ctx-fake"}}}
+        if self.autoemit_on_call:
+            for ev in self.autoemit_on_call:
+                self.emit_state_changed(
+                    ev["entity_id"], ev["state"],
+                    ev.get("attributes") or {},
+                )
+        elif self.autoemit:
+            # Derive expected state from service name.
+            state_map = {"turn_on": "on", "turn_off": "off", "toggle": "on"}
+            new_state = state_map.get(service)
+            if new_state is not None and target:
+                eids = target.get("entity_id") or []
+                if isinstance(eids, str):
+                    eids = [eids]
+                attrs = dict(service_data or {})
+                for eid in eids:
+                    self.emit_state_changed(eid, new_state, attrs)
+        return resp
+
+    def on_state_changed(self, cb) -> None:
+        self._state_cbs.append(cb)
+
+    def off_state_changed(self, cb) -> None:
+        try:
+            self._state_cbs.remove(cb)
+        except ValueError:
+            pass
+
+    def emit_state_changed(self, entity_id, state, attributes=None) -> None:
+        payload = {
+            "entity_id": entity_id,
+            "new_state": {
+                "entity_id": entity_id,
+                "state": state,
+                "attributes": attributes or {},
+            },
+        }
+        for cb in list(self._state_cbs):
+            cb(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +855,180 @@ class TestCompoundExecute:
 # ---------------------------------------------------------------------------
 # Execute path
 # ---------------------------------------------------------------------------
+
+class TestStateVerification:
+    """Phase 8.4 — post-execute state verification. Confirm the
+    disambiguator:
+      - marks state_verified=true on the audit and keeps optimistic
+        speech when the expected transition lands.
+      - marks state_verified=false AND replaces speech with an
+        honest note when strict mode is active and the transition
+        does NOT land.
+      - respects verification_mode=warn (keep optimistic speech
+        but still audit) and verification_mode=silent (no verifier
+        at all)."""
+
+    def _strict_rules(self) -> DisambiguationRules:
+        r = DisambiguationRules()
+        r.verification_mode = "strict"
+        # Small timeout so the "no state change" path doesn't make
+        # tests sluggish.
+        r.verification_timeout_s = 0.2
+        return r
+
+    def test_verified_success_keeps_speech(self) -> None:
+        """When the state_changed event lands, the optimistic
+        speech from Tier 2 is preserved and state_verified=True."""
+        states = [_state("light.kitchen", "Kitchen", state="off")]
+        ha = _FakeHAClient()
+        # Simulate a successful transition right after call_service.
+        ha.autoemit_on_call = [
+            {"entity_id": "light.kitchen", "state": "on"},
+        ]
+        cache = EntityCache()
+        cache.apply_get_states(states)
+        all_matches = [
+            CandidateMatch(entity=e, matched_name=e.friendly_name,
+                           score=100.0, sensitive=False)
+            for e in cache.snapshot()
+        ]
+        cache.get_candidates = lambda *a, **kw: all_matches  # type: ignore[method-assign]
+        d = Disambiguator(
+            ha_client=ha, cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=self._strict_rules(),
+        )
+        d._call_ollama = MagicMock(return_value=(
+            '{"decision":"execute","entity_ids":["light.kitchen"],'
+            '"service":"turn_on","speech":"Kitchen, illuminated.",'
+            '"rationale":"test"}'
+        ))
+        r = d.run("turn on the kitchen lights", source="webui_chat")
+        assert r.handled and r.decision == "execute"
+        # Optimistic speech preserved — the action actually landed.
+        assert "Kitchen, illuminated." in r.speech
+        assert ha.calls, "call_service should have fired"
+
+    def test_strict_mode_replaces_speech_on_fail(self) -> None:
+        """No state_changed observed within timeout → strict mode
+        replaces speech with an honest note + flags rationale."""
+        states = [_state("light.ghost", "Ghost Lamp", state="off")]
+        ha = _FakeHAClient(autoemit=False)  # no transition emitted
+        cache = EntityCache()
+        cache.apply_get_states(states)
+        all_matches = [
+            CandidateMatch(entity=e, matched_name=e.friendly_name,
+                           score=100.0, sensitive=False)
+            for e in cache.snapshot()
+        ]
+        cache.get_candidates = lambda *a, **kw: all_matches  # type: ignore[method-assign]
+        d = Disambiguator(
+            ha_client=ha, cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=self._strict_rules(),
+        )
+        d._call_ollama = MagicMock(return_value=(
+            '{"decision":"execute","entity_ids":["light.ghost"],'
+            '"service":"turn_on","speech":"Ghost Lamp, illuminated.",'
+            '"rationale":"should not land"}'
+        ))
+        r = d.run("turn on the ghost lamp", source="webui_chat")
+        assert r.handled and r.decision == "execute"
+        # Speech was REPLACED with the honest-failure line.
+        assert "Ghost Lamp, illuminated." not in r.speech
+        assert "did not register" in r.speech or "transition failed" in r.speech
+        # Rationale mentions the unverified entity id.
+        assert "light.ghost" in r.rationale or "unverified" in r.rationale
+
+    def test_warn_mode_keeps_optimistic_speech_on_fail(self) -> None:
+        """verification_mode=warn: the audit still records the
+        failure but the user hears the optimistic speech anyway."""
+        states = [_state("light.ghost", "Ghost Lamp", state="off")]
+        ha = _FakeHAClient(autoemit=False)
+        cache = EntityCache()
+        cache.apply_get_states(states)
+        all_matches = [
+            CandidateMatch(entity=e, matched_name=e.friendly_name,
+                           score=100.0, sensitive=False)
+            for e in cache.snapshot()
+        ]
+        cache.get_candidates = lambda *a, **kw: all_matches  # type: ignore[method-assign]
+        rules = self._strict_rules()
+        rules.verification_mode = "warn"
+        d = Disambiguator(
+            ha_client=ha, cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=rules,
+        )
+        d._call_ollama = MagicMock(return_value=(
+            '{"decision":"execute","entity_ids":["light.ghost"],'
+            '"service":"turn_on","speech":"Ghost Lamp, illuminated.",'
+            '"rationale":"should not land"}'
+        ))
+        r = d.run("turn on the ghost lamp", source="webui_chat")
+        assert r.handled and r.decision == "execute"
+        # Speech NOT replaced — warn mode keeps the optimistic line.
+        assert "Ghost Lamp, illuminated." in r.speech
+
+    def test_silent_mode_does_not_verify(self) -> None:
+        """verification_mode=silent: no watch created, no wait, no
+        honest-failure injection. Pre-Phase-8.4 behaviour."""
+        states = [_state("light.ghost", "Ghost Lamp", state="off")]
+        ha = _FakeHAClient()
+        cache = EntityCache()
+        cache.apply_get_states(states)
+        all_matches = [
+            CandidateMatch(entity=e, matched_name=e.friendly_name,
+                           score=100.0, sensitive=False)
+            for e in cache.snapshot()
+        ]
+        cache.get_candidates = lambda *a, **kw: all_matches  # type: ignore[method-assign]
+        rules = self._strict_rules()
+        rules.verification_mode = "silent"
+        d = Disambiguator(
+            ha_client=ha, cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=rules,
+        )
+        d._call_ollama = MagicMock(return_value=(
+            '{"decision":"execute","entity_ids":["light.ghost"],'
+            '"service":"turn_on","speech":"Ghost Lamp, illuminated.",'
+            '"rationale":"no verify"}'
+        ))
+        r = d.run("turn on the ghost lamp", source="webui_chat")
+        # No callback should have been registered.
+        assert ha._state_cbs == []
+        assert "Ghost Lamp, illuminated." in r.speech
+
+    def test_scene_turn_on_is_skipped_not_failed(self) -> None:
+        """Scenes can't be verified on their own entity (the child
+        lights move, not the scene itself). StateVerifier returns
+        skipped, so the run must NOT trip strict-mode failure."""
+        states = [_state("scene.evening", "Evening Scene",
+                         state="2026-04-20T02:39:30+00:00")]
+        ha = _FakeHAClient()
+        cache = EntityCache()
+        cache.apply_get_states(states)
+        all_matches = [
+            CandidateMatch(entity=e, matched_name=e.friendly_name,
+                           score=100.0, sensitive=False)
+            for e in cache.snapshot()
+        ]
+        cache.get_candidates = lambda *a, **kw: all_matches  # type: ignore[method-assign]
+        d = Disambiguator(
+            ha_client=ha, cache=cache,
+            ollama_url="http://fake", model="glados",
+            rules=self._strict_rules(),
+        )
+        d._call_ollama = MagicMock(return_value=(
+            '{"decision":"execute","entity_ids":["scene.evening"],'
+            '"service":"turn_on","speech":"Evening scene, engaged.",'
+            '"rationale":"scene activation"}'
+        ))
+        r = d.run("activate the evening scene", source="webui_chat")
+        # Strict mode, but scene was skipped — speech preserved.
+        assert "Evening scene, engaged." in r.speech
+
 
 class TestExecute:
     def test_executes_single_entity(self) -> None:

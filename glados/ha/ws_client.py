@@ -363,3 +363,11 @@ class HAClient:
         """Register a callback invoked for every state_changed event.
         Callbacks run on the asyncio loop thread; keep them fast."""
         self._on_state_changed.append(cb)
+
+    def off_state_changed(self, cb: Callable[[dict[str, Any]], None]) -> None:
+        """Remove a previously-registered state_changed callback.
+        Safe when the callback isn't registered — silently skips."""
+        try:
+            self._on_state_changed.remove(cb)
+        except ValueError:
+            pass

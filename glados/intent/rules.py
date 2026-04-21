@@ -353,6 +353,18 @@ class DisambiguationRules:
     # that mode the device-diversity collapse still applies and
     # explicit segment qualifiers can pin specific segments.
     ignore_segments: bool = True
+    # Phase 8.4 — post-execute state verification mode. Applied
+    # after Tier 2's call_service. Controls what happens when the
+    # expected state transition doesn't land within the timeout:
+    #   "strict" — audit state_verified=false AND replace the
+    #              optimistic speech with an honest failure note.
+    #   "warn"   — audit state_verified=false, keep optimistic
+    #              speech (useful while tuning — operator sees
+    #              via logs that something was off).
+    #   "silent" — no verification at all (pre-Phase-8.4 behaviour).
+    # Default strict per plan.
+    verification_mode: str = "strict"
+    verification_timeout_s: float = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +501,12 @@ def load_rules_from_yaml(path: str | Path) -> DisambiguationRules:
         ]
     if isinstance(raw.get("ignore_segments"), bool):
         rules.ignore_segments = bool(raw["ignore_segments"])
+    vm = raw.get("verification_mode")
+    if isinstance(vm, str) and vm.strip().lower() in {"strict", "warn", "silent"}:
+        rules.verification_mode = vm.strip().lower()
+    vt = raw.get("verification_timeout_s")
+    if isinstance(vt, (int, float)) and 0 < vt <= 30:
+        rules.verification_timeout_s = float(vt)
     return rules
 
 
@@ -511,6 +529,8 @@ def rules_to_dict(rules: DisambiguationRules) -> dict[str, Any]:
         "extra_ambient_patterns": list(rules.extra_ambient_patterns),
         "extra_segment_tokens": list(rules.extra_segment_tokens),
         "ignore_segments": bool(rules.ignore_segments),
+        "verification_mode": str(rules.verification_mode),
+        "verification_timeout_s": float(rules.verification_timeout_s),
     }
 
 
