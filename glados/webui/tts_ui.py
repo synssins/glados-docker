@@ -3667,6 +3667,28 @@ class Handler(BaseHTTPRequestHandler):
                 rules.extra_segment_tokens = cleaned_tokens
             if "ignore_segments" in data:
                 rules.ignore_segments = bool(data["ignore_segments"])
+            if "verification_mode" in data:
+                mode = str(data["verification_mode"] or "").strip().lower()
+                if mode not in {"strict", "warn", "silent"}:
+                    self._send_error(
+                        400,
+                        "verification_mode must be one of: strict, warn, silent",
+                    )
+                    return
+                rules.verification_mode = mode
+            if "verification_timeout_s" in data:
+                try:
+                    ts = float(data["verification_timeout_s"])
+                except (TypeError, ValueError):
+                    self._send_error(400, "verification_timeout_s must be a number")
+                    return
+                if not (0 < ts <= 30):
+                    self._send_error(
+                        400,
+                        "verification_timeout_s must be between 0 and 30 seconds",
+                    )
+                    return
+                rules.verification_timeout_s = ts
             save_rules_to_yaml(path, rules)
             applied = self._reload_disambiguator_rules()
             self._send_json(200, {
@@ -3678,6 +3700,8 @@ class Handler(BaseHTTPRequestHandler):
                 "extra_ambient_patterns": rules.extra_ambient_patterns,
                 "extra_segment_tokens": rules.extra_segment_tokens,
                 "ignore_segments": rules.ignore_segments,
+                "verification_mode": rules.verification_mode,
+                "verification_timeout_s": rules.verification_timeout_s,
             })
         except Exception as exc:
             self._send_error(500, f"Failed to save rules: {exc}")
@@ -6084,6 +6108,8 @@ function _disambPopulate(data) {
   const dedup = (data.twin_dedup === false) ? false : true;
   const ignoreSeg = (data.ignore_segments === false) ? false : true;
   const pairs = Array.isArray(data.opposing_token_pairs) ? data.opposing_token_pairs : [];
+  const verifyMode = (typeof data.verification_mode === 'string') ? data.verification_mode : 'strict';
+  const verifyTimeout = (typeof data.verification_timeout_s === 'number') ? data.verification_timeout_s : 3.0;
   let html = '';
   html += '<div class="cfg-field" style="display:flex;align-items:center;gap:10px;">'
     +   '<input type="checkbox" id="cfg-disamb-twin-dedup"' + (dedup ? ' checked' : '') + ' style="width:auto;">'
@@ -6134,6 +6160,29 @@ function _disambPopulate(data) {
     + '</div>'
     + '<div id="cfg-disamb-tokens" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
     + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddToken()">+ Add token</button>';
+  // Phase 8.4 — post-execute state verification.
+  html += '<div class="cfg-field-label" style="margin-top:18px;">Post-execute state verification</div>'
+    + '<div class="cfg-field-desc" style="margin-bottom:8px;">'
+    +   'After every <code>call_service</code>, the disambiguator waits for Home&nbsp;Assistant to report a '
+    +   'matching <code>state_changed</code> event. '
+    +   '<strong>Strict</strong> replaces the optimistic speech with an honest failure line when no matching '
+    +   'transition lands within the timeout &mdash; so GLaDOS never confidently announces a change that '
+    +   'silently failed. '
+    +   '<strong>Warn</strong> still audits the outcome but keeps the optimistic line. '
+    +   '<strong>Silent</strong> skips verification entirely (pre-Phase-8.4 behaviour).'
+    + '</div>'
+    + '<div class="cfg-field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+    +   '<label class="cfg-field-label" for="cfg-disamb-verify-mode" style="margin:0;min-width:140px;">Mode</label>'
+    +   '<select id="cfg-disamb-verify-mode" style="flex:1;min-width:160px;">'
+    +     '<option value="strict"' + (verifyMode === 'strict' ? ' selected' : '') + '>Strict (replace speech on failure)</option>'
+    +     '<option value="warn"' + (verifyMode === 'warn' ? ' selected' : '') + '>Warn (audit only)</option>'
+    +     '<option value="silent"' + (verifyMode === 'silent' ? ' selected' : '') + '>Silent (no verification)</option>'
+    +   '</select>'
+    + '</div>'
+    + '<div class="cfg-field" style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap;">'
+    +   '<label class="cfg-field-label" for="cfg-disamb-verify-timeout" style="margin:0;min-width:140px;">Timeout (seconds)</label>'
+    +   '<input type="number" id="cfg-disamb-verify-timeout" min="0.1" max="30" step="0.1" value="' + escAttr(verifyTimeout.toFixed(1)) + '" style="flex:1;min-width:120px;">'
+    + '</div>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
     + '<button class="cfg-save-btn" onclick="cfgSaveDisambiguation()">Save Disambiguation rules</button>'
     + '<span id="cfg-save-result-disamb" class="cfg-result"></span>'
@@ -6331,6 +6380,11 @@ async function cfgSaveDisambiguation() {
     const t = (el.value || '').trim();
     if (t) tokens.push(t);
   });
+  const verifyModeEl = document.getElementById('cfg-disamb-verify-mode');
+  const verifyMode = verifyModeEl ? String(verifyModeEl.value || 'strict') : 'strict';
+  const verifyTimeoutEl = document.getElementById('cfg-disamb-verify-timeout');
+  let verifyTimeout = verifyTimeoutEl ? parseFloat(verifyTimeoutEl.value) : 3.0;
+  if (!isFinite(verifyTimeout) || verifyTimeout <= 0) verifyTimeout = 3.0;
   try {
     const r = await fetch('/api/config/disambiguation', {
       method: 'PUT',
@@ -6340,6 +6394,8 @@ async function cfgSaveDisambiguation() {
         ignore_segments: ignoreSegments,
         opposing_token_pairs: pairs,
         extra_segment_tokens: tokens,
+        verification_mode: verifyMode,
+        verification_timeout_s: verifyTimeout,
       }),
     });
     const resp = await r.json();
