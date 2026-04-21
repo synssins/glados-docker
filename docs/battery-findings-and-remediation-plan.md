@@ -54,7 +54,8 @@ Work actually shipped in this session, in chronological order. Reference for Pha
 - **Phase 8.7 COMPLETE** (2026-04-21). Quip library + composer + three response modes replacing LLM-pass-through: `quip` (pick a Portal-voice line from `configs/quips/`, never leaks device names), `LLM_safe` (dedicated narrow Qwen3 call that sees only intent + outcome + mood), and `chime`/`silent` (audio-side hooks). WebUI Response behavior card under Audio & Speakers + Quip editor card under Personality (GET/PUT/DELETE/test API with path-escape protection). Live-verified: quip mode (`"Off. Efficient."`), LLM_safe mode (`"The device has been activated."`, `"Three of your lighting systems have been dimmed, but the fourth remains unchanged."`), all device-name-free. 788 tests pass. Seed content ~60 lines; content expansion to ~450 lines is a deferred follow-up.
 - **Phase 8.13 COMPLETE** (2026-04-21). Load-time config-drift reconciliation in `GladosConfig.from_yaml` — services.yaml wins over the duplicated Glados-block fields, every override logs a WARNING. Closes Change 15 open-issue #1. 837 tests pass (+13 new in `tests/test_glados_services_override.py`). Change 16 in `docs/CHANGES.md`.
 - **Phase 8.14 COMPLETE** (2026-04-21). Portal canon RAG shipped: `glados.memory.canon_loader` seeds 50 curated entries across 7 topic files into ChromaDB on boot (idempotent); `glados.core.canon_context.CanonContext` retrieves via `where={"source":"canon"}`; `needs_canon_context` gate keeps the ~400-token block off non-lore turns with hardcoded Portal trigger defaults + optional YAML extras. Both chat paths inject (SSE + ContextBuilder at priority=6). New WebUI Canon library card with tree / editor / dry-run, atomic save, and `POST /api/reload-canon` cross-process hot-reload. Closes Change 15 open-issue #2. 895 tests pass (+58 new across three files). Change 17 in `docs/CHANGES.md`.
-- **Phase 8.8–8.9 NOT STARTED** — queued and unchanged.
+- **Phase 8.8 COMPLETE** (2026-04-21). Positive anaphora detector replaces the "no qualifiers = anaphoric" heuristic that silently missed every operator-reported follow-up failure case. New `glados.intent.anaphora.is_anaphoric_followup` checks pronouns / repetition markers / bare-intensity-with-no-content / short additives with a WH-question guard. `CommandResolver._looks_anaphoric` delegates. Configurable follow-up window via `MemoryConfig.session_idle_ttl_seconds`, auto-renders on the existing Memory page. 959 tests pass (+64 new). Change 18 in `docs/CHANGES.md`.
+- **Phase 8.9 NOT STARTED** — queued and unchanged.
 
 Three new tracks surfaced during the session that weren't in the original plan:
 
@@ -405,17 +406,20 @@ Output grammar-constrained (Qwen3 native) to English only, no JSON wrapping.
 
 ---
 
-### Phase 8.8 — Dialog-state JSON & anaphora (2 days, P3)
+### Phase 8.8 — Dialog-state JSON & anaphora (COMPLETE, 2026-04-21)
 
-**Problem fixed:** "turn it up a bit" following an earlier command; "do that again"; ambient cues that reference prior context.
+**Problem fixed:** "turn it up a bit" / "do that again" / "keep going" following an earlier Tier 1/2 command. The pre-8.8 `_looks_anaphoric` heuristic mis-classified these as non-anaphoric because the carry-over signal words (`more`, `again`, `keep`) were absent from the disambiguator's qualifier stopword list, so the resolver fell through to chitchat.
 
-**Work:**
-- Extend `glados/core/session_memory.py` (already exists per SESSION_STATE) with a per-session state object: `{last_entities, last_area, last_service, last_delta, last_ts}`.
-- Planner prompt prepends this state; the Hermes tool schema adds an optional `context_anchor` field.
-- Anaphoric utterances ("it", "that", "those", "a bit more", "again") trigger carry-over if last turn was Tier-1 or planner `ok`.
-- WebUI Personality page gains "Follow-up window" setting (default 10 min idle TTL).
+**Shipped:**
 
-**Success:** a new 30-pair anaphora subtest (Phase 8.10) passes ≥80%.
+- The SessionMemory `Turn` dataclass already carried the needed fields (`entities_affected`, `resolved_area_id`, `service`, `service_data`, `ha_conversation_id`, timestamp) from prior phases — no extension required.
+- Disambiguator already accepted `assume_home_command`, `prior_entity_ids`, `prior_service` via its `run()` signature (from the earlier carry-over work). CommandResolver already threads them through.
+- Phase 8.8 swapped the broken gate for a positive detector in `glados.intent.anaphora.is_anaphoric_followup`: pronoun deictics + explicit repetition markers + bare-intensity-with-no-content-word + short additive continuations, with a WH-question guard. `CommandResolver._looks_anaphoric` now delegates.
+- Configurable follow-up window: `MemoryConfig.session_idle_ttl_seconds: int = 600` surfaced on the existing Memory page via `cfgBuildForm` (no new card). Read at boot and passed to `SessionMemory(idle_ttl_seconds=...)` in `server.py`.
+
+**Success verified:** new `tests/test_anaphora.py` (37 cases) + `TestPhase88Followups` in `tests/test_command_resolver.py` (8 parametrized end-to-end cases proving carry-over threads `prior_entity_ids` + `prior_service` + `assume_home_command=True` for every operator-reported follow-up phrase: "Turn it up more", "A bit more", "Do that again", "Keep going", "Dim it a little", "Turn them off", "Do the same thing"). 959 tests pass. Change 18 in `docs/CHANGES.md`.
+
+**Follow-up (not in 8.8 scope):** the anaphora subtest battery described in the original plan is a Phase 8.10-class harness item — worth adding when Phase 8.9 (test-harness hardening + CI wiring) lands.
 
 ---
 

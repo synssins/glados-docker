@@ -614,6 +614,56 @@ class TestSessionCarryover:
         assert session.last_turn(ctx_chat_no_area.session_id) is None
 
 
+class TestPhase88Followups:
+    """Phase 8.8 regression: the pre-8.8 ``_looks_anaphoric`` heuristic
+    ("no distinctive qualifier words = anaphoric") silently missed
+    every operator-reported follow-up failure case because the words
+    that carry the follow-up signal (``more``, ``again``, ``keep``,
+    ``going``) weren't in the disambiguator's qualifier stopword
+    list. The positive detector in ``glados.intent.anaphora`` fixes
+    that by keying on pronouns + repetition markers + bare-intensity
+    patterns instead.
+    """
+
+    @pytest.mark.parametrize("followup", [
+        "Turn it up more",
+        "Turn it up a bit",
+        "A bit more",
+        "Do that again",
+        "Keep going",
+        "Dim it a little",
+        "Turn them off",
+        "Do the same thing",
+    ])
+    def test_pronoun_or_repetition_follow_ups_use_carryover(
+        self, followup: str,
+        ctx_chat_no_area: SourceContext, learned: LearnedContextStore,
+    ) -> None:
+        clock = _Clock()
+        disambig = _FakeDisambiguator(_FakeDisambigResult(
+            handled=True, decision="execute",
+            service="light.turn_on",
+            entity_ids=["light.task_lamp_one"],
+            speech="Office lamp on.",
+        ))
+        session = SessionMemory(now_fn=clock)
+        resolver, _, d_seen, _ = _make_resolver(
+            disambiguator=disambig, session_memory=session,
+            learned_context=learned, clock=clock,
+        )
+        resolver.resolve("turn on the desk lamp", ctx_chat_no_area)
+        clock.advance(5.0)
+        resolver.resolve(followup, ctx_chat_no_area)
+
+        last_call = d_seen.calls[-1]
+        assert last_call["utterance"] == followup
+        assert last_call["prior_entity_ids"] == [
+            "light.task_lamp_one"
+        ], f"carry-over missed for {followup!r}"
+        assert last_call["prior_service"] == "light.turn_on"
+        assert last_call["assume_home_command"] is True
+
+
 # ---------------------------------------------------------------------------
 # Tests — HA state validator
 # ---------------------------------------------------------------------------
