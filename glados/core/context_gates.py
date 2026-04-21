@@ -103,14 +103,76 @@ def _get_section(section: str) -> dict[str, Any]:
     return _load_config().get(section, {})
 
 
+# Hardcoded default weather trigger keywords — ship in-code so a
+# fresh install works without an operator-curated
+# ``configs/context_gates.yaml``. Same pattern as ``needs_canon_context``
+# below. Without these, the gate returned False for every message
+# when the YAML was absent (operator-facing symptom: ``"What's the
+# weather like?"`` on ``stream:false`` returned an empty reply
+# because weather_cache was never injected).
+_WEATHER_DEFAULT_TRIGGERS: tuple[str, ...] = (
+    "weather",
+    "temperature",
+    "forecast",
+    "raining",
+    "snowing",
+    "humid",
+    "humidity",
+    "sunny",
+    "cloudy",
+    "overcast",
+    "windy",
+    "storm",
+    "drizzle",
+)
+
+# Ambiguous keywords — weather only if no indoor context word also
+# appears. ``"hot"`` / ``"cold"`` alone could be weather or indoor
+# HVAC; the indoor-override list gates them.
+_WEATHER_DEFAULT_AMBIGUOUS: tuple[str, ...] = (
+    "hot",
+    "cold",
+    "warm",
+    "chilly",
+    "freezing",
+    "outside",
+    "outdoor",
+    "outdoors",
+)
+
+_WEATHER_DEFAULT_INDOOR_OVERRIDE: tuple[str, ...] = (
+    "inside",
+    "indoor",
+    "living room",
+    "kitchen",
+    "bedroom",
+    "bathroom",
+    "office",
+    "hallway",
+    "basement",
+    "attic",
+    "garage",
+    "thermostat",
+    "ac ",
+    "heater",
+    "fan",
+)
+
+
 def needs_weather_context(message: str) -> bool:
     """
     Return True if the user message warrants injecting weather context.
 
     Logic:
-    1. Any trigger_keyword present → inject
-    2. Any ambiguous_keyword present AND no indoor_override_keyword → inject
+    1. Any trigger keyword (hardcoded default OR YAML extra) → inject
+    2. Any ambiguous keyword present AND no indoor-override keyword → inject
     3. Otherwise → skip (saves ~200 tokens per non-weather message)
+
+    Hardcoded defaults (``_WEATHER_DEFAULT_TRIGGERS``,
+    ``_WEATHER_DEFAULT_AMBIGUOUS``, ``_WEATHER_DEFAULT_INDOOR_OVERRIDE``)
+    ship with the module so a fresh install works without an operator-
+    curated YAML. Any list under ``weather.*`` in
+    ``configs/context_gates.yaml`` is merged as additive extras.
     """
     if not message:
         return False
@@ -118,9 +180,13 @@ def needs_weather_context(message: str) -> bool:
     text = message.lower()
     cfg = _get_section("weather")
 
-    trigger_kws = cfg.get("trigger_keywords", [])
-    indoor_kws = cfg.get("indoor_override_keywords", [])
-    ambiguous_kws = cfg.get("ambiguous_keywords", [])
+    extras_triggers = [k for k in (cfg.get("trigger_keywords") or []) if isinstance(k, str)]
+    extras_indoor = [k for k in (cfg.get("indoor_override_keywords") or []) if isinstance(k, str)]
+    extras_ambiguous = [k for k in (cfg.get("ambiguous_keywords") or []) if isinstance(k, str)]
+
+    trigger_kws = list(_WEATHER_DEFAULT_TRIGGERS) + extras_triggers
+    indoor_kws = list(_WEATHER_DEFAULT_INDOOR_OVERRIDE) + extras_indoor
+    ambiguous_kws = list(_WEATHER_DEFAULT_AMBIGUOUS) + extras_ambiguous
 
     # Direct weather trigger
     if any(kw in text for kw in trigger_kws):
