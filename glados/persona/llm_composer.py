@@ -83,7 +83,7 @@ def compose_speech(
     *,
     ollama_url: str,
     model: str,
-    timeout_s: float = 5.0,
+    timeout_s: float = 15.0,
 ) -> str:
     """Generate a GLaDOS-voice short reply via a dedicated LLM call.
     Returns empty string on any failure (network, parse, empty
@@ -125,10 +125,13 @@ def compose_speech(
         )
         return _tidy(text)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("LLM composer call failed: {}", exc)
+        # logger.warning so this is visible under the engine's
+        # SUCCESS-level sink — a silent composer failure is exactly
+        # the kind of thing we need to see in production.
+        logger.warning("LLM composer call failed: {}", exc)
         return ""
     except Exception as exc:  # noqa: BLE001 — composer never blocks
-        logger.debug("LLM composer raised: {}", exc)
+        logger.warning("LLM composer raised: {}", exc)
         return ""
 
 
