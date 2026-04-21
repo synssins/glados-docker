@@ -132,6 +132,12 @@ def _fetch_and_apply_registries(client: Any, semantic_index: Any) -> None:
          semantic_index.apply_device_registry),
         ("floor", {"type": "config/floor_registry/list"},
          semantic_index.apply_floor_registry),
+        # Phase 8.5 — entity registry carries area_id for most
+        # entities; without this the build() area→floor resolution
+        # can only see state-level area_ids, which HA populates
+        # inconsistently.
+        ("entity", {"type": "config/entity_registry/list"},
+         semantic_index.apply_entity_registry),
     )
     for name, msg, apply_fn in calls:
         resp = _sync_call(msg)
