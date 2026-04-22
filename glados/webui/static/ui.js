@@ -4400,7 +4400,7 @@ async function _cfgSaveSpeakersPicker() {
   if (resultSpan) { resultSpan.textContent = 'Saving…'; resultSpan.className = 'cfg-result'; }
   try {
     const r = await fetch('/api/config/speakers', {
-      method: 'POST',
+      method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(next),
     });
