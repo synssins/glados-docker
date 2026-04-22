@@ -106,12 +106,23 @@ def test_audio_speakers_has_custom_renderer(source: str) -> None:
     ), "cfgRenderSection must dispatch audio-speakers to _cfgRenderAudioSpeakers"
 
 
-def test_audio_speakers_renders_two_save_buttons_for_backing_sections(source: str) -> None:
-    # Quotes are escaped inside Python-string-wrapped JS: cfgSaveSection(\'speakers\', ...)
-    assert re.search(
-        r"cfgSaveSection\(\\?'speakers\\?',\s*\\?'cfg-save-result-speakers\\?'\)",
-        source,
-    ), "Audio & Speakers page must save the Speakers form to the 'speakers' backing"
+def test_audio_speakers_renders_save_buttons_for_both_backing_sections(source: str) -> None:
+    # Phase 5.7 (2026-04-21): Speakers is saved via a dedicated picker
+    # (_cfgSaveSpeakersPicker) rather than the generic cfgSaveSection
+    # — the checkbox-and-dropdown UI replaced the raw YAML form. The
+    # save handler still POSTs to /api/config/speakers, so the
+    # 'speakers' backing contract is preserved; the assertion below
+    # verifies that target URL is still present in the JS.
+    assert "_cfgSaveSpeakersPicker" in source, (
+        "Audio & Speakers must expose a Speakers save button wired to "
+        "_cfgSaveSpeakersPicker"
+    )
+    assert "/api/config/speakers" in source, (
+        "_cfgSaveSpeakersPicker must POST to the /api/config/speakers "
+        "endpoint so the speakers YAML is still the backing store"
+    )
+    # The Audio section continues to use the generic cfgSaveSection
+    # route (no picker UI), so its assertion stays as-was.
     assert re.search(
         r"cfgSaveSection\(\\?'audio\\?',\s*\\?'cfg-save-result-audio\\?'\)",
         source,
