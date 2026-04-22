@@ -281,6 +281,44 @@ class TestCooldownMath:
 # ── Event structure sanity ──────────────────────────────────────────────
 
 
+class TestClockOverride:
+    """Phase Emotion-D (2026-04-22): emotion_now() returns time.time()
+    unless GLADOS_EMOTION_CLOCK_OVERRIDE is set. Lets cooldown tests
+    time-travel without waiting 3 hours of wall-clock."""
+
+    def test_no_override_returns_wall_clock(self, monkeypatch):
+        monkeypatch.delenv("GLADOS_EMOTION_CLOCK_OVERRIDE", raising=False)
+        from glados.autonomy._clock import emotion_now
+        import time as _t
+        now = emotion_now()
+        assert abs(now - _t.time()) < 1.0, (
+            f"emotion_now() = {now}, time.time() = {_t.time()}; "
+            f"expected near-equal when override unset"
+        )
+
+    def test_override_is_respected(self, monkeypatch):
+        monkeypatch.setenv("GLADOS_EMOTION_CLOCK_OVERRIDE", "1234567890.5")
+        from glados.autonomy._clock import emotion_now
+        assert emotion_now() == 1234567890.5
+
+    def test_malformed_override_falls_back_to_wall_clock(self, monkeypatch):
+        monkeypatch.setenv("GLADOS_EMOTION_CLOCK_OVERRIDE", "not-a-number")
+        from glados.autonomy._clock import emotion_now
+        import time as _t
+        now = emotion_now()
+        # Should gracefully fall back; never crash.
+        assert abs(now - _t.time()) < 1.0
+
+    def test_override_advanceable_without_module_reload(self, monkeypatch):
+        """Tests need to move the clock forward mid-run. The helper
+        re-reads the env var each call, so updating it advances time."""
+        monkeypatch.setenv("GLADOS_EMOTION_CLOCK_OVERRIDE", "1000.0")
+        from glados.autonomy._clock import emotion_now
+        assert emotion_now() == 1000.0
+        monkeypatch.setenv("GLADOS_EMOTION_CLOCK_OVERRIDE", "4600.0")
+        assert emotion_now() == 4600.0  # 3600s (1 hour) later
+
+
 class TestEmotionEvent:
     def test_event_has_source_and_description(self):
         e = EmotionEvent(source="user", description="what's the weather")

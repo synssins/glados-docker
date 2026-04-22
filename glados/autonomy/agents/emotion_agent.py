@@ -18,6 +18,7 @@ from typing import Any
 
 from loguru import logger
 
+from .._clock import emotion_now
 from ..config import EmotionConfig, HEXACOConfig
 from ..emotion_loader import load_emotion_config, EmotionHEXACO
 from ..emotion_state import EmotionEvent, EmotionState
@@ -376,7 +377,7 @@ class EmotionAgent(Subagent):
                         break
                     self._do_tick()
 
-                elif (time.time() - self._last_tick) >= self._ecfg.events.idle_timeout_s:
+                elif (emotion_now() - self._last_tick) >= self._ecfg.events.idle_timeout_s:
                     # Idle fallback — drift toward baseline
                     logger.debug("EmotionAgent: idle fallback tick")
                     self._do_tick()
@@ -423,16 +424,16 @@ class EmotionAgent(Subagent):
             new_state = self._ask_llm(events)
             if new_state:
                 # Preserve cooldown lock from previous state if still active
-                if self._state.state_locked_until > time.time():
+                if self._state.state_locked_until > emotion_now():
                     new_state.state_locked_until = self._state.state_locked_until
                 self._state = new_state
 
                 # Set cooldown lock if acute state triggered
                 if (self._state.pleasure < self._ecfg.cooldown.pleasure_threshold or
                         self._state.arousal > self._ecfg.cooldown.arousal_threshold):
-                    if self._state.state_locked_until <= time.time():
+                    if self._state.state_locked_until <= emotion_now():
                         lock_s = self._ecfg.cooldown.duration_hours * 3600
-                        self._state.state_locked_until = time.time() + lock_s
+                        self._state.state_locked_until = emotion_now() + lock_s
                         logger.info(
                             "EmotionAgent: cooldown lock set for {}h (P:{:.2f} A:{:.2f})",
                             self._ecfg.cooldown.duration_hours,
@@ -453,8 +454,8 @@ class EmotionAgent(Subagent):
             self._state.pleasure, self._state.arousal, self._state.dominance
         )
         lock_info = ""
-        if self._state.state_locked_until > time.time():
-            h = round((self._state.state_locked_until - time.time()) / 3600, 1)
+        if self._state.state_locked_until > emotion_now():
+            h = round((self._state.state_locked_until - emotion_now()) / 3600, 1)
             lock_info = f" [locked {h}h]"
 
         return SubagentOutput(
@@ -471,7 +472,7 @@ class EmotionAgent(Subagent):
         - Locked:   slow drift rate (slow simmer — barely perceptible over lock window)
         Both rates are configured in emotion_config.yaml under drift.
         """
-        now = time.time()
+        now = emotion_now()
         cfg = self._ecfg
         b = cfg.baseline
 
@@ -521,7 +522,7 @@ EVENTS SINCE LAST UPDATE:
 {events_str}
 
 TIME NOW: {time.strftime("%H:%M:%S")}
-TIME SINCE LAST UPDATE: {time.time() - self._state.last_update:.0f}s
+TIME SINCE LAST UPDATE: {emotion_now() - self._state.last_update:.0f}s
 
 Output the new state as JSON with keys: pleasure, arousal, dominance, mood_pleasure, mood_arousal, mood_dominance
 Keep values between -1 and +1. Consider time elapsed for mood drift toward baseline."""
