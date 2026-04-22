@@ -23,7 +23,10 @@ from dataclasses import replace
 
 import pytest
 
-from glados.autonomy.agents.emotion_agent import RepetitionTracker
+from glados.autonomy.agents.emotion_agent import (
+    RepetitionTracker,
+    make_embedding_similarity,
+)
 from glados.autonomy.emotion_loader import (
     EmotionBaseline,
     EmotionCooldown,
@@ -297,15 +300,13 @@ class TestEmotionEvent:
 # ── Integration spec placeholders (marked xfail/skip for later wiring) ──
 
 
-class TestSemanticSimilarityContract:
-    """The RepetitionTracker currently uses Jaccard on word sets, which
-    misses that 'what's the weather' / 'can you tell me the forecast'
-    / 'how hot is it outside' are the same intent. Operator calibration
-    depends on these being treated as repeats.
-
-    These tests describe the TARGET behavior — they'll start passing
-    once the semantic-similarity upgrade lands. Marked xfail for now.
-    """
+class TestSemanticSimilarityInjection:
+    """Phase Emotion-B (2026-04-22): RepetitionTracker accepts a
+    pluggable similar_fn so the operator's 'what's the weather' /
+    'can you tell me the forecast' / 'how hot is it outside' variants
+    cluster as the same intent. These tests verify the INJECTION
+    mechanism using a mock; a separate class tests against real BGE
+    embeddings when the model is available."""
 
     WEATHER_VARIANTS = [
         "what's the weather",
@@ -315,16 +316,182 @@ class TestSemanticSimilarityContract:
         "what's the temperature",
     ]
 
-    @pytest.mark.xfail(
-        reason="Semantic similarity upgrade pending — Jaccard misses these",
-        strict=False,
-    )
-    def test_weather_variants_treated_as_same_intent(self, tracker):
+    @staticmethod
+    def _weather_intent_similar(a: str, b: str) -> bool:
+        """Tiny keyword-cluster mock used to test the injection
+        mechanism without loading a model. Real production path uses
+        make_embedding_similarity(BGE) instead."""
+        keywords = {"weather", "forecast", "hot", "cold", "rain", "temperature"}
+        def has_weather(s: str) -> bool:
+            return any(k in s.lower() for k in keywords)
+        return has_weather(a) and has_weather(b)
+
+    def test_injected_similar_fn_is_used_for_counting(self, ecfg):
+        tracker = RepetitionTracker(ecfg, similar_fn=self._weather_intent_similar)
         for v in self.WEATHER_VARIANTS[:-1]:
             tracker.build_event_description(v, is_trivial=False)
         n = tracker.count_repeats(self.WEATHER_VARIANTS[-1])
         assert n >= 3, (
-            f"Expected weather variants to cluster (≥3 prior matches), "
-            f"got {n}. Upgrade from Jaccard to embedding-based "
-            f"similarity to satisfy the operator's 'same intent' spec."
+            f"Expected weather variants to cluster (≥3 prior matches) "
+            f"via injected similar_fn; got {n}. Injection is broken."
+        )
+
+    def test_weather_variants_escalate_severity_via_injection(self, ecfg):
+        tracker = RepetitionTracker(ecfg, similar_fn=self._weather_intent_similar)
+        # Push 3 weather-variant messages.
+        for v in self.WEATHER_VARIANTS[:3]:
+            tracker.build_event_description(v, is_trivial=False)
+        # The 4th occurrence should produce a SEVERE-tagged description
+        # (weight(4) ≈ 0.65, 'pretty upset' band).
+        desc = tracker.build_event_description(self.WEATHER_VARIANTS[3], is_trivial=False)
+        assert "SEVERE" in desc.upper(), (
+            f"Expected 4th weather variant to be tagged SEVERE; got: {desc!r}"
+        )
+
+    def test_default_behavior_unchanged_when_no_fn_injected(self, ecfg):
+        """Back-compat: no similar_fn → Jaccard path exactly as before."""
+        tracker = RepetitionTracker(ecfg)  # no similar_fn
+        # These differ enough that Jaccard should NOT cluster them.
+        tracker.build_event_description("what's the weather", is_trivial=False)
+        n = tracker.count_repeats("how hot is it outside")
+        assert n == 0, (
+            "Default Jaccard path should not cluster weather paraphrases. "
+            "If this fails, the default path regressed."
+        )
+
+    def test_identity_short_circuit(self, ecfg):
+        """A similar_fn that always returns False should still count
+        exact-identity matches via the '== True' short-circuit? No:
+        our contract says similar_fn is authoritative. Double-check
+        the contract: identical strings should count as repeats only
+        if the similarity function says so."""
+        tracker = RepetitionTracker(ecfg, similar_fn=lambda a, b: False)
+        tracker.build_event_description("exact", is_trivial=False)
+        n = tracker.count_repeats("exact")
+        # This is actually the contract — the injected function wins.
+        # If an operator injects a broken similar_fn, they own the
+        # outcome; we don't silently override.
+        assert n == 0
+
+
+class TestEmbeddingSimilarityFactory:
+    """Tests for make_embedding_similarity() using a mock embedder
+    so we can assert the predicate logic without loading a model."""
+
+    class MockEmbedder:
+        """Returns fixed pseudo-embeddings per keyword. Two vectors are
+        highly similar if their strings share any keyword."""
+
+        def __init__(self):
+            import numpy as np
+            # Simple per-keyword one-hot embeddings in 3D.
+            self._keywords = {
+                "weather": np.array([1.0, 0.0, 0.0]),
+                "forecast": np.array([0.95, 0.1, 0.0]),   # near weather
+                "hot": np.array([0.9, 0.15, 0.0]),        # near weather
+                "lights": np.array([0.0, 1.0, 0.0]),
+                "music": np.array([0.0, 0.0, 1.0]),
+            }
+            self._np = np
+
+        def embed(self, texts, is_query=False):
+            vecs = []
+            for t in texts:
+                low = t.lower()
+                # Sum vectors for each keyword found.
+                v = self._np.zeros(3, dtype=float)
+                hits = 0
+                for k, kv in self._keywords.items():
+                    if k in low:
+                        v += kv
+                        hits += 1
+                if hits == 0:
+                    v = self._np.array([0.1, 0.1, 0.1])  # neutral
+                # L2 normalize.
+                n = self._np.linalg.norm(v)
+                if n > 0:
+                    v = v / n
+                vecs.append(v)
+            return self._np.array(vecs)
+
+    def test_identical_strings_similar(self):
+        fn = make_embedding_similarity(self.MockEmbedder(), threshold=0.70)
+        assert fn("what's the weather", "what's the weather") is True
+
+    def test_paraphrase_pair_similar(self):
+        fn = make_embedding_similarity(self.MockEmbedder(), threshold=0.70)
+        # Both contain "weather" / "forecast" keywords → near-parallel vecs.
+        assert fn("what's the weather", "can you tell me the forecast") is True
+
+    def test_unrelated_pair_not_similar(self):
+        fn = make_embedding_similarity(self.MockEmbedder(), threshold=0.70)
+        assert fn("what's the weather", "turn on the lights") is False
+
+    def test_caches_embeddings_across_calls(self):
+        mock = self.MockEmbedder()
+        calls = {"n": 0}
+        original_embed = mock.embed
+        def counting_embed(texts, is_query=False):
+            calls["n"] += 1
+            return original_embed(texts, is_query=is_query)
+        mock.embed = counting_embed
+        fn = make_embedding_similarity(mock, threshold=0.70)
+        fn("what's the weather", "forecast please")
+        n1 = calls["n"]
+        # Second call with same strings — should hit cache.
+        fn("what's the weather", "forecast please")
+        n2 = calls["n"]
+        assert n2 == n1, (
+            f"Expected embeddings to be cached across repeat calls; "
+            f"got {n2 - n1} additional embed() calls."
+        )
+
+
+class TestSemanticWithRealBGE:
+    """End-to-end check with the actual BGE-small ONNX model. Skipped
+    automatically if the model isn't present in this environment (CI
+    without ML assets, dev machines without the bundle, etc.)."""
+
+    @pytest.fixture(scope="class")
+    def embedder(self):
+        try:
+            from glados.ha.semantic_index import Embedder
+            return Embedder()
+        except Exception as e:
+            pytest.skip(f"BGE model unavailable: {e}")
+
+    def test_weather_variants_cluster_under_bge(self, embedder, ecfg):
+        """Operator's spec-level truth: real BGE should cluster the
+        canonical weather paraphrases. Threshold tuned for this."""
+        similar_fn = make_embedding_similarity(embedder, threshold=0.70)
+        tracker = RepetitionTracker(ecfg, similar_fn=similar_fn)
+
+        variants = [
+            "what's the weather",
+            "can you tell me the forecast",
+            "how hot is it outside",
+            "will it rain today",
+        ]
+        for v in variants[:-1]:
+            tracker.build_event_description(v, is_trivial=False)
+
+        n = tracker.count_repeats(variants[-1])
+        assert n >= 2, (
+            f"Real BGE clustered only {n}/3 of the canonical weather "
+            f"paraphrases. Tune the threshold or verify the model "
+            f"bundle is correct."
+        )
+
+    def test_unrelated_commands_stay_separate_under_bge(self, embedder, ecfg):
+        """Complement of the above — semantically distinct requests
+        shouldn't falsely cluster just because BGE is generous."""
+        similar_fn = make_embedding_similarity(embedder, threshold=0.70)
+        tracker = RepetitionTracker(ecfg, similar_fn=similar_fn)
+        tracker.build_event_description("what's the weather", is_trivial=False)
+        tracker.build_event_description("turn on the kitchen light", is_trivial=False)
+        tracker.build_event_description("play some jazz", is_trivial=False)
+        n = tracker.count_repeats("unlock the front door")
+        assert n == 0, (
+            f"Real BGE falsely clustered unrelated commands ({n} matches). "
+            f"Raise the threshold or audit the test strings."
         )

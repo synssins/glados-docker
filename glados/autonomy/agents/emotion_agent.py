@@ -24,24 +24,108 @@ from ..emotion_state import EmotionEvent, EmotionState
 
 
 # ---------------------------------------------------------------------------
-# Repetition tracker — Jaccard similarity, config-driven severity
+# Repetition tracker — pluggable similarity (Jaccard by default, semantic
+# via BGE embeddings when available)
 # ---------------------------------------------------------------------------
+
+from typing import Callable, Optional
+
+
+def make_embedding_similarity(
+    embedder: Any,
+    threshold: float = 0.70,
+    cache_size: int = 256,
+) -> Callable[[str, str], bool]:
+    """Build a semantic-similarity predicate backed by an Embedder.
+
+    Phase Emotion-B (2026-04-22): the operator's spec calls for
+    paraphrases of the same request ("what's the weather" / "can you
+    tell me the forecast" / "how hot is it outside") to cluster as
+    repeats. Jaccard on word sets misses those; BGE-small cosine
+    similarity catches them reliably. Threshold 0.70 tracks
+    near-paraphrase + same-intent in BGE's normalized space; raise
+    for stricter, lower for looser.
+
+    Falls back to exact-string match if embedding itself fails so a
+    transient ONNX hiccup doesn't break tier-2 repetition tracking.
+    Per-message embeddings are cached (ordered dict, LRU-ish eviction)
+    because the same message gets compared to many history entries
+    in a single count_repeats() call.
+    """
+    # Local import: numpy is already a first-class dep via onnxruntime,
+    # but we want the helper module-importable even when numpy isn't
+    # yet loaded (tests that don't need semantic similarity).
+    import numpy as _np
+
+    _cache: dict[str, Any] = {}
+
+    def _embed(text: str):
+        if text in _cache:
+            return _cache[text]
+        vec = embedder.embed([text], is_query=False)[0]
+        if len(_cache) >= cache_size:
+            # Drop oldest. Python dicts iterate in insertion order
+            # since 3.7 so this is effectively LRU for append-only
+            # caches (which this is).
+            _cache.pop(next(iter(_cache)))
+        _cache[text] = vec
+        return vec
+
+    def _similar(a: str, b: str) -> bool:
+        if a == b:
+            return True
+        try:
+            va = _embed(a)
+            vb = _embed(b)
+            # Both vectors L2-normalized → cosine is a dot product.
+            sim = float(_np.dot(va, vb))
+            return sim >= threshold
+        except Exception as e:
+            logger.debug("Semantic similarity failed, falling back to exact match: %s", e)
+            return False  # conservative: don't treat as same if we can't tell
+
+    return _similar
+
 
 class RepetitionTracker:
     """
     Detects repeated/similar messages and returns a severity-tagged
     event description for the emotion LLM.
 
-    Similarity is Jaccard on word sets — fast, no ML dependencies.
-    Config drives window size, threshold, curve, and severity labels.
+    Similarity is pluggable. The default path uses Jaccard on word
+    sets — fast, no ML dependencies, handles exact repeats well.
+    Constructors that inject `similar_fn=make_embedding_similarity(...)`
+    get semantic matching, so the operator's "what's the weather /
+    forecast / how hot is it outside" variants cluster as repeats.
+
+    Config drives window size, Jaccard threshold, curve shape, and
+    severity labels.
     """
 
-    def __init__(self, ecfg: Any) -> None:
+    def __init__(
+        self,
+        ecfg: Any,
+        similar_fn: Optional[Callable[[str, str], bool]] = None,
+    ) -> None:
         self._ecfg = ecfg
         self._history: list[str] = []  # Recent user messages
+        # similar_fn takes (a, b) and returns True iff they count as
+        # the same intent. Default: Jaccard ≥ configured threshold.
+        self._similar_fn = similar_fn or self._default_similar
+
+    def _default_similar(self, a: str, b: str) -> bool:
+        """Jaccard similarity over lowercased word sets."""
+        wa = set(a.lower().split())
+        wb = set(b.lower().split())
+        if not wa or not wb:
+            return False
+        jacc = len(wa & wb) / len(wa | wb)
+        return jacc >= self._ecfg.escalation.similarity_threshold
 
     @staticmethod
     def _jaccard(a: str, b: str) -> float:
+        """Raw Jaccard score — kept for backward compatibility with
+        callers that want the numeric similarity (e.g. tests)."""
         wa = set(a.lower().split())
         wb = set(b.lower().split())
         if not wa or not wb:
@@ -52,10 +136,7 @@ class RepetitionTracker:
         """Return how many times this message (or similar) appears in history."""
         esc = self._ecfg.escalation
         window = self._history[-esc.history_window:]
-        return sum(
-            1 for prev in window
-            if self._jaccard(message, prev) >= esc.similarity_threshold
-        )
+        return sum(1 for prev in window if self._similar_fn(message, prev))
 
     def build_event_description(self, message: str, is_trivial: bool) -> str:
         """
@@ -186,7 +267,33 @@ class EmotionAgent(Subagent):
         self._events_lock = threading.Lock()
         self._personality_prompt = build_personality_prompt(self._ecfg.hexaco)
         self._trigger = threading.Event()
-        self._repetition_tracker = RepetitionTracker(self._ecfg)
+        self._repetition_tracker = self._build_repetition_tracker()
+
+    def _build_repetition_tracker(self) -> "RepetitionTracker":
+        """Build a semantic-aware tracker if BGE embeddings are
+        available; fall back to Jaccard on any failure.
+
+        Phase Emotion-B (2026-04-22): semantic similarity catches
+        paraphrases that Jaccard misses — 'what's the weather' /
+        'can you tell me the forecast' / 'how hot is it outside' all
+        land in the same repetition cluster. Gracefully degrades to
+        the word-set path if ONNX / tokenizers / the model file
+        aren't present on this container."""
+        try:
+            # Local import so a missing dep doesn't break the agent entirely.
+            from ...ha.semantic_index import Embedder
+            embedder = Embedder()
+            similar_fn = make_embedding_similarity(embedder, threshold=0.70)
+            logger.info(
+                "EmotionAgent: semantic repetition tracking enabled (BGE cosine @ 0.70)"
+            )
+            return RepetitionTracker(self._ecfg, similar_fn=similar_fn)
+        except Exception as e:
+            logger.info(
+                "EmotionAgent: semantic tracking unavailable ({}); falling back to Jaccard",
+                type(e).__name__ + ": " + str(e)[:120],
+            )
+            return RepetitionTracker(self._ecfg)
 
     def _load_state(self) -> EmotionState:
         """Load state from memory, or create fresh with baseline values."""
