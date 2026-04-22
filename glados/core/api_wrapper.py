@@ -2262,6 +2262,8 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_semantic_status()
         elif self.path == "/api/test-harness/noise-patterns":
             self._handle_test_harness_noise_patterns()
+        elif self.path == "/api/emotion/state":
+            self._handle_get_emotion_state()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
 
@@ -2322,6 +2324,10 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_semantic_test()
         elif self.path == "/api/semantic/rebuild":
             self._handle_semantic_rebuild()
+        elif self.path == "/api/emotion/reset":
+            self._handle_emotion_reset()
+        elif self.path == "/api/emotion/push-event":
+            self._handle_emotion_push_event()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
 
@@ -2950,6 +2956,177 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Emotion agent not available"}, 503)
         except Exception as exc:
             logger.error("Force emotion failed: {}", exc)
+            self._send_json({"error": str(exc)}, 500)
+
+    # ── Phase Emotion-D: observability + test-support endpoints ───────
+
+    def _handle_get_emotion_state(self) -> None:
+        """GET /api/emotion/state — read live PAD, mood, lock timer,
+        and recent event history from the running EmotionAgent.
+
+        Used by the operator probe script + any future dashboard panel.
+        Returns 503 if the engine isn't initialized yet.
+        """
+        import time as _time
+        global _engine
+        if _engine is None or _engine._emotion_agent is None:
+            self._send_json({"error": "Emotion agent not available"}, 503)
+            return
+        try:
+            agent = _engine._emotion_agent
+            state = agent._state
+            now = _time.time()
+            lock_ts = state.state_locked_until or 0.0
+            remaining_s = max(0.0, lock_ts - now) if lock_ts else 0.0
+            # Peek at the repetition tracker's history window.
+            try:
+                history_size = len(agent._repetition_tracker._history)
+                history_tail = list(agent._repetition_tracker._history)[-5:]
+            except Exception:
+                history_size = None
+                history_tail = []
+            # Recent events queue (last ~10).
+            try:
+                with agent._events_lock:
+                    events_tail = [
+                        {
+                            "source": e.source,
+                            "description": e.description[:200],
+                            "age_s": round(now - e.timestamp, 1),
+                        }
+                        for e in list(agent._events)[-10:]
+                    ]
+            except Exception:
+                events_tail = []
+            # Classify the current state.
+            try:
+                from glados.autonomy.emotion_loader import classify_emotion
+                name, intensity = classify_emotion(
+                    state.pleasure, state.arousal, state.dominance,
+                )
+            except Exception:
+                name, intensity = "unknown", 0.0
+            self._send_json({
+                "pleasure":     round(state.pleasure, 3),
+                "arousal":      round(state.arousal, 3),
+                "dominance":    round(state.dominance, 3),
+                "mood_pleasure":  round(state.mood_pleasure, 3),
+                "mood_arousal":   round(state.mood_arousal, 3),
+                "mood_dominance": round(state.mood_dominance, 3),
+                "last_update":   state.last_update,
+                "classification": {"name": name, "intensity": round(intensity, 3)},
+                "cooldown": {
+                    "locked_until": lock_ts,
+                    "locked": bool(lock_ts and lock_ts > now),
+                    "remaining_s": round(remaining_s, 1),
+                },
+                "repetition": {
+                    "history_size": history_size,
+                    "history_tail": history_tail,
+                },
+                "recent_events": events_tail,
+                "server_now": now,
+            })
+        except Exception as exc:
+            logger.exception("emotion state fetch failed")
+            self._send_json({"error": str(exc)}, 500)
+
+    def _handle_emotion_reset(self) -> None:
+        """POST /api/emotion/reset — restore baseline state and clear
+        the repetition-tracker history. Test-only: lets an operator
+        probe start from a clean slate without waiting hours for
+        natural decay. Returns 503 if the engine isn't initialized."""
+        import time as _time
+        global _engine
+        if _engine is None or _engine._emotion_agent is None:
+            self._send_json({"error": "Emotion agent not available"}, 503)
+            return
+        try:
+            from glados.autonomy.emotion_state import EmotionState
+            agent = _engine._emotion_agent
+            cfg = agent._emotion_config
+            baseline_state = EmotionState(
+                pleasure=cfg.baseline_pleasure,
+                arousal=cfg.baseline_arousal,
+                dominance=cfg.baseline_dominance,
+                mood_pleasure=cfg.baseline_pleasure,
+                mood_arousal=cfg.baseline_arousal,
+                mood_dominance=cfg.baseline_dominance,
+                last_update=_time.time(),
+                state_locked_until=0.0,
+            )
+            agent._state = baseline_state
+            agent._save_state()
+            # Clear repetition tracker history (but keep the tracker
+            # itself so the injected similar_fn / BGE path is preserved).
+            try:
+                agent._repetition_tracker._history.clear()
+            except Exception:
+                pass
+            # Drain queued events.
+            try:
+                with agent._events_lock:
+                    agent._events.clear()
+            except Exception:
+                pass
+            logger.info("Emotion state reset to baseline via /api/emotion/reset")
+            self._send_json({
+                "status": "ok",
+                "baseline": {
+                    "pleasure":  cfg.baseline_pleasure,
+                    "arousal":   cfg.baseline_arousal,
+                    "dominance": cfg.baseline_dominance,
+                },
+            })
+        except Exception as exc:
+            logger.exception("emotion reset failed")
+            self._send_json({"error": str(exc)}, 500)
+
+    def _handle_emotion_push_event(self) -> None:
+        """POST /api/emotion/push-event — inject a synthetic user-style
+        message into the RepetitionTracker + EmotionAgent without going
+        through the chat pipeline. Lets tests drive escalation without
+        running a live LLM turn for each event.
+
+        Body: {"message": "<string>", "is_trivial": false, "source": "user"}
+        """
+        global _engine
+        if _engine is None or _engine._emotion_agent is None:
+            self._send_json({"error": "Emotion agent not available"}, 503)
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = (
+                json.loads(self.rfile.read(content_length))
+                if content_length else {}
+            )
+            message = (body.get("message") or "").strip()
+            if not message:
+                self._send_json({"error": "message is required"}, 400)
+                return
+            is_trivial = bool(body.get("is_trivial", False))
+            source = (body.get("source") or "user").strip() or "user"
+
+            from glados.autonomy.emotion_state import EmotionEvent
+            agent = _engine._emotion_agent
+            desc = agent.build_event_description(message, is_trivial=is_trivial)
+            agent.push_event(EmotionEvent(source=source, description=desc))
+            try:
+                repeats = agent._repetition_tracker.count_repeats(message)
+            except Exception:
+                repeats = None
+            self._send_json({
+                "status": "ok",
+                "event_description": desc,
+                "repeats_before_this_event": (
+                    # count_repeats was called AFTER build_event_description
+                    # which already appended this message; subtract 1 so
+                    # the caller sees the pre-this-event count.
+                    max(0, repeats - 1) if repeats is not None else None
+                ),
+            })
+        except Exception as exc:
+            logger.exception("emotion push-event failed")
             self._send_json({"error": str(exc)}, 500)
 
     def _handle_entities(self) -> None:
