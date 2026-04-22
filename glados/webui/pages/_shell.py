@@ -1,0 +1,93 @@
+"""HTML chrome for the GLaDOS WebUI: head, sidebar, main open/close.
+
+Extracted from glados/webui/tts_ui.py during Phase 3 of the WebUI
+refactor (2026-04-21). Composed with per-page HTML constants
+(pages/chat.py, pages/system.py, etc.) in glados.webui.tts_ui to
+form the full HTML_PAGE constant.
+"""
+
+SHELL_TOP = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GLaDOS Control Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- â”€â”€ Sidebar (desktop) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+<nav class="sidebar">
+  <div class="sidebar-brand">
+    <span class="engine-status-dot" id="engineStatusDot" title="Engine status"></span>
+    <span>GLaDOS</span>
+    <span>Control</span>
+  </div>
+  <div class="nav-items">
+    <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Chat
+    </a>
+    <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      TTS Generator
+    </a>
+    <a class="nav-item nav-parent" data-nav-key="config" onclick="navToggleConfig()" data-requires-auth="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      Configuration <span class="lock-icon" id="lockConfig"></span>
+      <span class="nav-caret">&#9656;</span>
+    </a>
+    <div class="nav-children">
+      <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
+      <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')" data-requires-auth="true">Integrations</a>
+      <a class="nav-item" data-nav-key="config.llm-services" onclick="navigateTo('config.llm-services')" data-requires-auth="true">LLM &amp; Services</a>
+      <a class="nav-item" data-nav-key="config.audio-speakers" onclick="navigateTo('config.audio-speakers')" data-requires-auth="true">Audio &amp; Speakers</a>
+      <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')" data-requires-auth="true">Personality</a>
+      <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')" data-requires-auth="true">Memory</a>
+      <a class="nav-item" data-nav-key="config.logs" onclick="navigateTo('config.logs')" data-requires-auth="true">Logs</a>
+      <a class="nav-item" data-nav-key="config.ssl" onclick="navigateTo('config.ssl')" data-requires-auth="true">SSL</a>
+      <a class="nav-item" data-nav-key="config.raw" onclick="navigateTo('config.raw')" data-requires-auth="true">Raw YAML</a>
+    </div>
+    <!-- Training removed: piper_train is a host-native tool, not available in container -->
+  </div>
+  <div class="sidebar-footer">
+    <a id="authLinkSidebar" href="/login">Sign In</a>
+  </div>
+</nav>
+
+<!-- â”€â”€ Top bar (mobile) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+<div class="topbar">
+  <div class="topbar-inner">
+    <span class="topbar-brand">GLaDOS</span>
+    <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')">Chat</a>
+    <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')">TTS</a>
+    <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
+    <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')" data-requires-auth="true">Config</a>
+    <!-- Training removed: not available in container -->
+  </div>
+</div>
+
+<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!-- MAIN CONTENT                                                   -->
+<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<main class="main-content">
+
+<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!-- TAB 1: TTS Generator                                           -->
+<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+"""
+
+SHELL_BOTTOM = r"""
+</main>
+
+<!-- Toast -->
+<div id="toastStack" class="toast-stack"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/static/ui.js"></script>
+</body>
+</html>
+"""
