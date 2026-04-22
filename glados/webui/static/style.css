@@ -6,6 +6,11 @@
  */
 /* â”€â”€ Variables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 :root {
+  /* ── Core palette (preserved verbatim from Phase 5) ──────────────
+     Surface + state colors. DO NOT change hex values — the operator
+     has explicitly asked to keep the color scheme. All visual tuning
+     happens via the v2 tokens below (borders, spacing, radius) not
+     the palette. */
   --bg-dark: #1a1a1e;
   --bg-card: #242429;
   --bg-input: #2e2e35;
@@ -21,11 +26,66 @@
   --red-hover: #e87777;
   --green: #4caf50;
   --blue: #4a9eff;
-  /* Phase 5: distinctive display face for headings + branding.
-     Body text stays system-ui for readability. Swapping this var is
-     all it takes to try a different display font. */
+
+  /* ── Phase 4 (2026-04-21): token architecture v2 ─────────────────
+     Adds structured tokens for text hierarchy, border progression,
+     spacing scale, radius scale, and a mono font stack. The goal is
+     a quieter surface system where depth is whispered through hairline
+     rgba borders instead of jumping through high-contrast hex lines.
+     See docs/RESTORE.md + .interface-design/system.md. */
+
+  /* Text hierarchy — four levels beat two. */
+  --fg-primary: #e0e0e0;
+  --fg-secondary: #a8a8ad;
+  --fg-tertiary: #70707a;
+  --fg-muted: #4a4a52;
+
+  /* Border progression — rgba so borders blend, never fight.
+     The whole point: you should barely see them in isolation, feel
+     them when surfaces stack. Keep hue neutral (text-based) so orange
+     stays reserved for state. */
+  --border-subtle: rgba(224, 224, 224, 0.06);
+  --border-default: rgba(224, 224, 224, 0.10);
+  --border-strong: rgba(224, 224, 224, 0.16);
+  --border-focus: rgba(244, 166, 35, 0.45);
+  --border-danger: rgba(224, 85, 85, 0.40);
+
+  /* Spacing scale — base unit 4px.
+     Pick a multiple from this scale for margin / padding / gap.
+     Random values are the clearest sign of no system. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* Radius scale — sharper is more technical, rounder is friendlier.
+     This product is an instrument panel, so bias sharp. */
+  --r-sharp: 2px;
+  --r-input: 4px;
+  --r-card: 6px;
+  --r-modal: 8px;
+
+  /* ── Typography ─────────────────────────────────────────────────
+     Display: Major Mono Display, kept for page H1 branding.
+     Mono: JetBrains Mono for every label, value, readout, and data
+     cell — this interface is a control panel, not a document. The
+     proportional --font-body is used ONLY for long-form prose
+     (e.g., the Personality preprompt editor). */
   --font-display: 'Major Mono Display', 'Consolas', monospace;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'Consolas', 'Menlo', monospace;
+  --font-body: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+
+  /* ── Layout metrics ─────────────────────────────────────────────
+     Sidebar stays 220px on desktop; collapses to an icon rail on
+     tablet (see @media below). */
   --sidebar-w: 220px;
+  --sidebar-w-collapsed: 64px;
+  --topbar-h: 54px;
+  --content-max: 1440px;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -951,19 +1011,52 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 .toast.info    { background: #2e4262;      color: #e7ecff; }
 
 /* â”€â”€ Responsive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-@media (max-width: 768px) {
+/* ── Responsive breakpoints (Phase 4) ─────────────────────────────
+   Four tiers:
+     >1600px : wide desktop, content capped at --content-max, centered
+     1024-1600 : standard desktop, sidebar 220px (default)
+     640-1024 : tablet, sidebar collapses to 64px icon rail
+     <640    : mobile, sidebar hidden, topbar shown, 1-col grids
+   The old single-breakpoint stub at 768px flipped the sidebar off
+   abruptly at awkward window widths. The new set gives a graceful
+   degradation path and a max-width on truly wide displays so lines
+   of text don't stretch past a comfortable reading measure. */
+
+@media (min-width: 1601px) {
+  .main-content {
+    max-width: var(--content-max);
+    margin-left: var(--sidebar-w);
+    margin-right: auto;
+  }
+}
+
+@media (max-width: 1024px) {
+  :root { --sidebar-w: var(--sidebar-w-collapsed); }
+  .sidebar { width: var(--sidebar-w-collapsed); }
+  .sidebar-brand span:not(.engine-status-dot) { display: none; }
+  .nav-item { justify-content: center; padding: 0.7rem 0; }
+  .nav-item span:not(.nav-icon):not(.engine-status-dot) { display: none; }
+  .main-content { margin-left: var(--sidebar-w-collapsed); }
+  .service-grid { grid-template-columns: 1fr 1fr; }
+  .health-grid { grid-template-columns: 1fr 1fr; }
+  .train-status-row { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 640px) {
   .sidebar { display: none; }
   .topbar { display: block; }
   .main-content {
     margin-left: 0;
-    margin-top: 54px;
-    padding: 1rem;
+    margin-top: var(--topbar-h);
+    padding: var(--sp-4);
     max-width: 100%;
   }
-  .service-grid { grid-template-columns: 1fr; }
-  .health-grid { grid-template-columns: 1fr; }
+  .service-grid,
+  .health-grid,
   .weather-grid { grid-template-columns: 1fr; }
   .train-status-row { grid-template-columns: 1fr 1fr; }
+  .telemetry-strip { flex-wrap: wrap; row-gap: var(--sp-2); }
+  .telemetry-strip .cell { font-size: 0.68rem; }
 }
 
 /* â”€â”€ Training Monitor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -1032,3 +1125,109 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   50% { opacity: 0.5; }
 }
 .snap-running { animation: pulse-snap 1.5s infinite; color: var(--accent) !important; }
+
+/* ════════════════════════════════════════════════════════════════
+   TELEMETRY STRIP — signature component (Phase 4)
+   ════════════════════════════════════════════════════════════════
+   A condensed monospace ribbon at the top of each configuration
+   page. Turns what used to be a plain page title into a live
+   control-panel readout.
+
+   Structure (in HTML):
+     <div class="telemetry-strip">
+       <span class="label">SSL</span>
+       <span class="cell">CERT glados.example.com</span>
+       <span class="cell">EXP 2026-07-16 (86d)</span>
+       <span class="cell ok">MODE LE-DNS01</span>
+       <span class="cell warn">RELOAD 3d ago</span>
+     </div>
+
+   Cell states: .ok (green), .warn (orange), .err (red), default
+   (dim). Hydration is driven by the per-page JS (Phase 5 work).
+   ============================================================ */
+
+.telemetry-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  margin-bottom: var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-card);
+  color: var(--fg-secondary);
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+.telemetry-strip .label {
+  color: var(--orange);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  padding-right: var(--sp-3);
+  border-right: 1px solid var(--border-subtle);
+}
+.telemetry-strip .cell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--fg-secondary);
+}
+.telemetry-strip .cell::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  flex-shrink: 0;
+}
+.telemetry-strip .cell.ok    { color: var(--fg-primary); }
+.telemetry-strip .cell.ok::before  { background: var(--green); }
+.telemetry-strip .cell.warn  { color: var(--orange); }
+.telemetry-strip .cell.warn::before { background: var(--orange); }
+.telemetry-strip .cell.err   { color: var(--red); }
+.telemetry-strip .cell.err::before  { background: var(--red); }
+.telemetry-strip .cell strong {
+  color: var(--fg-muted);
+  font-weight: 400;
+  margin-right: 4px;
+  letter-spacing: 0.08em;
+}
+.telemetry-strip .cell em {
+  color: var(--fg-primary);
+  font-style: normal;
+}
+
+/* Upgraded labels, descriptions, and data cells to the mono stack.
+   Applied as a Phase 4 override below the existing rules so we don't
+   disturb the original layout math. */
+.cfg-field-label,
+.cfg-field-desc,
+.cfg-group-title,
+.section-title {
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+.section-title {
+  color: var(--fg-primary);
+  font-weight: 500;
+}
+.cfg-field-desc {
+  color: var(--fg-tertiary);
+}
+
+/* Tighten card/group borders to rgba so they whisper instead of
+   shout. Preserves the existing radius/padding; only the border
+   color changes. */
+.card,
+.cfg-group {
+  border-color: var(--border-default);
+}
+.cfg-group-title {
+  color: var(--fg-secondary);
+}
