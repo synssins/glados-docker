@@ -1131,12 +1131,19 @@ function _cfgRenderAudioSpeakers() {
     + '<div class="cfg-section-desc">' + escHtml(meta.desc || '') + '</div>'
     + '</div>';
 
+  // Phase 5.7 (2026-04-21): Speakers picker — HA-detected media
+  // players rendered as checkboxes grouped by area, plus a
+  // dropdown to pick the default speaker used for Maintenance
+  // Mode. Replaces the old cfgBuildForm rendering which exposed
+  // raw entity_id arrays. _cfgLoadSpeakersPicker() hydrates
+  // asynchronously and owns the save button; the blacklist
+  // field is preserved as-is and remains editable via Raw YAML.
   html += '<div class="cfg-subsection-title">Speakers</div>';
-  html += cfgBuildForm(speakers, 'speakers', '');
-  html += '<div class="cfg-save-row">'
-    + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'speakers\', \'cfg-save-result-speakers\')">Save Speakers</button>'
-    + '<span id="cfg-save-result-speakers" class="cfg-result"></span>'
+  html += '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    + 'Media players detected on Home Assistant. Check the ones GLaDOS is allowed '
+    + 'to announce on; uncheck to exclude. Pick a default for Maintenance Mode below.'
     + '</div>';
+  html += '<div id="cfg-speakers-body">Loading detected speakers&hellip;</div>';
 
   html += '<div class="cfg-subsection-title" style="margin-top:18px;">Audio</div>';
   html += cfgBuildForm(audio, 'audio', '');
@@ -1214,6 +1221,7 @@ function _cfgRenderAudioSpeakers() {
 
   document.getElementById('cfg-form-area').innerHTML = html;
   setTimeout(loadStartupSpeakers, 0);
+  setTimeout(_cfgLoadSpeakersPicker, 0);
   setTimeout(_cfgLoadResponseBehavior, 0);
   setTimeout(_cfgLoadPronunciation, 0);
   setTimeout(_cfgLoadChimes, 0);
@@ -4275,6 +4283,137 @@ async function setVerbosity(scenario, pctValue) {
       body: JSON.stringify({scenario, followup_probability: parseInt(pctValue) / 100}),
     });
   } catch (e) { console.error('Failed to set verbosity:', e); }
+}
+
+// ── Phase 5.7: Speakers picker (replaces cfgBuildForm rendering
+//    for speakers.yaml) ─────────────────────────────────────────
+//
+// State shape written back to /api/config/speakers:
+//   { default: '<entity_id>|null', available: [<entity_id>, ...],
+//     blacklist: [...] }  // blacklist preserved verbatim
+let _speakersPickerState = null;  // { detected: [...], config: {...} }
+
+async function _cfgLoadSpeakersPicker() {
+  const body = document.getElementById('cfg-speakers-body');
+  if (!body) return;
+  try {
+    const [det, cfg] = await Promise.all([
+      fetch('/api/speakers').then(r => r.json()),
+      fetch('/api/config/speakers').then(r => r.json()),
+    ]);
+    _speakersPickerState = {
+      detected: det.speakers || [],
+      config: cfg || { default: null, available: [], blacklist: [] },
+    };
+    _cfgRenderSpeakersPicker();
+  } catch (e) {
+    body.innerHTML = '<div style="color:var(--red);">Failed to load speakers: '
+      + escHtml(String(e)) + '</div>';
+    console.error('speakers picker load failed:', e);
+  }
+}
+
+function _cfgRenderSpeakersPicker() {
+  const body = document.getElementById('cfg-speakers-body');
+  if (!body || !_speakersPickerState) return;
+  const { detected, config } = _speakersPickerState;
+  const enabled = new Set(config.available || []);
+  // Group detected speakers by area for readable scanning.
+  const byArea = {};
+  for (const sp of detected) {
+    const area = sp.area || 'Unassigned';
+    if (!byArea[area]) byArea[area] = [];
+    byArea[area].push(sp);
+  }
+  const areas = Object.keys(byArea).sort();
+  let html = '';
+  for (const area of areas) {
+    html += '<div class="speakers-area-group">';
+    html += '<div class="speakers-area-label">' + escHtml(area) + '</div>';
+    for (const sp of byArea[area].sort((a,b) => a.name.localeCompare(b.name))) {
+      const chk = enabled.has(sp.entity_id) ? ' checked' : '';
+      html += ''
+        + '<label class="speaker-item">'
+        +   '<input type="checkbox" class="speaker-check" '
+        +     'data-entity-id="' + escHtml(sp.entity_id) + '"' + chk
+        +     ' onchange="_cfgOnSpeakerToggle()">'
+        +   '<div class="speaker-item-body">'
+        +     '<div class="speaker-name">' + escHtml(sp.name) + '</div>'
+        +     '<div class="speaker-entity-id">' + escHtml(sp.entity_id) + '</div>'
+        +   '</div>'
+        + '</label>';
+    }
+    html += '</div>';
+  }
+  // Default-speaker dropdown, scoped to currently-enabled entities.
+  html += '<div class="speakers-default-row">';
+  html += '<label class="cfg-field-label" for="cfg-speakers-default">Default speaker for Maintenance Mode</label>';
+  html += '<div class="trait-desc" style="margin-top:4px;">Maintenance Mode routes all audio to this single speaker. Restricted to speakers you have enabled above.</div>';
+  html += '<select id="cfg-speakers-default" style="margin-top:6px;">';
+  html += '<option value=""' + (!config.default ? ' selected' : '') + '>&mdash; none &mdash;</option>';
+  const enabledList = detected.filter(sp => enabled.has(sp.entity_id));
+  for (const sp of enabledList.sort((a,b) => a.name.localeCompare(b.name))) {
+    const sel = sp.entity_id === config.default ? ' selected' : '';
+    html += '<option value="' + escHtml(sp.entity_id) + '"' + sel + '>'
+      + escHtml(sp.name) + ' (' + escHtml(sp.area || 'Unassigned') + ')</option>';
+  }
+  html += '</select>';
+  html += '</div>';
+  // Save row.
+  html += '<div class="cfg-save-row">'
+    + '<button class="cfg-save-btn" onclick="_cfgSaveSpeakersPicker()">Save Speakers</button>'
+    + '<span id="cfg-save-result-speakers" class="cfg-result"></span>'
+    + '</div>';
+  body.innerHTML = html;
+}
+
+function _cfgOnSpeakerToggle() {
+  // Recompute enabled set and re-render so the default dropdown
+  // stays consistent with checked checkboxes. Preserve a
+  // previously-selected default if it's still enabled.
+  if (!_speakersPickerState) return;
+  const checked = Array.from(document.querySelectorAll('.speaker-check:checked'))
+    .map(el => el.getAttribute('data-entity-id'));
+  _speakersPickerState.config.available = checked;
+  // Clear default if it was unchecked.
+  if (_speakersPickerState.config.default && checked.indexOf(_speakersPickerState.config.default) < 0) {
+    _speakersPickerState.config.default = null;
+  }
+  _cfgRenderSpeakersPicker();
+}
+
+async function _cfgSaveSpeakersPicker() {
+  const resultSpan = document.getElementById('cfg-save-result-speakers');
+  if (!_speakersPickerState) {
+    if (resultSpan) resultSpan.textContent = 'Not loaded';
+    return;
+  }
+  const checked = Array.from(document.querySelectorAll('.speaker-check:checked'))
+    .map(el => el.getAttribute('data-entity-id'));
+  const defaultSel = document.getElementById('cfg-speakers-default');
+  const nextDefault = (defaultSel && defaultSel.value) ? defaultSel.value : null;
+  const next = {
+    default: nextDefault,
+    available: checked,
+    blacklist: _speakersPickerState.config.blacklist || [],
+  };
+  if (resultSpan) { resultSpan.textContent = 'Saving…'; resultSpan.className = 'cfg-result'; }
+  try {
+    const r = await fetch('/api/config/speakers', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(next),
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      throw new Error('HTTP ' + r.status + ': ' + txt.slice(0, 200));
+    }
+    _speakersPickerState.config = next;
+    if (resultSpan) { resultSpan.textContent = 'Saved'; resultSpan.className = 'cfg-result cfg-result-ok'; }
+  } catch (e) {
+    if (resultSpan) { resultSpan.textContent = 'Save failed: ' + String(e); resultSpan.className = 'cfg-result cfg-result-err'; }
+    console.error('speakers save failed:', e);
+  }
 }
 
 async function loadStartupSpeakers() {

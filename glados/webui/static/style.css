@@ -1314,6 +1314,89 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   border: 1px solid var(--orange-dim);
 }
 
+/* Phase 5.7 (2026-04-21): Speakers picker — grouped-by-area list of
+   HA media players as checkboxes, plus a default-speaker dropdown.
+   Replaces the generic cfgBuildForm rendering which left operators
+   typing raw entity_ids into text boxes. */
+.speakers-area-group {
+  margin-bottom: var(--sp-4);
+}
+.speakers-area-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-tertiary);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--sp-2);
+}
+.speaker-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-2);
+  margin-bottom: var(--sp-1);
+  border-radius: var(--r-input);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.speaker-item:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.speaker-check {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--orange);
+  cursor: pointer;
+}
+.speaker-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.speaker-name {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--fg-primary);
+  letter-spacing: 0.01em;
+}
+.speaker-entity-id {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--fg-tertiary);
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.speakers-default-row {
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-default);
+}
+.speakers-default-row select {
+  width: 100%;
+  max-width: 420px;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-input);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-input);
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+.speakers-default-row select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
 /* Sub-group label inside a cfg-group — used to split the Emotion
    model into Baseline mood / Dynamics sections under a single
    card. Less prominent than cfg-subsection-title, more than plain
