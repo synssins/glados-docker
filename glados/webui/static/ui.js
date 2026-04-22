@@ -374,8 +374,6 @@ function cfgRenderSection(section) {
   // Page-specific extras appended AFTER the main form + save button.
   if (section === 'integrations') {
     html += _cfgRenderIntegrationsExtras();
-  } else if (section === 'llm-services') {
-    html += _cfgRenderLLMServicesExtras();
   }
 
   document.getElementById('cfg-form-area').innerHTML = html;
@@ -390,18 +388,24 @@ function cfgRenderSection(section) {
 // the top tab bar. Each panel hosts whatever was previously on the
 // long scroll. Top-right Save button saves the active tab's section.
 function _cfgRenderIntegrations() {
+  // Phase 6.2 (2026-04-22): LLM tab added — Ollama endpoints +
+  // Model Options + LLM Timeouts, moved from the deleted LLM &
+  // Services page. Disambiguation / Candidate Retrieval stay for
+  // now; they move off this page in a follow-up commit.
   const globalData = _cfgData.global || {};
+  const servicesData = _cfgData.services || {};
   const meta = SECTION_META['integrations'] || {};
 
   const TABS = [
-    { id: 'ha',      label: 'Home Assistant', backing: 'global',       save: () => cfgSaveSection('global') },
-    { id: 'mqtt',    label: 'MQTT',           backing: 'mqtt',         save: () => _cfgSaveMqtt() },
-    { id: 'disamb',  label: 'Disambiguation', backing: 'disambiguation', save: () => _disambSave && _disambSave() },
-    { id: 'candret', label: 'Candidate retrieval', backing: null,      save: null },
+    { id: 'ha',      label: 'Home Assistant' },
+    { id: 'llm',     label: 'LLM' },
+    { id: 'mqtt',    label: 'MQTT' },
+    { id: 'disamb',  label: 'Disambiguation' },
+    { id: 'candret', label: 'Candidate retrieval' },
   ];
   const activeTabId = _loadPageTab('integrations', 'ha');
 
-  // Page header: title on the left, Save button on the right.
+  // Page header: title + Save button.
   let html = '<div class="page-header">'
     + '<div>'
     +   '<h2 class="page-title">' + escHtml(meta.title || 'Integrations') + '</h2>'
@@ -423,48 +427,58 @@ function _cfgRenderIntegrations() {
   }
   html += '</nav>';
 
-  // Panels.
   html += '<div class="page-tab-panels">';
 
-  // Home Assistant panel — HA subset of the global backing.
+  // ── HA panel ────────────────────────────────────────────────
   const haSubset = {};
   if (globalData.home_assistant) haSubset.home_assistant = globalData.home_assistant;
   html += '<div class="page-tab-panel' + (activeTabId === 'ha' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="ha">';
+  html +=   '<div class="card">' + cfgBuildForm(haSubset, 'global', '') + '</div>';
+  html += '</div>';
+
+  // ── LLM panel ───────────────────────────────────────────────
+  // Ollama endpoints (scope='llm') + Model Options + LLM Timeouts.
+  html += '<div class="page-tab-panel' + (activeTabId === 'llm' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="llm">';
   html +=   '<div class="card">';
-  html +=     cfgBuildForm(haSubset, 'global', '');
+  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+        +      'Ollama endpoints, models, and LLM runtime knobs. URL + Model discovery buttons '
+        +      'query the upstream; edits save to <code>services.yaml</code> (URLs/models), '
+        +      '<code>personality.yaml</code> (model options), and <code>global.yaml</code> '
+        +      '(timeouts).'
+        +    '</div>';
+  html +=     cfgRenderServices(servicesData, 'llm');
+  html +=     _cfgRenderLLMExtrasOnly();
   html +=   '</div>';
   html += '</div>';
 
-  // MQTT panel — body hydrated by _cfgLoadMqtt() after render.
+  // ── MQTT panel ──────────────────────────────────────────────
   html += '<div class="page-tab-panel' + (activeTabId === 'mqtt' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="mqtt">';
   html +=   '<div class="card" id="cfg-mqtt-card">';
   html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-        +      'Optional integration with an MQTT broker (e.g. Home Assistant&rsquo;s Mosquitto add-on). '
-        +      'Publishes GLaDOS events to the peer bus and subscribes to commands from other LAN services. '
-        +      'Disabled by default; enable only after you have the broker coordinates and credentials.'
+        +      'Optional integration with an MQTT broker. Publishes GLaDOS events to the peer '
+        +      'bus and subscribes to commands from other LAN services. Disabled by default.'
         +    '</div>';
   html +=     '<div id="cfg-mqtt-body">Loading MQTT settings&hellip;</div>';
   html +=   '</div>';
   html += '</div>';
 
-  // Disambiguation panel.
+  // ── Disambiguation panel ───────────────────────────────────
   html += '<div class="page-tab-panel' + (activeTabId === 'disamb' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="disamb">';
   html +=   '<div class="card" id="cfg-disambiguation-card">';
   html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
         +      'Controls how Tier&nbsp;2 picks entities when the utterance is ambiguous. '
-        +      'Rules apply against Home&nbsp;Assistant&rsquo;s live entity cache; no entity data is stored here.'
+        +      'Rules apply against Home&nbsp;Assistant&rsquo;s live entity cache.'
         +    '</div>';
   html +=     '<div id="cfg-disamb-body">Loading rules&hellip;</div>';
   html +=   '</div>';
   html += '</div>';
 
-  // Candidate retrieval panel.
+  // ── Candidate retrieval panel ──────────────────────────────
   html += '<div class="page-tab-panel' + (activeTabId === 'candret' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="candret">';
   html +=   '<div class="card" id="cfg-candretrieval-card">';
   html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-        +      'Phase&nbsp;8.3 semantic retriever (BGE-small-en-v1.5 ONNX) with a '
-        +      'device-diversity filter on top-K. Use the test input to see which '
-        +      'entities would be handed to the planner for any phrasing.'
+        +      'Phase&nbsp;8.3 semantic retriever with a device-diversity filter on top-K. '
+        +      'Use the test input to preview which entities would be handed to the planner.'
         +    '</div>';
   html +=     '<div id="cfg-candretrieval-body">Loading retriever status&hellip;</div>';
   html +=   '</div>';
@@ -474,13 +488,106 @@ function _cfgRenderIntegrations() {
 
   document.getElementById('cfg-form-area').innerHTML = html;
 
-  // Hydrate each panel's async content. They target elements that
-  // now live inside panels, but the existing loaders don't care
-  // about the panel wrapper — getElementById still finds them.
   setTimeout(_cfgLoadDisambiguation, 0);
   setTimeout(_cfgLoadCandRetrieval, 0);
   setTimeout(_cfgLoadMqtt, 0);
+  setTimeout(() => cfgPingServices(servicesData), 100);
 }
+
+// Model Options + LLM Timeouts cards — extracted from the original
+// _cfgRenderLLMServicesExtras so the LLM tab can include them inline
+// without the surrounding service grid.
+function _cfgRenderLLMExtrasOnly() {
+  const mo = (_cfgData.personality || {}).model_options || {};
+  const t = ((_cfgData.global || {}).tuning) || {};
+  let html = '';
+  html += '<div class="card" style="margin-top:14px;">';
+  html +=   '<div class="cfg-subsection-title">Model Options</div>';
+  html +=   '<div class="cfg-field"><label class="cfg-field-label">Temperature</label>'
+    +      '<div class="cfg-field-desc">0.0 is deterministic, 1.0+ is creative</div>'
+    +      '<input id="cfg-personality-model_options-temperature" data-path="model_options.temperature" data-type="number" type="number" step="any" value="' + escAttr(String(mo.temperature ?? 0.7)) + '"></div>';
+  html +=   '<div class="cfg-field"><label class="cfg-field-label">Top P</label>'
+    +      '<div class="cfg-field-desc">Nucleus sampling threshold (0.0 - 1.0)</div>'
+    +      '<input id="cfg-personality-model_options-top_p" data-path="model_options.top_p" data-type="number" type="number" step="any" value="' + escAttr(String(mo.top_p ?? 0.9)) + '"></div>';
+  html +=   '<div class="cfg-field"><label class="cfg-field-label">Context Window (num_ctx)</label>'
+    +      '<div class="cfg-field-desc">Tokens of context the model sees per turn</div>'
+    +      '<input id="cfg-personality-model_options-num_ctx" data-path="model_options.num_ctx" data-type="number" type="number" value="' + escAttr(String(mo.num_ctx ?? 16384)) + '"></div>';
+  html +=   '<div class="cfg-field"><label class="cfg-field-label">Repeat Penalty</label>'
+    +      '<div class="cfg-field-desc">Higher values reduce parroting (typical 1.0 - 1.3)</div>'
+    +      '<input id="cfg-personality-model_options-repeat_penalty" data-path="model_options.repeat_penalty" data-type="number" type="number" step="any" value="' + escAttr(String(mo.repeat_penalty ?? 1.1)) + '"></div>';
+  html +=   '<div class="cfg-save-row">'
+    +      '<button class="cfg-save-btn" onclick="cfgSaveModelOptions()">Save Model Options</button>'
+    +      '<span id="cfg-save-result-model-options" class="cfg-result"></span></div>';
+  html += '</div>';
+  html += '<div class="card" style="margin-top:14px;" data-advanced="true">';
+  html +=   '<div class="cfg-subsection-title">LLM Timeouts <span class="cfg-placeholder-tag">advanced</span></div>';
+  html +=   '<div class="cfg-field"><label class="cfg-field-label">Connect Timeout (s)</label>'
+    +      '<div class="cfg-field-desc">Seconds to wait for LLM connection</div>'
+    +      '<input id="cfg-llm-connect-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_connect_timeout_s ?? 10)) + '"></div>';
+  html +=   '<div class="cfg-field"><label class="cfg-field-label">Read Timeout (s)</label>'
+    +      '<div class="cfg-field-desc">Max seconds to wait for LLM response</div>'
+    +      '<input id="cfg-llm-read-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_read_timeout_s ?? 180)) + '"></div>';
+  html +=   '<div class="cfg-save-row">'
+    +      '<button class="cfg-save-btn" onclick="cfgSaveLLMTimeouts()">Save Timeouts</button>'
+    +      '<span id="cfg-save-result-timeouts" class="cfg-result"></span></div>';
+  html += '</div>';
+  return html;
+}
+
+// Save dispatcher for Integrations page. Page-save button click
+// routes to the active tab's save handler. Covers LLM (compound:
+// services subset + model_options + timeouts) in addition to the
+// original HA/MQTT/Disamb cases.
+function _cfgSaveCurrentIntegrationsTab() {
+  const active = document.querySelector('[data-page-tab-group="integrations"].active');
+  const id = active ? active.getAttribute('data-tab') : 'ha';
+  switch (id) {
+    case 'ha':      return cfgSaveSection('global');
+    case 'llm':     return _cfgSaveIntegrationsLLM();
+    case 'mqtt':    return _cfgSaveMqtt();
+    case 'disamb':  return (typeof _disambSave === 'function') ? _disambSave() : null;
+    case 'candret': return;
+    default: return;
+  }
+}
+
+// Compound save for Integrations → LLM tab. Collects Ollama URL/model
+// changes, merges into the current services config (so TTS/STT/Vision
+// on the System page aren't wiped), PUTs services.yaml, then cascades
+// to cfgSaveModelOptions + cfgSaveLLMTimeouts. Each sub-save shows
+// its own inline status; the compound surface is one click for the
+// operator.
+async function _cfgSaveIntegrationsLLM() {
+  // 1. Collect Ollama fields currently in DOM.
+  const partial = cfgCollectForm('services');
+  const merged = Object.assign({}, _cfgData.services || {}, partial);
+  try {
+    const r = await fetch('/api/config/services', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(merged),
+    });
+    const resp = await r.json();
+    if (!r.ok) {
+      showToast('Ollama save failed: ' + (resp.error || r.status), 'error');
+    } else {
+      _cfgData.services = merged;
+    }
+  } catch (e) {
+    showToast('Ollama save error: ' + e.message, 'error');
+  }
+  // 2. Model Options (personality.model_options).
+  if (document.getElementById('cfg-personality-model_options-temperature')) {
+    await cfgSaveModelOptions();
+  }
+  // 3. LLM Timeouts (global.tuning.llm_*).
+  if (document.getElementById('cfg-llm-connect-timeout')) {
+    await cfgSaveLLMTimeouts();
+  }
+  showToast('LLM settings saved.', 'success');
+}
+
+
 
 // Dispatch the page Save button to the active tab's save handler.
 function _cfgSaveCurrentIntegrationsTab() {
@@ -1068,51 +1175,7 @@ async function cfgSaveDisambiguation() {
   }
 }
 
-// Phase 6: cross-section cards under LLM & Services so operators can tune
-// persona strength (personality.model_options) and request timeouts
-// (global.tuning.llm_*_timeout_s) without hunting through the schema.
-// Each card saves its own backing section independently.
-function _cfgRenderLLMServicesExtras() {
-  const mo = (_cfgData.personality || {}).model_options || {};
-  const t = ((_cfgData.global || {}).tuning) || {};
-  let html = '';
 
-  // Model Options card (personality.model_options)
-  html += '<div class="card" style="margin-top:14px;">';
-  html += '<div class="cfg-subsection-title">Model Options</div>';
-  html += '<div class="cfg-field"><label class="cfg-field-label">Temperature</label>'
-    + '<div class="cfg-field-desc">0.0 is deterministic, 1.0+ is creative</div>'
-    + '<input id="cfg-personality-model_options-temperature" data-path="model_options.temperature" data-type="number" type="number" step="any" value="' + escAttr(String(mo.temperature ?? 0.7)) + '"></div>';
-  html += '<div class="cfg-field"><label class="cfg-field-label">Top P</label>'
-    + '<div class="cfg-field-desc">Nucleus sampling threshold (0.0 - 1.0)</div>'
-    + '<input id="cfg-personality-model_options-top_p" data-path="model_options.top_p" data-type="number" type="number" step="any" value="' + escAttr(String(mo.top_p ?? 0.9)) + '"></div>';
-  html += '<div class="cfg-field"><label class="cfg-field-label">Context Window (num_ctx)</label>'
-    + '<div class="cfg-field-desc">Tokens of context the model sees per turn</div>'
-    + '<input id="cfg-personality-model_options-num_ctx" data-path="model_options.num_ctx" data-type="number" type="number" value="' + escAttr(String(mo.num_ctx ?? 16384)) + '"></div>';
-  html += '<div class="cfg-field"><label class="cfg-field-label">Repeat Penalty</label>'
-    + '<div class="cfg-field-desc">Higher values reduce parroting (typical 1.0 - 1.3)</div>'
-    + '<input id="cfg-personality-model_options-repeat_penalty" data-path="model_options.repeat_penalty" data-type="number" type="number" step="any" value="' + escAttr(String(mo.repeat_penalty ?? 1.1)) + '"></div>';
-  html += '<div class="cfg-save-row">'
-    + '<button class="cfg-save-btn" onclick="cfgSaveModelOptions()">Save Model Options</button>'
-    + '<span id="cfg-save-result-model-options" class="cfg-result"></span></div>';
-  html += '</div>';
-
-  // LLM Timeouts card (global.tuning.llm_*)
-  html += '<div class="card" style="margin-top:14px;" data-advanced="true">';
-  html += '<div class="cfg-subsection-title">LLM Timeouts <span class="cfg-placeholder-tag">advanced</span></div>';
-  html += '<div class="cfg-field"><label class="cfg-field-label">Connect Timeout (s)</label>'
-    + '<div class="cfg-field-desc">Seconds to wait for LLM connection</div>'
-    + '<input id="cfg-llm-connect-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_connect_timeout_s ?? 10)) + '"></div>';
-  html += '<div class="cfg-field"><label class="cfg-field-label">Read Timeout (s)</label>'
-    + '<div class="cfg-field-desc">Max seconds to wait for LLM response</div>'
-    + '<input id="cfg-llm-read-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_read_timeout_s ?? 180)) + '"></div>';
-  html += '<div class="cfg-save-row">'
-    + '<button class="cfg-save-btn" onclick="cfgSaveLLMTimeouts()">Save Timeouts</button>'
-    + '<span id="cfg-save-result-timeouts" class="cfg-result"></span></div>';
-  html += '</div>';
-
-  return html;
-}
 
 // Model Options: wrap the existing personality section save with a
 // targeted update — read current personality data, overlay the four
@@ -1934,10 +1997,57 @@ function _svcDiscoverKind(key) {
 // Services grid. Raw YAML still shows them.
 const SERVICES_HIDDEN = new Set(['gladys_api']);
 
-function cfgRenderServices(data) {
+
+// Phase 6.2 (2026-04-22) — System page Services zone loader + save.
+// The Services zone lives inside pages/system.py; we hydrate it on
+// config.system activation with the non-LLM services (scope='system').
+async function loadSystemServices() {
+  const body = document.getElementById('system-services-body');
+  if (!body) return;
+  // Make sure _cfgData.services is populated (config.system doesn't
+  // auto-call cfgLoadAll; this is the System-page entry point).
+  if (!_cfgData.services) {
+    try { await cfgLoadAll(); } catch (e) { /* continue with empty */ }
+  }
+  const data = _cfgData.services || {};
+  body.innerHTML = cfgRenderServices(data, 'system');
+  setTimeout(() => cfgPingServices(data), 100);
+}
+
+async function _cfgSaveSystemServices() {
+  const resultEl = document.getElementById('cfg-save-result-system-services');
+  if (resultEl) { resultEl.textContent = 'Saving…'; resultEl.className = 'cfg-result'; }
+  const partial = cfgCollectForm('services');
+  const merged = Object.assign({}, _cfgData.services || {}, partial);
+  try {
+    const r = await fetch('/api/config/services', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(merged),
+    });
+    const resp = await r.json();
+    if (!r.ok) {
+      if (resultEl) { resultEl.textContent = resp.error || ('Error ' + r.status); resultEl.className = 'cfg-result err'; }
+      return;
+    }
+    _cfgData.services = merged;
+    if (resultEl) { resultEl.textContent = 'Saved'; resultEl.className = 'cfg-result cfg-result-ok'; }
+  } catch (e) {
+    if (resultEl) { resultEl.textContent = String(e); resultEl.className = 'cfg-result err'; }
+  }
+}
+
+function cfgRenderServices(data, scope) {
+  // Phase 6.2 (2026-04-22): scope filters the service grid.
+  //   scope === 'llm'    -> Ollama endpoints only (Integrations page)
+  //   scope === 'system' -> TTS / STT / Vision / api_wrapper (System page)
+  //   scope === null     -> full grid (legacy behavior)
+  const _isLLM = k => k.indexOf('ollama') === 0;
   let html = '<div class="service-grid">';
   for (const [key, svc] of Object.entries(data)) {
     if (SERVICES_HIDDEN.has(key)) continue;
+    if (scope === 'llm' && !_isLLM(key)) continue;
+    if (scope === 'system' && _isLLM(key)) continue;
     const name = SERVICE_NAMES[key] || key;
     const urlId = 'cfg-services-' + key + '-url';
     const discoverKind = _svcDiscoverKind(key);
@@ -3843,6 +3953,7 @@ function navigateTo(key) {
     loadModes(); loadSpeakers(); loadHealth(); loadEyeDemo();
     loadRobots();
     loadAudioStats();
+    loadSystemServices();
     startRobotAutoRefresh();
     if (typeof loadSystemConfigCards === 'function') loadSystemConfigCards();
   } else if (key === 'config.memory') {

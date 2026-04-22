@@ -25,7 +25,9 @@ def source() -> str:
 @pytest.mark.parametrize("nav_key, label", [
     ("config.system", "System"),
     ("config.integrations", "Integrations"),
-    ("config.llm-services", "LLM &amp; Services"),
+    # Phase 6.2 (2026-04-22): 'LLM & Services' sidebar entry removed.
+    # Services (TTS/STT/Vision) live on System; LLM (Ollama, model
+    # options, timeouts) lives as a tab on Integrations.
     ("config.audio-speakers", "Audio &amp; Speakers"),
     ("config.personality", "Personality"),
     ("config.memory", "Memory"),

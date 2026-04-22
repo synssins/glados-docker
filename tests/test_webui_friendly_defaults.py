@@ -147,8 +147,12 @@ def test_llm_services_has_llm_timeouts_card_marked_advanced(source: str) -> None
     # Find the LLM Timeouts card opening and assert data-advanced is present.
     # Attribute order can vary (class/style/data-advanced), so we just
     # require both markers to be in the same opening <div>.
+    # Phase 6.2 (2026-04-22): relaxed the inter-statement whitespace
+    # pattern — the JS source was re-indented when LLM extras moved
+    # to _cfgRenderLLMExtrasOnly. Multiple spaces between 'html +='
+    # and the opening quote are now valid.
     m = re.search(
-        r"<div([^>]*)>'\s*;\s*html \+= '<div class=\"cfg-subsection-title\">LLM Timeouts",
+        r"<div([^>]*)>'\s*;\s*html\s*\+=\s*'<div class=\"cfg-subsection-title\">LLM Timeouts",
         source,
     )
     assert m, "Expected a <div> opening immediately before the LLM Timeouts subsection title"

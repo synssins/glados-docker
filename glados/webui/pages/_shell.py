@@ -43,7 +43,6 @@ SHELL_TOP = r"""<!DOCTYPE html>
     <div class="nav-children">
       <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
       <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')" data-requires-auth="true">Integrations</a>
-      <a class="nav-item" data-nav-key="config.llm-services" onclick="navigateTo('config.llm-services')" data-requires-auth="true">LLM &amp; Services</a>
       <a class="nav-item" data-nav-key="config.audio-speakers" onclick="navigateTo('config.audio-speakers')" data-requires-auth="true">Audio &amp; Speakers</a>
       <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')" data-requires-auth="true">Personality</a>
       <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')" data-requires-auth="true">Memory</a>

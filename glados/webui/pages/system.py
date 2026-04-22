@@ -126,6 +126,29 @@ HTML = r"""
   </div>
 
   <!-- ────────────────────────────────────────────────────────────────
+       ZONE 2.5 — Services (Phase 6.2, 2026-04-22)
+       ────────────────────────────────────────────────────────────────
+       TTS / STT / Vision / api_wrapper endpoints, formerly on the
+       LLM & Services page. LLM (Ollama) moved to Integrations in
+       the same commit. Hydrated by loadSystemServices() from the
+       config.system activation hook. -->
+  <h3 class="zone-heading">Services</h3>
+
+  <div class="card">
+    <div class="section-title">Service endpoints</div>
+    <div class="mode-desc" style="margin-bottom:10px;">
+      Non-LLM backends GLaDOS calls: TTS (Speaches), STT (Faster-Whisper),
+      Vision, and the local api-wrapper. URL + health + discovery per service.
+      LLM / Ollama config lives under <em>Integrations &rsquo;LLM&rsquo;</em>.
+    </div>
+    <div id="system-services-body">Loading services&hellip;</div>
+    <div class="cfg-save-row">
+      <button class="cfg-save-btn" onclick="_cfgSaveSystemServices()">Save Services</button>
+      <span id="cfg-save-result-system-services" class="cfg-result"></span>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────────────────
        ZONE 3 — Hardware and ops
        ──────────────────────────────────────────────────────────────── -->
   <h3 class="zone-heading">Hardware and ops</h3>
