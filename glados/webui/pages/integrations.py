@@ -36,17 +36,13 @@ HTML = r"""
     </div>
   </div>
 
-  <div class="card" style="margin-top:12px;">
-    <div style="display:flex;gap:12px;align-items:center;">
-      <button class="btn" onclick="cfgReload()" style="background:#555;">Reload from Disk</button>
-      <span id="cfg-status" style="color:var(--text-dim);font-size:0.85em;"></span>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:12px;">
-    <div class="section-title">Audio Storage</div>
-    <div id="audioStatsPanel" style="font-size:0.85rem;color:var(--text-dim);">Loading...</div>
-  </div>
+  <!-- Phase 6.1 (2026-04-22): 'Reload from Disk' and 'Audio Storage'
+       cards moved to the System page's Maintenance zone. They used
+       to live in this shared Configuration shell so they appeared
+       below every single sub-page (Integrations / LLM / Audio /
+       Personality / etc) — pure chrome clutter on 90% of views.
+       Now they show up only where an operator would go to actually
+       do maintenance. -->
 
 </div>
 </div>
