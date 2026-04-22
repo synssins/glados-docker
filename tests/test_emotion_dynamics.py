@@ -26,6 +26,7 @@ import pytest
 from glados.autonomy.agents.emotion_agent import (
     RepetitionTracker,
     make_embedding_similarity,
+    repetition_pad_delta,
 )
 from glados.autonomy.emotion_loader import (
     EmotionBaseline,
@@ -279,6 +280,146 @@ class TestCooldownMath:
 
 
 # ── Event structure sanity ──────────────────────────────────────────────
+
+
+class TestDeterministicRepetitionDelta:
+    """Phase Emotion-E (2026-04-22): repetition events produce a
+    calibrated PAD delta applied directly, bypassing the LLM. These
+    tests lock in that the compound curve matches the operator's
+    spec: 4 repeats → annoyed, 5 → hostile (cooldown engaged), 6 →
+    saturated."""
+
+    def test_zero_weight_is_zero_delta(self):
+        assert repetition_pad_delta(0.0) == (0.0, 0.0, 0.0)
+
+    def test_full_weight_matches_coefficients(self):
+        dp, da, dd = repetition_pad_delta(1.0)
+        assert dp == pytest.approx(-0.30)
+        assert da == pytest.approx(+0.25)
+        assert dd == pytest.approx(+0.03)
+
+    def test_half_weight_scales_linearly(self):
+        dp, da, dd = repetition_pad_delta(0.5)
+        assert dp == pytest.approx(-0.15)
+        assert da == pytest.approx(+0.125)
+        assert dd == pytest.approx(+0.015)
+
+    def test_dominance_bump_is_positive(self):
+        """GLaDOS stays in control even as pleasure drops — dominance
+        bump on every repetition so she feels MORE dominant, not less,
+        when the user keeps asking the same thing."""
+        _, _, dd = repetition_pad_delta(1.0)
+        assert dd > 0
+
+    def test_pleasure_drops_while_arousal_climbs(self):
+        """Emotional architecture: annoyance = less pleasant + more
+        alert. Both signs must be correct for every weight."""
+        for w in (0.1, 0.5, 0.9, 1.0):
+            dp, da, _ = repetition_pad_delta(w)
+            assert dp < 0
+            assert da > 0
+
+    def test_compound_curve_matches_operator_calibration(self, escalation):
+        """End-to-end curve: start at baseline, apply the delta for
+        the weight of each repeat count, confirm the bands land where
+        the operator specified. This is the primary lock-in test —
+        if someone retunes the coefficients, CI catches drift."""
+
+        def _clamp(v):
+            return max(-1.0, min(1.0, v))
+
+        # Baseline from emotion_config defaults (EmotionBaseline).
+        p, a, d = 0.10, -0.10, 0.60
+
+        # Apply deltas for repeats 2..6 in sequence.
+        trajectory = []
+        for n in range(2, 7):
+            w = escalation.weight(n)
+            dp, da, dd = repetition_pad_delta(w)
+            p = _clamp(p + dp)
+            a = _clamp(a + da)
+            d = _clamp(d + dd)
+            trajectory.append((n, w, p, a, d))
+
+        # repeat 4 should land in ANNOYED band: pleasure ≤ -0.2 (operator: "pretty upset")
+        _, _, p4, _, _ = trajectory[2]  # index 2 = repeat 4
+        assert p4 <= -0.20, (
+            f"repeat 4 pleasure = {p4:.3f}; expected ≤ -0.20 (annoyed band, operator: 'pretty upset'). "
+            f"Full trajectory: {trajectory}"
+        )
+
+        # repeat 5 should land in HOSTILE band: pleasure ≤ -0.5 → triggers cooldown
+        _, _, p5, _, _ = trajectory[3]
+        assert p5 <= -0.50, (
+            f"repeat 5 pleasure = {p5:.3f}; expected ≤ -0.50 (hostile band, cooldown threshold). "
+            f"Operator spec: 'her worst' begins at 5-6 repeats."
+        )
+
+        # repeat 6 should saturate further (clamped near -1)
+        _, _, p6, _, _ = trajectory[4]
+        assert p6 <= -0.70, (
+            f"repeat 6 pleasure = {p6:.3f}; expected ≤ -0.70 (saturated)"
+        )
+
+        # Arousal should climb meaningfully across the sequence.
+        _, _, _, a_first, _ = trajectory[0]
+        _, _, _, a_last, _ = trajectory[-1]
+        assert a_last - a_first >= 0.5, (
+            f"Arousal delta only {a_last - a_first:.3f} across repeats 2→6; "
+            f"expected ≥ 0.5 (she should be markedly more agitated by the end)"
+        )
+
+        # Dominance stays positive (she remains in control).
+        for n, _, _, _, dv in trajectory:
+            assert dv > 0.3, (
+                f"repeat {n} dominance = {dv:.3f}; should stay > 0.3 "
+                f"(she does not surrender control to annoyance)"
+            )
+
+
+class TestSeverityTagParsing:
+    """Phase Emotion-E: the tick loop splits events by whether their
+    description carries a '[SEVERITY: X | weight:Y]' tag. Parse
+    correctness is critical — misparses either skip severe events
+    (no escalation) or apply deltas to novel events (false escalation)."""
+
+    # EmotionAgent._parse_weight is an instance method but uses only
+    # a class-level regex. Exercise it through a minimal subclass so
+    # we inherit _WEIGHT_RE without needing the full agent __init__.
+    def _parse(self, desc: str) -> float | None:
+        from glados.autonomy.agents.emotion_agent import EmotionAgent
+
+        class _FakeAgent(EmotionAgent):
+            def __init__(self):  # skip the real heavyweight init
+                pass
+
+        return _FakeAgent()._parse_weight(desc)
+
+    def test_standard_tag_parses(self):
+        desc = "[SEVERITY: SEVERE | weight:0.65] severe — she has clearly stopped listening. Repeat #4."
+        assert self._parse(desc) == pytest.approx(0.65)
+
+    def test_critical_weight_1_0_parses(self):
+        desc = "[SEVERITY: CRITICAL | weight:1.000] five or more times. Repeat #5."
+        assert self._parse(desc) == pytest.approx(1.0)
+
+    def test_missing_tag_returns_none(self):
+        assert self._parse("User said: what's the weather") is None
+
+    def test_trivial_ha_marker_returns_none(self):
+        """Trivial-HA descriptions don't carry weight — they're gloat
+        opportunities and route through the LLM, not the deterministic
+        path."""
+        assert self._parse(
+            "Trivial HA request (gloat opportunity): turn on the light"
+        ) is None
+
+    def test_malformed_weight_returns_none(self):
+        assert self._parse("[SEVERITY: X | weight:not_a_number]") is None
+
+    def test_empty_string_returns_none(self):
+        assert self._parse("") is None
+        assert self._parse(None) is None
 
 
 class TestClockOverride:

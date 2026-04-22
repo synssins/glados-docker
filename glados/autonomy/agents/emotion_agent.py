@@ -11,6 +11,7 @@ debounce window to batch them) or after a 6-hour idle fallback timer.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections import deque
@@ -22,6 +23,33 @@ from .._clock import emotion_now
 from ..config import EmotionConfig, HEXACOConfig
 from ..emotion_loader import load_emotion_config, EmotionHEXACO
 from ..emotion_state import EmotionEvent, EmotionState
+
+
+# Phase Emotion-E: pure helper so tests and the instance method share
+# the same coefficients. Change these numbers in ONE place.
+_REPETITION_DP_COEF = -0.30
+_REPETITION_DA_COEF = +0.25
+_REPETITION_DD_COEF = +0.03
+
+
+def repetition_pad_delta(weight: float) -> tuple[float, float, float]:
+    """Return the (dP, dA, dD) for a repetition event of this weight.
+
+    Calibrated so the compound effect across the RepetitionTracker's
+    standard weight curve (weight(2..5) ≈ 0.125 / 0.354 / 0.650 / 1.000)
+    puts GLaDOS into the 'annoyed' PAD band by the 4th repeat and
+    the 'hostile' band (pleasure ≤ −0.5, engaging cooldown) by the
+    5th repeat — matching the operator's 4 → pretty upset, 5-6 →
+    her worst calibration.
+
+    Pure function so Phase Emotion-A / E unit tests can exercise
+    it without constructing an EmotionAgent.
+    """
+    return (
+        _REPETITION_DP_COEF * weight,
+        _REPETITION_DA_COEF * weight,
+        _REPETITION_DD_COEF * weight,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -411,8 +439,75 @@ class EmotionAgent(Subagent):
 
             logger.info("Subagent %s stopped.", self._config.agent_id)
 
+    # ── Phase Emotion-E: deterministic deltas for repetition events ──
+    #
+    # When the RepetitionTracker tags an event as a repeat
+    # (severity label + weight present in the description), apply a
+    # calibrated PAD delta directly — no LLM call. This is the
+    # operator-sanctioned path because the meaning is already
+    # inferred deterministically (BGE embedding + cosine; no
+    # reasoning required) so asking the LLM for a delta just adds
+    # noise and under-applies the intended math.
+    #
+    # Calibration (matches operator spec "4 = pretty upset, 5-6 = worst"):
+    #   ΔP = -0.30 * weight   ΔA = +0.25 * weight   ΔD = +0.03 * weight
+    #
+    # Compounding across repeats (from baseline P=+0.10):
+    #   repeat 2 (w=0.125)  P +0.062  A -0.069  (still Contemptuous Calm)
+    #   repeat 3 (w=0.354)  P -0.044  A +0.020  (annoyed band edge)
+    #   repeat 4 (w=0.650)  P -0.239  A +0.183  (ANNOYED — operator: "pretty upset")
+    #   repeat 5 (w=1.000)  P -0.539  A +0.433  (HOSTILE — cooldown engaged)
+    #   repeat 6 (w=1.000)  P -0.839  A +0.683  (saturated — operator: "her worst")
+    #
+    # Novel events (no severity tag) continue through the LLM path
+    # so gloat-on-trivial, existential threats, scene changes, etc.
+    # retain nuance. The split is on event type, not severity level.
+
+    _WEIGHT_RE = re.compile(r"weight:([0-9.]+)")
+
+    def _parse_weight(self, description: str) -> float | None:
+        """Extract weight from a '[SEVERITY: X | weight:Y.YY]' tag.
+        Returns None when the description carries no repetition tag —
+        caller routes those events to the LLM instead."""
+        m = self._WEIGHT_RE.search(description or "")
+        if not m:
+            return None
+        try:
+            return float(m.group(1))
+        except (TypeError, ValueError):
+            return None
+
+    def _apply_deterministic_delta(self, event: EmotionEvent, weight: float) -> None:
+        """Apply the calibrated PAD delta for a repetition event.
+        Clamps to [-1, 1]. Does not touch the cooldown lock — that's
+        evaluated once per tick after all deltas accumulate."""
+        dp, da, dd = repetition_pad_delta(weight)
+
+        def _clamp(v: float) -> float:
+            return max(-1.0, min(1.0, v))
+
+        self._state.pleasure  = _clamp(self._state.pleasure + dp)
+        self._state.arousal   = _clamp(self._state.arousal + da)
+        self._state.dominance = _clamp(self._state.dominance + dd)
+        self._state.last_update = emotion_now()
+
+        logger.info(
+            "EmotionAgent: deterministic repetition delta weight={:.2f} "
+            "dP={:+.3f} dA={:+.3f} dD={:+.3f} -> P:{:.2f} A:{:.2f} D:{:.2f}",
+            weight, dp, da, dd,
+            self._state.pleasure, self._state.arousal, self._state.dominance,
+        )
+
     def tick(self) -> SubagentOutput | None:
-        """Process accumulated events via LLM, or drift if idle."""
+        """Process accumulated events via LLM, or drift if idle.
+
+        Phase Emotion-E: split events into two buckets.
+          - Repetition events (carry a weight tag) -> deterministic
+            PAD delta applied in-place, no LLM call.
+          - Novel events -> LLM reasons about the PAD update as
+            before, preserving gloat-on-trivial, existential threat
+            handling, scene-change reactions, etc.
+        """
         with self._events_lock:
             events = list(self._events)
             self._events.clear()
@@ -420,26 +515,50 @@ class EmotionAgent(Subagent):
         if not events or not self._llm_config:
             self._apply_baseline_drift()
         else:
-            logger.info("EmotionAgent: processing {} events via LLM", len(events))
-            new_state = self._ask_llm(events)
-            if new_state:
-                # Preserve cooldown lock from previous state if still active
-                if self._state.state_locked_until > emotion_now():
-                    new_state.state_locked_until = self._state.state_locked_until
-                self._state = new_state
+            # Partition events by whether they carry a repetition
+            # weight tag (from RepetitionTracker.build_event_description).
+            repetition_events: list[tuple[EmotionEvent, float]] = []
+            novel_events: list[EmotionEvent] = []
+            for e in events:
+                w = self._parse_weight(e.description)
+                if w is not None and w > 0.0:
+                    repetition_events.append((e, w))
+                else:
+                    novel_events.append(e)
 
-                # Set cooldown lock if acute state triggered
-                if (self._state.pleasure < self._ecfg.cooldown.pleasure_threshold or
-                        self._state.arousal > self._ecfg.cooldown.arousal_threshold):
-                    if self._state.state_locked_until <= emotion_now():
-                        lock_s = self._ecfg.cooldown.duration_hours * 3600
-                        self._state.state_locked_until = emotion_now() + lock_s
-                        logger.info(
-                            "EmotionAgent: cooldown lock set for {}h (P:{:.2f} A:{:.2f})",
-                            self._ecfg.cooldown.duration_hours,
-                            self._state.pleasure,
-                            self._state.arousal,
-                        )
+            if repetition_events:
+                logger.info(
+                    "EmotionAgent: applying deterministic deltas for {} repetition events",
+                    len(repetition_events),
+                )
+                for e, w in repetition_events:
+                    self._apply_deterministic_delta(e, w)
+
+            if novel_events:
+                logger.info(
+                    "EmotionAgent: processing {} novel events via LLM",
+                    len(novel_events),
+                )
+                new_state = self._ask_llm(novel_events)
+                if new_state:
+                    # Preserve cooldown lock from previous state if still active
+                    if self._state.state_locked_until > emotion_now():
+                        new_state.state_locked_until = self._state.state_locked_until
+                    self._state = new_state
+
+            # Set cooldown lock if acute state triggered (either from
+            # deterministic deltas or the LLM's update).
+            if (self._state.pleasure < self._ecfg.cooldown.pleasure_threshold or
+                    self._state.arousal > self._ecfg.cooldown.arousal_threshold):
+                if self._state.state_locked_until <= emotion_now():
+                    lock_s = self._ecfg.cooldown.duration_hours * 3600
+                    self._state.state_locked_until = emotion_now() + lock_s
+                    logger.info(
+                        "EmotionAgent: cooldown lock set for {}h (P:{:.2f} A:{:.2f})",
+                        self._ecfg.cooldown.duration_hours,
+                        self._state.pleasure,
+                        self._state.arousal,
+                    )
 
         # Wire EmotionConstitutionBridge — translate PAD to behavioral modifiers
         if self._constitutional_state is not None:
