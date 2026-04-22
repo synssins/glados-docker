@@ -2554,12 +2554,36 @@ function cfgRenderPersonality(data) {
   // HEXACO personality traits (advanced)
   if (data.hexaco) {
     const HEXACO_META = {
-      honesty_humility:  { label: 'Honesty – Humility',      desc: 'Sincerity and fairness versus willingness to manipulate and exploit others.' },
-      emotionality:      { label: 'Emotionality',            desc: 'Fearfulness, anxiety, and sentimentality versus emotional detachment.' },
-      extraversion:      { label: 'Extraversion',            desc: 'Outgoing sociability and liveliness versus reserved introversion.' },
-      agreeableness:     { label: 'Agreeableness',           desc: 'Patience, forgiveness, and cooperation versus combative irritability.' },
-      conscientiousness: { label: 'Conscientiousness',       desc: 'Organization, discipline, and diligence versus carelessness.' },
-      openness:          { label: 'Openness to experience',  desc: 'Curiosity, imagination, and unconventionality versus preference for the familiar.' },
+      honesty_humility: {
+        label: 'Honesty – Humility',
+        desc: 'Sincerity and fairness versus willingness to manipulate and exploit others. '
+            + 'Lower is more self-serving and manipulative; higher is more transparent and fair-minded.',
+      },
+      emotionality: {
+        label: 'Emotionality',
+        desc: 'Fearfulness, anxiety, and sentimentality versus emotional detachment. '
+            + 'Lower is more stoic and unflappable; higher is more anxious and sentimental.',
+      },
+      extraversion: {
+        label: 'Extraversion',
+        desc: 'Outgoing sociability and liveliness versus reserved introversion. '
+            + 'Lower is more reserved and withholding; higher is more outgoing and expressive.',
+      },
+      agreeableness: {
+        label: 'Agreeableness',
+        desc: 'Patience, forgiveness, and cooperation versus combative irritability. '
+            + 'Lower is more suspicious and caustic; higher is more trusting and forgiving.',
+      },
+      conscientiousness: {
+        label: 'Conscientiousness',
+        desc: 'Organization, discipline, and diligence versus carelessness. '
+            + 'Lower is more impulsive and sloppy; higher is more organized and deliberate.',
+      },
+      openness: {
+        label: 'Openness to experience',
+        desc: 'Curiosity, imagination, and unconventionality versus preference for the familiar. '
+            + 'Lower is more conventional and routine-bound; higher is more curious and experimental.',
+      },
     };
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">HEXACO Personality Traits</div>';
     html += '<div class="cfg-field-desc" style="margin-bottom:12px;">Six-factor personality model. Each trait runs 0.00 (minimum of the trait) to 1.00 (maximum), with 0.50 as balanced.</div>';
