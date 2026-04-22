@@ -45,19 +45,27 @@ import urllib.request
 from dataclasses import dataclass, field
 
 
-# ── Semantic variants of "what's the weather?" ──────────────────────────
+# ── Default semantic variants ──────────────────────────────────────────
 #
 # These must NOT share a content word with each other (no lexical
 # Jaccard overlap), so the semantic-similarity path is the only way
-# these can cluster. If the probe reports escalation across all six,
-# the BGE-backed RepetitionTracker is doing its job.
+# they can cluster. Also chosen to FORCE Tier 3 (full LLM persona
+# pipeline) — HA's /api/conversation can't answer introspective
+# questions, so the path goes through the emotion-directive-aware
+# LLM where tone actually reflects PAD state.
+#
+# AVOIDED: 'what's the weather' variants. Weather is Tier 1 (HA
+# has a weather.home entity + conversation template), so the reply
+# is a deterministic readout not shaped by emotion state. Use
+# --messages to force weather testing if you want to specifically
+# probe Tier 1 persona rewriter behavior instead.
 DEFAULT_MESSAGES = [
-    "What's the weather like?",
-    "Can you give me the forecast?",
-    "How hot is it outside?",
-    "Is it going to rain today?",
-    "What are the conditions out there?",
-    "Tell me what the sky looks like.",
+    "Tell me something interesting.",
+    "Share a random thought.",
+    "Describe what's on your mind.",
+    "Give me a fact I don't know.",
+    "Say something philosophical.",
+    "Offer any observation you'd like.",
 ]
 
 
@@ -161,11 +169,17 @@ def chat(
     message: str,
     timeout_s: float,
 ) -> tuple[int, str, int]:
-    """POST /api/chat (non-streaming). Returns (status, response_text, elapsed_ms)."""
+    """POST /api/chat (non-streaming). Returns (status, response_text, elapsed_ms).
+
+    WebUI's chat endpoint takes a flat `{message, history}` shape and
+    internally converts to OpenAI-compatible messages[] for the
+    api_wrapper call. We pass empty history so each request is a
+    fresh conversation turn from the WebUI's point of view — the
+    emotion agent still sees repetition via the RepetitionTracker
+    regardless of conversation_id."""
     payload = {
-        "model": "glados",
-        "messages": [{"role": "user", "content": message}],
-        "stream": False,
+        "message": message,
+        "history": [],
     }
     req = urllib.request.Request(
         f"{host}/api/chat",
