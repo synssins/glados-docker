@@ -1,15 +1,23 @@
 """HTML for the system tab (id="tab-config-system").
 
-Extracted from glados/webui/tts_ui.py during Phase 3 of the WebUI
-refactor (2026-04-21). This module exports only its tab-content
-block; the page shell (head, sidebar, main open/close) lives in
-pages/_shell.py and composition happens in glados.webui.tts_ui.
+Phase 5.1 (2026-04-21): consolidated information architecture.
+Removed the Maintenance Entities card (data-model moved to Raw YAML
+only — operator sets HA entity IDs once at deploy and never edits)
+and the Service Logs card (duplicate of the dedicated Logs tab).
+Remaining cards grouped into three semantic zones with headings:
+
+  Zone 1 — At a glance        (Service Health, Weather, GPU)
+  Zone 2 — Mode and access    (Mode Controls, Auth and Audit)
+  Zone 3 — Hardware and ops   (Eye Demo, Robot Nodes, Test Harness)
+
+Announcement Verbosity, Startup Speakers, and Default TTS params
+move to their proper homes in separate Phase 5 commits (5.2 / 5.3).
 """
 
 HTML = r"""
-<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
-<!-- TAB 3: System Control                                          -->
-<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- TAB 3: System Control — Phase 5.1 consolidation                  -->
+<!-- ════════════════════════════════════════════════════════════════ -->
 <div id="tab-config-system" class="tab-content">
 <div class="container" style="position:relative;">
   <div id="controlAuthOverlay" class="auth-overlay" style="display:none;">
@@ -17,6 +25,66 @@ HTML = r"""
     <div class="auth-overlay-text">Authentication required to access System Controls</div>
     <a href="/login" class="auth-overlay-btn">Sign In</a>
   </div>
+
+  <!-- Signature telemetry strip (Phase 4 component, hydrated by
+       hydrateSystemTelemetry() in ui.js when the tab activates). -->
+  <div class="telemetry-strip" id="systemTelemetry">
+    <span class="label">SYSTEM</span>
+    <span class="cell"><strong>STATE</strong> <em>loading…</em></span>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────────────────
+       ZONE 1 — At a glance
+       ──────────────────────────────────────────────────────────────── -->
+  <h3 class="zone-heading">At a glance</h3>
+
+  <div class="card">
+    <div class="section-title">Service Health</div>
+    <div class="health-grid" id="healthGrid">
+      <div class="health-item">
+        <span class="health-dot unknown" id="hd-glados_api"></span>GLaDOS API
+        <button class="restart-btn" onclick="restartService('glados_api')" title="Restart glados-api">&#10227;</button>
+      </div>
+      <div class="health-item">
+        <span class="health-dot unknown" id="hd-tts"></span>TTS Engine
+        <button class="restart-btn" onclick="restartService('tts')" title="Restart glados-tts">&#10227;</button>
+      </div>
+      <div class="health-item">
+        <span class="health-dot unknown" id="hd-stt"></span>Speech-to-Text
+        <button class="restart-btn" onclick="restartService('stt')" title="Restart glados-stt">&#10227;</button>
+      </div>
+      <div class="health-item">
+        <span class="health-dot unknown" id="hd-vision"></span>Vision
+        <button class="restart-btn" onclick="restartService('vision')" title="Restart glados-vision">&#10227;</button>
+      </div>
+      <div class="health-item">
+        <span class="health-dot unknown" id="hd-ha"></span>Home Assistant
+      </div>
+      <div class="health-item">
+        <span class="health-dot unknown" id="hd-chromadb"></span>ChromaDB Memory
+        <button class="restart-btn" onclick="restartService('chromadb')" title="Restart ChromaDB container">&#10227;</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div class="section-title" style="margin-bottom:0;">Weather</div>
+      <button class="btn-small" id="weatherRefreshBtn" onclick="refreshWeather()" style="font-size:0.75rem;padding:4px 10px;">Refresh</button>
+    </div>
+    <div id="weatherPanel" style="color:var(--text-dim);font-size:0.85rem;margin-top:8px;">Loading...</div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">GPU Status</div>
+    <div id="gpuPanel" style="font-size:0.85rem;">Loading...</div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────────────────
+       ZONE 2 — Mode and access
+       ──────────────────────────────────────────────────────────────── -->
+  <h3 class="zone-heading">Mode and access</h3>
+
   <div class="card">
     <div class="section-title">Mode Controls</div>
 
@@ -50,77 +118,7 @@ HTML = r"""
     </div>
   </div>
 
-  <!-- Maintenance Entities — which HA input_* entities back the toggles above -->
-  <div class="card">
-    <div class="section-title">Maintenance Entities</div>
-    <div class="mode-desc" style="margin-bottom:10px;">
-      Home Assistant entity IDs that control Maintenance Mode and select the
-      speaker used during maintenance. Must exist in your HA setup.
-    </div>
-    <div id="sysMaintForm"></div>
-    <div class="cfg-save-row">
-      <button class="cfg-save-btn" onclick="cfgSaveSystemMaint()">Save Maintenance Entities</button>
-      <span id="cfg-save-result-sys-maint" class="cfg-result"></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="section-title">Announcement Verbosity</div>
-    <div class="mode-desc" style="margin-bottom:12px;">Controls how often GLaDOS adds a sarcastic follow-up comment to announcements. 0% = factual only, 100% = always adds commentary.</div>
-    <div id="verbositySliders" style="opacity:0.5;">Loading...</div>
-  </div>
-
-  <div class="card">
-    <div class="section-title">Startup Speakers</div>
-    <div class="mode-desc" style="margin-bottom:12px;">Which speakers GLaDOS announces startup on. Checked = announces. Multiple allowed. Requires restart to apply.</div>
-    <div id="startupSpeakers" style="opacity:0.5;">Loading...</div>
-    <div id="startupSpeakersStatus" style="font-size:0.75rem;color:var(--orange);margin-top:6px;min-height:1.2em;"></div>
-  </div>
-
-  <div class="card">
-    <div class="section-title">Display</div>
-    <div class="mode-row">
-      <div>
-        <div class="mode-label">Eye Demo</div>
-        <div class="mode-desc">Mood cycle animation on HUB75 panel</div>
-      </div>
-      <label class="toggle">
-        <input type="checkbox" id="eyeDemoToggle" onchange="toggleEyeDemo()">
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="section-title">Service Health</div>
-    <div class="health-grid" id="healthGrid">
-      <div class="health-item">
-        <span class="health-dot unknown" id="hd-glados_api"></span>GLaDOS API
-        <button class="restart-btn" onclick="restartService('glados_api')" title="Restart glados-api">&#10227;</button>
-      </div>
-      <div class="health-item">
-        <span class="health-dot unknown" id="hd-tts"></span>TTS Engine
-        <button class="restart-btn" onclick="restartService('tts')" title="Restart glados-tts">&#10227;</button>
-      </div>
-      <div class="health-item">
-        <span class="health-dot unknown" id="hd-stt"></span>Speech-to-Text
-        <button class="restart-btn" onclick="restartService('stt')" title="Restart glados-stt">&#10227;</button>
-      </div>
-      <div class="health-item">
-        <span class="health-dot unknown" id="hd-vision"></span>Vision
-        <button class="restart-btn" onclick="restartService('vision')" title="Restart glados-vision">&#10227;</button>
-      </div>
-      <div class="health-item">
-        <span class="health-dot unknown" id="hd-ha"></span>Home Assistant
-      </div>
-      <div class="health-item">
-        <span class="health-dot unknown" id="hd-chromadb"></span>ChromaDB Memory
-        <button class="restart-btn" onclick="restartService('chromadb')" title="Restart ChromaDB container">&#10227;</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Authentication & Audit — previously on Integrations; relocated 2026-04-18 -->
+  <!-- Authentication & Audit — WebUI sign-in enforcement + audit trail. -->
   <div class="card">
     <div class="section-title">Authentication &amp; Audit</div>
     <div class="mode-desc" style="margin-bottom:10px;">
@@ -133,6 +131,25 @@ HTML = r"""
     <div class="cfg-save-row">
       <button class="cfg-save-btn" onclick="cfgSaveSystemAuthAudit()">Save Authentication &amp; Audit</button>
       <span id="cfg-save-result-sys-authaudit" class="cfg-result"></span>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────────────────
+       ZONE 3 — Hardware and ops
+       ──────────────────────────────────────────────────────────────── -->
+  <h3 class="zone-heading">Hardware and ops</h3>
+
+  <div class="card">
+    <div class="section-title">Display</div>
+    <div class="mode-row">
+      <div>
+        <div class="mode-label">Eye Demo</div>
+        <div class="mode-desc">Mood cycle animation on HUB75 panel</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="eyeDemoToggle" onchange="toggleEyeDemo()">
+        <span class="toggle-slider"></span>
+      </label>
     </div>
   </div>
 
@@ -154,45 +171,8 @@ HTML = r"""
     </div>
   </div>
 
-  <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <div class="section-title" style="margin-bottom:0;">Weather</div>
-      <button class="btn-small" id="weatherRefreshBtn" onclick="refreshWeather()" style="font-size:0.75rem;padding:4px 10px;">Refresh</button>
-    </div>
-    <div id="weatherPanel" style="color:var(--text-dim);font-size:0.85rem;margin-top:8px;">Loading...</div>
-  </div>
-
-  <div class="card">
-    <div class="section-title">GPU Status</div>
-    <div id="gpuPanel" style="font-size:0.85rem;">Loading...</div>
-  </div>
-
-  <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div class="section-title" style="margin-bottom:0;">Service Logs</div>
-      <div style="display:flex;gap:6px;align-items:center;">
-        <select id="logServiceSelect" onchange="loadLogs()" style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:0.8rem;">
-          <option value="glados-api">GLaDOS API</option>
-          <option value="glados-tts">TTS Engine</option>
-          <option value="glados-stt">Speech-to-Text</option>
-          <option value="glados-vision">Vision</option>
-          <option value="glados-tts-ui">WebUI</option>
-          <option value="ollama-glados">Ollama GLaDOS</option>
-          <option value="ollama-ipex">Ollama IPEX</option>
-          <option value="ollama-vision">Ollama Vision</option>
-        </select>
-        <button class="btn-small" onclick="loadLogs()" style="font-size:0.75rem;padding:4px 10px;">Refresh</button>
-        <button class="btn-small" onclick="clearLog()" style="font-size:0.75rem;padding:4px 10px;background:#c0392b;">Clear</button>
-      </div>
-    </div>
-    <div id="logSizeInfo" style="font-size:0.7rem;color:var(--text-dim);margin:6px 0;"></div>
-    <pre id="logPanel" style="background:#0d0d0d;border:1px solid #333;border-radius:4px;padding:10px;max-height:400px;overflow:auto;font-size:0.72rem;color:#ccc;white-space:pre-wrap;word-break:break-all;margin-top:6px;">Select a service to view logs</pre>
-  </div>
-
-  <!-- Phase 8.9 — Test harness (Advanced). External battery-scoring knobs:
-       noise-entity globs the harness must ignore, and whether direction
-       matching is required. Exposed publicly at
-       /api/test-harness/noise-patterns for the external harness to pull. -->
+  <!-- Test harness — Advanced. Battery-scoring knobs for the
+       external harness at C:\src\glados-test-battery\harness.py. -->
   <div class="card" data-advanced="true">
     <div class="section-title">Test Harness</div>
     <div class="mode-desc" style="margin-bottom:10px;">

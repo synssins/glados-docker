@@ -1030,13 +1030,12 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   }
 }
 
+/* Tablet (1024px and under): keep sidebar full-width, only tighten
+   grids. The Phase 4 icon-rail collapse was broken — the nav items
+   have no icons, so collapsing to 64px left an unlabeled column
+   with no way to re-expand. Parking the idea until the HTML gets
+   an icon pass (SVGs + aria labels) in a future commit. */
 @media (max-width: 1024px) {
-  :root { --sidebar-w: var(--sidebar-w-collapsed); }
-  .sidebar { width: var(--sidebar-w-collapsed); }
-  .sidebar-brand span:not(.engine-status-dot) { display: none; }
-  .nav-item { justify-content: center; padding: 0.7rem 0; }
-  .nav-item span:not(.nav-icon):not(.engine-status-dot) { display: none; }
-  .main-content { margin-left: var(--sidebar-w-collapsed); }
   .service-grid { grid-template-columns: 1fr 1fr; }
   .health-grid { grid-template-columns: 1fr 1fr; }
   .train-status-row { grid-template-columns: 1fr 1fr; }
@@ -1203,22 +1202,58 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   font-style: normal;
 }
 
-/* Upgraded labels, descriptions, and data cells to the mono stack.
-   Applied as a Phase 4 override below the existing rules so we don't
-   disturb the original layout math. */
+/* Phase 5.0 (2026-04-21): unified mono-font override.
+   Every label, section heading, field label, and data cell uses
+   --font-mono. --font-display (Major Mono Display) is reserved for
+   the sidebar brand only. The earlier Phase 4 override missed
+   .cfg-section-title and .cfg-subsection-title, which left headings
+   in the stylized display face while surrounding text moved to the
+   clean mono — producing the "weird font" regression the operator
+   flagged. This !important override ensures consistency regardless
+   of source-order conflicts. */
+.section-title,
+.cfg-section-title,
+.cfg-subsection-title,
+.cfg-group-title,
 .cfg-field-label,
 .cfg-field-desc,
-.cfg-group-title,
-.section-title {
-  font-family: var(--font-mono);
+.mode-label,
+.mode-desc,
+.train-card-label {
+  font-family: var(--font-mono) !important;
   letter-spacing: 0.02em;
 }
-.section-title {
+.section-title,
+.cfg-section-title {
   color: var(--fg-primary);
   font-weight: 500;
 }
-.cfg-field-desc {
+.cfg-subsection-title {
+  font-weight: 500;
+}
+.cfg-field-desc,
+.cfg-section-desc,
+.mode-desc {
   color: var(--fg-tertiary);
+}
+
+/* Zone headings — used to visually separate the semantic groups of
+   cards on consolidated pages (System, Audio & Speakers). Hairline
+   top rule + uppercase mono label; feels like a section divider on
+   a control panel rather than a chunky dashboard header. */
+.zone-heading {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-tertiary);
+  padding: var(--sp-3) 0 var(--sp-2);
+  margin: var(--sp-5) 0 var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.zone-heading:first-of-type {
+  margin-top: var(--sp-3);
 }
 
 /* Tighten card/group borders to rgba so they whisper instead of
