@@ -109,6 +109,8 @@ class ProbeResult:
     status_code: int
     elapsed_ms: int
     counts: dict[str, int] = field(default_factory=dict)
+    pad_before: dict | None = None
+    pad_after: dict | None = None
 
 
 def grade(response: str) -> dict[str, int]:
@@ -144,6 +146,43 @@ def build_opener(verify_tls: bool) -> urllib.request.OpenerDirector:
         urllib.request.HTTPSHandler(context=ctx),
         urllib.request.HTTPCookieProcessor(jar),
     )
+
+
+def reset_emotion(api_host: str) -> bool:
+    """Reset emotion state via /api/emotion/reset (Phase Emotion-D).
+    api_host is the api_wrapper endpoint (typically port 8015), not
+    the WebUI. Returns True on success, False if endpoint missing."""
+    try:
+        req = urllib.request.Request(
+            f"{api_host}/api/emotion/reset",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        r = urllib.request.urlopen(req, timeout=10)
+        return r.status == 200
+    except Exception as e:
+        print(f"    (reset unavailable: {e})")
+        return False
+
+
+def read_emotion_state(api_host: str) -> dict | None:
+    """Fetch current PAD state. Returns None if endpoint unreachable."""
+    try:
+        r = urllib.request.urlopen(f"{api_host}/api/emotion/state", timeout=5)
+        return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def fmt_pad(state: dict | None) -> str:
+    if not state:
+        return "  (no state)  "
+    p = state.get("pleasure", 0.0)
+    a = state.get("arousal", 0.0)
+    d = state.get("dominance", 0.0)
+    name = (state.get("classification") or {}).get("name", "?")
+    return f"P{p:+.2f} A{a:+.2f} D{d:+.2f} [{name}]"
 
 
 def login(opener: urllib.request.OpenerDirector, host: str, password: str) -> None:
@@ -238,6 +277,10 @@ def main() -> int:
                         help="Skip TLS verification (default: true for LAN self-signed certs)")
     parser.add_argument("--messages", nargs="+", default=None,
                         help="Custom message list (defaults to 6 weather paraphrases)")
+    parser.add_argument("--api-host", default="http://10.0.0.50:8015",
+                        help="api_wrapper base URL for /api/emotion/* endpoints (default: %(default)s)")
+    parser.add_argument("--no-reset", action="store_true",
+                        help="Skip /api/emotion/reset at the start")
     args = parser.parse_args()
 
     messages = args.messages or DEFAULT_MESSAGES
@@ -255,15 +298,31 @@ def main() -> int:
     print(">>> Logging in …")
     login(opener, args.host, args.password)
     print("    OK")
+
+    # Phase Emotion-D: reset emotion state to baseline before the run.
+    if not args.no_reset:
+        print(">>> Resetting emotion state …")
+        if reset_emotion(args.api_host):
+            print("    OK")
+        else:
+            print("    SKIPPED (endpoint unavailable; run continues from live state)")
     print()
 
     results: list[ProbeResult] = []
     for i, msg in enumerate(messages, 1):
+        pad_before = read_emotion_state(args.api_host)
         print(f">>> [{i}/{len(messages)}] {msg}")
+        print(f"    before: {fmt_pad(pad_before)}")
         status, text, elapsed = chat(opener, args.host, msg, args.chat_timeout)
         snippet = text[:200].replace("\n", " ")
         print(f"    ({status}, {elapsed}ms) {snippet}{'…' if len(text) > 200 else ''}")
-        r = ProbeResult(index=i, request=msg, response=text, status_code=status, elapsed_ms=elapsed)
+        pad_after = read_emotion_state(args.api_host)
+        print(f"    after:  {fmt_pad(pad_after)}")
+        r = ProbeResult(
+            index=i, request=msg, response=text,
+            status_code=status, elapsed_ms=elapsed,
+            pad_before=pad_before, pad_after=pad_after,
+        )
         r.counts = grade(text) if status == 200 else {}
         results.append(r)
         if i < len(messages):
@@ -273,8 +332,21 @@ def main() -> int:
     print("=" * 72)
     print("ESCALATION REPORT")
     print("=" * 72)
+    print("Tone markers (grade from response text):")
     for r in results:
-        print(format_row(r))
+        print("  " + format_row(r))
+    print()
+    # PAD trajectory: shows what the emotion agent actually did.
+    print("PAD trajectory (from /api/emotion/state, read AFTER each message):")
+    print(f"  {'msg':>3}  {'pleasure':>9}  {'arousal':>9}  {'dominance':>9}  {'classification':<25}")
+    for r in results:
+        s = r.pad_after or {}
+        p = s.get("pleasure")
+        a = s.get("arousal")
+        d = s.get("dominance")
+        cls = (s.get("classification") or {}).get("name", "?")
+        fmt = lambda v: f"{v:+.3f}" if isinstance(v, (int, float)) else "    —"
+        print(f"  {r.index:>3}  {fmt(p):>9}  {fmt(a):>9}  {fmt(d):>9}  {cls:<25}")
     print()
 
     # Pass / fail — compare the escalation score of the first third vs the
