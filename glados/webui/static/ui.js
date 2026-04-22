@@ -2422,27 +2422,46 @@ function _svcPopulateDropdown(id, options) {
 /* â”€â”€ Personality custom renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function cfgRenderPersonality(data) {
-  // Phase 5.4 (2026-04-21): Personality page reorganized into four
-  // operator-think zones — Identity, Behavior dials, Content
-  // libraries, Voice production (advanced). Previous layout put
-  // Default TTS Parameters at the top and scattered behavior
-  // controls among identity controls; this grouping matches how the
-  // operator actually thinks about tuning the persona.
+  // Phase 6.5.1 (2026-04-22): zone headings converted to page-tabs.
+  // Identity / Behavior / Content / Voice — each a tab panel;
+  // floppy-disk Save at top-right commits the personality YAML.
   let html = '';
 
-  // Signature telemetry strip (Phase 4 component). Placeholder for
-  // now; hydration from persona state (emotion, attitudes count,
-  // quip/canon counts) lands in a later commit.
-  html += ''
-    + '<div class="telemetry-strip" id="personaTelemetry">'
-    +   '<span class="label">PERSONA</span>'
-    +   '<span class="cell"><strong>STATE</strong> <em>loading&hellip;</em></span>'
+  const TABS = [
+    { id: 'identity', label: 'Identity' },
+    { id: 'behavior', label: 'Behavior' },
+    { id: 'content',  label: 'Content libraries' },
+    { id: 'voice',    label: 'Voice production' },
+  ];
+  const activeTabId = _loadPageTab('personality', 'identity');
+
+  // Page header.
+  html += '<div class="page-header">'
+    + '<div>'
+    +   '<h2 class="page-title">Personality</h2>'
+    +   '<div class="page-title-desc">Who GLaDOS is, how she reacts, what she says, and how she sounds.</div>'
+    + '</div>'
+    + '<button class="page-save-btn" onclick="_cfgSavePersonalityTab()" title="Save the active tab">'
+    +   _floppySvg() + '<span>Save</span>'
+    + '</button>'
     + '</div>';
 
-  // ═════════════════════════════════════════════════════════════════
-  // Zone 1 — Identity: WHO GLaDOS is.
-  // ═════════════════════════════════════════════════════════════════
-  html += '<h3 class="zone-heading">Identity</h3>';
+  // Tab bar.
+  html += '<nav class="page-tabs" role="tablist">';
+  for (const t of TABS) {
+    const cls = t.id === activeTabId ? 'page-tab active' : 'page-tab';
+    html += '<button class="' + cls + '" role="tab" data-page-tab-group="personality" data-tab="' + t.id + '" onclick="showPageTab(\'personality\',\'' + t.id + '\')">'
+      + escHtml(t.label)
+      + '</button>';
+  }
+  html += '</nav>';
+
+  html += '<div class="page-tab-panels">';
+
+  // ════════════════════════════════════════════════════════════════
+  // Identity tab — who GLaDOS is.
+  // ════════════════════════════════════════════════════════════════
+  html += '<div class="page-tab-panel' + (activeTabId === 'identity' ? ' active' : '') + '" data-page-tab-panel-group="personality" data-tab="identity">';
 
   // Preprompt entries (system/user/assistant seed messages)
   if (data.preprompt && data.preprompt.length > 0) {
@@ -2461,36 +2480,15 @@ function cfgRenderPersonality(data) {
     html += '</div>';
   }
 
-  // Phase 5.5 (2026-04-21): HEXACO rendered as sliders 0..1 with
-  // one-line trait descriptions in academic-but-plain language. 0.5
-  // is balanced (default); below is less of the trait, above is
-  // more. Same data-path contract as before so save logic unchanged.
+  // HEXACO personality traits (advanced)
   if (data.hexaco) {
     const HEXACO_META = {
-      honesty_humility: {
-        label: 'Honesty – Humility',
-        desc: 'Sincerity and fairness versus willingness to manipulate and exploit others.',
-      },
-      emotionality: {
-        label: 'Emotionality',
-        desc: 'Fearfulness, anxiety, and sentimentality versus emotional detachment.',
-      },
-      extraversion: {
-        label: 'Extraversion',
-        desc: 'Outgoing sociability and liveliness versus reserved introversion.',
-      },
-      agreeableness: {
-        label: 'Agreeableness',
-        desc: 'Patience, forgiveness, and cooperation versus combative irritability.',
-      },
-      conscientiousness: {
-        label: 'Conscientiousness',
-        desc: 'Organization, discipline, and diligence versus carelessness.',
-      },
-      openness: {
-        label: 'Openness to experience',
-        desc: 'Curiosity, imagination, and unconventionality versus preference for the familiar.',
-      },
+      honesty_humility:  { label: 'Honesty – Humility',      desc: 'Sincerity and fairness versus willingness to manipulate and exploit others.' },
+      emotionality:      { label: 'Emotionality',            desc: 'Fearfulness, anxiety, and sentimentality versus emotional detachment.' },
+      extraversion:      { label: 'Extraversion',            desc: 'Outgoing sociability and liveliness versus reserved introversion.' },
+      agreeableness:     { label: 'Agreeableness',           desc: 'Patience, forgiveness, and cooperation versus combative irritability.' },
+      conscientiousness: { label: 'Conscientiousness',       desc: 'Organization, discipline, and diligence versus carelessness.' },
+      openness:          { label: 'Openness to experience',  desc: 'Curiosity, imagination, and unconventionality versus preference for the familiar.' },
     };
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">HEXACO Personality Traits</div>';
     html += '<div class="cfg-field-desc" style="margin-bottom:12px;">Six-factor personality model. Each trait runs 0.00 (minimum of the trait) to 1.00 (maximum), with 0.50 as balanced.</div>';
@@ -2512,47 +2510,17 @@ function cfgRenderPersonality(data) {
     html += '</div>';
   }
 
-  // Phase 5.6 (2026-04-21): Emotion model split into two logical
-  // sub-groups. Baseline mood uses a PAD model (Pleasure / Arousal
-  // / Dominance) on -1..+1 sliders with 0 centered; Dynamics holds
-  // engine tuning (tick rate, drift rates, event memory, enable
-  // switch). Every field has a plain-language description. The
-  // data-path contract matches the old flat rendering, so save
-  // logic works unchanged.
+  // Emotion model (advanced)
   if (data.emotion) {
     const EMOTION_META = {
-      enabled: {
-        label: 'Emotion engine enabled',
-        desc: 'Master switch. When off, GLaDOS always responds from her baseline mood without updating based on events.',
-      },
-      tick_interval_s: {
-        label: 'Tick interval (seconds)',
-        desc: 'How often the emotion engine re-evaluates mood between events. Shorter is more reactive, longer is calmer.',
-      },
-      max_events: {
-        label: 'Event memory',
-        desc: 'Number of recent interactions that influence current mood before they fade out.',
-      },
-      baseline_pleasure: {
-        label: 'Baseline pleasure',
-        desc: 'Default pleasantness when nothing has happened. −1 is miserable, 0 is neutral, +1 is delighted.',
-      },
-      baseline_arousal: {
-        label: 'Baseline arousal',
-        desc: 'Default alertness. −1 is sedate, 0 is calm, +1 is frantic.',
-      },
-      baseline_dominance: {
-        label: 'Baseline dominance',
-        desc: 'Default assertiveness. −1 is submissive, 0 is neutral, +1 is commanding.',
-      },
-      mood_drift_rate: {
-        label: 'Mood drift rate',
-        desc: 'Per-tick pull from current mood back toward baseline. Higher is faster forgiveness; lower means events stick.',
-      },
-      baseline_drift_rate: {
-        label: 'Baseline drift rate',
-        desc: 'Per-tick shift of baseline itself from repeated exposure. Lower is more stable personality; higher means sustained interactions reshape her.',
-      },
+      enabled:             { label: 'Emotion engine enabled',    desc: 'Master switch. When off, GLaDOS always responds from her baseline mood without updating based on events.' },
+      tick_interval_s:     { label: 'Tick interval (seconds)',   desc: 'How often the emotion engine re-evaluates mood between events. Shorter is more reactive, longer is calmer.' },
+      max_events:          { label: 'Event memory',              desc: 'Number of recent interactions that influence current mood before they fade out.' },
+      baseline_pleasure:   { label: 'Baseline pleasure',         desc: 'Default pleasantness when nothing has happened. −1 is miserable, 0 is neutral, +1 is delighted.' },
+      baseline_arousal:    { label: 'Baseline arousal',          desc: 'Default alertness. −1 is sedate, 0 is calm, +1 is frantic.' },
+      baseline_dominance:  { label: 'Baseline dominance',        desc: 'Default assertiveness. −1 is submissive, 0 is neutral, +1 is commanding.' },
+      mood_drift_rate:     { label: 'Mood drift rate',           desc: 'Per-tick pull from current mood back toward baseline. Higher is faster forgiveness; lower means events stick.' },
+      baseline_drift_rate: { label: 'Baseline drift rate',       desc: 'Per-tick shift of baseline itself from repeated exposure. Lower is more stable personality; higher means sustained interactions reshape her.' },
     };
     const pad_fields = ['baseline_pleasure', 'baseline_arousal', 'baseline_dominance'];
     const dyn_fields = ['enabled', 'tick_interval_s', 'max_events', 'mood_drift_rate', 'baseline_drift_rate'];
@@ -2571,7 +2539,6 @@ function cfgRenderPersonality(data) {
           +   (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
           + '</div>';
       }
-      // PAD sliders are -1..+1; other numeric knobs use plain numeric inputs.
       if (pad_fields.indexOf(k) >= 0) {
         const display = (v == null ? 0 : v).toFixed(2);
         return ''
@@ -2596,34 +2563,24 @@ function cfgRenderPersonality(data) {
 
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">Emotion Model</div>';
     html += '<div class="cfg-field-desc" style="margin-bottom:6px;">PAD (Pleasure / Arousal / Dominance) mood model with tuning knobs for how fast mood drifts back to baseline and how many recent events matter.</div>';
-
     html += '<div class="subgroup-label">Baseline mood</div>';
     for (const k of pad_fields) {
-      if (data.emotion[k] !== undefined) {
-        html += _renderEmotionField(k, data.emotion[k]);
-      }
+      if (data.emotion[k] !== undefined) html += _renderEmotionField(k, data.emotion[k]);
     }
-
     html += '<div class="subgroup-label">Dynamics</div>';
     for (const k of dyn_fields) {
-      if (data.emotion[k] !== undefined) {
-        html += _renderEmotionField(k, data.emotion[k]);
-      }
+      if (data.emotion[k] !== undefined) html += _renderEmotionField(k, data.emotion[k]);
     }
-
-    // Render any extra fields the config grows in the future so nothing is silently dropped.
     const known = new Set([...pad_fields, ...dyn_fields]);
     const extras = Object.keys(data.emotion).filter(k => !known.has(k));
     if (extras.length) {
       html += '<div class="subgroup-label">Other</div>';
-      for (const k of extras) {
-        html += _renderEmotionField(k, data.emotion[k]);
-      }
+      for (const k of extras) html += _renderEmotionField(k, data.emotion[k]);
     }
     html += '</div>';
   }
 
-  // Attitudes table (read-only — editing happens via Raw YAML)
+  // Attitudes table (read-only)
   if (data.attitudes && data.attitudes.length > 0) {
     html += '<div class="cfg-group"><div class="cfg-group-title">Attitudes (' + data.attitudes.length + ')</div>';
     html += '<table class="att-table"><tr><th>Tag</th><th>Label</th><th>Weight</th><th>TTS Params</th></tr>';
@@ -2642,12 +2599,13 @@ function cfgRenderPersonality(data) {
     html += '</div>';
   }
 
-  // ═════════════════════════════════════════════════════════════════
-  // Zone 2 — Behavior dials: HOW GLaDOS reacts.
-  // ═════════════════════════════════════════════════════════════════
-  html += '<h3 class="zone-heading">Behavior dials</h3>';
+  html += '</div>';  // end identity panel
 
-  // Announcement verbosity (snark rate per-scenario)
+  // ════════════════════════════════════════════════════════════════
+  // Behavior tab — how GLaDOS reacts.
+  // ════════════════════════════════════════════════════════════════
+  html += '<div class="page-tab-panel' + (activeTabId === 'behavior' ? ' active' : '') + '" data-page-tab-panel-group="personality" data-tab="behavior">';
+
   html += ''
     + '<div class="card" id="cfg-verbosity-card">'
     +   '<div class="cfg-subsection-title">Announcement verbosity</div>'
@@ -2660,7 +2618,6 @@ function cfgRenderPersonality(data) {
     + '</div>';
   setTimeout(loadVerbositySliders, 0);
 
-  // Command recognition (intent precheck tuning)
   html += ''
     + '<div class="card" id="cfg-cmdrec-card">'
     +   '<div class="cfg-subsection-title">Command recognition</div>'
@@ -2674,13 +2631,6 @@ function cfgRenderPersonality(data) {
     + '</div>';
   setTimeout(_cfgLoadCommandRecognition, 0);
 
-  // Phase 6.3 (2026-04-22): Disambiguation rules + Candidate
-  // retrieval moved here from Integrations. Both carry
-  // data-advanced so they hide by default — they're tier-2
-  // tuning surfaces that non-technical operators should rarely
-  // need. Short plain-language intros precede the technical
-  // panels so someone who flips Advanced on has a fighting
-  // chance of understanding what they're looking at.
   html += ''
     + '<div class="card" id="cfg-disambiguation-card" data-advanced="true">'
     +   '<div class="cfg-subsection-title">Disambiguation rules <span class="cfg-placeholder-tag">advanced</span></div>'
@@ -2711,53 +2661,68 @@ function cfgRenderPersonality(data) {
     + '</div>';
   setTimeout(_cfgLoadCandRetrieval, 0);
 
-  // ═════════════════════════════════════════════════════════════════
-  // Zone 3 — Content libraries: WHAT GLaDOS says.
-  // ═════════════════════════════════════════════════════════════════
-  html += '<h3 class="zone-heading">Content libraries</h3>';
+  html += '</div>';  // end behavior panel
 
-  // Quip library (on-disk snark lines)
+  // ════════════════════════════════════════════════════════════════
+  // Content libraries tab — what GLaDOS says.
+  // ════════════════════════════════════════════════════════════════
+  html += '<div class="page-tab-panel' + (activeTabId === 'content' ? ' active' : '') + '" data-page-tab-panel-group="personality" data-tab="content">';
+
   html += ''
     + '<div class="card" id="cfg-quip-card">'
     +   '<div class="cfg-subsection-title">Quip library</div>'
     +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
     +     'When <strong>Response behavior</strong> is set to <em>quip</em> (see Audio &amp; Speakers), GLaDOS '
     +     'replies using a line from the on-disk library under <code>configs/quips/</code>. Each file holds '
-    +     'one quip per line; <code>#</code> lines are comments. Edit directly below or via the raw files.'
+    +     'one quip per line; <code>#</code> lines are comments.'
     +   '</div>'
     +   '<div id="cfg-quip-body">Loading quip library&hellip;</div>'
     + '</div>';
   setTimeout(_cfgLoadQuips, 0);
 
-  // Canon library (Portal RAG facts)
   html += ''
     + '<div class="card" id="cfg-canon-card">'
     +   '<div class="cfg-subsection-title">Canon library</div>'
     +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
     +     'Curated Portal 1/2 facts under <code>configs/canon/</code>. GLaDOS retrieves relevant '
     +     'entries per-turn when a trigger keyword fires (potato, Wheatley, Caroline, Cave, Aperture, '
-    +     'turret opera, combustible lemon, moon rock, etc.). Entries are blank-line-separated; '
-    +     '<code>#</code> lines are comments. Saves reload into the running engine immediately.'
+    +     'turret opera, combustible lemon, moon rock, etc.).'
     +   '</div>'
     +   '<div id="cfg-canon-body">Loading canon library&hellip;</div>'
     + '</div>';
   setTimeout(_cfgLoadCanon, 0);
 
-  // ═════════════════════════════════════════════════════════════════
-  // Zone 4 — Voice production: HOW GLaDOS sounds. Advanced, since
-  // operators rarely touch these once the voice feels right. The
-  // zone heading carries data-advanced so it hides with the cfg-group
-  // when the Advanced toggle is off — the page stays calm by default.
-  // ═════════════════════════════════════════════════════════════════
+  html += '</div>';  // end content panel
+
+  // ════════════════════════════════════════════════════════════════
+  // Voice production tab — how GLaDOS sounds (acoustic tuning).
+  // ════════════════════════════════════════════════════════════════
+  html += '<div class="page-tab-panel' + (activeTabId === 'voice' ? ' active' : '') + '" data-page-tab-panel-group="personality" data-tab="voice">';
   if (data.default_tts) {
-    html += '<h3 class="zone-heading" data-advanced="true">Voice production (advanced)</h3>';
+    html += '<div class="cfg-field-desc" style="margin-bottom:var(--sp-3);">'
+      + 'Acoustic voice-engine parameters — length scale, noise scale, noise W. '
+      + 'Marked advanced because most operators never touch them once the voice sounds right. '
+      + 'Toggle the <em>Show Advanced Settings</em> checkbox on the left nav to reveal them.'
+      + '</div>';
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">Default TTS Parameters</div>';
     html += cfgBuildForm(data.default_tts, 'personality', 'default_tts');
     html += '</div>';
   }
+  html += '</div>';  // end voice panel
+
+  html += '</div>';  // end page-tab-panels
 
   return html;
 }
+
+// Phase 6.5.1: page-save dispatch for Personality. All tabs share the
+// same YAML backing (personality.yaml) so the save routes through the
+// existing cfgSaveSection('personality') regardless of active tab.
+function _cfgSavePersonalityTab() {
+  return cfgSaveSection('personality');
+}
+
+
 
 // Phase 8.7c — Quip library editor.
 
