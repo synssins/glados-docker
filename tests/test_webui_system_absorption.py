@@ -40,15 +40,21 @@ def test_integrations_skipkeys_extended(source: str) -> None:
 # ── System tab new cards ───────────────────────────────────────────────
 
 
-def test_system_has_maintenance_entities_card(source: str) -> None:
-    # Card header + form div + save button + result span.
-    assert re.search(
+def test_system_no_longer_exposes_maintenance_entities_card(source: str) -> None:
+    # Phase 5.1: the Maintenance Entities card was removed from the
+    # System page. The underlying HA entity bindings
+    # (mode_entities.maintenance_mode / maintenance_speaker) are still
+    # in config and editable via Raw YAML, but they're no longer part
+    # of the System UI — operator sets them once at deploy and never
+    # touches them again, so exposing a dedicated form was clutter.
+    # This test locks that removal in.
+    assert not re.search(
         r'<div class="section-title">\s*Maintenance Entities\s*</div>',
         source,
-    ), "Expected 'Maintenance Entities' card header on System"
-    assert 'id="sysMaintForm"' in source
-    assert "cfgSaveSystemMaint" in source
-    assert 'id="cfg-save-result-sys-maint"' in source
+    ), "'Maintenance Entities' card should be gone from System (Phase 5.1)"
+    assert 'id="sysMaintForm"' not in source, (
+        "#sysMaintForm target div should be removed with the card"
+    )
 
 
 def test_system_has_authentication_and_audit_card(source: str) -> None:
