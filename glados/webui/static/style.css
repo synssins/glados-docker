@@ -1237,6 +1237,98 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   color: var(--fg-tertiary);
 }
 
+/* Phase 5.5 / 5.6 (2026-04-21): Trait-row slider component used by
+   HEXACO and the PAD fields of the Emotion model. Produces a
+   three-row unit: label + live value display (flex row across the
+   top), full-width slider underneath, optional small description at
+   the bottom. Replaces the old cfg-field number-input rendering for
+   those specific fields, where a slider conveys magnitude far
+   better than a typed number. */
+.trait-row {
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-2) 0 var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.trait-row:last-child { border-bottom: none; }
+.trait-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+.trait-label {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--fg-primary);
+  letter-spacing: 0.02em;
+}
+.trait-value {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--orange);
+  min-width: 3.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.trait-desc {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--fg-tertiary);
+  line-height: 1.5;
+  margin-top: var(--sp-2);
+}
+.trait-row input[type="range"] {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sharp);
+  cursor: pointer;
+  accent-color: var(--orange);
+}
+.trait-row input[type="range"]:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+.trait-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--r-sharp);
+  background: var(--orange);
+  cursor: pointer;
+  border: 1px solid var(--orange-dim);
+}
+.trait-row input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--r-sharp);
+  background: var(--orange);
+  cursor: pointer;
+  border: 1px solid var(--orange-dim);
+}
+
+/* Sub-group label inside a cfg-group — used to split the Emotion
+   model into Baseline mood / Dynamics sections under a single
+   card. Less prominent than cfg-subsection-title, more than plain
+   text. */
+.subgroup-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-tertiary);
+  margin: var(--sp-4) 0 var(--sp-2);
+  padding-bottom: var(--sp-1);
+}
+
 /* Zone headings — used to visually separate the semantic groups of
    cards on consolidated pages (System, Audio & Speakers). Hairline
    top rule + uppercase mono label; feels like a section divider on

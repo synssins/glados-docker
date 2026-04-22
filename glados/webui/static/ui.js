@@ -1857,36 +1857,163 @@ function cfgRenderPersonality(data) {
     html += '</div>';
   }
 
-  // HEXACO personality traits (advanced)
+  // Phase 5.5 (2026-04-21): HEXACO rendered as sliders 0..1 with
+  // one-line trait descriptions in academic-but-plain language. 0.5
+  // is balanced (default); below is less of the trait, above is
+  // more. Same data-path contract as before so save logic unchanged.
   if (data.hexaco) {
+    const HEXACO_META = {
+      honesty_humility: {
+        label: 'Honesty – Humility',
+        desc: 'Sincerity and fairness versus willingness to manipulate and exploit others.',
+      },
+      emotionality: {
+        label: 'Emotionality',
+        desc: 'Fearfulness, anxiety, and sentimentality versus emotional detachment.',
+      },
+      extraversion: {
+        label: 'Extraversion',
+        desc: 'Outgoing sociability and liveliness versus reserved introversion.',
+      },
+      agreeableness: {
+        label: 'Agreeableness',
+        desc: 'Patience, forgiveness, and cooperation versus combative irritability.',
+      },
+      conscientiousness: {
+        label: 'Conscientiousness',
+        desc: 'Organization, discipline, and diligence versus carelessness.',
+      },
+      openness: {
+        label: 'Openness to experience',
+        desc: 'Curiosity, imagination, and unconventionality versus preference for the familiar.',
+      },
+    };
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">HEXACO Personality Traits</div>';
+    html += '<div class="cfg-field-desc" style="margin-bottom:12px;">Six-factor personality model. Each trait runs 0.00 (minimum of the trait) to 1.00 (maximum), with 0.50 as balanced.</div>';
     for (const [k, v] of Object.entries(data.hexaco)) {
       const fieldId = 'cfg-personality-hexaco-' + k;
-      html += '<div class="cfg-field">'
-        + '<label class="cfg-field-label">' + escHtml(k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())) + '</label>'
-        + '<input id="' + fieldId + '" data-path="hexaco.' + k + '" data-type="number" type="number" step="any" value="' + v + '">'
+      const meta = HEXACO_META[k] || { label: k.replace(/_/g, ' '), desc: '' };
+      const display = (v == null ? 0 : v).toFixed(2);
+      html += '<div class="trait-row">'
+        + '<div class="trait-head">'
+        +   '<label class="trait-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
+        +   '<output class="trait-value" id="' + fieldId + '-value">' + display + '</output>'
+        + '</div>'
+        + '<input id="' + fieldId + '" data-path="hexaco.' + k + '" data-type="number" type="range" '
+        +   'min="0" max="1" step="0.01" value="' + v + '" '
+        +   'oninput="document.getElementById(\'' + fieldId + '-value\').textContent = parseFloat(this.value).toFixed(2);">'
+        + (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
         + '</div>';
     }
     html += '</div>';
   }
 
-  // Emotion model (advanced)
+  // Phase 5.6 (2026-04-21): Emotion model split into two logical
+  // sub-groups. Baseline mood uses a PAD model (Pleasure / Arousal
+  // / Dominance) on -1..+1 sliders with 0 centered; Dynamics holds
+  // engine tuning (tick rate, drift rates, event memory, enable
+  // switch). Every field has a plain-language description. The
+  // data-path contract matches the old flat rendering, so save
+  // logic works unchanged.
   if (data.emotion) {
-    html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">Emotion Model</div>';
-    for (const [k, v] of Object.entries(data.emotion)) {
+    const EMOTION_META = {
+      enabled: {
+        label: 'Emotion engine enabled',
+        desc: 'Master switch. When off, GLaDOS always responds from her baseline mood without updating based on events.',
+      },
+      tick_interval_s: {
+        label: 'Tick interval (seconds)',
+        desc: 'How often the emotion engine re-evaluates mood between events. Shorter is more reactive, longer is calmer.',
+      },
+      max_events: {
+        label: 'Event memory',
+        desc: 'Number of recent interactions that influence current mood before they fade out.',
+      },
+      baseline_pleasure: {
+        label: 'Baseline pleasure',
+        desc: 'Default pleasantness when nothing has happened. −1 is miserable, 0 is neutral, +1 is delighted.',
+      },
+      baseline_arousal: {
+        label: 'Baseline arousal',
+        desc: 'Default alertness. −1 is sedate, 0 is calm, +1 is frantic.',
+      },
+      baseline_dominance: {
+        label: 'Baseline dominance',
+        desc: 'Default assertiveness. −1 is submissive, 0 is neutral, +1 is commanding.',
+      },
+      mood_drift_rate: {
+        label: 'Mood drift rate',
+        desc: 'Per-tick pull from current mood back toward baseline. Higher is faster forgiveness; lower means events stick.',
+      },
+      baseline_drift_rate: {
+        label: 'Baseline drift rate',
+        desc: 'Per-tick shift of baseline itself from repeated exposure. Lower is more stable personality; higher means sustained interactions reshape her.',
+      },
+    };
+    const pad_fields = ['baseline_pleasure', 'baseline_arousal', 'baseline_dominance'];
+    const dyn_fields = ['enabled', 'tick_interval_s', 'max_events', 'mood_drift_rate', 'baseline_drift_rate'];
+
+    function _renderEmotionField(k, v) {
       const fieldId = 'cfg-personality-emotion-' + k;
+      const meta = EMOTION_META[k] || { label: k.replace(/_/g, ' '), desc: '' };
       if (typeof v === 'boolean') {
-        html += '<div class="cfg-field">'
-          + '<label class="cfg-field-label">' + escHtml(k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())) + '</label>'
-          + '<select id="' + fieldId + '" data-path="emotion.' + k + '" data-type="bool">'
-          + '<option value="true"' + (v ? ' selected' : '') + '>true</option>'
-          + '<option value="false"' + (!v ? ' selected' : '') + '>false</option>'
-          + '</select></div>';
-      } else {
-        html += '<div class="cfg-field">'
-          + '<label class="cfg-field-label">' + escHtml(k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())) + '</label>'
-          + '<input id="' + fieldId + '" data-path="emotion.' + k + '" data-type="number" type="number" step="any" value="' + v + '">'
+        return ''
+          + '<div class="cfg-field">'
+          +   '<label class="cfg-field-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
+          +   '<select id="' + fieldId + '" data-path="emotion.' + k + '" data-type="bool">'
+          +     '<option value="true"' + (v ? ' selected' : '') + '>true</option>'
+          +     '<option value="false"' + (!v ? ' selected' : '') + '>false</option>'
+          +   '</select>'
+          +   (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
           + '</div>';
+      }
+      // PAD sliders are -1..+1; other numeric knobs use plain numeric inputs.
+      if (pad_fields.indexOf(k) >= 0) {
+        const display = (v == null ? 0 : v).toFixed(2);
+        return ''
+          + '<div class="trait-row">'
+          +   '<div class="trait-head">'
+          +     '<label class="trait-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
+          +     '<output class="trait-value" id="' + fieldId + '-value">' + display + '</output>'
+          +   '</div>'
+          +   '<input id="' + fieldId + '" data-path="emotion.' + k + '" data-type="number" type="range" '
+          +     'min="-1" max="1" step="0.05" value="' + v + '" '
+          +     'oninput="document.getElementById(\'' + fieldId + '-value\').textContent = parseFloat(this.value).toFixed(2);">'
+          +   (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
+          + '</div>';
+      }
+      return ''
+        + '<div class="cfg-field">'
+        +   '<label class="cfg-field-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
+        +   '<input id="' + fieldId + '" data-path="emotion.' + k + '" data-type="number" type="number" step="any" value="' + v + '">'
+        +   (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
+        + '</div>';
+    }
+
+    html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">Emotion Model</div>';
+    html += '<div class="cfg-field-desc" style="margin-bottom:6px;">PAD (Pleasure / Arousal / Dominance) mood model with tuning knobs for how fast mood drifts back to baseline and how many recent events matter.</div>';
+
+    html += '<div class="subgroup-label">Baseline mood</div>';
+    for (const k of pad_fields) {
+      if (data.emotion[k] !== undefined) {
+        html += _renderEmotionField(k, data.emotion[k]);
+      }
+    }
+
+    html += '<div class="subgroup-label">Dynamics</div>';
+    for (const k of dyn_fields) {
+      if (data.emotion[k] !== undefined) {
+        html += _renderEmotionField(k, data.emotion[k]);
+      }
+    }
+
+    // Render any extra fields the config grows in the future so nothing is silently dropped.
+    const known = new Set([...pad_fields, ...dyn_fields]);
+    const extras = Object.keys(data.emotion).filter(k => !known.has(k));
+    if (extras.length) {
+      html += '<div class="subgroup-label">Other</div>';
+      for (const k of extras) {
+        html += _renderEmotionField(k, data.emotion[k]);
       }
     }
     html += '</div>';
