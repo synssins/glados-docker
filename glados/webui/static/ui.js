@@ -1667,6 +1667,8 @@ async function cfgSaveSystemAuthAudit() {
 // Phase 6 merged page: renders Speakers + Audio side-by-side with
 // per-subsection Save buttons (each targets its own backing section).
 function _cfgRenderAudioSpeakers() {
+  // Phase 6.5.2 (2026-04-22): converted to page-tabs. Five tabs map
+  // to the five concerns that used to stack vertically.
   const speakers = _cfgData.speakers;
   const audio = _cfgData.audio;
   if (!speakers || !audio) {
@@ -1675,98 +1677,121 @@ function _cfgRenderAudioSpeakers() {
     return;
   }
   const meta = SECTION_META['audio-speakers'] || {};
-  let html = '<div class="cfg-section-header">'
-    + '<div class="cfg-section-title">' + escHtml(meta.title || 'Audio & Speakers') + '</div>'
-    + '<div class="cfg-section-desc">' + escHtml(meta.desc || '') + '</div>'
+
+  const TABS = [
+    { id: 'speakers',      label: 'Speakers' },
+    { id: 'audio',         label: 'Audio' },
+    { id: 'response',      label: 'Response behavior' },
+    { id: 'pronunciation', label: 'Pronunciation' },
+    { id: 'chimes',        label: 'Chimes' },
+  ];
+  const activeTabId = _loadPageTab('audio-speakers', 'speakers');
+
+  let html = '<div class="page-header">'
+    + '<div>'
+    +   '<h2 class="page-title">' + escHtml(meta.title || 'Audio & Speakers') + '</h2>'
+    +   (meta.desc ? '<div class="page-title-desc">' + escHtml(meta.desc) + '</div>' : '')
+    + '</div>'
+    + '<button class="page-save-btn" onclick="_cfgSaveCurrentAudioSpeakersTab()" title="Save the active tab">'
+    +   _floppySvg() + '<span>Save</span>'
+    + '</button>'
     + '</div>';
 
-  // Phase 5.7 (2026-04-21): Speakers picker — HA-detected media
-  // players rendered as checkboxes grouped by area, plus a
-  // dropdown to pick the default speaker used for Maintenance
-  // Mode. Replaces the old cfgBuildForm rendering which exposed
-  // raw entity_id arrays. _cfgLoadSpeakersPicker() hydrates
-  // asynchronously and owns the save button; the blacklist
-  // field is preserved as-is and remains editable via Raw YAML.
+  html += '<nav class="page-tabs" role="tablist">';
+  for (const t of TABS) {
+    const cls = t.id === activeTabId ? 'page-tab active' : 'page-tab';
+    html += '<button class="' + cls + '" role="tab" data-page-tab-group="audio-speakers" data-tab="' + t.id + '" onclick="showPageTab(\'audio-speakers\',\'' + t.id + '\')">'
+      + escHtml(t.label) + '</button>';
+  }
+  html += '</nav>';
+
+  html += '<div class="page-tab-panels">';
+
+  // ── Speakers tab ──────────────────────────────────────────
+  html += '<div class="page-tab-panel' + (activeTabId === 'speakers' ? ' active' : '') + '" data-page-tab-panel-group="audio-speakers" data-tab="speakers">';
+  html += '<div class="card">';
   html += '<div class="cfg-subsection-title">Speakers</div>';
   html += '<div class="cfg-field-desc" style="margin-bottom:10px;">'
     + 'Media players detected on Home Assistant. Check the ones GLaDOS is allowed '
     + 'to announce on; uncheck to exclude. Pick a default for Maintenance Mode below.'
     + '</div>';
   html += '<div id="cfg-speakers-body">Loading detected speakers&hellip;</div>';
+  html += '</div>';
 
-  html += '<div class="cfg-subsection-title" style="margin-top:18px;">Audio</div>';
+  html += '<div class="card" id="cfg-startup-speakers-card" style="margin-top:var(--sp-3);">';
+  html +=   '<div class="cfg-subsection-title">Startup speakers</div>';
+  html +=   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+        +    'Which speakers announce GLaDOS&rsquo;s startup. Checked speakers '
+        +    'receive the boot announcement; unchecked stay silent. '
+        +    'Requires a container restart to apply.'
+        +  '</div>';
+  html +=   '<div id="startupSpeakers" style="opacity:0.5;">Loading&hellip;</div>';
+  html +=   '<div id="startupSpeakersStatus" style="font-size:0.75rem;color:var(--orange);margin-top:6px;min-height:1.2em;"></div>';
+  html += '</div>';
+  html += '</div>';
+
+  // ── Audio tab ─────────────────────────────────────────────
+  html += '<div class="page-tab-panel' + (activeTabId === 'audio' ? ' active' : '') + '" data-page-tab-panel-group="audio-speakers" data-tab="audio">';
+  html += '<div class="card">';
+  html += '<div class="cfg-subsection-title">Audio engine</div>';
+  html += '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    + 'Low-level audio settings &mdash; sentence pacing, cache sizes, directory paths, streaming pacing knobs. '
+    + 'Most fields are advanced; toggle <em>Show Advanced Settings</em> to reveal the full set.'
+    + '</div>';
   html += cfgBuildForm(audio, 'audio', '');
   html += '<div class="cfg-save-row">'
     + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'audio\', \'cfg-save-result-audio\')">Save Audio</button>'
     + '<span id="cfg-save-result-audio" class="cfg-result"></span>'
     + '</div>';
+  html += '</div>';
+  html += '</div>';
 
-  // Phase 8.7a — Response behavior card. Picks whether speech comes
-  // from the LLM (default), a pre-written Portal-voice quip from
-  // configs/quips/, a sound chime, or nothing at all. Configurable
-  // globally OR per event category.
-  html += ''
-    + '<div class="card" id="cfg-response-behavior-card" style="margin-top:18px;">'
-    +   '<div class="cfg-subsection-title">Response behavior</div>'
-    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    +     'Choose how GLaDOS acknowledges commands. '
-    +     '<strong>LLM</strong> (default) has the language model write each reply &mdash; expressive but can drift. '
-    +     '<strong>Quip</strong> picks a pre-written line from <code>configs/quips/</code> &mdash; never leaks device names, no drift. '
-    +     '<strong>Chime</strong> plays a sound file. '
-    +     '<strong>Silent</strong> makes no audible reply at all.'
-    +   '</div>'
-    +   '<div id="cfg-response-behavior-body">Loading&hellip;</div>'
+  // ── Response behavior tab ─────────────────────────────────
+  html += '<div class="page-tab-panel' + (activeTabId === 'response' ? ' active' : '') + '" data-page-tab-panel-group="audio-speakers" data-tab="response">';
+  html += '<div class="card" id="cfg-response-behavior-card">';
+  html += '<div class="cfg-subsection-title">Response behavior</div>';
+  html += '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    + 'Choose how GLaDOS acknowledges commands. '
+    + '<strong>LLM</strong> (default) has the language model write each reply &mdash; expressive but can drift. '
+    + '<strong>Quip</strong> picks a pre-written line from <code>configs/quips/</code> &mdash; never leaks device names, no drift. '
+    + '<strong>Chime</strong> plays a sound file. '
+    + '<strong>Silent</strong> makes no audible reply at all.'
     + '</div>';
+  html += '<div id="cfg-response-behavior-body">Loading&hellip;</div>';
+  html += '</div>';
+  html += '</div>';
 
-  // Phase 8.10 — Pronunciation overrides. Two maps the operator edits
-  // as plain text: one-per-line key=value rows. Piper mispronounces
-  // common short abbreviations ("AI" as one-letter "Aye"); this pass
-  // expands them BEFORE the all-caps splitter that caused the slur.
-  html += ''
-    + '<div class="card" id="cfg-pronunciation-card" style="margin-top:18px;">'
-    +   '<div class="cfg-subsection-title">TTS Pronunciation overrides</div>'
-    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    +     'Piper pronounces short abbreviations poorly by default &mdash; '
-    +     '<code>AI</code> becomes one slurred letter, <code>HA</code> reads '
-    +     'mechanically. These overrides expand each key before the text-to-speech '
-    +     'converter processes it. <strong>Word expansions</strong> match whole '
-    +     'words case-insensitively. <strong>Symbol expansions</strong> replace '
-    +     'literal characters. One <code>key = value</code> pair per line.'
-    +   '</div>'
-    +   '<div id="cfg-pronunciation-body">Loading&hellip;</div>'
+  // ── Pronunciation tab ─────────────────────────────────────
+  html += '<div class="page-tab-panel' + (activeTabId === 'pronunciation' ? ' active' : '') + '" data-page-tab-panel-group="audio-speakers" data-tab="pronunciation">';
+  html += '<div class="card" id="cfg-pronunciation-card">';
+  html += '<div class="cfg-subsection-title">TTS Pronunciation overrides</div>';
+  html += '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    + 'Piper pronounces short abbreviations poorly by default &mdash; '
+    + '<code>AI</code> becomes one slurred letter, <code>HA</code> reads '
+    + 'mechanically. These overrides expand each key before the text-to-speech '
+    + 'converter processes it. <strong>Word expansions</strong> match whole '
+    + 'words case-insensitively. <strong>Symbol expansions</strong> replace '
+    + 'literal characters. One <code>key = value</code> pair per line.'
     + '</div>';
+  html += '<div id="cfg-pronunciation-body">Loading&hellip;</div>';
+  html += '</div>';
+  html += '</div>';
 
-  // Phase 8.7 (deferred) — Chime library. Flat list of .wav / .mp3
-  // clips the scenario-chime loader plays before announcements, plus
-  // the "chime" response mode uses them for command acknowledgements.
-  // Upload / preview / delete — no subdirectory structure.
-  html += ''
-    + '<div class="card" id="cfg-chimes-card" style="margin-top:18px;">'
-    +   '<div class="cfg-subsection-title">Chime library</div>'
-    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    +     'Short sound clips played before announcements and for the '
-    +     '<strong>chime</strong> response mode. Allowed formats: '
-    +     '<code>.wav</code>, <code>.mp3</code>. 5 MB per clip. '
-    +     'Flat library (no subdirectories).'
-    +   '</div>'
-    +   '<div id="cfg-chimes-body">Loading&hellip;</div>'
+  // ── Chimes tab ────────────────────────────────────────────
+  html += '<div class="page-tab-panel' + (activeTabId === 'chimes' ? ' active' : '') + '" data-page-tab-panel-group="audio-speakers" data-tab="chimes">';
+  html += '<div class="card" id="cfg-chimes-card">';
+  html += '<div class="cfg-subsection-title">Chime library</div>';
+  html += '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    + 'Short sound clips played before announcements and for the '
+    + '<strong>chime</strong> response mode. Allowed formats: '
+    + '<code>.wav</code>, <code>.mp3</code>. 5 MB per clip. '
+    + 'Flat library (no subdirectories). Upload / delete actions save immediately.'
     + '</div>';
+  html += '<div id="cfg-chimes-body">Loading&hellip;</div>';
+  html += '</div>';
+  html += '</div>';
 
-  // Phase 5.3 (2026-04-21): Startup speakers moved from System to
-  // Audio & Speakers. Speaker routing at boot is an audio concern,
-  // not an operational concern. Same /api/startup-speakers endpoint,
-  // same loadStartupSpeakers() hydrator.
-  html += ''
-    + '<div class="card" id="cfg-startup-speakers-card" style="margin-top:18px;">'
-    +   '<div class="cfg-subsection-title">Startup speakers</div>'
-    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    +     'Which speakers announce GLaDOS&rsquo;s startup. Checked speakers '
-    +     'receive the boot announcement; unchecked stay silent. '
-    +     'Requires a container restart to apply.'
-    +   '</div>'
-    +   '<div id="startupSpeakers" style="opacity:0.5;">Loading&hellip;</div>'
-    +   '<div id="startupSpeakersStatus" style="font-size:0.75rem;color:var(--orange);margin-top:6px;min-height:1.2em;"></div>'
-    + '</div>';
+  html += '</div>';  // end page-tab-panels
 
   document.getElementById('cfg-form-area').innerHTML = html;
   setTimeout(loadStartupSpeakers, 0);
@@ -1775,6 +1800,52 @@ function _cfgRenderAudioSpeakers() {
   setTimeout(_cfgLoadPronunciation, 0);
   setTimeout(_cfgLoadChimes, 0);
 }
+
+// Page-save dispatcher for System (Phase 6.5.3). Status and
+// Maintenance have no direct save; Mode saves auth+audit, Services
+// saves the service endpoint grid, Hardware saves test harness.
+function _cfgSaveCurrentSystemTab() {
+  const active = document.querySelector('[data-page-tab-group="system"].active');
+  const id = active ? active.getAttribute('data-tab') : 'status';
+  switch (id) {
+    case 'mode':     return cfgSaveSystemAuthAudit();
+    case 'services': return _cfgSaveSystemServices();
+    case 'hardware': return cfgSaveTestHarness();
+    case 'status':
+      showToast('Status tab is read-only. Restart buttons on each service save-by-action.', 'info');
+      return;
+    case 'maintenance':
+      showToast('Maintenance actions save immediately; no separate save needed.', 'info');
+      return;
+    default: return;
+  }
+}
+
+// Page-save dispatcher for Audio & Speakers. Routes by active tab
+// to the appropriate save handler; tabs without a clean master save
+// (chime uploads/deletes save immediately) just toast a note.
+function _cfgSaveCurrentAudioSpeakersTab() {
+  const active = document.querySelector('[data-page-tab-group="audio-speakers"].active');
+  const id = active ? active.getAttribute('data-tab') : 'speakers';
+  switch (id) {
+    case 'speakers':      return _cfgSaveSpeakersPicker();
+    case 'audio':         return cfgSaveSection('audio', 'cfg-save-result-audio');
+    case 'response':
+    case 'pronunciation': {
+      // Click the card's own Save button if present.
+      const host = document.getElementById('cfg-' + (id === 'response' ? 'response-behavior' : 'pronunciation') + '-body');
+      const btn = host && host.querySelector('button');
+      if (btn) btn.click();
+      return;
+    }
+    case 'chimes':
+      showToast('Chime uploads and deletes save immediately. No separate save needed.', 'info');
+      return;
+    default: return;
+  }
+}
+
+
 
 // ── Phase 8.7 chime library JS ──────────────────────────────────
 
