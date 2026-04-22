@@ -3836,12 +3836,14 @@ function navigateTo(key) {
 
   // Tab activation hooks
   if (key === 'config.system') {
-    // Phase 5.1: System page consolidation — Verbosity and Startup
-    // Speakers moved off this tab to Personality / Audio & Speakers
-    // respectively (Phase 5.2 / 5.3). Don't call their loaders here.
+    // Phase 6.1 (2026-04-22): Weather + GPU cards removed from System
+    // (Weather moving to Integrations; GPU was redundant). Audio
+    // storage + Reload from Disk moved here from the Configuration
+    // shell, so loadAudioStats needs to fire on this hook now.
     loadModes(); loadSpeakers(); loadHealth(); loadEyeDemo();
-    loadWeather(); loadGPU(); loadRobots();
-    startGPUAutoRefresh(); startWeatherAutoRefresh(); startRobotAutoRefresh();
+    loadRobots();
+    loadAudioStats();
+    startRobotAutoRefresh();
     if (typeof loadSystemConfigCards === 'function') loadSystemConfigCards();
   } else if (key === 'config.memory') {
     // Memory page UI arrives in Phase 5 Commit 3; placeholder for now.
