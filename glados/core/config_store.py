@@ -202,19 +202,36 @@ class TuningGlobal(BaseModel):
 
 
 class WeatherGlobal(BaseModel):
+    """Consolidated weather configuration (Phase 6.4 — 2026-04-22).
+
+    Before this pass, unit preferences were split between WeatherGlobal
+    (marked deprecated, unused) and autonomy's WeatherJobConfig — the
+    UI would edit one while the fetcher read the other. Consolidated
+    here so the Integrations → Weather tab has a single source of
+    truth. The autonomy subagent still holds tuning knobs (poll
+    interval, alert thresholds) separately since those are autonomy-
+    specific and not operator-facing.
+
+    Provider is Open-Meteo (free, no API key). The geocoding endpoint
+    translates postal code / city / address into lat-long; the forecast
+    endpoint consumes the resolved coordinates. location_name is the
+    friendly string shown in the UI (e.g. 'Fort Worth, Texas, US') so
+    operators see *where* they're pointed, not just raw coordinates.
+    """
+
+    # Location — lat/lng are authoritative; location_name and the
+    # auto-from-HA flag are UI convenience.
     latitude: float = 0.0
     longitude: float = 0.0
-    temperature_unit: str = Field(default="fahrenheit", deprecated=True)
-    wind_speed_unit: str = Field(default="mph", deprecated=True)
     auto_from_ha: bool = True
+    location_name: str = ""
 
-    @model_validator(mode="after")
-    def _warn_deprecated(self) -> "WeatherGlobal":
-        _warn_deprecated_yaml(self, {
-            "temperature_unit": "display preference, not a backend field; will move to UI state",
-            "wind_speed_unit": "display preference, not a backend field; will move to UI state",
-        })
-        return self
+    # Unit preferences — passed to Open-Meteo query params so the API
+    # returns values in the operator's chosen units directly.
+    temperature_unit: str = "fahrenheit"   # 'celsius' | 'fahrenheit'
+    wind_speed_unit: str = "mph"           # 'mph' | 'kmh' | 'ms' | 'kn'
+    precipitation_unit: str = "inch"       # 'inch' | 'mm'
+    timezone: str = "auto"                 # Open-Meteo IANA or 'auto'
 
 
 class GlobalConfig(BaseModel):
