@@ -1314,6 +1314,82 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   border: 1px solid var(--orange-dim);
 }
 
+/* Phase 5.8 (2026-04-22): MQTT peer bus config pane. Form-heavy card
+   on Integrations with an auth-required toggle that reveals username/
+   password fields inline. Reuses .trait-desc for helper text so the
+   typographic feel matches HEXACO / Emotion / Speakers. */
+.mqtt-field {
+  margin-bottom: var(--sp-4);
+}
+.mqtt-subgroup {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-tertiary);
+  margin: var(--sp-5) 0 var(--sp-2);
+  padding-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.mqtt-row {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.mqtt-row .mqtt-field {
+  flex: 1;
+  min-width: 180px;
+}
+.mqtt-row .mqtt-field.mqtt-port {
+  flex: 0 0 120px;
+  min-width: 100px;
+}
+.mqtt-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--fg-secondary);
+  letter-spacing: 0.02em;
+  margin-bottom: var(--sp-1);
+}
+.mqtt-field input[type="text"],
+.mqtt-field input[type="password"],
+.mqtt-field input[type="number"] {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-input);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-input);
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+}
+.mqtt-field input[type="text"]:focus,
+.mqtt-field input[type="password"]:focus,
+.mqtt-field input[type="number"]:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+.mqtt-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  color: var(--fg-primary);
+}
+.mqtt-inline-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--orange);
+  cursor: pointer;
+  margin: 0;
+}
+
 /* Phase 5.7 (2026-04-21): Speakers picker — grouped-by-area list of
    HA media players as checkboxes, plus a default-speaker dropdown.
    Replaces the generic cfgBuildForm rendering which left operators

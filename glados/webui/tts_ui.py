@@ -3514,6 +3514,13 @@ class Handler(BaseHTTPRequestHandler):
             if "auth" in data:
                 data["auth"].pop("password_hash", None)
                 data["auth"].pop("session_secret", None)
+        # Never leak the MQTT broker password; return an indicator
+        # flag instead so the UI can hint "password set — leave blank
+        # to keep, or type new to change." The actual password field
+        # always comes back empty.
+        if section == "mqtt":
+            data["password_is_set"] = bool(data.get("password"))
+            data["password"] = ""
         self._send_json(200, data)
 
     def _get_config_raw(self):
@@ -3552,6 +3559,14 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError) as e:
             self._send_error(400, f"Invalid JSON: {e}")
             return
+        # MQTT password handling: UI never displays the real password,
+        # so an empty incoming password means "keep existing." Splice
+        # the stored value in before validation so we don't
+        # inadvertently wipe credentials on every settings save.
+        if section == "mqtt":
+            data.pop("password_is_set", None)
+            if not data.get("password"):
+                data["password"] = _cfg.mqtt.password
         try:
             _cfg.update_section(section, data)
             if section == "services":
