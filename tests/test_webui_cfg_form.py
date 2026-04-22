@@ -26,7 +26,8 @@ TTS_UI = Path(__file__).resolve().parent.parent / "glados" / "webui" / "tts_ui.p
 
 @pytest.fixture(scope="module")
 def source() -> str:
-    return TTS_UI.read_text(encoding="utf-8")
+    from tests._webui_source import webui_combined_source
+    return webui_combined_source()
 
 
 def test_cfg_build_form_accepts_skip_keys(source: str) -> None:
