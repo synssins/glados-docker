@@ -224,30 +224,37 @@ body {
   border-left-color: transparent;
 }
 
-/* â”€â”€ Main content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Main content ──────────────────────────────────────────────
+   Phase 6.0 (2026-04-22): widened from 900px to 1200px so content
+   breathes on desktop monitors, and padding tightened. Cards and
+   inter-card gaps also reduced below — the operator flagged the
+   old density as "obnoxious, spaced far apart." */
 .main-content {
   margin-left: var(--sidebar-w);
   flex: 1;
   min-height: 100vh;
-  padding: 1.5rem;
-  max-width: 900px;
+  padding: var(--sp-4);
+  max-width: 1200px;
 }
 
-/* â”€â”€ Tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Tabs (sidebar-level, not page-level) ───────────────────── */
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 .container {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: var(--sp-3);
 }
 
-/* â”€â”€ Cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Cards ─────────────────────────────────────────────────────
+   Phase 6.0: padding tightened from 1.25rem (20px) to 14px; radius
+   dropped from 8px to --r-card (6px) so cards feel engraved into
+   the surface rather than floating on top. */
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1.25rem;
+  border-radius: var(--r-card);
+  padding: var(--sp-3) var(--sp-4);
   position: relative;
 }
 
@@ -1312,6 +1319,134 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   background: var(--orange);
   cursor: pointer;
   border: 1px solid var(--orange-dim);
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Phase 6.0 (2026-04-22) — page-header + page-tabs + page-save-btn
+   ════════════════════════════════════════════════════════════════
+   Shared chrome for multi-section pages. Each page renders:
+
+     <div class="page-header">
+       <h2 class="page-title">Integrations</h2>
+       <button class="page-save-btn" onclick="...">
+         <svg>...floppy...</svg>
+         <span>Save</span>
+       </button>
+     </div>
+     <nav class="page-tabs">
+       <button class="page-tab active" data-page-tab-group="..." data-tab="...">...</button>
+       ...
+     </nav>
+     <div class="page-tab-panels">
+       <div class="page-tab-panel active" data-page-tab-panel-group="..." data-tab="...">...</div>
+       ...
+     </div>
+
+   Active tab uses an orange underline; inactive tabs are muted. The
+   page-save-btn is anchored top-right; per-tab save handlers run
+   whatever is dirty on the active tab. ============================ */
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-2) 0 var(--sp-3);
+  margin-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border-default);
+  flex-wrap: wrap;
+}
+.page-title {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: var(--fg-primary);
+  margin: 0;
+}
+.page-title-desc {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--fg-tertiary);
+  letter-spacing: 0.02em;
+  margin-top: 2px;
+}
+.page-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--orange);
+  color: #1a1a1e;
+  border: 1px solid var(--orange);
+  border-radius: var(--r-input);
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.12s, box-shadow 0.12s;
+  white-space: nowrap;
+}
+.page-save-btn:hover {
+  background: var(--orange-hover);
+  box-shadow: 0 0 0 3px rgba(244, 166, 35, 0.18);
+}
+.page-save-btn:disabled,
+.page-save-btn[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.page-save-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+  flex-shrink: 0;
+}
+
+.page-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border-default);
+  margin-bottom: var(--sp-4);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.page-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  background: transparent;
+  color: var(--fg-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  margin-bottom: -1px;  /* merge with the container's bottom border */
+  transition: color 0.12s, border-color 0.12s;
+}
+.page-tab:hover {
+  color: var(--fg-secondary);
+}
+.page-tab.active {
+  color: var(--orange);
+  border-bottom-color: var(--orange);
+}
+
+.page-tab-panels {}
+.page-tab-panel { display: none; }
+.page-tab-panel.active { display: block; }
+
+@media (max-width: 640px) {
+  .page-tab { padding: var(--sp-2) var(--sp-3); font-size: 0.76rem; }
+  .page-save-btn span { display: none; }  /* icon-only on mobile */
 }
 
 /* Phase 5.9.2 (2026-04-22): TTS-page Script/Improv mode toggle.

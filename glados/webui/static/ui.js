@@ -291,9 +291,45 @@ const _CFG_BACKING = {
   // per-subsection save buttons.
 };
 
+// ════════════════════════════════════════════════════════════════
+// Phase 6.0 — page-level top-tab navigation (within a sidebar page)
+// ════════════════════════════════════════════════════════════════
+// Each multi-section page emits:
+//   <button class="page-tab" data-page-tab-group="GROUP" data-tab="ID" onclick="showPageTab('GROUP','ID')">...</button>
+//   <div class="page-tab-panel" data-page-tab-panel-group="GROUP" data-tab="ID">...</div>
+// showPageTab toggles the active state and persists last-active per
+// group so the tab picks up where the operator left off on return.
+function showPageTab(group, tabId) {
+  const tabs = document.querySelectorAll('[data-page-tab-group="' + group + '"]');
+  tabs.forEach(t => t.classList.toggle('active', t.getAttribute('data-tab') === tabId));
+  const panels = document.querySelectorAll('[data-page-tab-panel-group="' + group + '"]');
+  panels.forEach(p => p.classList.toggle('active', p.getAttribute('data-tab') === tabId));
+  try { localStorage.setItem('glados_ptab_' + group, tabId); } catch(e) {}
+}
+function _loadPageTab(group, fallback) {
+  try {
+    const v = localStorage.getItem('glados_ptab_' + group);
+    if (v) return v;
+  } catch(e) {}
+  return fallback;
+}
+
+// Floppy-disk SVG used by every page-save-btn.
+function _floppySvg() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>'
+    + '<polyline points="17 21 17 13 7 13 7 21"/>'
+    + '<polyline points="7 3 7 8 15 8"/>'
+    + '</svg>';
+}
+
 function cfgRenderSection(section) {
   if (section === 'audio-speakers') {
     _cfgRenderAudioSpeakers();
+    return;
+  }
+  if (section === 'integrations') {
+    _cfgRenderIntegrations();
     return;
   }
   const backing = _CFG_BACKING[section] || section;
@@ -345,68 +381,121 @@ function cfgRenderSection(section) {
   document.getElementById('cfg-form-area').innerHTML = html;
 }
 
-// Phase 6: placeholder cards for Stage 3 Phase 2 (MQTT peer bus) and
-// the post-Stage-3 media stack (*arr + Plex). Render as read-only cards
-// so operators know the page exists for future growth without requiring
-// real configuration yet.
-function _cfgRenderIntegrationsExtras() {
-  let html = '';
-  // Phase 8.1 — Disambiguation rules card. Loaded lazily so the card
-  // paints a placeholder immediately; the GET resolves and
-  // _disambPopulate() replaces the body once rules arrive.
-  html += ''
-    + '<div class="card" id="cfg-disambiguation-card" style="margin-top:14px;">'
-    +   '<div class="cfg-subsection-title">Disambiguation rules</div>'
-    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    +     'Controls how Tier&nbsp;2 picks entities when the utterance is ambiguous. '
-    +     'Rules apply against Home&nbsp;Assistant&rsquo;s live entity cache; no entity data is stored here.'
-    +   '</div>'
-    +   '<div id="cfg-disamb-body">Loading rules&hellip;</div>'
-    + '</div>';
-  // Phase 8.3.5 — Candidate retrieval card. Status, rebuild, and
-  // a live test input for the semantic retriever + device-
-  // diversity filter. Lives directly under Disambiguation rules
-  // since the two systems compose: the rules define which tokens
-  // count as segments, the retriever applies them.
-  html += ''
-    + '<div class="card" id="cfg-candretrieval-card" style="margin-top:14px;">'
-    +   '<div class="cfg-subsection-title">Candidate retrieval</div>'
-    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    +     'Phase&nbsp;8.3 semantic retriever (BGE-small-en-v1.5 ONNX) with a '
-    +     'device-diversity filter on top-K. Use the test input to see which '
-    +     'entities would be handed to the planner for any phrasing.'
-    +   '</div>'
-    +   '<div id="cfg-candretrieval-body">Loading retriever status&hellip;</div>'
-    + '</div>';
-  // Phase 5.8 (2026-04-22): MQTT peer bus — real config pane.
-  // Replaces the previous 'Coming soon' placeholder. The form
-  // fetches /api/config/mqtt and writes back via PUT; no broker
-  // host, port, or credential is hardcoded anywhere. Actual
-  // aiomqtt connect logic lands in a follow-up commit.
-  html += ''
-    + '<div class="card" id="cfg-mqtt-card" style="margin-top:14px;">'
-    +   '<div class="cfg-subsection-title">MQTT peer bus</div>'
-    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    +     'Optional integration with an MQTT broker (e.g. Home Assistant&rsquo;s Mosquitto add-on). '
-    +     'Publishes GLaDOS events to the peer bus and subscribes to commands from other LAN services. '
-    +     'Disabled by default; enable only after you have the broker coordinates and credentials.'
-    +   '</div>'
-    +   '<div id="cfg-mqtt-body">Loading MQTT settings&hellip;</div>'
+// ════════════════════════════════════════════════════════════════
+// Phase 6.0 (2026-04-22) — Integrations page, top-tabs layout.
+// ════════════════════════════════════════════════════════════════
+// Replaces the old scroll-forever stack of cards. Left sidebar click
+// on "Integrations" lands on this renderer; operator switches between
+// Home Assistant / MQTT / Disambiguation / Candidate retrieval via
+// the top tab bar. Each panel hosts whatever was previously on the
+// long scroll. Top-right Save button saves the active tab's section.
+function _cfgRenderIntegrations() {
+  const globalData = _cfgData.global || {};
+  const meta = SECTION_META['integrations'] || {};
+
+  const TABS = [
+    { id: 'ha',      label: 'Home Assistant', backing: 'global',       save: () => cfgSaveSection('global') },
+    { id: 'mqtt',    label: 'MQTT',           backing: 'mqtt',         save: () => _cfgSaveMqtt() },
+    { id: 'disamb',  label: 'Disambiguation', backing: 'disambiguation', save: () => _disambSave && _disambSave() },
+    { id: 'candret', label: 'Candidate retrieval', backing: null,      save: null },
+  ];
+  const activeTabId = _loadPageTab('integrations', 'ha');
+
+  // Page header: title on the left, Save button on the right.
+  let html = '<div class="page-header">'
+    + '<div>'
+    +   '<h2 class="page-title">' + escHtml(meta.title || 'Integrations') + '</h2>'
+    +   (meta.desc ? '<div class="page-title-desc">' + escHtml(meta.desc) + '</div>' : '')
     + '</div>'
-    + '<div class="cfg-placeholder-card">'
-    +   '<div class="cfg-placeholder-title">Media Stack <span class="cfg-placeholder-tag">Coming soon</span></div>'
-    +   '<div class="cfg-placeholder-desc">'
-    +     'Voice control for Radarr / Sonarr / Lidarr / Plex is targeted post-Stage-3; '
-    +     'track it in <code>docs/roadmap.md</code>.'
-    +   '</div>'
+    + '<button class="page-save-btn" onclick="_cfgSaveCurrentIntegrationsTab()" title="Save the active tab">'
+    +   _floppySvg()
+    +   '<span>Save</span>'
+    + '</button>'
     + '</div>';
-  // Defer fetch until the DOM exists. setTimeout(0) punts to the next
-  // tick — by then cfg-form-area has been painted.
+
+  // Tab bar.
+  html += '<nav class="page-tabs" role="tablist">';
+  for (const t of TABS) {
+    const cls = t.id === activeTabId ? 'page-tab active' : 'page-tab';
+    html += '<button class="' + cls + '" role="tab" data-page-tab-group="integrations" data-tab="' + t.id + '" onclick="showPageTab(\'integrations\',\'' + t.id + '\')">'
+      + escHtml(t.label)
+      + '</button>';
+  }
+  html += '</nav>';
+
+  // Panels.
+  html += '<div class="page-tab-panels">';
+
+  // Home Assistant panel — HA subset of the global backing.
+  const haSubset = {};
+  if (globalData.home_assistant) haSubset.home_assistant = globalData.home_assistant;
+  html += '<div class="page-tab-panel' + (activeTabId === 'ha' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="ha">';
+  html +=   '<div class="card">';
+  html +=     cfgBuildForm(haSubset, 'global', '');
+  html +=   '</div>';
+  html += '</div>';
+
+  // MQTT panel — body hydrated by _cfgLoadMqtt() after render.
+  html += '<div class="page-tab-panel' + (activeTabId === 'mqtt' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="mqtt">';
+  html +=   '<div class="card" id="cfg-mqtt-card">';
+  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+        +      'Optional integration with an MQTT broker (e.g. Home Assistant&rsquo;s Mosquitto add-on). '
+        +      'Publishes GLaDOS events to the peer bus and subscribes to commands from other LAN services. '
+        +      'Disabled by default; enable only after you have the broker coordinates and credentials.'
+        +    '</div>';
+  html +=     '<div id="cfg-mqtt-body">Loading MQTT settings&hellip;</div>';
+  html +=   '</div>';
+  html += '</div>';
+
+  // Disambiguation panel.
+  html += '<div class="page-tab-panel' + (activeTabId === 'disamb' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="disamb">';
+  html +=   '<div class="card" id="cfg-disambiguation-card">';
+  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+        +      'Controls how Tier&nbsp;2 picks entities when the utterance is ambiguous. '
+        +      'Rules apply against Home&nbsp;Assistant&rsquo;s live entity cache; no entity data is stored here.'
+        +    '</div>';
+  html +=     '<div id="cfg-disamb-body">Loading rules&hellip;</div>';
+  html +=   '</div>';
+  html += '</div>';
+
+  // Candidate retrieval panel.
+  html += '<div class="page-tab-panel' + (activeTabId === 'candret' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="candret">';
+  html +=   '<div class="card" id="cfg-candretrieval-card">';
+  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+        +      'Phase&nbsp;8.3 semantic retriever (BGE-small-en-v1.5 ONNX) with a '
+        +      'device-diversity filter on top-K. Use the test input to see which '
+        +      'entities would be handed to the planner for any phrasing.'
+        +    '</div>';
+  html +=     '<div id="cfg-candretrieval-body">Loading retriever status&hellip;</div>';
+  html +=   '</div>';
+  html += '</div>';
+
+  html += '</div>';  // end page-tab-panels
+
+  document.getElementById('cfg-form-area').innerHTML = html;
+
+  // Hydrate each panel's async content. They target elements that
+  // now live inside panels, but the existing loaders don't care
+  // about the panel wrapper — getElementById still finds them.
   setTimeout(_cfgLoadDisambiguation, 0);
   setTimeout(_cfgLoadCandRetrieval, 0);
   setTimeout(_cfgLoadMqtt, 0);
-  return html;
 }
+
+// Dispatch the page Save button to the active tab's save handler.
+function _cfgSaveCurrentIntegrationsTab() {
+  const active = document.querySelector('[data-page-tab-group="integrations"].active');
+  const id = active ? active.getAttribute('data-tab') : 'ha';
+  switch (id) {
+    case 'ha':      return cfgSaveSection('global');
+    case 'mqtt':    return _cfgSaveMqtt();
+    case 'disamb':  return (typeof _disambSave === 'function') ? _disambSave() : null;
+    case 'candret': return;  // read-only / trigger-only panel
+    default: return;
+  }
+}
+
+
 
 // Phase 8.1 — Disambiguation rules card population and save.
 
