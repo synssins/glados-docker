@@ -291,6 +291,10 @@ class AudioConfig(BaseModel):
     announcements_dir: str = f"{_GLADOS_AUDIO}/glados_announcements"
     commands_dir: str = f"{_GLADOS_AUDIO}/glados_commands"
     chimes_dir: str = f"{_GLADOS_AUDIO}/chimes"
+    # Phase 5.9.2.2: sound-library categories — one folder per category
+    # under this path. Parallel to chimes_dir. Accessed by the TTS
+    # Save-to-category flow and the HA-trigger dispatcher.
+    sounds_dir: str = f"{_GLADOS_AUDIO}/sounds"
     silence_between_sentences_ms: int = 400
     sample_rate: int = 24000
 
