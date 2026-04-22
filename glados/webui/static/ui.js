@@ -1196,7 +1196,24 @@ function _cfgRenderAudioSpeakers() {
     +   '<div id="cfg-chimes-body">Loading&hellip;</div>'
     + '</div>';
 
+  // Phase 5.3 (2026-04-21): Startup speakers moved from System to
+  // Audio & Speakers. Speaker routing at boot is an audio concern,
+  // not an operational concern. Same /api/startup-speakers endpoint,
+  // same loadStartupSpeakers() hydrator.
+  html += ''
+    + '<div class="card" id="cfg-startup-speakers-card" style="margin-top:18px;">'
+    +   '<div class="cfg-subsection-title">Startup speakers</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Which speakers announce GLaDOS&rsquo;s startup. Checked speakers '
+    +     'receive the boot announcement; unchecked stay silent. '
+    +     'Requires a container restart to apply.'
+    +   '</div>'
+    +   '<div id="startupSpeakers" style="opacity:0.5;">Loading&hellip;</div>'
+    +   '<div id="startupSpeakersStatus" style="font-size:0.75rem;color:var(--orange);margin-top:6px;min-height:1.2em;"></div>'
+    + '</div>';
+
   document.getElementById('cfg-form-area').innerHTML = html;
+  setTimeout(loadStartupSpeakers, 0);
   setTimeout(_cfgLoadResponseBehavior, 0);
   setTimeout(_cfgLoadPronunciation, 0);
   setTimeout(_cfgLoadChimes, 0);
