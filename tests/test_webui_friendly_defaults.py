@@ -115,11 +115,16 @@ def test_integrations_has_mqtt_config_pane(source: str) -> None:
     ), "MQTT placeholder should have been replaced by a real config pane"
 
 
-def test_integrations_has_media_stack_placeholder(source: str) -> None:
-    assert re.search(
+def test_integrations_no_longer_has_media_stack_placeholder(source: str) -> None:
+    # Phase 6.0 (2026-04-22): Integrations was restructured into top-
+    # tabs (HA / MQTT / Disambiguation / Candidate retrieval). The
+    # 'Media Stack — Coming soon' placeholder was dropped in the
+    # same pass; when that work is actually scoped it becomes a
+    # proper tab, not a placeholder card. Locks the removal in.
+    assert not re.search(
         r"cfg-placeholder-title[^>]*>\s*Media Stack",
         source,
-    ), "Integrations must render a Media Stack placeholder card"
+    ), "Media Stack placeholder should have been removed in Phase 6.0"
 
 
 # ── LLM & Services: Model Options + LLM Timeouts cards ─────────────────
