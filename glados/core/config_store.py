@@ -623,6 +623,72 @@ class Hub75DisplayConfig(BaseModel):
     info_panel: Hub75InfoPanelConfig = Hub75InfoPanelConfig()
 
 
+class SoundFileEntry(BaseModel):
+    """One audio file inside a sound category folder.
+
+    Tracked in sound_categories.yaml so operators can enable/disable
+    individual files (keep the recording around but bar it from the
+    random pool) and annotate them with notes. The file itself lives
+    on disk under configs/sounds/<category>/<name>.
+    """
+    enabled: bool = True
+    added: str = ""        # ISO date string
+    note: str = ""         # operator annotation, optional
+
+
+class SoundCategory(BaseModel):
+    """One named category of GLaDOS-voiced audio.
+
+    Categories are the unit HA pulls on: for each enabled category,
+    GLaDOS registers an input_button helper via HA's REST API on
+    startup, and dispatches the configured action_kind when the
+    corresponding state_changed event arrives over the WebSocket.
+    """
+    name: str
+    description: str = ""
+    action_kind: str = "audio_random"
+    # action_kind values:
+    #   audio_random                  - pick any file (enabled flags ignored; UI hides them)
+    #   audio_specific                - play selected_file every time
+    #   audio_random_from_enabled_files - pick randomly from files with enabled=true
+    #   llm                           - compose live via llm_preset; no files consumed
+
+    llm_preset: str = ""
+    # One of: morning_greeting, arrival_greeting, departure_farewell,
+    # weather_alert, appliance_done, generic_announce. Only used when
+    # action_kind == 'llm'.
+
+    selected_file: str = ""
+    # Only used when action_kind == 'audio_specific'. Filename within
+    # the category folder (no path).
+
+    ha_exposed: bool = True
+    # When true, GLaDOS publishes input_button.glados_<name> to HA on
+    # startup. Set false to keep the category operational but
+    # unexposed (e.g., while still recording the first files).
+
+    speaker: str | None = None
+    # HA media_player entity_id to route audio through, or None to
+    # use the Speakers-picker default.
+
+    files: dict[str, SoundFileEntry] = {}
+    # Per-file metadata. Keys are filenames (no path). Populated by
+    # the TTS save-to-category flow; operator edits enable flags.
+
+
+class SoundCategoriesConfig(BaseModel):
+    """Registry of named audio categories.
+
+    Each category is a folder under configs/sounds/<name>/ plus the
+    metadata here. When the TTS page saves a new recording to a
+    category, it writes the audio file AND upserts a SoundFileEntry
+    into files[] for that category. The operator then enables /
+    disables individual files via the Sound Categories UI card.
+    """
+    version: int = 1
+    categories: list[SoundCategory] = []
+
+
 class MQTTConfig(BaseModel):
     """MQTT peer bus configuration.
 
@@ -699,6 +765,7 @@ class GladosConfigStore:
         self._test_harness: TestHarnessConfig = TestHarnessConfig()
         self._tts_pronunciation: TtsPronunciationConfig = TtsPronunciationConfig()
         self._mqtt: MQTTConfig = MQTTConfig()
+        self._sound_categories: SoundCategoriesConfig = SoundCategoriesConfig()
 
     @staticmethod
     def _resolve_config_dir() -> Path:
@@ -740,6 +807,9 @@ class GladosConfigStore:
             d / "tts_pronunciation.yaml", TtsPronunciationConfig,
         )
         self._mqtt = self._load_model(d / "mqtt.yaml", MQTTConfig)
+        self._sound_categories = self._load_model(
+            d / "sound_categories.yaml", SoundCategoriesConfig,
+        )
         logger.info("Config store loaded from {}", d)
 
     @staticmethod
@@ -934,6 +1004,7 @@ class GladosConfigStore:
             "test_harness": self._test_harness.model_dump(),
             "tts_pronunciation": self._tts_pronunciation.model_dump(),
             "mqtt": self._mqtt.model_dump(),
+            "sound_categories": self._sound_categories.model_dump(),
         }
 
     def update_section(self, section: str, data: dict) -> None:
@@ -951,6 +1022,7 @@ class GladosConfigStore:
             "test_harness": (TestHarnessConfig, "test_harness.yaml"),
             "tts_pronunciation": (TtsPronunciationConfig, "tts_pronunciation.yaml"),
             "mqtt": (MQTTConfig, "mqtt.yaml"),
+            "sound_categories": (SoundCategoriesConfig, "sound_categories.yaml"),
         }
         if section not in model_map:
             raise KeyError(f"Unknown config section: {section!r}")

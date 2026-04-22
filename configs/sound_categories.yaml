@@ -1,0 +1,130 @@
+version: 1
+categories:
+- name: doorbell_press
+  description: Someone is at the door
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: door_opened
+  description: Entry door opened
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: door_closed
+  description: Entry door closed
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: motion_detected
+  description: Motion sensor triggered
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: person_arrived
+  description: Someone has come home
+  action_kind: llm
+  llm_preset: arrival_greeting
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: person_left
+  description: Someone has left
+  action_kind: llm
+  llm_preset: departure_farewell
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: laundry_done
+  description: Washer or dryer has finished its cycle
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: dishwasher_done
+  description: Dishwasher has finished its cycle
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: oven_preheat
+  description: Oven has reached preheat temperature
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: package_delivered
+  description: Package detected at the door
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: morning_wakeup
+  description: Morning greeting with the day's weather
+  action_kind: llm
+  llm_preset: morning_greeting
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: bedtime
+  description: Going to bed
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: dinner_call
+  description: Call everyone to dinner
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: weather_alert
+  description: Severe weather alert from the forecast service
+  action_kind: llm
+  llm_preset: weather_alert
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: low_battery
+  description: A smart-home device has a low battery
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
+- name: system_error
+  description: Something in the system has broken
+  action_kind: audio_random
+  llm_preset: ''
+  selected_file: ''
+  ha_exposed: true
+  speaker: null
+  files: {}
