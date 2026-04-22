@@ -89,15 +89,30 @@ def test_services_gladys_api_hidden_from_services_grid(source: str) -> None:
 # ── Integrations: MQTT + Media Stack placeholder cards ─────────────────
 
 
-def test_integrations_has_mqtt_placeholder(source: str) -> None:
+def test_integrations_has_mqtt_config_pane(source: str) -> None:
+    # Phase 5.8 (2026-04-22): the old 'Coming soon' MQTT placeholder
+    # was replaced by a real config pane. Operator can set broker
+    # host / port / TLS / auth / client id / topic prefix via the UI
+    # and the form PUTs to /api/config/mqtt. No broker coordinates
+    # are hardcoded anywhere.
     assert "_cfgRenderIntegrationsExtras" in source
-    assert re.search(
+    assert "_cfgLoadMqtt" in source, (
+        "Integrations must wire the MQTT config-pane loader"
+    )
+    assert "_cfgSaveMqtt" in source, (
+        "MQTT config pane must expose a save function that PUTs the form"
+    )
+    assert 'id="cfg-mqtt-body"' in source, (
+        "MQTT card must expose the #cfg-mqtt-body mount point"
+    )
+    assert "/api/config/mqtt" in source, (
+        "MQTT save handler must POST to /api/config/mqtt"
+    )
+    # The 'Coming soon' placeholder must be gone.
+    assert not re.search(
         r"cfg-placeholder-title[^>]*>\s*MQTT",
         source,
-    ), "Integrations must render an MQTT placeholder card"
-    assert "Stage 3 Phase 2" in source, (
-        "MQTT placeholder should reference the Stage 3 Phase 2 plan"
-    )
+    ), "MQTT placeholder should have been replaced by a real config pane"
 
 
 def test_integrations_has_media_stack_placeholder(source: str) -> None:

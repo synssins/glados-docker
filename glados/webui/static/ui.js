@@ -378,13 +378,20 @@ function _cfgRenderIntegrationsExtras() {
     +   '</div>'
     +   '<div id="cfg-candretrieval-body">Loading retriever status&hellip;</div>'
     + '</div>';
+  // Phase 5.8 (2026-04-22): MQTT peer bus — real config pane.
+  // Replaces the previous 'Coming soon' placeholder. The form
+  // fetches /api/config/mqtt and writes back via PUT; no broker
+  // host, port, or credential is hardcoded anywhere. Actual
+  // aiomqtt connect logic lands in a follow-up commit.
   html += ''
-    + '<div class="cfg-placeholder-card">'
-    +   '<div class="cfg-placeholder-title">MQTT <span class="cfg-placeholder-tag">Coming soon</span></div>'
-    +   '<div class="cfg-placeholder-desc">'
-    +     'Peer-bus integration with Node-RED / Sonorium arrives in '
-    +     '<strong>Stage 3 Phase 2</strong>. See <code>docs/Stage 3.md</code> for the plan.'
+    + '<div class="card" id="cfg-mqtt-card" style="margin-top:14px;">'
+    +   '<div class="cfg-subsection-title">MQTT peer bus</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Optional integration with an MQTT broker (e.g. Home Assistant&rsquo;s Mosquitto add-on). '
+    +     'Publishes GLaDOS events to the peer bus and subscribes to commands from other LAN services. '
+    +     'Disabled by default; enable only after you have the broker coordinates and credentials.'
     +   '</div>'
+    +   '<div id="cfg-mqtt-body">Loading MQTT settings&hellip;</div>'
     + '</div>'
     + '<div class="cfg-placeholder-card">'
     +   '<div class="cfg-placeholder-title">Media Stack <span class="cfg-placeholder-tag">Coming soon</span></div>'
@@ -397,10 +404,181 @@ function _cfgRenderIntegrationsExtras() {
   // tick — by then cfg-form-area has been painted.
   setTimeout(_cfgLoadDisambiguation, 0);
   setTimeout(_cfgLoadCandRetrieval, 0);
+  setTimeout(_cfgLoadMqtt, 0);
   return html;
 }
 
 // Phase 8.1 — Disambiguation rules card population and save.
+
+// ═════════════════════════════════════════════════════════════════
+// Phase 5.8 (2026-04-22) — MQTT peer bus configuration pane.
+//
+// Loads from GET /api/config/mqtt (password masked server-side;
+// password_is_set flag tells the UI whether to display a 'leave
+// blank to keep' hint). Saves via PUT. No broker host / port /
+// credential is hardcoded here; the form is the only surface.
+// ═════════════════════════════════════════════════════════════════
+let _mqttConfigState = null;  // { config, password_is_set }
+
+async function _cfgLoadMqtt() {
+  const body = document.getElementById('cfg-mqtt-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/config/mqtt');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const cfg = await r.json();
+    _mqttConfigState = {
+      config: cfg,
+      password_is_set: cfg.password_is_set === true,
+    };
+    _cfgRenderMqtt();
+  } catch (e) {
+    body.innerHTML = '<div style="color:var(--red);">Failed to load MQTT settings: '
+      + escHtml(String(e)) + '</div>';
+    console.error('mqtt config load failed:', e);
+  }
+}
+
+function _cfgRenderMqtt() {
+  const body = document.getElementById('cfg-mqtt-body');
+  if (!body || !_mqttConfigState) return;
+  const c = _mqttConfigState.config;
+  const pwHint = _mqttConfigState.password_is_set
+    ? 'Password is currently set. Leave blank to keep it; type a new value to change.'
+    : 'No password stored. If auth is required, enter it here.';
+  let html = '';
+
+  // Top-level enable toggle. Everything else is just stored; the
+  // client only attempts a connection when enabled is on AND
+  // broker_host is non-empty.
+  html += '<div class="mqtt-field">'
+    + '<label class="mqtt-inline-check">'
+    +   '<input type="checkbox" id="cfg-mqtt-enabled"' + (c.enabled ? ' checked' : '') + '>'
+    +   '<span>Enable MQTT peer bus</span>'
+    + '</label>'
+    + '<div class="trait-desc">When disabled, the client never connects and no events are published or subscribed.</div>'
+    + '</div>';
+
+  // Broker connection.
+  html += '<div class="mqtt-subgroup">Broker connection</div>';
+  html += '<div class="mqtt-row">'
+    + '<div class="mqtt-field">'
+    +   '<label class="mqtt-label" for="cfg-mqtt-host">Broker host</label>'
+    +   '<input id="cfg-mqtt-host" type="text" value="' + escHtml(c.broker_host || '') + '" placeholder="10.0.0.20">'
+    + '</div>'
+    + '<div class="mqtt-field mqtt-port">'
+    +   '<label class="mqtt-label" for="cfg-mqtt-port">Port</label>'
+    +   '<input id="cfg-mqtt-port" type="number" min="1" max="65535" value="' + (c.broker_port || 1883) + '">'
+    + '</div>'
+    + '</div>';
+  html += '<div class="mqtt-field">'
+    + '<label class="mqtt-inline-check">'
+    +   '<input type="checkbox" id="cfg-mqtt-tls"' + (c.use_tls ? ' checked' : '') + '>'
+    +   '<span>Use TLS</span>'
+    + '</label>'
+    + '<div class="trait-desc">Strongly recommended when the broker is reachable outside the trusted LAN. Requires the broker to present a certificate.</div>'
+    + '</div>';
+
+  // Authentication.
+  html += '<div class="mqtt-subgroup">Authentication</div>';
+  html += '<div class="mqtt-field">'
+    + '<label class="mqtt-inline-check">'
+    +   '<input type="checkbox" id="cfg-mqtt-auth"' + (c.auth_enabled ? ' checked' : '') + ' onchange="_cfgMqttToggleAuth()">'
+    +   '<span>Authentication required</span>'
+    + '</label>'
+    + '<div class="trait-desc">Check this if the broker is set up with a username/password. HA&rsquo;s Mosquitto add-on almost always requires auth.</div>'
+    + '</div>';
+  html += '<div id="cfg-mqtt-auth-fields" style="' + (c.auth_enabled ? '' : 'display:none;') + '">';
+  html +=   '<div class="mqtt-field">'
+    +       '<label class="mqtt-label" for="cfg-mqtt-user">Username</label>'
+    +       '<input id="cfg-mqtt-user" type="text" value="' + escHtml(c.username || '') + '" autocomplete="off">'
+    +     '</div>';
+  html +=   '<div class="mqtt-field">'
+    +       '<label class="mqtt-label" for="cfg-mqtt-pw">Password</label>'
+    +       '<input id="cfg-mqtt-pw" type="password" value="" autocomplete="new-password" placeholder="' + escHtml(_mqttConfigState.password_is_set ? '(leave blank to keep)' : '') + '">'
+    +       '<div class="trait-desc">' + escHtml(pwHint) + '</div>'
+    +     '</div>';
+  html += '</div>';
+
+  // Identity + topic routing.
+  html += '<div class="mqtt-subgroup">Identity and topics</div>';
+  html += '<div class="mqtt-field">'
+    + '<label class="mqtt-label" for="cfg-mqtt-clientid">Client ID</label>'
+    + '<input id="cfg-mqtt-clientid" type="text" value="' + escHtml(c.client_id || 'glados-bridge') + '">'
+    + '<div class="trait-desc">Unique identifier GLaDOS presents to the broker. Change only if another client on the same broker already uses this name.</div>'
+    + '</div>';
+  html += '<div class="mqtt-field">'
+    + '<label class="mqtt-label" for="cfg-mqtt-prefix">Topic prefix</label>'
+    + '<input id="cfg-mqtt-prefix" type="text" value="' + escHtml(c.topic_prefix || 'glados') + '">'
+    + '<div class="trait-desc">Root of the outbound event channel (<code>&lt;prefix&gt;/events/…</code>) and the inbound command channel (<code>&lt;prefix&gt;/cmd/…</code>). Keep it short and operator-meaningful.</div>'
+    + '</div>';
+
+  // Transport tuning — tucked behind Advanced.
+  html += '<div class="mqtt-subgroup" data-advanced="true">Transport tuning (advanced)</div>';
+  html += '<div class="mqtt-row" data-advanced="true">'
+    + '<div class="mqtt-field">'
+    +   '<label class="mqtt-label" for="cfg-mqtt-keepalive">Keepalive (seconds)</label>'
+    +   '<input id="cfg-mqtt-keepalive" type="number" min="5" max="600" value="' + (c.keepalive_s || 60) + '">'
+    + '</div>'
+    + '<div class="mqtt-field">'
+    +   '<label class="mqtt-label" for="cfg-mqtt-reconnect">Reconnect delay (seconds)</label>'
+    +   '<input id="cfg-mqtt-reconnect" type="number" min="1" max="300" value="' + (c.reconnect_delay_s || 5) + '">'
+    + '</div>'
+    + '</div>';
+
+  html += '<div class="cfg-save-row">'
+    + '<button class="cfg-save-btn" onclick="_cfgSaveMqtt()">Save MQTT settings</button>'
+    + '<span id="cfg-save-result-mqtt" class="cfg-result"></span>'
+    + '</div>';
+
+  body.innerHTML = html;
+}
+
+function _cfgMqttToggleAuth() {
+  const chk = document.getElementById('cfg-mqtt-auth');
+  const fields = document.getElementById('cfg-mqtt-auth-fields');
+  if (chk && fields) fields.style.display = chk.checked ? '' : 'none';
+}
+
+async function _cfgSaveMqtt() {
+  const result = document.getElementById('cfg-save-result-mqtt');
+  if (!_mqttConfigState) {
+    if (result) result.textContent = 'Not loaded';
+    return;
+  }
+  const g = id => document.getElementById(id);
+  const next = {
+    enabled: !!g('cfg-mqtt-enabled').checked,
+    broker_host: g('cfg-mqtt-host').value.trim(),
+    broker_port: parseInt(g('cfg-mqtt-port').value, 10) || 1883,
+    use_tls: !!g('cfg-mqtt-tls').checked,
+    auth_enabled: !!g('cfg-mqtt-auth').checked,
+    username: g('cfg-mqtt-user').value.trim(),
+    password: g('cfg-mqtt-pw').value,  // empty => backend keeps stored value
+    client_id: g('cfg-mqtt-clientid').value.trim() || 'glados-bridge',
+    topic_prefix: g('cfg-mqtt-prefix').value.trim() || 'glados',
+    keepalive_s: parseInt(g('cfg-mqtt-keepalive').value, 10) || 60,
+    reconnect_delay_s: parseInt(g('cfg-mqtt-reconnect').value, 10) || 5,
+  };
+  if (result) { result.textContent = 'Saving…'; result.className = 'cfg-result'; }
+  try {
+    const r = await fetch('/api/config/mqtt', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(next),
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      throw new Error('HTTP ' + r.status + ': ' + txt.slice(0, 200));
+    }
+    if (result) { result.textContent = 'Saved'; result.className = 'cfg-result cfg-result-ok'; }
+    // Refresh so password_is_set + other derived state updates.
+    _cfgLoadMqtt();
+  } catch (e) {
+    if (result) { result.textContent = 'Save failed: ' + String(e); result.className = 'cfg-result cfg-result-err'; }
+    console.error('mqtt save failed:', e);
+  }
+}
 
 async function _cfgLoadDisambiguation() {
   const body = document.getElementById('cfg-disamb-body');

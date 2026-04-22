@@ -623,6 +623,51 @@ class Hub75DisplayConfig(BaseModel):
     info_panel: Hub75InfoPanelConfig = Hub75InfoPanelConfig()
 
 
+class MQTTConfig(BaseModel):
+    """MQTT peer bus configuration.
+
+    Everything here is operator-editable via the Integrations → MQTT
+    card in the WebUI — no hardcoded broker host, port, topic prefix,
+    or credentials anywhere in the code. Same pattern as the HA
+    connection: config is the only source of truth.
+
+    When `enabled` is false (default), the client never connects and
+    no events are published or subscribed. When `auth_enabled` is
+    false, username/password are ignored and the broker is connected
+    anonymously (useful for local dev brokers without auth).
+
+    Typical HA Mosquitto setup:
+      broker_host = 10.0.0.20
+      broker_port = 1883
+      auth_enabled = true
+      username = glados-bridge
+      password = <from HA user list>
+    """
+
+    enabled: bool = False
+
+    # Broker connection.
+    broker_host: str = ""
+    broker_port: int = 1883
+    use_tls: bool = False
+
+    # Auth is per-broker. HA's Mosquitto add-on almost always requires
+    # authentication; local dev brokers often don't.
+    auth_enabled: bool = False
+    username: str = ""
+    password: str = ""
+
+    # Identity + topic routing. topic_prefix is the root for both
+    # outbound events ({prefix}/events/...) and inbound commands
+    # ({prefix}/cmd/...). Keep it short and operator-meaningful.
+    client_id: str = "glados-bridge"
+    topic_prefix: str = "glados"
+
+    # Transport tuning — leave alone unless you know why.
+    keepalive_s: int = 60
+    reconnect_delay_s: int = 5
+
+
 # ---------------------------------------------------------------------------
 # Unified config store
 # ---------------------------------------------------------------------------
@@ -653,6 +698,7 @@ class GladosConfigStore:
         self._robots: RobotsConfig = RobotsConfig()
         self._test_harness: TestHarnessConfig = TestHarnessConfig()
         self._tts_pronunciation: TtsPronunciationConfig = TtsPronunciationConfig()
+        self._mqtt: MQTTConfig = MQTTConfig()
 
     @staticmethod
     def _resolve_config_dir() -> Path:
@@ -693,6 +739,7 @@ class GladosConfigStore:
         self._tts_pronunciation = self._load_model(
             d / "tts_pronunciation.yaml", TtsPronunciationConfig,
         )
+        self._mqtt = self._load_model(d / "mqtt.yaml", MQTTConfig)
         logger.info("Config store loaded from {}", d)
 
     @staticmethod
@@ -886,6 +933,7 @@ class GladosConfigStore:
             "robots": self._robots.model_dump(),
             "test_harness": self._test_harness.model_dump(),
             "tts_pronunciation": self._tts_pronunciation.model_dump(),
+            "mqtt": self._mqtt.model_dump(),
         }
 
     def update_section(self, section: str, data: dict) -> None:
@@ -902,6 +950,7 @@ class GladosConfigStore:
             "robots": (RobotsConfig, "robots.yaml"),
             "test_harness": (TestHarnessConfig, "test_harness.yaml"),
             "tts_pronunciation": (TtsPronunciationConfig, "tts_pronunciation.yaml"),
+            "mqtt": (MQTTConfig, "mqtt.yaml"),
         }
         if section not in model_map:
             raise KeyError(f"Unknown config section: {section!r}")
