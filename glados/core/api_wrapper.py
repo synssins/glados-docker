@@ -3104,12 +3104,15 @@ class APIHandler(BaseHTTPRequestHandler):
             if not message:
                 self._send_json({"error": "message is required"}, 400)
                 return
-            is_trivial = bool(body.get("is_trivial", False))
             source = (body.get("source") or "user").strip() or "user"
 
             from glados.autonomy.emotion_state import EmotionEvent
             agent = _engine._emotion_agent
-            desc = agent.build_event_description(message, is_trivial=is_trivial)
+            # EmotionAgent.build_event_description takes only the
+            # message — triviality is decided internally via
+            # is_trivial_request(). The tracker handles severity +
+            # weight tagging for repeats.
+            desc = agent.build_event_description(message)
             agent.push_event(EmotionEvent(source=source, description=desc))
             try:
                 repeats = agent._repetition_tracker.count_repeats(message)
