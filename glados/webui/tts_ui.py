@@ -1346,6 +1346,8 @@ class Handler(BaseHTTPRequestHandler):
             self._get_status()
         elif p == "/api/weather":
             self._get_weather()
+        elif p.startswith("/api/weather/geocode"):
+            self._get_weather_geocode()
         elif p == "/api/gpu":
             self._get_gpu_status()
         elif p == "/api/entities/states":
@@ -2626,6 +2628,50 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"gpus": gpus})
 
     # â”€â”€ Weather refresh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def _get_weather_geocode(self):
+        """Phase 6.4 (2026-04-22): proxy to Open-Meteo geocoding so the
+        Integrations → Weather tab can resolve an operator-entered
+        postal code / city / address into lat-long + timezone. No API
+        key required. Returns up to 5 candidates with name / admin1 /
+        country / latitude / longitude / timezone fields."""
+        import httpx
+        try:
+            q = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(q)
+            query = (params.get("q") or [""])[0].strip()
+        except Exception:
+            self._send_error(400, "Invalid query")
+            return
+        if not query:
+            self._send_error(400, "Missing 'q' parameter (postal code / city / address)")
+            return
+        try:
+            r = httpx.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": query, "count": 5, "language": "en", "format": "json"},
+                timeout=10.0,
+                headers={"User-Agent": "GLaDOS/1.0"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            out = []
+            for hit in (data.get("results") or []):
+                out.append({
+                    "name": hit.get("name", ""),
+                    "admin1": hit.get("admin1", ""),
+                    "country": hit.get("country", ""),
+                    "country_code": hit.get("country_code", ""),
+                    "latitude": hit.get("latitude"),
+                    "longitude": hit.get("longitude"),
+                    "timezone": hit.get("timezone", "auto"),
+                    "population": hit.get("population"),
+                })
+            self._send_json(200, {"candidates": out, "query": query})
+        except httpx.HTTPError as e:
+            self._send_error(502, f"Geocoding failed: {e}")
+        except Exception as e:
+            self._send_error(500, f"Geocoding error: {e}")
 
     def _refresh_weather(self):
         """Force-refresh weather data from Open-Meteo API."""

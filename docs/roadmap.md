@@ -646,6 +646,49 @@ models and populate a dropdown.
 
 ---
 
+## Unit-conversion quick responses (TODO — 2026-04-22)
+
+**Context:** operator often asks GLaDOS for quick unit conversions —
+"how many feet in a meter," "how many teaspoons in a cup," "convert
+20°C to Fahrenheit" — and the full LLM chain is overkill for
+deterministic arithmetic. The voice assistant should feel *instant*
+for this class of question.
+
+**Requirement:** a short-circuit path that detects conversion intent,
+does the math locally, and answers in 1-2 sentences in persona
+without hitting the full tier-3 pipeline.
+
+**Suggested scope:**
+
+- Detector at the precheck stage (same site as the intent/command
+  recognition gate) that spots patterns like:
+  - *"how many X in Y"* / *"X to Y"* / *"convert X units to Y"*
+  - numeric magnitude + unit keyword.
+- Local conversion engine covering at least:
+  - Length: mm / cm / m / km / in / ft / yd / mi
+  - Mass: g / kg / oz / lb / st
+  - Volume: ml / L / tsp / tbsp / fl oz / cup / pint / quart / gal (US+UK)
+  - Temperature: °C / °F / K
+  - Speed: mph / km/h / m/s / knots / ft/s
+  - Time: s / min / hr / day
+  - Pressure / energy / power as follow-ups
+- Persona layer wraps the numeric answer in a GLaDOS-voiced
+  one-liner through the persona rewriter (reusing the same path the
+  announcement quips use). Keep it to 1-2 sentences.
+- Audit-log entry with a `conversion` kind so operator can see how
+  often the fast path fires vs falling through to tier 3.
+
+**Why not just let the LLM handle it:** current warm latency on
+qwen3:14b is ~15-20 s. A local conversion is sub-millisecond and the
+voice result feels live. This is the same argument as Tier 1 HA
+conversation: offload the determinism-amenable intents to code so
+the LLM only sees the genuinely ambiguous ones.
+
+**Not scoped yet.** Captured here so the design reference exists when
+we pick it up.
+
+---
+
 ## Multi-Persona Support
 
 **Context:** GLaDOS is the default persona but the system is fundamentally

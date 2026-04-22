@@ -232,20 +232,42 @@ class WeatherSubagent(Subagent):
     def _fetch_weather(self) -> dict[str, object] | None:
         """Fetch current weather from Open-Meteo API.
 
-        Unit params (temperature_unit, wind_speed_unit, precipitation_unit)
-        and timeout are read from WeatherJobConfig.
+        Phase 6.4 (2026-04-22): lat/long/units/timezone now come from
+        the consolidated cfg.global_.weather so the WebUI Weather tab
+        is the single source of truth. Previously these were split
+        between WeatherJobConfig and WeatherGlobal, leading to UI-vs-
+        fetcher drift. Autonomy-specific tuning (forecast_days,
+        fetch_timeout_s, alert thresholds) stays on WeatherJobConfig
+        since those aren't operator-facing. Falls back to WeatherJobConfig
+        values if the global config somehow isn't loaded yet.
         """
+        from ...core.config_store import cfg as _cfg
+        try:
+            gw = _cfg.global_.weather
+            lat = gw.latitude if gw.latitude else self._wc.latitude
+            lng = gw.longitude if gw.longitude else self._wc.longitude
+            t_unit = gw.temperature_unit
+            w_unit = gw.wind_speed_unit
+            p_unit = gw.precipitation_unit
+            tz = gw.timezone
+        except Exception:
+            lat = self._wc.latitude
+            lng = self._wc.longitude
+            t_unit = self._wc.temperature_unit
+            w_unit = self._wc.wind_speed_unit
+            p_unit = self._wc.precipitation_unit
+            tz = self._wc.timezone
         params = {
-            "latitude": self._wc.latitude,
-            "longitude": self._wc.longitude,
+            "latitude": lat,
+            "longitude": lng,
             "current": "temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m",
             "hourly": "temperature_2m,weather_code",
             "daily": "temperature_2m_max,temperature_2m_min,weather_code",
             "forecast_days": self._wc.forecast_days,
-            "timezone": self._wc.timezone,
-            "temperature_unit": self._wc.temperature_unit,
-            "wind_speed_unit": self._wc.wind_speed_unit,
-            "precipitation_unit": self._wc.precipitation_unit,
+            "timezone": tz,
+            "temperature_unit": t_unit,
+            "wind_speed_unit": w_unit,
+            "precipitation_unit": p_unit,
         }
         try:
             response = httpx.get(

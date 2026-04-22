@@ -401,9 +401,10 @@ function _cfgRenderIntegrations() {
   // tier-2 tuning knobs, not 'external systems' — Integrations
   // now only holds things GLaDOS talks to.
   const TABS = [
-    { id: 'ha',   label: 'Home Assistant' },
-    { id: 'llm',  label: 'LLM' },
-    { id: 'mqtt', label: 'MQTT' },
+    { id: 'ha',      label: 'Home Assistant' },
+    { id: 'llm',     label: 'LLM' },
+    { id: 'weather', label: 'Weather' },
+    { id: 'mqtt',    label: 'MQTT' },
   ];
   const activeTabId = _loadPageTab('integrations', 'ha');
 
@@ -453,6 +454,17 @@ function _cfgRenderIntegrations() {
   html +=   '</div>';
   html += '</div>';
 
+  // ── Weather panel (Phase 6.4) ──────────────────────────────
+  html += '<div class="page-tab-panel' + (activeTabId === 'weather' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="weather">';
+  html +=   '<div class="card" id="cfg-weather-card">';
+  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+        +      'Weather provider is Open-Meteo &mdash; free, no API key, works anywhere on Earth. '
+        +      'Point it at your location by postal code, city, or address; units are operator-selectable.'
+        +    '</div>';
+  html +=     '<div id="cfg-weather-body">Loading weather settings&hellip;</div>';
+  html +=   '</div>';
+  html += '</div>';
+
   // ── MQTT panel ──────────────────────────────────────────────
   html += '<div class="page-tab-panel' + (activeTabId === 'mqtt' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="mqtt">';
   html +=   '<div class="card" id="cfg-mqtt-card">';
@@ -469,6 +481,7 @@ function _cfgRenderIntegrations() {
   document.getElementById('cfg-form-area').innerHTML = html;
 
   setTimeout(_cfgLoadMqtt, 0);
+  setTimeout(_cfgLoadWeather, 0);
   setTimeout(() => cfgPingServices(servicesData), 100);
 }
 
@@ -520,9 +533,10 @@ function _cfgSaveCurrentIntegrationsTab() {
   const active = document.querySelector('[data-page-tab-group="integrations"].active');
   const id = active ? active.getAttribute('data-tab') : 'ha';
   switch (id) {
-    case 'ha':   return cfgSaveSection('global');
-    case 'llm':  return _cfgSaveIntegrationsLLM();
-    case 'mqtt': return _cfgSaveMqtt();
+    case 'ha':      return cfgSaveSection('global');
+    case 'llm':     return _cfgSaveIntegrationsLLM();
+    case 'weather': return _cfgSaveWeather();
+    case 'mqtt':    return _cfgSaveMqtt();
     default: return;
   }
 }
@@ -591,6 +605,235 @@ function _cfgSaveCurrentIntegrationsTab() {
 // credential is hardcoded here; the form is the only surface.
 // ═════════════════════════════════════════════════════════════════
 let _mqttConfigState = null;  // { config, password_is_set }
+
+// ════════════════════════════════════════════════════════════════
+// Phase 6.4 (2026-04-22) — Weather tab on Integrations.
+// ════════════════════════════════════════════════════════════════
+// Provider: Open-Meteo (free, no API key). Location resolves either
+// from HA zone.home (auto) or from operator-entered postal code /
+// city / address via /api/weather/geocode. Unit preferences flow
+// directly through to the forecast API as query params.
+let _weatherState = null;
+
+async function _cfgLoadWeather() {
+  const body = document.getElementById('cfg-weather-body');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/config/global');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const gdata = await r.json();
+    _weatherState = {
+      config: gdata.weather || {},
+      candidates: [],
+    };
+    _cfgRenderWeather();
+    _cfgRenderWeatherPreview();
+  } catch (e) {
+    body.innerHTML = '<div style="color:var(--red);">Failed to load weather: '
+      + escHtml(String(e)) + '</div>';
+  }
+}
+
+function _cfgRenderWeather() {
+  const body = document.getElementById('cfg-weather-body');
+  if (!body || !_weatherState) return;
+  const c = _weatherState.config;
+  const autoHA = !!c.auto_from_ha;
+  const loc = (c.location_name || '').trim();
+  const lat = c.latitude || 0, lng = c.longitude || 0;
+
+  let html = '';
+  html += '<div class="mqtt-subgroup">Location</div>';
+  html += '<div class="mqtt-field">'
+    + '<label class="mqtt-inline-check">'
+    +   '<input type="radio" name="wx-loc-mode" id="wx-loc-auto" ' + (autoHA ? 'checked' : '') + ' onchange="_cfgWeatherModeChange()">'
+    +   '<span>Use Home Assistant location (zone.home)</span>'
+    + '</label>'
+    + '<div class="trait-desc">Reads lat/long from your HA configuration on each refresh. Good default when HA is your home-location source of truth.</div>'
+    + '</div>';
+  html += '<div class="mqtt-field">'
+    + '<label class="mqtt-inline-check">'
+    +   '<input type="radio" name="wx-loc-mode" id="wx-loc-manual" ' + (!autoHA ? 'checked' : '') + ' onchange="_cfgWeatherModeChange()">'
+    +   '<span>Set location manually</span>'
+    + '</label>'
+    + '</div>';
+
+  html += '<div id="wx-manual-block" style="' + (autoHA ? 'display:none;' : '') + 'padding-left:var(--sp-5);">';
+  html +=   '<div class="mqtt-row">';
+  html +=     '<div class="mqtt-field" style="flex:2;">';
+  html +=       '<label class="mqtt-label" for="wx-query">City, postal code, or address</label>';
+  html +=       '<input id="wx-query" type="text" placeholder="e.g. 76102 or London, UK or Tokyo" value="" autocomplete="off">';
+  html +=     '</div>';
+  html +=     '<div class="mqtt-field" style="flex:0 0 auto;">';
+  html +=       '<label class="mqtt-label">&nbsp;</label>';
+  html +=       '<button class="btn" style="background:var(--bg-input);padding:var(--sp-2) var(--sp-4);" onclick="_cfgWeatherGeocode()">Look up</button>';
+  html +=     '</div>';
+  html +=   '</div>';
+  html +=   '<div id="wx-candidates" class="trait-desc" style="margin-top:var(--sp-2);"></div>';
+  html += '</div>';
+
+  html += '<div class="mqtt-field" style="margin-top:var(--sp-3);">';
+  html +=   '<label class="mqtt-label">Current resolved location</label>';
+  html +=   '<div class="trait-desc" style="font-size:0.82rem;color:var(--fg-secondary);">'
+        +    (loc ? escHtml(loc) + ' &nbsp;&middot;&nbsp; ' : '')
+        +    (lat && lng ? (Number(lat).toFixed(4) + ', ' + Number(lng).toFixed(4))
+                         : '<em>not set &mdash; use auto-HA or run a lookup above</em>')
+        +  '</div>';
+  html += '</div>';
+
+  const tu = c.temperature_unit || 'fahrenheit';
+  const wu = c.wind_speed_unit || 'mph';
+  const pu = c.precipitation_unit || 'inch';
+  html += '<div class="mqtt-subgroup">Units</div>';
+  html += '<div class="mqtt-row">';
+  html +=   _wxUnitRadio('Temperature', 'wx-temp', [['fahrenheit', '°F'], ['celsius', '°C']], tu);
+  html +=   _wxUnitRadio('Wind speed',  'wx-wind', [['mph', 'mph'], ['kmh', 'km/h'], ['ms', 'm/s'], ['kn', 'knots']], wu);
+  html +=   _wxUnitRadio('Precipitation','wx-prec', [['inch', 'inches'], ['mm', 'mm']], pu);
+  html += '</div>';
+
+  html += '<div class="mqtt-subgroup">Current reading</div>';
+  html += '<div id="wx-preview" class="trait-desc" style="font-size:0.84rem;">Loading&hellip;</div>';
+  html += '<div class="controls" style="margin-top:var(--sp-2);">';
+  html +=   '<button class="btn" style="background:var(--bg-input);" onclick="_cfgRenderWeatherPreview()">Refresh preview</button>';
+  html += '</div>';
+
+  body.innerHTML = html;
+}
+
+function _wxUnitRadio(label, prefix, opts, current) {
+  let html = '<div class="mqtt-field" style="flex:1;min-width:160px;">';
+  html += '<label class="mqtt-label">' + escHtml(label) + '</label>';
+  for (let i = 0; i < opts.length; i++) {
+    const [val, disp] = opts[i];
+    const id = prefix + '-' + val;
+    html += '<label class="mqtt-inline-check" style="margin-right:var(--sp-3);">';
+    html +=   '<input type="radio" name="' + prefix + '" id="' + id + '" value="' + val + '"' + (val === current ? ' checked' : '') + '>';
+    html +=   '<span>' + escHtml(disp) + '</span>';
+    html += '</label>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function _cfgWeatherModeChange() {
+  const autoEl = document.getElementById('wx-loc-auto');
+  const manualBlock = document.getElementById('wx-manual-block');
+  if (autoEl && manualBlock) {
+    manualBlock.style.display = autoEl.checked ? 'none' : '';
+  }
+}
+
+async function _cfgWeatherGeocode() {
+  const qEl = document.getElementById('wx-query');
+  const candEl = document.getElementById('wx-candidates');
+  if (!qEl || !candEl) return;
+  const q = qEl.value.trim();
+  if (!q) {
+    candEl.innerHTML = '<span style="color:var(--orange)">Enter a postal code, city, or address first.</span>';
+    return;
+  }
+  candEl.innerHTML = '<span class="spinner"></span> Looking up…';
+  try {
+    const r = await fetch('/api/weather/geocode?q=' + encodeURIComponent(q));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const hits = data.candidates || [];
+    if (!hits.length) {
+      candEl.innerHTML = '<span style="color:var(--red)">No matches. Try a different query.</span>';
+      return;
+    }
+    let html = '<div style="color:var(--fg-secondary);margin-bottom:var(--sp-1);">Pick a match:</div>';
+    for (let i = 0; i < hits.length; i++) {
+      const h = hits[i];
+      const fullName = [h.name, h.admin1, h.country].filter(Boolean).join(', ');
+      html += '<div style="padding:var(--sp-1) 0;">'
+        + '<button class="btn" style="background:var(--bg-input);text-align:left;width:100%;padding:var(--sp-2) var(--sp-3);" '
+        +   'onclick="_cfgWeatherPickCandidate(' + i + ')">'
+        +   escHtml(fullName) + ' <span style="color:var(--fg-tertiary);font-size:0.72rem;">&mdash; '
+        +   Number(h.latitude).toFixed(4) + ', ' + Number(h.longitude).toFixed(4) + ' &middot; ' + escHtml(h.timezone || 'auto') + '</span>'
+        + '</button>'
+        + '</div>';
+    }
+    candEl.innerHTML = html;
+    if (!_weatherState) _weatherState = { config: {}, candidates: [] };
+    _weatherState.candidates = hits;
+  } catch (e) {
+    candEl.innerHTML = '<span style="color:var(--red)">Lookup failed: ' + escHtml(String(e)) + '</span>';
+  }
+}
+
+function _cfgWeatherPickCandidate(i) {
+  if (!_weatherState || !_weatherState.candidates || !_weatherState.candidates[i]) return;
+  const h = _weatherState.candidates[i];
+  const fullName = [h.name, h.admin1, h.country].filter(Boolean).join(', ');
+  _weatherState.config.latitude = h.latitude;
+  _weatherState.config.longitude = h.longitude;
+  _weatherState.config.timezone = h.timezone || 'auto';
+  _weatherState.config.location_name = fullName;
+  _weatherState.config.auto_from_ha = false;
+  _cfgWeatherCaptureUnits();
+  _cfgRenderWeather();
+}
+
+function _cfgWeatherCaptureUnits() {
+  if (!_weatherState) return;
+  const tu = document.querySelector('input[name="wx-temp"]:checked');
+  const wu = document.querySelector('input[name="wx-wind"]:checked');
+  const pu = document.querySelector('input[name="wx-prec"]:checked');
+  if (tu) _weatherState.config.temperature_unit = tu.value;
+  if (wu) _weatherState.config.wind_speed_unit = wu.value;
+  if (pu) _weatherState.config.precipitation_unit = pu.value;
+  const autoEl = document.getElementById('wx-loc-auto');
+  if (autoEl) _weatherState.config.auto_from_ha = autoEl.checked;
+}
+
+async function _cfgRenderWeatherPreview() {
+  const el = document.getElementById('wx-preview');
+  if (!el) return;
+  el.innerHTML = '<span class="spinner"></span> Fetching current conditions…';
+  try {
+    const r = await fetch('/api/weather/refresh', { method: 'POST' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const c = d.current || {};
+    const t = d.today || {};
+    const units = d.units || {};
+    el.innerHTML = ''
+      + '<div><strong>' + escHtml(String(c.temperature ?? '?') + (units.temperature || '°')) + '</strong>, '
+      + escHtml(String(c.condition || '?')) + ', '
+      + 'wind ' + (c.wind_speed ?? '?') + ' ' + escHtml(String(units.wind_speed || '')) + '</div>'
+      + '<div>Today: high ' + (t.high ?? '?') + (units.temperature || '°')
+      + ' / low ' + (t.low ?? '?') + (units.temperature || '°')
+      + ', ' + escHtml(String(t.condition || '?')) + '</div>';
+  } catch (e) {
+    el.innerHTML = '<span style="color:var(--red)">Preview failed: ' + escHtml(String(e)) + '</span>';
+  }
+}
+
+async function _cfgSaveWeather() {
+  if (!_weatherState) return;
+  _cfgWeatherCaptureUnits();
+  try {
+    const r = await fetch('/api/config/global');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const gdata = await r.json();
+    gdata.weather = Object.assign({}, gdata.weather || {}, _weatherState.config);
+    const put = await fetch('/api/config/global', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(gdata),
+    });
+    if (!put.ok) {
+      const txt = await put.text();
+      showToast('Weather save failed: ' + txt.slice(0, 200), 'error');
+      return;
+    }
+    showToast('Weather settings saved.', 'success');
+    _cfgRenderWeatherPreview();
+  } catch (e) {
+    showToast('Weather save error: ' + e.message, 'error');
+  }
+}
 
 async function _cfgLoadMqtt() {
   const body = document.getElementById('cfg-mqtt-body');

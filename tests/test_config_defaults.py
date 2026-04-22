@@ -163,8 +163,11 @@ def test_existing_yaml_with_full_urls_still_parses() -> None:
     (AuditGlobal, {"path": "/x/a.jsonl"}, "path"),
     (AuditGlobal, {"retention_days": 90}, "retention_days"),
     (TuningGlobal, {"engine_audio_default": False}, "engine_audio_default"),
-    (WeatherGlobal, {"temperature_unit": "celsius"}, "temperature_unit"),
-    (WeatherGlobal, {"wind_speed_unit": "kmh"}, "wind_speed_unit"),
+    # Phase 6.4 (2026-04-22): WeatherGlobal.temperature_unit and
+    # wind_speed_unit are no longer deprecated — they're the canonical
+    # operator-facing unit preferences now that the Integrations →
+    # Weather tab consolidates configuration. See WeatherGlobal
+    # docstring for the consolidation rationale.
 ])
 def test_deprecated_yaml_field_emits_warning(model_cls, yaml_payload, field_name) -> None:
     with _capture_warnings() as msgs:
