@@ -1692,9 +1692,10 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # Write into configs/sounds/<category>/. Bind-mounted from host,
-        # so the file persists across container recreates.
-        sounds_dir = _cfg.configs_dir / "sounds" / category
+        # Write into audio_files/sounds/<category>/ — parallel to
+        # chimes_dir and all other audio-blob dirs. configs/ is for
+        # YAML only; audio blobs go under GLADOS_AUDIO.
+        sounds_dir = Path(_cfg.audio.sounds_dir) / category
         sounds_dir.mkdir(parents=True, exist_ok=True)
         dest_path = sounds_dir / save_as
         try:
