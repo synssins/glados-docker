@@ -1818,35 +1818,29 @@ function _svcPopulateDropdown(id, options) {
 /* â”€â”€ Personality custom renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function cfgRenderPersonality(data) {
+  // Phase 5.4 (2026-04-21): Personality page reorganized into four
+  // operator-think zones — Identity, Behavior dials, Content
+  // libraries, Voice production (advanced). Previous layout put
+  // Default TTS Parameters at the top and scattered behavior
+  // controls among identity controls; this grouping matches how the
+  // operator actually thinks about tuning the persona.
   let html = '';
 
-  // Default TTS params (advanced)
-  if (data.default_tts) {
-    html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">Default TTS Parameters</div>';
-    html += cfgBuildForm(data.default_tts, 'personality', 'default_tts');
-    html += '</div>';
-  }
+  // Signature telemetry strip (Phase 4 component). Placeholder for
+  // now; hydration from persona state (emotion, attitudes count,
+  // quip/canon counts) lands in a later commit.
+  html += ''
+    + '<div class="telemetry-strip" id="personaTelemetry">'
+    +   '<span class="label">PERSONA</span>'
+    +   '<span class="cell"><strong>STATE</strong> <em>loading&hellip;</em></span>'
+    + '</div>';
 
-  // Attitudes table (read-only display)
-  if (data.attitudes && data.attitudes.length > 0) {
-    html += '<div class="cfg-group"><div class="cfg-group-title">Attitudes (' + data.attitudes.length + ')</div>';
-    html += '<table class="att-table"><tr><th>Tag</th><th>Label</th><th>Weight</th><th>TTS Params</th></tr>';
-    for (const a of data.attitudes) {
-      const tts = a.tts || {};
-      const ttsStr = 'L:' + (tts.length_scale ?? '-') + ' N:' + (tts.noise_scale ?? '-') + ' W:' + (tts.noise_w ?? '-');
-      html += '<tr>'
-        + '<td class="tag-cell">' + escHtml(a.tag || '') + '</td>'
-        + '<td>' + escHtml(a.label || '') + '</td>'
-        + '<td>' + (a.weight ?? 1.0) + '</td>'
-        + '<td class="tts-cell">' + escHtml(ttsStr) + '</td>'
-        + '</tr>';
-    }
-    html += '</table>';
-    html += '<div style="font-size:0.73rem;color:var(--text-muted);margin-top:6px;">Edit attitudes via Raw YAML tab</div>';
-    html += '</div>';
-  }
+  // ═════════════════════════════════════════════════════════════════
+  // Zone 1 — Identity: WHO GLaDOS is.
+  // ═════════════════════════════════════════════════════════════════
+  html += '<h3 class="zone-heading">Identity</h3>';
 
-  // Preprompt entries
+  // Preprompt entries (system/user/assistant seed messages)
   if (data.preprompt && data.preprompt.length > 0) {
     html += '<div class="cfg-group"><div class="cfg-group-title">Preprompt Messages</div>';
     for (let i = 0; i < data.preprompt.length; i++) {
@@ -1863,7 +1857,7 @@ function cfgRenderPersonality(data) {
     html += '</div>';
   }
 
-  // HEXACO (advanced)
+  // HEXACO personality traits (advanced)
   if (data.hexaco) {
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">HEXACO Personality Traits</div>';
     for (const [k, v] of Object.entries(data.hexaco)) {
@@ -1876,7 +1870,7 @@ function cfgRenderPersonality(data) {
     html += '</div>';
   }
 
-  // Emotion (advanced)
+  // Emotion model (advanced)
   if (data.emotion) {
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">Emotion Model</div>';
     for (const [k, v] of Object.entries(data.emotion)) {
@@ -1898,11 +1892,46 @@ function cfgRenderPersonality(data) {
     html += '</div>';
   }
 
-  // Phase 8.2 — Command recognition card. Separate card with its own
-  // fetch / save cycle; writes to disambiguation.yaml, same file as the
-  // Disambiguation rules card under Integrations → Home Assistant.
+  // Attitudes table (read-only — editing happens via Raw YAML)
+  if (data.attitudes && data.attitudes.length > 0) {
+    html += '<div class="cfg-group"><div class="cfg-group-title">Attitudes (' + data.attitudes.length + ')</div>';
+    html += '<table class="att-table"><tr><th>Tag</th><th>Label</th><th>Weight</th><th>TTS Params</th></tr>';
+    for (const a of data.attitudes) {
+      const tts = a.tts || {};
+      const ttsStr = 'L:' + (tts.length_scale ?? '-') + ' N:' + (tts.noise_scale ?? '-') + ' W:' + (tts.noise_w ?? '-');
+      html += '<tr>'
+        + '<td class="tag-cell">' + escHtml(a.tag || '') + '</td>'
+        + '<td>' + escHtml(a.label || '') + '</td>'
+        + '<td>' + (a.weight ?? 1.0) + '</td>'
+        + '<td class="tts-cell">' + escHtml(ttsStr) + '</td>'
+        + '</tr>';
+    }
+    html += '</table>';
+    html += '<div style="font-size:0.73rem;color:var(--text-muted);margin-top:6px;">Edit attitudes via Raw YAML tab</div>';
+    html += '</div>';
+  }
+
+  // ═════════════════════════════════════════════════════════════════
+  // Zone 2 — Behavior dials: HOW GLaDOS reacts.
+  // ═════════════════════════════════════════════════════════════════
+  html += '<h3 class="zone-heading">Behavior dials</h3>';
+
+  // Announcement verbosity (snark rate per-scenario)
   html += ''
-    + '<div class="card" id="cfg-cmdrec-card" style="margin-top:14px;">'
+    + '<div class="card" id="cfg-verbosity-card">'
+    +   '<div class="cfg-subsection-title">Announcement verbosity</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Probability that GLaDOS adds a sarcastic follow-up comment to an announcement. '
+    +     '<em>0%</em> is factual only, <em>100%</em> always adds commentary. '
+    +     'Set per scenario (doorbells, alarms, arrivals, etc.).'
+    +   '</div>'
+    +   '<div id="verbositySliders" style="opacity:0.5;">Loading announcement settings&hellip;</div>'
+    + '</div>';
+  setTimeout(loadVerbositySliders, 0);
+
+  // Command recognition (intent precheck tuning)
+  html += ''
+    + '<div class="card" id="cfg-cmdrec-card">'
     +   '<div class="cfg-subsection-title">Command recognition</div>'
     +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
     +     'Tunes the Tier&nbsp;1/2 precheck gate. When an utterance matches any of these signals, '
@@ -1914,29 +1943,14 @@ function cfgRenderPersonality(data) {
     + '</div>';
   setTimeout(_cfgLoadCommandRecognition, 0);
 
-  // Phase 5.2 (2026-04-21): Announcement verbosity moved from System
-  // to Personality. Conceptually it belongs here — it's a persona
-  // behavior dial (how talky is she, how often does she add snark)
-  // not a system state. Same /api/announcement-settings endpoint,
-  // same loadVerbositySliders() hydrator.
-  html += ''
-    + '<div class="card" id="cfg-verbosity-card" style="margin-top:14px;">'
-    +   '<div class="cfg-subsection-title">Announcement verbosity</div>'
-    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    +     'Probability that GLaDOS adds a sarcastic follow-up comment to an announcement. '
-    +     '<em>0%</em> is factual only, <em>100%</em> always adds commentary. '
-    +     'Set per scenario (doorbells, alarms, arrivals, etc.).'
-    +   '</div>'
-    +   '<div id="verbositySliders" style="opacity:0.5;">Loading announcement settings&hellip;</div>'
-    + '</div>';
-  setTimeout(loadVerbositySliders, 0);
+  // ═════════════════════════════════════════════════════════════════
+  // Zone 3 — Content libraries: WHAT GLaDOS says.
+  // ═════════════════════════════════════════════════════════════════
+  html += '<h3 class="zone-heading">Content libraries</h3>';
 
-  // Phase 8.7c — Quip library editor. Tree on the left, textarea on
-  // the right for the currently-selected file. Save button writes to
-  // disk through PUT /api/quips. Live-test card at the bottom shows
-  // which line the selector would pick right now.
+  // Quip library (on-disk snark lines)
   html += ''
-    + '<div class="card" id="cfg-quip-card" style="margin-top:14px;">'
+    + '<div class="card" id="cfg-quip-card">'
     +   '<div class="cfg-subsection-title">Quip library</div>'
     +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
     +     'When <strong>Response behavior</strong> is set to <em>quip</em> (see Audio &amp; Speakers), GLaDOS '
@@ -1947,12 +1961,9 @@ function cfgRenderPersonality(data) {
     + '</div>';
   setTimeout(_cfgLoadQuips, 0);
 
-  // Phase 8.14 — Portal canon library editor. Retrieval-augmented
-  // facts the model pulls when a trigger keyword fires. Tree on the
-  // left by topic, textarea on the right for the selected file,
-  // dry-run panel at the bottom to preview retrieval.
+  // Canon library (Portal RAG facts)
   html += ''
-    + '<div class="card" id="cfg-canon-card" style="margin-top:14px;">'
+    + '<div class="card" id="cfg-canon-card">'
     +   '<div class="cfg-subsection-title">Canon library</div>'
     +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
     +     'Curated Portal 1/2 facts under <code>configs/canon/</code>. GLaDOS retrieves relevant '
@@ -1963,6 +1974,19 @@ function cfgRenderPersonality(data) {
     +   '<div id="cfg-canon-body">Loading canon library&hellip;</div>'
     + '</div>';
   setTimeout(_cfgLoadCanon, 0);
+
+  // ═════════════════════════════════════════════════════════════════
+  // Zone 4 — Voice production: HOW GLaDOS sounds. Advanced, since
+  // operators rarely touch these once the voice feels right. The
+  // zone heading carries data-advanced so it hides with the cfg-group
+  // when the Advanced toggle is off — the page stays calm by default.
+  // ═════════════════════════════════════════════════════════════════
+  if (data.default_tts) {
+    html += '<h3 class="zone-heading" data-advanced="true">Voice production (advanced)</h3>';
+    html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">Default TTS Parameters</div>';
+    html += cfgBuildForm(data.default_tts, 'personality', 'default_tts');
+    html += '</div>';
+  }
 
   return html;
 }
