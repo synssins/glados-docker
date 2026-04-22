@@ -1897,6 +1897,23 @@ function cfgRenderPersonality(data) {
     + '</div>';
   setTimeout(_cfgLoadCommandRecognition, 0);
 
+  // Phase 5.2 (2026-04-21): Announcement verbosity moved from System
+  // to Personality. Conceptually it belongs here — it's a persona
+  // behavior dial (how talky is she, how often does she add snark)
+  // not a system state. Same /api/announcement-settings endpoint,
+  // same loadVerbositySliders() hydrator.
+  html += ''
+    + '<div class="card" id="cfg-verbosity-card" style="margin-top:14px;">'
+    +   '<div class="cfg-subsection-title">Announcement verbosity</div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     'Probability that GLaDOS adds a sarcastic follow-up comment to an announcement. '
+    +     '<em>0%</em> is factual only, <em>100%</em> always adds commentary. '
+    +     'Set per scenario (doorbells, alarms, arrivals, etc.).'
+    +   '</div>'
+    +   '<div id="verbositySliders" style="opacity:0.5;">Loading announcement settings&hellip;</div>'
+    + '</div>';
+  setTimeout(loadVerbositySliders, 0);
+
   // Phase 8.7c — Quip library editor. Tree on the left, textarea on
   // the right for the currently-selected file. Save button writes to
   // disk through PUT /api/quips. Live-test card at the bottom shows
@@ -3376,9 +3393,11 @@ function navigateTo(key) {
 
   // Tab activation hooks
   if (key === 'config.system') {
+    // Phase 5.1: System page consolidation — Verbosity and Startup
+    // Speakers moved off this tab to Personality / Audio & Speakers
+    // respectively (Phase 5.2 / 5.3). Don't call their loaders here.
     loadModes(); loadSpeakers(); loadHealth(); loadEyeDemo();
     loadWeather(); loadGPU(); loadRobots();
-    loadVerbositySliders(); loadStartupSpeakers();
     startGPUAutoRefresh(); startWeatherAutoRefresh(); startRobotAutoRefresh();
     if (typeof loadSystemConfigCards === 'function') loadSystemConfigCards();
   } else if (key === 'config.memory') {
