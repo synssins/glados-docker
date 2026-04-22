@@ -1314,6 +1314,79 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   border: 1px solid var(--orange-dim);
 }
 
+/* Phase 5.9.2 (2026-04-22): TTS-page Script/Improv mode toggle.
+   Two radio-cards side by side; operator taps one to switch modes.
+   Each carries a title and a short description so the mode
+   semantics are legible at a glance. */
+.tts-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-3);
+}
+.tts-mode-option {
+  display: block;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-card);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tts-mode-option:hover {
+  border-color: var(--border-strong);
+}
+.tts-mode-option input[type="radio"] {
+  display: none;
+}
+.tts-mode-option.active {
+  border-color: var(--orange);
+  background: rgba(244, 166, 35, 0.06);
+}
+.tts-mode-title {
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--fg-primary);
+  margin-bottom: var(--sp-1);
+}
+.tts-mode-option.active .tts-mode-title {
+  color: var(--orange);
+}
+.tts-mode-desc {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--fg-tertiary);
+  line-height: 1.5;
+}
+@media (max-width: 768px) {
+  .tts-mode-toggle { grid-template-columns: 1fr; }
+}
+
+/* Save-to-category row on the TTS preview player. Appears after
+   audio is generated; lets operator drop the recording into a
+   sound-library category. */
+.tts-save-row {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.tts-save-row select,
+.tts-save-row input[type="text"] {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-input);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-input);
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+}
+.tts-save-row select:focus,
+.tts-save-row input[type="text"]:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
 /* Phase 5.8 (2026-04-22): MQTT peer bus config pane. Form-heavy card
    on Integrations with an auth-required toggle that reveals username/
    password fields inline. Reuses .trait-desc for helper text so the

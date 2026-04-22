@@ -827,6 +827,23 @@ class GladosConfigStore:
     # ── Accessors ──────────────────────────────────────────────
 
     @property
+    def configs_dir(self) -> Path:
+        """Resolved config directory — parent of all YAML files and the
+        sound-library root (configs/sounds/<category>/)."""
+        self._ensure_loaded()
+        return self._configs_dir
+
+    @property
+    def sound_categories(self) -> SoundCategoriesConfig:
+        self._ensure_loaded()
+        return self._sound_categories
+
+    @property
+    def mqtt(self) -> MQTTConfig:
+        self._ensure_loaded()
+        return self._mqtt
+
+    @property
     def ha_url(self) -> str:
         self._ensure_loaded()
         return self._global.home_assistant.url.rstrip("/")

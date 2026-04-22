@@ -1490,6 +1490,11 @@ class Handler(BaseHTTPRequestHandler):
             self._post_canon_test()
         elif p == "/api/stt":
             self._stt()
+        # Phase 5.9.2: TTS-page Improv mode LLM drafting + Save-to-category.
+        elif p == "/api/tts/draft":
+            self._post_tts_draft()
+        elif p == "/api/tts/save-to-category":
+            self._post_tts_save_to_category()
         # --- Protected routes below ---
         elif p == "/api/modes":
             self._set_modes()
@@ -1581,7 +1586,153 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_error(404, "Not found")
 
-    # â”€â”€ TTS Generate (existing) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Phase 5.9.2: TTS Improv draft + Save-to-category ──────────────
+
+    def _post_tts_draft(self):
+        """Draft a single short line in GLaDOS's voice from a plain-
+        English instruction. Direct Ollama generate call — no chat
+        memory pollution, no tool use, no conversation context."""
+        import httpx
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as e:
+            self._send_error(400, f"Invalid JSON: {e}")
+            return
+        instruction = (data.get("instruction") or "").strip()
+        if not instruction:
+            self._send_error(400, "Missing 'instruction'")
+            return
+        system_prompt = (
+            "You are GLaDOS, the Aperture Science testing-chamber AI. "
+            "Write a single short line (under 40 words) that does what "
+            "the operator asks. Output ONLY the line itself — no "
+            "explanations, no quotation marks, no role prefix. Voice: "
+            "dry, condescending, darkly theatrical, occasionally "
+            "threatening but always composed."
+        )
+        ollama_url = _svc_ollama_generate()
+        model = _svc_ollama_model()
+        try:
+            resp = httpx.post(
+                ollama_url,
+                json={
+                    "model": model,
+                    "system": system_prompt,
+                    "prompt": instruction,
+                    "stream": False,
+                    "options": {"temperature": 0.8},
+                },
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            out = resp.json()
+            text = (out.get("response") or "").strip().strip('"').strip("'")
+            self._send_json(200, {"text": text, "model": model})
+        except httpx.HTTPError as e:
+            self._send_error(502, f"LLM call failed: {e}")
+        except Exception as e:
+            self._send_error(500, f"Draft failed: {e}")
+
+    def _post_tts_save_to_category(self):
+        """Move a generated TTS file from OUTPUT_DIR into
+        configs/sounds/<category>/ and register it in
+        sound_categories.yaml. Operator uses this from the TTS
+        Generator page after previewing the audio."""
+        import re as _re
+        import shutil as _shutil
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8") if length else "{}"
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError) as e:
+            self._send_error(400, f"Invalid JSON: {e}")
+            return
+        source_filename = (data.get("source_filename") or "").strip()
+        category = (data.get("category") or "").strip()
+        save_as = (data.get("save_as") or "").strip() or source_filename
+        new_category_description = (data.get("new_category_description") or "").strip()
+        create_new = bool(data.get("create_new"))
+
+        if not source_filename or not category:
+            self._send_error(400, "source_filename and category are both required")
+            return
+
+        # Category name guard — lowercase alphanumeric + underscores.
+        if not _re.fullmatch(r"[a-z][a-z0-9_]*", category):
+            self._send_error(400, "category must be lowercase alphanumeric with underscores")
+            return
+
+        # Resolve source file safely under OUTPUT_DIR.
+        try:
+            source_path = (OUTPUT_DIR / source_filename).resolve()
+            source_path.relative_to(OUTPUT_DIR.resolve())
+        except (ValueError, OSError):
+            self._send_error(403, "Source path escapes OUTPUT_DIR")
+            return
+        if not source_path.is_file():
+            self._send_error(404, f"Source not found: {source_filename}")
+            return
+
+        existing = {c.name for c in _cfg.sound_categories.categories}
+        if category not in existing and not create_new:
+            self._send_error(
+                404,
+                f"Unknown category {category!r}. Pass create_new=true to add it.",
+            )
+            return
+
+        # Write into configs/sounds/<category>/. Bind-mounted from host,
+        # so the file persists across container recreates.
+        sounds_dir = _cfg.configs_dir / "sounds" / category
+        sounds_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = sounds_dir / save_as
+        try:
+            _shutil.copy2(source_path, dest_path)
+        except Exception as e:
+            self._send_error(500, f"Copy failed: {e}")
+            return
+
+        # Upsert into sound_categories.yaml.
+        current = _cfg.to_dict()["sound_categories"]
+        now_iso = datetime.now(timezone.utc).date().isoformat()
+        cat_entry = next(
+            (c for c in current.get("categories", []) if c["name"] == category),
+            None,
+        )
+        if cat_entry is None:
+            cat_entry = {
+                "name": category,
+                "description": new_category_description or f"Custom: {category}",
+                "action_kind": "audio_random",
+                "llm_preset": "",
+                "selected_file": "",
+                "ha_exposed": True,
+                "speaker": None,
+                "files": {},
+            }
+            current.setdefault("categories", []).append(cat_entry)
+        cat_entry.setdefault("files", {})[save_as] = {
+            "enabled": True,
+            "added": now_iso,
+            "note": "",
+        }
+        try:
+            _cfg.update_section("sound_categories", current)
+        except Exception as e:
+            self._send_error(500, f"Failed to update sound_categories: {e}")
+            return
+
+        self._send_json(200, {
+            "ok": True,
+            "category": category,
+            "filename": save_as,
+            "path": f"configs/sounds/{category}/{save_as}",
+            "created_category": cat_entry is not None and category not in existing,
+        })
+
+    # ── TTS Generate (existing) ───────────────────────────────────────
 
     def _generate(self):
         try:

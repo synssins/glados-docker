@@ -3910,6 +3910,8 @@ async function ttsGenerate() {
     playerLabel.textContent = data.filename;
     playerCard.classList.add('visible');
     audioPlayer.play().catch(() => {});
+    // Phase 5.9.2: expose the Save-to-category row once we have audio.
+    _ttsShowSaveRow(data.filename);
     const attLabel = attitudeSel.options[attitudeSel.selectedIndex].textContent;
     ttsStatus.innerHTML = '<span style="color:var(--green)">Done! (' + escHtml(attLabel) + ')</span>';
     setTimeout(() => { ttsStatus.innerHTML = ''; }, 3000);
@@ -3918,6 +3920,217 @@ async function ttsGenerate() {
   } finally {
     genBtn.disabled = false;
     refreshFiles();
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════
+// Phase 5.9.2 (2026-04-22) — TTS Generator: Script / Improv modes +
+// Save-to-category flow.
+// ═════════════════════════════════════════════════════════════════
+let _ttsCurrentFilename = null;  // tracks the most recently generated file
+
+function _ttsSwitchMode(mode) {
+  const scriptCard = document.getElementById('tts-script-card');
+  const improvCard = document.getElementById('tts-improv-card');
+  if (mode === 'improv') {
+    if (scriptCard) scriptCard.style.display = 'none';
+    if (improvCard) improvCard.style.display = '';
+  } else {
+    if (scriptCard) scriptCard.style.display = '';
+    if (improvCard) improvCard.style.display = 'none';
+  }
+  // Visual state on the radio cards
+  for (const el of document.querySelectorAll('.tts-mode-option')) {
+    el.classList.toggle('active', el.getAttribute('data-mode') === mode);
+  }
+  // Mirror voice/format/attitude options from Script into Improv on first switch
+  _ttsSyncImprovSelects();
+}
+
+function _ttsSyncImprovSelects() {
+  const copy = (fromId, toId) => {
+    const a = document.getElementById(fromId);
+    const b = document.getElementById(toId);
+    if (!a || !b || b.options.length > 2) return;  // already populated
+    b.innerHTML = '';
+    for (const opt of a.options) b.appendChild(opt.cloneNode(true));
+    b.value = a.value;
+  };
+  copy('voiceSelect', 'improvVoiceSelect');
+  copy('formatSelect', 'improvFormatSelect');
+  copy('attitudeSelect', 'improvAttitudeSelect');
+}
+
+async function _ttsImprovDraft() {
+  const instructionEl = document.getElementById('improvInstruction');
+  const statusEl = document.getElementById('improvStatus');
+  const draftSection = document.getElementById('improvDraftSection');
+  const draftedTextEl = document.getElementById('improvDraftedText');
+  const btn = document.getElementById('improvDraftBtn');
+  const instruction = instructionEl ? instructionEl.value.trim() : '';
+  if (!instruction) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Brief her first.</span>';
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Drafting in her voice...';
+  try {
+    const r = await fetch('/api/tts/draft', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({instruction}),
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      throw new Error('HTTP ' + r.status + ': ' + txt.slice(0, 200));
+    }
+    const data = await r.json();
+    const text = (data.text || '').trim();
+    if (draftedTextEl) draftedTextEl.value = text;
+    if (draftSection) draftSection.style.display = '';
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">She wrote a line — approve, edit, or redraft.</span>';
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Draft failed: ' + escHtml(String(e)) + '</span>';
+    console.error('tts draft failed:', e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function _ttsImprovGenerate() {
+  const textEl = document.getElementById('improvDraftedText');
+  const voiceSel = document.getElementById('improvVoiceSelect');
+  const formatSel = document.getElementById('improvFormatSelect');
+  const attitudeSel = document.getElementById('improvAttitudeSelect');
+  const statusEl = document.getElementById('improvGenStatus');
+  const btn = document.getElementById('improvGenerateBtn');
+  const text = textEl ? textEl.value.trim() : '';
+  if (!text) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Nothing to read.</span>';
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Generating...';
+  try {
+    // Reuse the same attitude→tts_params logic as Script mode.
+    let ttsParams = {};
+    const val = attitudeSel ? attitudeSel.value : 'default';
+    if (val !== 'default') {
+      if (val === 'random' && _attitudes.length) {
+        const pick = _attitudes[Math.floor(Math.random() * _attitudes.length)];
+        ttsParams = pick.tts || {};
+      } else {
+        const found = _attitudes.find(a => a.tag === val);
+        if (found) ttsParams = found.tts || {};
+      }
+    }
+    const payload = {
+      text,
+      voice: voiceSel ? voiceSel.value : 'glados',
+      format: formatSel ? formatSel.value : 'wav',
+      ...ttsParams,
+    };
+    const r = await fetch('/api/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Generation failed');
+    audioPlayer.src = data.url;
+    playerLabel.textContent = data.filename;
+    playerCard.classList.add('visible');
+    audioPlayer.play().catch(() => {});
+    _ttsShowSaveRow(data.filename);
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">Generated. Preview and save below.</span>';
+    setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 4000);
+    refreshFiles();
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message || e)) + '</span>';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function _ttsShowSaveRow(filename) {
+  _ttsCurrentFilename = filename;
+  const row = document.getElementById('ttsSaveRow');
+  if (row) row.style.display = '';
+  // Populate category dropdown from sound_categories
+  const sel = document.getElementById('ttsSaveCategory');
+  if (!sel) return;
+  try {
+    const r = await fetch('/api/config/sound_categories');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const cfg = await r.json();
+    const cats = (cfg.categories || []).slice().sort(
+      (a, b) => a.name.localeCompare(b.name)
+    );
+    const prev = sel.value;
+    sel.innerHTML = '';
+    sel.appendChild(new Option('-- pick category --', ''));
+    for (const c of cats) {
+      sel.appendChild(new Option(c.name + ' (' + (c.description || '').slice(0, 40) + ')', c.name));
+    }
+    sel.appendChild(new Option('-- new category --', '__new__'));
+    if (prev && (cats.some(c => c.name === prev) || prev === '__new__')) sel.value = prev;
+  } catch (e) {
+    console.error('failed to load sound categories for save dropdown:', e);
+  }
+}
+
+async function _ttsSaveToCategory() {
+  const catSel = document.getElementById('ttsSaveCategory');
+  const fnEl = document.getElementById('ttsSaveFilename');
+  const statusEl = document.getElementById('ttsSaveStatus');
+  const btn = document.getElementById('ttsSaveBtn');
+  if (!_ttsCurrentFilename) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">No audio to save.</span>';
+    return;
+  }
+  let category = catSel ? catSel.value : '';
+  let createNew = false;
+  let newDesc = '';
+  if (category === '__new__') {
+    category = prompt('New category name (lowercase letters, digits, underscores):');
+    if (!category) return;
+    category = category.trim().toLowerCase();
+    if (!/^[a-z][a-z0-9_]*$/.test(category)) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Invalid name; must start with a letter, only lowercase alphanumeric + underscores.</span>';
+      return;
+    }
+    newDesc = prompt('Short description of this category:') || '';
+    createNew = true;
+  }
+  if (!category) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Pick a category.</span>';
+    return;
+  }
+  const save_as = (fnEl ? fnEl.value.trim() : '') || _ttsCurrentFilename;
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Saving...';
+  try {
+    const r = await fetch('/api/tts/save-to-category', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        source_filename: _ttsCurrentFilename,
+        category,
+        save_as,
+        create_new: createNew,
+        new_category_description: newDesc,
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Save failed');
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">Saved to ' + escHtml(data.path) + '</span>';
+    // Refresh the dropdown so the new category shows up next time
+    _ttsShowSaveRow(_ttsCurrentFilename);
+    setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 6000);
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message || e)) + '</span>';
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
