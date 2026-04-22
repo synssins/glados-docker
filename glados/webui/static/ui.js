@@ -396,12 +396,14 @@ function _cfgRenderIntegrations() {
   const servicesData = _cfgData.services || {};
   const meta = SECTION_META['integrations'] || {};
 
+  // Phase 6.3 (2026-04-22): Disambiguation + Candidate retrieval
+  // moved to Personality > Behavior dials (advanced). They're
+  // tier-2 tuning knobs, not 'external systems' — Integrations
+  // now only holds things GLaDOS talks to.
   const TABS = [
-    { id: 'ha',      label: 'Home Assistant' },
-    { id: 'llm',     label: 'LLM' },
-    { id: 'mqtt',    label: 'MQTT' },
-    { id: 'disamb',  label: 'Disambiguation' },
-    { id: 'candret', label: 'Candidate retrieval' },
+    { id: 'ha',   label: 'Home Assistant' },
+    { id: 'llm',  label: 'LLM' },
+    { id: 'mqtt', label: 'MQTT' },
   ];
   const activeTabId = _loadPageTab('integrations', 'ha');
 
@@ -462,34 +464,10 @@ function _cfgRenderIntegrations() {
   html +=   '</div>';
   html += '</div>';
 
-  // ── Disambiguation panel ───────────────────────────────────
-  html += '<div class="page-tab-panel' + (activeTabId === 'disamb' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="disamb">';
-  html +=   '<div class="card" id="cfg-disambiguation-card">';
-  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-        +      'Controls how Tier&nbsp;2 picks entities when the utterance is ambiguous. '
-        +      'Rules apply against Home&nbsp;Assistant&rsquo;s live entity cache.'
-        +    '</div>';
-  html +=     '<div id="cfg-disamb-body">Loading rules&hellip;</div>';
-  html +=   '</div>';
-  html += '</div>';
-
-  // ── Candidate retrieval panel ──────────────────────────────
-  html += '<div class="page-tab-panel' + (activeTabId === 'candret' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="candret">';
-  html +=   '<div class="card" id="cfg-candretrieval-card">';
-  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-        +      'Phase&nbsp;8.3 semantic retriever with a device-diversity filter on top-K. '
-        +      'Use the test input to preview which entities would be handed to the planner.'
-        +    '</div>';
-  html +=     '<div id="cfg-candretrieval-body">Loading retriever status&hellip;</div>';
-  html +=   '</div>';
-  html += '</div>';
-
   html += '</div>';  // end page-tab-panels
 
   document.getElementById('cfg-form-area').innerHTML = html;
 
-  setTimeout(_cfgLoadDisambiguation, 0);
-  setTimeout(_cfgLoadCandRetrieval, 0);
   setTimeout(_cfgLoadMqtt, 0);
   setTimeout(() => cfgPingServices(servicesData), 100);
 }
@@ -542,11 +520,9 @@ function _cfgSaveCurrentIntegrationsTab() {
   const active = document.querySelector('[data-page-tab-group="integrations"].active');
   const id = active ? active.getAttribute('data-tab') : 'ha';
   switch (id) {
-    case 'ha':      return cfgSaveSection('global');
-    case 'llm':     return _cfgSaveIntegrationsLLM();
-    case 'mqtt':    return _cfgSaveMqtt();
-    case 'disamb':  return (typeof _disambSave === 'function') ? _disambSave() : null;
-    case 'candret': return;
+    case 'ha':   return cfgSaveSection('global');
+    case 'llm':  return _cfgSaveIntegrationsLLM();
+    case 'mqtt': return _cfgSaveMqtt();
     default: return;
   }
 }
@@ -2454,6 +2430,43 @@ function cfgRenderPersonality(data) {
     +   '<div id="cfg-cmdrec-body">Loading command recognition rules&hellip;</div>'
     + '</div>';
   setTimeout(_cfgLoadCommandRecognition, 0);
+
+  // Phase 6.3 (2026-04-22): Disambiguation rules + Candidate
+  // retrieval moved here from Integrations. Both carry
+  // data-advanced so they hide by default — they're tier-2
+  // tuning surfaces that non-technical operators should rarely
+  // need. Short plain-language intros precede the technical
+  // panels so someone who flips Advanced on has a fighting
+  // chance of understanding what they're looking at.
+  html += ''
+    + '<div class="card" id="cfg-disambiguation-card" data-advanced="true">'
+    +   '<div class="cfg-subsection-title">Disambiguation rules <span class="cfg-placeholder-tag">advanced</span></div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     '<strong>In plain English:</strong> your home has dozens of devices with similar names '
+    +     '("bedroom light," "office light," "guest bedroom light"). When you give a command '
+    +     'like <em>"turn on the lights,"</em> GLaDOS has to pick which ones you meant. These '
+    +     'rules tune how she chooses &mdash; what to treat as synonyms, which words to ignore, '
+    +     'which tokens to expand. <strong>Most operators should leave this alone.</strong> '
+    +     'Touch it only if GLaDOS is consistently picking the wrong devices.'
+    +   '</div>'
+    +   '<div id="cfg-disamb-body">Loading rules&hellip;</div>'
+    + '</div>';
+  setTimeout(_cfgLoadDisambiguation, 0);
+
+  html += ''
+    + '<div class="card" id="cfg-candretrieval-card" data-advanced="true">'
+    +   '<div class="cfg-subsection-title">Candidate retrieval <span class="cfg-placeholder-tag">advanced</span></div>'
+    +   '<div class="cfg-field-desc" style="margin-bottom:10px;">'
+    +     '<strong>In plain English:</strong> Home Assistant has thousands of devices; GLaDOS '
+    +     'can&rsquo;t hand them all to the language model for every command. Before you even speak, '
+    +     'a semantic search narrows them to a short list of likely candidates. This card tunes '
+    +     'that search and lets you test it with a sample phrase. <strong>Most operators should '
+    +     'leave this alone.</strong> Touch it only if GLaDOS is consistently failing to find the '
+    +     'device you meant.'
+    +   '</div>'
+    +   '<div id="cfg-candretrieval-body">Loading retriever status&hellip;</div>'
+    + '</div>';
+  setTimeout(_cfgLoadCandRetrieval, 0);
 
   // ═════════════════════════════════════════════════════════════════
   // Zone 3 — Content libraries: WHAT GLaDOS says.
