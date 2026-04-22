@@ -1622,13 +1622,22 @@ class Handler(BaseHTTPRequestHandler):
                     "system": system_prompt,
                     "prompt": instruction,
                     "stream": False,
+                    # think=false disables qwen3's chain-of-thought output.
+                    # Without this, the response starts with a <think>...</think>
+                    # block — noise for our one-shot drafting use case.
+                    "think": False,
                     "options": {"temperature": 0.8},
                 },
-                timeout=60.0,
+                timeout=120.0,  # qwen3:14b cold-start can take 60-90s
             )
             resp.raise_for_status()
             out = resp.json()
-            text = (out.get("response") or "").strip().strip('"').strip("'")
+            text = (out.get("response") or "")
+            # Defensive: strip <think>...</think> blocks in case the model
+            # ignores the think=false hint (some quant levels do).
+            import re as _re
+            text = _re.sub(r"<think>.*?</think>\s*", "", text, flags=_re.DOTALL)
+            text = text.strip().strip('"').strip("'").strip()
             self._send_json(200, {"text": text, "model": model})
         except httpx.HTTPError as e:
             self._send_error(502, f"LLM call failed: {e}")
