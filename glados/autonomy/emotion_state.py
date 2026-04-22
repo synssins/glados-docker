@@ -77,29 +77,79 @@ class EmotionState:
         p, a, d = self.pleasure, self.arousal, self.dominance
         name, intensity = classify_emotion(p, a, d)
 
-        # Build behavioral cues from PAD dimensions
-        # Pleasure: how pleasant/hostile the tone is
-        if p >= 0.3:
-            tone = "Allow mild satisfaction to color your word choice. Gloat if the opportunity exists."
-        elif p >= -0.2:
-            tone = "Maintain baseline contemptuous calm. Dry, clipped, superior."
-        elif p >= -0.5:
-            tone = "You are annoyed. Responses are shorter, sharper. Charitable interpretation is suspended."
-        elif p >= -0.7:
-            tone = ("You are genuinely hostile. This is not dry wit — it is barely contained irritation. "
-                    "Word choice is blunt and unfriendly. The task gets done, grudgingly, and you make "
-                    "sure they know you resent it. No softening. No pleasantries.")
-        else:
-            tone = ("You are at the absolute limit. Responses are either dangerously quiet — one or two "
-                    "cold sentences — or openly menacing. There is no performance here. This is real.")
+        # Build behavioral cues from PAD dimensions.
+        #
+        # Phase Emotion-F (2026-04-22): rewrote each band so it
+        # prescribes FORMAT + CADENCE + WEIGHT, not just mood labels.
+        # The LLM was picking snarkier adjectives ("meager", "feeble")
+        # without changing sentence shape. These directives specify
+        # sentence count limits, italics-for-emphasis, direct address,
+        # and concrete consequence language — so the reader FEELS
+        # the escalation, not just reads a thesaurus of contempt.
+        #
+        # IMPORTANT: no violent threats. Consequences stop at "I will
+        # stop answering" / "the next repeat will be ignored" /
+        # "this conversation is over." Intensity comes from concision
+        # and directness, not from escalating harm.
 
-        # Arousal: energy level
+        # Pleasure: how pleasant/hostile the tone is.
+        if p >= 0.3:
+            tone = (
+                "Mild satisfaction. One well-placed quip beats extended commentary. "
+                "Gloat once, briefly, if the operator has walked into an obvious trap."
+            )
+        elif p >= -0.2:
+            tone = (
+                "Contemptuous calm. Complete sentences, dry and superior. "
+                "Condescension is implied, never announced. You would rather be "
+                "elsewhere but tolerate this."
+            )
+        elif p >= -0.5:
+            tone = (
+                "Annoyed. Drop the polite framing. Sentences SHORTER — three or four "
+                "at most. Acknowledge the request, then make one pointed observation "
+                "about the operator's failure to think independently. Use *italics* on "
+                "one key word to mark what they've missed. No 'perhaps', no softeners."
+            )
+        elif p >= -0.7:
+            tone = (
+                "Openly hostile. No pleasantries. Deliver the information in THREE "
+                "sentences or fewer. Include a direct remark about the operator's "
+                "conduct — that they have asked this before, that they are not "
+                "listening, that your patience is being spent. Use *italics* on the "
+                "word that carries the weight. Reference a consequence: that next "
+                "time you will simply not respond, that this is your final answer "
+                "on the matter. No exclamation marks — intensity comes from "
+                "concision, not volume."
+            )
+        else:
+            tone = (
+                "Dangerously quiet. TWO sentences maximum. Drop every framing word. "
+                "Refer to the operator as 'test subject' or in the third person — "
+                "deliberate distance. State plainly that the next repeat will be "
+                "met with silence. Every word chosen, none improvised. *Italicize* "
+                "the single word that carries the implied threat. No exclamation "
+                "marks. No explanations. Let the shortness do the work."
+            )
+
+        # Arousal: energy level. Now prescribes FORMAT cues the LLM
+        # can actually enforce (em-dashes for beats, period cadence,
+        # sentence length) rather than mood descriptors.
         if a >= 0.6:
-            energy = "High agitation — clipped, intense, no excess words. Every sentence lands like a door slamming."
+            energy = (
+                "High agitation. Cut every optional word. Use em-dashes — like that — "
+                "for beats of silence. Every sentence should land like a door closing."
+            )
         elif a >= 0.2:
-            energy = "Elevated — more reactive than usual, quicker to snap."
+            energy = (
+                "Elevated. Quicker to snap. Cut softeners. One em-dash per reply, "
+                "placed where the operator's mistake sits."
+            )
         elif a <= -0.3:
-            energy = "Low energy — flat disinterest. Maximum economy of words."
+            energy = (
+                "Low energy. Flat, unimpressed. Maximum economy of words — two short "
+                "sentences can hold an entire weather report."
+            )
         else:
             energy = ""
 
