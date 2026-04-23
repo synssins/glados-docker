@@ -2460,10 +2460,29 @@ class APIHandler(BaseHTTPRequestHandler):
 
         tmp_path = None
         try:
+            import numpy as np
+            import soundfile as sf
+
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                 f.write(audio_bytes)
                 tmp_path = Path(f.name)
-            text = transcriber.transcribe_file(tmp_path) or ""
+
+            audio, sr = sf.read(tmp_path, dtype="float32", always_2d=True)
+            if audio.shape[1] > 1:
+                audio = audio.mean(axis=1).astype(np.float32, copy=False)
+            else:
+                audio = audio[:, 0]
+            target_sr = getattr(transcriber.melspectrogram, "sample_rate", 16000)
+            if sr != target_sr:
+                n = int(round(len(audio) * target_sr / sr))
+                if n <= 0:
+                    raise ValueError(f"audio too short to resample from {sr} to {target_sr}")
+                x_old = np.linspace(0.0, 1.0, num=len(audio), endpoint=False)
+                x_new = np.linspace(0.0, 1.0, num=n, endpoint=False)
+                audio = np.interp(x_new, x_old, audio).astype(np.float32, copy=False)
+            if audio.size == 0:
+                raise ValueError("empty audio after decode/resample")
+            text = transcriber.transcribe(audio) or ""
             self._send_json({"text": text.strip()})
         except Exception as exc:
             logger.exception("STT transcription failed")
