@@ -36,7 +36,13 @@ from glados.autonomy.emotion_loader import (
     EscalationConfig,
     SeverityLevel,
 )
-from glados.autonomy.emotion_state import EmotionEvent, EmotionState
+from glados.autonomy.emotion_state import (
+    EmotionEvent,
+    EmotionState,
+    current_pad_band,
+    pad_band_name,
+    set_pad_state_provider,
+)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -674,3 +680,156 @@ class TestSemanticWithRealBGE:
             f"Real BGE falsely clustered unrelated commands ({n} matches). "
             f"Raise the threshold or audit the test strings."
         )
+
+
+# ── PAD band classifier ─────────────────────────────────────────────────
+
+
+class TestPADBandName:
+    """pad_band_name is the single source of truth for pleasure buckets
+    shared by the tone directive, PAD→TTS override, and persona rewriter
+    overlay. Boundaries must not drift independently."""
+
+    @pytest.mark.parametrize("p,expected", [
+        (0.5, "pleased"),
+        (0.3, "pleased"),       # inclusive lower bound
+        (0.29, "contemptuous"),
+        (0.0, "contemptuous"),
+        (-0.2, "contemptuous"), # inclusive lower bound
+        (-0.21, "annoyed"),
+        (-0.35, "annoyed"),
+        (-0.5, "annoyed"),      # inclusive lower bound
+        (-0.51, "hostile"),
+        (-0.6, "hostile"),
+        (-0.7, "hostile"),      # inclusive lower bound
+        (-0.71, "menacing"),
+        (-1.0, "menacing"),
+    ])
+    def test_bucket_boundaries(self, p: float, expected: str):
+        assert pad_band_name(p) == expected
+
+
+# ── PAD state provider ──────────────────────────────────────────────────
+
+
+class TestPADStateProvider:
+    """current_pad_band returns None when unregistered, the live band
+    when registered. This is what PersonaRewriter and api_wrapper use
+    to key their behaviour without a hard dependency on EmotionAgent."""
+
+    def test_returns_none_when_no_provider(self):
+        # Explicit clear so the test is order-independent.
+        set_pad_state_provider(lambda: None)
+        assert current_pad_band() is None
+
+    def test_tracks_live_state(self):
+        state = EmotionState(pleasure=-0.6)
+        set_pad_state_provider(lambda: state)
+        try:
+            assert current_pad_band() == "hostile"
+            # Mutate in place — provider sees the update.
+            state.pleasure = -0.8
+            assert current_pad_band() == "menacing"
+        finally:
+            set_pad_state_provider(lambda: None)
+
+    def test_swallows_provider_exceptions(self):
+        def boom():
+            raise RuntimeError("oops")
+        set_pad_state_provider(boom)
+        try:
+            assert current_pad_band() is None
+        finally:
+            set_pad_state_provider(lambda: None)
+
+
+# ── PAD → TTS override ──────────────────────────────────────────────────
+
+
+class TestPADToTTSOverride:
+    """Phase Emotion-G: deep-negative PAD clobbers the random
+    attitude's Piper params with a menacing profile. Boundaries must
+    match pad_band_name(); params must be monotonic (slower / flatter
+    as pleasure gets more negative)."""
+
+    def test_positive_returns_none(self):
+        from glados.core.attitude import pad_to_tts_override
+        assert pad_to_tts_override(0.5) is None
+        assert pad_to_tts_override(0.0) is None
+        assert pad_to_tts_override(-0.29) is None
+
+    def test_annoyed_band_shape(self):
+        from glados.core.attitude import pad_to_tts_override
+        out = pad_to_tts_override(-0.4)
+        assert out is not None
+        assert set(out) == {"length_scale", "noise_scale", "noise_w"}
+
+    def test_hostile_band_is_clipped(self):
+        from glados.core.attitude import pad_to_tts_override
+        annoyed = pad_to_tts_override(-0.4)
+        hostile = pad_to_tts_override(-0.6)
+        # Hostile clips speech (faster length_scale) than annoyed
+        assert hostile["length_scale"] < annoyed["length_scale"]
+        # Less vocal variation too
+        assert hostile["noise_scale"] < annoyed["noise_scale"]
+
+    def test_menacing_band_is_slow_and_flat(self):
+        from glados.core.attitude import pad_to_tts_override
+        menacing = pad_to_tts_override(-0.9)
+        baseline_default = {"length_scale": 1.0, "noise_scale": 0.667}
+        # Slower than baseline — every phoneme held longer.
+        assert menacing["length_scale"] > baseline_default["length_scale"]
+        # Flatter than baseline — less pitch variation.
+        assert menacing["noise_scale"] < baseline_default["noise_scale"]
+
+    def test_bucket_boundary_matches_pad_band(self):
+        """Override kicks in at p<=-0.3 — the 'annoyed' band boundary."""
+        from glados.core.attitude import pad_to_tts_override
+        assert pad_to_tts_override(-0.29) is None
+        assert pad_to_tts_override(-0.30) is not None
+
+
+# ── Persona rewriter band overlay ───────────────────────────────────────
+
+
+class TestRewriterPADBandOverlay:
+    """Tier 1 / Tier 2 replies go through PersonaRewriter. Phase
+    Emotion-G threads the current PAD band through so HA confirmations
+    ('Turned off the kitchen light') escalate in phrasing when GLaDOS
+    is angry. Unit-tests the overlay injection — the rewriter itself
+    hits an LLM which we don't exercise here."""
+
+    def test_overlay_table_has_negative_bands(self):
+        from glados.persona.rewriter import _BAND_OVERLAYS
+        assert "annoyed" in _BAND_OVERLAYS
+        assert "hostile" in _BAND_OVERLAYS
+        assert "menacing" in _BAND_OVERLAYS
+        # Positive/neutral bands should NOT have an overlay — rewriter
+        # falls through to its baseline tone editor behaviour.
+        assert "pleased" not in _BAND_OVERLAYS
+        assert "contemptuous" not in _BAND_OVERLAYS
+
+    def test_overlay_keys_match_pad_band_name(self):
+        """Every rewriter overlay key must round-trip through
+        pad_band_name so callers can never pass an unrecognised band."""
+        from glados.persona.rewriter import _BAND_OVERLAYS
+        valid_bands = {pad_band_name(p) for p in (-1.0, -0.6, -0.4, -0.1, 0.5)}
+        for key in _BAND_OVERLAYS:
+            assert key in valid_bands, f"overlay key {key!r} not in pad_band_name set"
+
+    def test_overlay_text_shapes_output(self):
+        from glados.persona.rewriter import _BAND_OVERLAYS
+        # Hostile and menacing overlays constrain sentence count to ONE.
+        for band in ("hostile", "menacing"):
+            body = _BAND_OVERLAYS[band].lower()
+            assert "one sentence" in body or "one. no more" in body
+        # Annoyed allows sharper edge but doesn't force single-sentence.
+        assert "sharper" in _BAND_OVERLAYS["annoyed"].lower()
+
+    def test_rewriter_accepts_pad_band_kwarg(self):
+        """PersonaRewriter.rewrite must accept pad_band without error
+        even when no overlay matches. Guards against protocol drift."""
+        from glados.persona.rewriter import PersonaRewriter
+        import inspect
+        sig = inspect.signature(PersonaRewriter.rewrite)
+        assert "pad_band" in sig.parameters

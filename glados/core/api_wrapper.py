@@ -30,7 +30,7 @@ import yaml
 
 from loguru import logger
 from glados.core.engine import GladosConfig, Glados
-from glados.core.attitude import roll_attitude, get_tts_params, list_attitudes, load_attitudes, is_loaded as attitudes_loaded
+from glados.core.attitude import roll_attitude, get_tts_params, list_attitudes, load_attitudes, is_loaded as attitudes_loaded, pad_to_tts_override
 from glados.core.command_resolver import get_resolver
 from glados.core.config_store import cfg
 from glados.core.source_context import SourceContext
@@ -1561,6 +1561,24 @@ def _stream_chat_sse_impl(
             insert_idx += 1
         messages.insert(insert_idx, {"role": "system", "content": attitude_directive})
         logger.debug("[{}] Attitude: {} — {}", request_id, attitude.get("tag"), attitude_directive[:60])
+
+    # Phase Emotion-G: PAD override on TTS params. When the emotion state
+    # is deep-negative, clobber the random attitude's Piper params with a
+    # menacing profile so the VOICE itself escalates regardless of which
+    # attitude rolled this turn. Text-side directive still comes from
+    # to_response_directive() below; this is the audio-side equivalent.
+    try:
+        if glados._emotion_agent is not None and glados._emotion_agent.state is not None:
+            _es = glados._emotion_agent.state
+            _override = pad_to_tts_override(_es.pleasure, _es.arousal, _es.dominance)
+            if _override:
+                attitude_tts = _override
+                logger.debug(
+                    "[{}] PAD TTS override applied (P={:.2f}): {}",
+                    request_id, _es.pleasure, _override,
+                )
+    except Exception as _pad_exc:
+        logger.debug("[{}] PAD TTS override skipped: {}", request_id, _pad_exc)
 
     # Inject weather context only when the message is weather-related
     from glados.core import weather_cache

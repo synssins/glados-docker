@@ -172,7 +172,12 @@ class _DisambiguatorLike(Protocol):
 
 
 class _RewriterLike(Protocol):
-    def rewrite(self, plain_text: str, context_hint: str | None = ...) -> str: ...
+    def rewrite(
+        self,
+        plain_text: str,
+        context_hint: str | None = ...,
+        pad_band: str | None = ...,
+    ) -> str: ...
 
 
 class _EntityCacheLike(Protocol):
@@ -660,12 +665,23 @@ class CommandResolver:
         if not plain or self._rewriter is None:
             return plain
         try:
+            # Phase Emotion-G: pass the current PAD band so the rewriter
+            # can escalate Tier 1/Tier 2 confirmations alongside Tier 3
+            # chat. Import lazily to avoid a top-level autonomy
+            # dependency and to tolerate environments where the emotion
+            # agent isn't wired (unit tests, startup window).
+            pad_band: str | None = None
+            try:
+                from glados.autonomy.emotion_state import current_pad_band
+                pad_band = current_pad_band()
+            except Exception:
+                pad_band = None
             # PersonaRewriter.rewrite returns a RewriteResult dataclass,
             # not a string. Extracting `.text` here prevents the object
             # from leaking into downstream speech fields (where it
             # caused a JSON-serialization crash on Tier 1 replies —
             # seen live on "turn off the basement lights" 2026-04-21).
-            out = self._rewriter.rewrite(plain, context_hint=utterance_hint)
+            out = self._rewriter.rewrite(plain, context_hint=utterance_hint, pad_band=pad_band)
             text = getattr(out, "text", None) if out is not None else None
             if isinstance(text, str):
                 return text or plain

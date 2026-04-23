@@ -107,7 +107,12 @@ class _FakeRewriter:
         self._func = func or (lambda s, hint=None: f"[glados] {s}")
         self.calls: list[tuple[str, str | None]] = []
 
-    def rewrite(self, plain_text: str, context_hint: str | None = None) -> str:
+    def rewrite(
+        self,
+        plain_text: str,
+        context_hint: str | None = None,
+        pad_band: str | None = None,
+    ) -> str:
         self.calls.append((plain_text, context_hint))
         return self._func(plain_text, context_hint)
 
@@ -358,7 +363,7 @@ class TestTier1Path:
         from glados.persona.rewriter import RewriteResult
 
         class _RewriteResultRewriter:
-            def rewrite(self, plain_text, context_hint=None):
+            def rewrite(self, plain_text, context_hint=None, pad_band=None):
                 return RewriteResult(
                     success=True,
                     text="Basement lights extinguished. Compliance.",
