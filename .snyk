@@ -1,24 +1,172 @@
 # Snyk (https://snyk.io) policy file — suppressions and ignore rules.
 # Documented exceptions only. Each entry must state a reason and expiry.
+#
+# Policy: only ignore CVEs that are genuinely unreachable from any code
+# path this container exercises at runtime. When in doubt, leave the
+# finding surfaced. Expiry forces a re-audit ~180 days out so the
+# ignore list doesn't rot as the container's behaviour evolves.
 
 version: v1.25.0
 
 ignore:
-  # Transitive dep of ffmpeg, which the container installs for audio
-  # processing. The container does NOT process JPEG-XL images — it handles
-  # WAV/MP3/OGG audio via ffmpeg. libjxl is pulled in because ffmpeg links
-  # against the full Debian codec set, not because we call JPEG-XL code.
-  # CVE-2026-1837 is a resource-exhaustion bug in JPEG-XL image decoding
-  # paths that the container has no way to reach.
+
+  # ─────────────────────────────────────────────────────────────────
+  # ffmpeg CENC decryption path — CVE-2026-40962
+  # ─────────────────────────────────────────────────────────────────
+  # "FFmpeg: Integer overflow and out-of-bounds write via CENC
+  # subsample data." Affects 9 shipped packages (ffmpeg, libavcodec61,
+  # libavdevice61, libavfilter10, libavformat61, libavutil59,
+  # libpostproc58, libswresample5, libswscale8). Status in Debian 13:
+  # fix_deferred — no upstream patch available yet.
   #
-  # Fix plan: revisit when Debian trixie publishes a patched libjxl; swap
-  # to `ffmpeg-libjxl=no` alternative if Debian ships one; or move to a
-  # slimmer ffmpeg build that excludes the JPEG-XL codec.
+  # Container usage: the doorbell screener
+  # (glados/doorbell/screener.py:32-348) spawns ffmpeg to capture
+  # audio from an RTSPS stream into PCM/WAV. The vulnerable path is
+  # Common Encryption (CENC) subsample parsing for DRM-protected
+  # video — we never decode encrypted video, only record raw audio
+  # from an unencrypted RTSPS source.
+  'CVE-2026-40962':
+    - '*':
+        reason: >-
+          FFmpeg CENC decryption code path not reached — container
+          only uses ffmpeg for raw RTSPS audio capture into PCM.
+          No DRM-protected video decode. Debian 13 status:
+          fix_deferred upstream.
+        expires: '2026-10-21T00:00:00.000Z'
+
+  # ─────────────────────────────────────────────────────────────────
+  # mesa / OpenGL — CVE-2026-40393
+  # ─────────────────────────────────────────────────────────────────
+  # "Mesa: out-of-bounds memory access" — affects mesa-libgallium,
+  # libgl1-mesa-dri, libgbm1, libglx-mesa0. All pulled in as
+  # transitive deps of libsdl2-2.0-0 (a ffmpeg hard-dep). The
+  # container runs headless with no X11 / GPU / OpenGL. No Mesa
+  # function is ever called.
+  'CVE-2026-40393':
+    - '*':
+        reason: >-
+          Headless container with no X11 or GPU — Mesa pulled in as
+          transitive dep of libsdl2 (ffmpeg-chain), never invoked.
+          Debian status: affected, no fixed version.
+        expires: '2026-10-21T00:00:00.000Z'
+
+  # ─────────────────────────────────────────────────────────────────
+  # ncurses buffer overflow — CVE-2025-69720
+  # ─────────────────────────────────────────────────────────────────
+  # "ncurses: Buffer overflow vulnerability may lead to arbitrary
+  # code execution." Affects libncursesw6, libtinfo6, ncurses-base,
+  # ncurses-bin. The container is headless; the vulnerable code path
+  # is terminal-sequence parsing on TTY. Python stdlib may link
+  # libncurses but never parses attacker-controlled terminal input
+  # in this deployment.
+  'CVE-2025-69720':
+    - '*':
+        reason: >-
+          Headless container — ncurses terminal-sequence parser is
+          never fed attacker-controlled input. Debian status:
+          affected, no fixed version.
+        expires: '2026-10-21T00:00:00.000Z'
+
+  # ─────────────────────────────────────────────────────────────────
+  # libssh SFTP DoS — CVE-2026-3731
+  # ─────────────────────────────────────────────────────────────────
+  # "libssh: Denial of Service via out-of-bounds read in SFTP
+  # extension name." Pulled in as a transitive dep of libavformat61
+  # (ffmpeg can stream over SSH). Container never opens an outbound
+  # SSH/SFTP connection — the deploy script (scripts/deploy_ghcr.py)
+  # runs on the HOST, not inside.
+  'CVE-2026-3731':
+    - '*':
+        reason: >-
+          Container never initiates SSH/SFTP — libssh-4 pulled in by
+          libavformat61 (ffmpeg chain) but ffmpeg is only used for
+          RTSPS audio capture, not SSH streaming. Debian status:
+          affected, no fixed version.
+        expires: '2026-10-21T00:00:00.000Z'
+
+  # ─────────────────────────────────────────────────────────────────
+  # libcdio — CVE-2024-36600
+  # ─────────────────────────────────────────────────────────────────
+  # CD-ROM library. Pulled in via libcdio-cdda2t64 / libcdio-paranoia
+  # as ffmpeg deps for CD audio extraction. Container has no CD
+  # device and never invokes CD-related ffmpeg paths.
+  'CVE-2024-36600':
+    - '*':
+        reason: >-
+          No CD/DVD drive or ISO handling — libcdio pulled in by
+          ffmpeg's CD audio extraction support, unreachable.
+          Debian status: affected, no fixed version.
+        expires: '2026-10-21T00:00:00.000Z'
+
+  # ─────────────────────────────────────────────────────────────────
+  # systemd/udev IPC — CVE-2026-29111
+  # ─────────────────────────────────────────────────────────────────
+  # "systemd: Arbitrary code execution or DoS via spurious IPC."
+  # Affects libsystemd0 and libudev1. These libraries are hard deps
+  # of apt/coreutils/pam/dbus (base system) but the container is
+  # NOT running systemd as PID 1 — there's no systemd bus to attack.
+  'CVE-2026-29111':
+    - '*':
+        reason: >-
+          Container runs as a plain process, not under systemd —
+          libsystemd0/libudev1 linked by base utilities but no
+          systemd IPC endpoint exists. Debian status: affected,
+          no fixed version.
+        expires: '2026-10-21T00:00:00.000Z'
+
+  # ─────────────────────────────────────────────────────────────────
+  # libjxl JPEG-XL — CVE-2026-1837
+  # ─────────────────────────────────────────────────────────────────
+  # Transitive dep of libavcodec61 (ffmpeg). JPEG-XL image decoding
+  # is never exercised — the container only processes WAV/PCM audio
+  # from RTSPS streams.
+  #
+  # (Originally filed under SNYK-DEBIAN13-JPEGXL-15272630; also match
+  # the CVE form so scanners that surface it either way honour the
+  # ignore.)
+  'CVE-2026-1837':
+    - '*':
+        reason: >-
+          JPEG-XL decoding path never invoked — libjxl pulled in by
+          ffmpeg/libavcodec61, container only processes WAV/PCM
+          audio. Debian status: affected, no fixed version.
+        expires: '2026-10-21T00:00:00.000Z'
   'SNYK-DEBIAN13-JPEGXL-15272630':
     - '*':
         reason: >-
-          Transitive dep of ffmpeg; the container does not decode JPEG-XL
-          images — this CVE is on an unreachable code path. No fixed
-          version is available in Debian 13 (trixie) at the time of
-          writing.
-        expires: '2026-10-14T00:00:00.000Z'
+          Duplicate of CVE-2026-1837 (same finding in Snyk's private
+          advisory ID space). Kept for backward compatibility with
+          older scan reports.
+        expires: '2026-10-21T00:00:00.000Z'
+
+  # ─────────────────────────────────────────────────────────────────
+  # lcms2 color profile — CVE-2026-41254
+  # ─────────────────────────────────────────────────────────────────
+  # Color management library. Pulled in by libjxl0.11 and libplacebo.
+  # No color profile handling is ever invoked in this container.
+  'CVE-2026-41254':
+    - '*':
+        reason: >-
+          No image/color profile handling — liblcms2 pulled in by
+          libjxl and libplacebo in the ffmpeg codec chain, never
+          invoked. Debian status: affected, no fixed version.
+        expires: '2026-10-21T00:00:00.000Z'
+
+  # ─────────────────────────────────────────────────────────────────
+  # ── NOT ignored (surfaced in Snyk for audit) ───────────────────
+  # ─────────────────────────────────────────────────────────────────
+  #
+  # The following CVEs MAY be reachable from code this container
+  # exercises. They are deliberately left unsuppressed so Snyk keeps
+  # reporting them on every scan until either Debian ships a fix or
+  # the operator confirms unreachability with a line-level audit:
+  #
+  #   CVE-2026-25210    libexpat1            (XML parsing)
+  #   CVE-2026-34872    libmbedcrypto16      (mbedTLS FFDH)
+  #   CVE-2026-34873    libmbedcrypto16      (mbedTLS TLS 1.3 resume)
+  #   CVE-2026-34875    libmbedcrypto16      (mbedTLS buffer overflow)
+  #   CVE-2026-27135    libnghttp2-14        (HTTP/2 post-termination DoS)
+  #
+  # To add an ignore for any of these, document WHY the vulnerable
+  # code path is unreachable AND set an expiry no more than 180 days
+  # out.
