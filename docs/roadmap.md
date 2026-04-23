@@ -646,6 +646,74 @@ models and populate a dropdown.
 
 ---
 
+## Authentication follow-ups (TODO — 2026-04-23)
+
+Two items added after the 2026-04-23 incident where the WebUI
+password was wiped by a partial-save bug and the operator had to
+bootstrap through a shell command. The partial-save bug itself is
+fixed in this session (`configs/global.yaml` merge-on-write); these
+items address the larger UX gap.
+
+### Supported auth system (medium)
+
+**Context:** current auth is a single bcrypt password hash stored
+in `configs/global.yaml` with a `session_secret` cookie. There is
+no per-user identity, no MFA, no OIDC, no rate limiting on sign-in,
+no account recovery. It's fine for LAN-trust deployment behind a
+reverse proxy but does not scale to multi-operator or any
+internet-facing use.
+
+**Suggested scope:**
+
+- Swap the bespoke bcrypt path for a battle-tested auth library
+  (e.g. `authlib` / OIDC relying-party, or integrate with an
+  existing SSO — Authelia, Keycloak, Cloudflare Access).
+- Retain local-bcrypt as a fallback for offline / bootstrap use.
+- Per-operator identity in the audit log (currently every WebUI
+  action is "the operator" — can't tell two operators apart).
+- Rate-limit sign-in attempts (currently unlimited).
+- Account recovery flow that doesn't require shell access.
+
+**Not scoped yet.** Larger architectural change — touches the
+auth middleware, session cookie, audit log schema, and login
+page. Blocker for exposing the WebUI beyond LAN.
+
+### Startup wizard UI (medium)
+
+**Context:** first-run experience today is "open the WebUI, hit
+sign-in page, realize there's no password set, SSH into container,
+`python -m glados.tools.set_password`, restart container, come
+back, sign in." Operator reasonably expects to set a password
+through the UI itself.
+
+**Suggested scope:**
+
+- Detect first-run state: `cfg.auth.password_hash == ""` AND no
+  `configs/config.yaml` (or an explicit bootstrap marker file)
+  means "fresh install."
+- On first request to any page, redirect to a one-time
+  `/setup/welcome` route that:
+    1. Shows a welcome screen explaining what GLaDOS is, what
+       services it expects upstream (Ollama + speaches + HA +
+       ChromaDB), and whether they're reachable (reuse the
+       Discover-endpoint health checks).
+    2. Prompts for an initial password (write via the existing
+       `glados.tools.set_password` logic).
+    3. Prompts for HA URL + token (validates by hitting HA's
+       `/api/` with the token before accepting).
+    4. Shows "you're done" screen with links into Configuration.
+- Wizard is one-shot: once the password hash is written, the
+  setup route 302-redirects to `/login` and can't be replayed.
+- Recovery path: if the operator needs to reset without UI
+  access, a `GLADOS_BOOTSTRAP=1` env var re-enables the wizard
+  for one container start.
+
+**Not scoped yet.** Decent-sized feature — new route handler, new
+page templates, integration with the auth middleware to bypass
+sign-in during setup.
+
+---
+
 ## Emotion system follow-ups (TODO — 2026-04-23)
 
 Three items surfaced during Phase Emotion A–I (see CHANGES.md

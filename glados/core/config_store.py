@@ -1112,8 +1112,35 @@ class GladosConfigStore:
             raise KeyError(f"Unknown config section: {section!r}")
 
         model_cls, filename = model_map[section]
-        validated = model_cls.model_validate(data)
         path = self._configs_dir / filename
+
+        # Merge incoming data on top of the on-disk YAML. Without this,
+        # a partial save from the WebUI (e.g. Integrations page only
+        # posts the `home_assistant` block of global.yaml) would
+        # reconstruct the whole model from defaults and silently wipe
+        # every field the form didn't include — notably
+        # `auth.password_hash` and `auth.session_secret`, locking the
+        # operator out of the WebUI. Live incident 2026-04-23: HA
+        # token save wiped the password.
+        #
+        # Policy: shallow merge at the top level. Nested objects are
+        # replaced wholesale (that matches the WebUI's one-pane-per-
+        # nested-block layout). If the operator explicitly wants to
+        # clear a top-level field, they pass it as None/empty.
+        existing: dict = {}
+        if path.exists():
+            try:
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                if isinstance(loaded, dict):
+                    existing = loaded
+            except yaml.YAMLError as exc:
+                logger.warning(
+                    "update_section: {} YAML is malformed ({}); replacing wholesale",
+                    filename, exc,
+                )
+        merged = {**existing, **(data or {})}
+
+        validated = model_cls.model_validate(merged)
         yaml_str = yaml.dump(
             validated.model_dump(), default_flow_style=False, sort_keys=False,
         )

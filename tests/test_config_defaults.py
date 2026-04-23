@@ -314,3 +314,61 @@ def test_config_example_yaml_has_no_service_url_defaults() -> None:
         "Post-Phase-6 the example should rely on pydantic same-stack "
         "defaults; operators customize URLs via env or the WebUI."
     )
+
+
+# ── Partial-save regression (no-wipe contract) ─────────────────────────
+
+
+def test_partial_global_save_preserves_auth_block(tmp_path) -> None:
+    """Live incident 2026-04-23: saving the HA tab via WebUI wiped the
+    auth.password_hash field because update_section rebuilt the whole
+    GlobalConfig from defaults. This test locks the merge-on-write
+    behaviour — partial posts must preserve untouched fields."""
+    import yaml as _yaml
+
+    from glados.core.config_store import GladosConfigStore
+
+    # Seed a populated global.yaml on disk
+    configs_dir = tmp_path / "configs"
+    configs_dir.mkdir()
+    (configs_dir / "global.yaml").write_text(_yaml.dump({
+        "home_assistant": {
+            "url": "http://original:8123",
+            "ws_url": "ws://original:8123/api/websocket",
+            "token": "original-token",
+        },
+        "auth": {
+            "enabled": True,
+            "password_hash": "$2b$12$fake.hash.preserved",
+            "session_secret": "preserved-secret-xyz",
+        },
+        "audit": {"enabled": True},
+    }), encoding="utf-8")
+
+    store = GladosConfigStore()
+    store.load(configs_dir=configs_dir)
+
+    # WebUI posts only the home_assistant block (Integrations → HA tab)
+    store.update_section("global", {
+        "home_assistant": {
+            "url": "http://updated:8123",
+            "ws_url": "ws://updated:8123/api/websocket",
+            "token": "rotated-token",
+        },
+    })
+
+    # New HA values landed
+    assert store.global_.home_assistant.token == "rotated-token"
+    assert store.global_.home_assistant.url == "http://updated:8123"
+
+    # Auth block MUST survive the partial save untouched.
+    assert store.global_.auth.password_hash == "$2b$12$fake.hash.preserved"
+    assert store.global_.auth.session_secret == "preserved-secret-xyz"
+    assert store.global_.auth.enabled is True
+
+    # And the YAML on disk reflects that — next load will still have it
+    reloaded = _yaml.safe_load(
+        (configs_dir / "global.yaml").read_text(encoding="utf-8")
+    )
+    assert reloaded["auth"]["password_hash"] == "$2b$12$fake.hash.preserved"
+    assert reloaded["auth"]["session_secret"] == "preserved-secret-xyz"
