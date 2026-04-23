@@ -16,6 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify LFS objects are real
+        run: |
+          git lfs pull
+          file models/TTS/glados.onnx
+          du -h models/TTS/glados.onnx models/TTS/phomenizer_en.onnx
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
