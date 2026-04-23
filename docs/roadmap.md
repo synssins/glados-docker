@@ -74,23 +74,32 @@ Possible fixes:
 - Or post-filter switches by friendly_name keyword (skip if name
   contains 'sonos', 'media', 'crossfade', etc.)
 
-### HA misclassifies state queries as `action_done` (medium)
+### HA misclassifies state queries as `action_done` (medium — partial)
 
 "Is the kitchen cabinet light on" comes back from HA's conversation
 API as `response_type=action_done` with speech "Turned on the
-lights" — HA's intent matcher treats it as an action. Tier 1 honors
-HA's verdict; the rewriter restyles the wrong text. Fix would need
-local query-vs-action detection (regex for `is the …`, `what is …`,
-`how much …`, etc.) before the HA call so we can either short-circuit
-to a state lookup or warn the LLM.
+lights" — HA's intent matcher treats it as an action.
 
-### Some entities report success without state change (medium)
+Partial mitigation shipped:
+- `47dd377` rejects the HA empty-nop pattern (`targets=success=failed=[]`).
+- `79ac748` rejects the HA weather-fallback-on-chitchat misclassification.
 
-Discovered during the lights test matrix: 139/198 lights are in
-`unavailable` state but HA's conversation API still accepts service
-calls against them and returns `action_done`. Tier 1 reports success;
-no actual change happens. Fix: post-execute state verification on a
-short delay; if state didn't transition as expected, retry or report.
+Still open: no local query-vs-action pre-filter (regex for `is the …`,
+`what is …`, `how much …`) before the HA call. When HA replies with
+a non-empty but wrong action_done, Tier 1 still honors the verdict.
+See `docs/state-query-prompt-research.md` for the prompt-side research.
+
+### Post-execute state verification ✅ Shipped in Phase 8.4
+
+`da00af7` added a verification pass after every Tier 1/Tier 2
+service call: HAClient compares the promised state delta against
+the mirror cache on a short delay and reports `state_verified=False`
++ failed entity IDs when the transition didn't land. `a630dea`
+plumbed `state_verified` / `state_verification` through
+`DisambiguationResult` → `ResolverResult` → `CommandResolver._audit`
+so the audit JSONL carries the verification outcome for every
+executed command. Covers the "139/198 lights unavailable but HA
+says action_done" failure mode.
 
 ### Conversation history not propagated ✅ Fixed in Change 9 (Phase 4)
 
@@ -151,15 +160,14 @@ the primary need; a cron-based daily summary is a polish follow-up
 that would put end-of-day rollups into ChromaDB independent of how
 chatty the day was.
 
-### Operator-side model swap not yet executed
+### Operator-side model swap ✅ Executed
 
-Phase A code supports running with a neutral base model
-(`qwen2.5:14b-instruct-q4_K_M` instead of `glados:latest`), but the
-operator's `/app/configs/glados_config.yaml` still references
-`"glados:latest"`. Swap is a one-line edit + container restart +
-`ollama rm glados:latest`. Phase A's tests guarantee the
-ModelOptionsConfig + cfg.personality.model_options pass-through path
-works correctly with whichever model is loaded.
+Operator's production container now runs `qwen3:14b` for chat,
+Tier 2 disambiguator, and persona rewriter on a single Ollama
+endpoint. The custom `glados:latest` Modelfile path is deprecated.
+Phase A's tests continue to cover the ModelOptionsConfig pass-
+through path so any future model swap stays a one-line config
+change.
 
 ### Per-principal conversation_id (parked)
 
@@ -244,9 +252,10 @@ autonomy used neutral qwen.
 - Code already implemented the fallback chain — no logic change.
 - Prod: removed `OLLAMA_AUTONOMY_URL` / `OLLAMA_VISION_URL` from
   the compose env list. Autonomy unified immediately via
-  services.yaml. Vision required pulling `llama3.2-vision:latest`
-  onto B60 first; then `services.yaml` `ollama_vision.url` flipped
-  from 11435 → 11434. T4 #0 is now free for other use.
+  services.yaml. Vision configured to the same unified endpoint
+  once the vision model was available there. All three lanes
+  share one Ollama URL by default; operators can still split via
+  per-lane env overrides.
 
 ### Chat self-healing for polluted conversation history ✅ Shipped in `69568c2` → `ccc0c1e`
 
@@ -327,199 +336,73 @@ on faster hardware can override via `DISAMBIGUATOR_TIMEOUT_S` env.
 
 ---
 
-## Stage 3 Phase 7+ targets (next session)
+## Stage 3 Phase 7+ targets
 
-Listed in the order they should be tackled. The two **P0** bugs at
-the top are new as of 2026-04-19; they surfaced while verifying
-unified Ollama on T4 #1 and are the right starting point for the
-next session. Everything below them is still open but lower
-priority than device-control correctness.
+The two **P0** device-control bugs that headlined this section
+(Tier 2 missing `service_data`; follow-up turns bypassing Tier 1/2)
+have shipped. See below. Everything remaining is ordered by
+priority — device-control correctness at the top, polish at the
+bottom.
 
-### P0: Tier 2 never sends `service_data` — brightness / colour / temperature requests silently no-op (high)
+### P0: Tier 2 `service_data` ✅ Shipped in `2ebb38e` (2026-04-18)
 
-Operator report 2026-04-19:
+Disambiguator JSON schema now exposes `service_data` with prompt
+guidance for absolute (`brightness_pct=40`, `color_temp_kelvin=2700`,
+`color_name=blue`, `percentage=30`, `volume_level=0.4`, `temperature=68`)
+and relative (current±25 on brightness, warmer/cooler stepping on
+color temperature) phrasings. Candidate prompt lines include an
+`attrs=` segment with `brightness_pct` / `color_temp_kelvin` /
+`percentage` derived from live `EntityState.attributes` when the
+mirror cache is fresh, so relative adjustments can read current
+state. `service_data` threads through to `HAClient.call_service` and
+is surfaced on both the Tier 2 audit row and the `execute_no_ack`
+branch. Pre-existing `AuditEvent.rationale` kwarg bug surfaced and
+fixed in the same commit. Tests: +23 (9 service_data shape + prompt
+attrs + no-ack, 2 vocative strip paths, 12 carry-over cases).
 
-    User: "The office is too dark. Can you adjust the desk lamp up a little bit?"
-    GLaDOS: "Adjusting the office desk monitor lamp to a brighter setting, as requested."
+### P0: Follow-up turn bypass ✅ Shipped in `2ebb38e` + `3d1cbc9` (2026-04-18 / 2026-04-21)
 
-The light didn't change. Audit trail shows Tier 2 executed with:
+`2ebb38e` added `_should_carry_over_home_command()` — reads the most-
+recent assistant row's tier from the conversation store and inherits
+home-command intent for one turn when it's 1 or 2 within
+`FOLLOWUP_HOME_COMMAND_WINDOW_S` (default 120 s). Intervening Tier 3
+chitchat cancels the lease. Wired at both precheck sites (streaming
++ non-streaming).
 
-    service: light.turn_on
-    entity_ids: ["light.task_lamp_one"]
-    service_data: (never populated)
+`3d1cbc9` (Phase 8.8) added a positive anaphora detector in
+`glados/intent/anaphora.py:is_anaphoric_followup` — four orthogonal
+rules (pronoun deictics, repetition markers like again/more/same,
+bare intensity adverbs, short additive continuations) with a
+WH-question guard. Tests: 149 cases in `tests/test_anaphora.py`
+plus 8 end-to-end carry-over assertions.
 
-The disambiguator's JSON schema only exposes `decision`,
-`entity_ids`, `service`, `speech`, `rationale`. There is no
-`service_data` field for brightness_pct, color_temp_kelvin,
-color_name, transition, etc. Every "dim", "brighter", "set to
-50%", "warmer", "change to blue" request goes through as a bare
-`turn_on` and Home Assistant does whatever the device's default
-is — which reads as "nothing happened" to the operator.
+### Tier 3 latency: prompt + cache efficiency work (medium)
 
-**Scope of fix:**
+Cold chitchat turns take tens of seconds on the current upstream
+Ollama; warm turns are faster but still bottlenecked by prefill on
+every round-trip. Upstream performance tuning is out of scope —
+what we can do on the container side:
 
-1. Add `service_data` to the disambiguator's output schema and
-   prompt examples ("dim" → lower brightness_pct vs current;
-   "set to 40%" → brightness_pct=40; "warmer" → color_temp_kelvin
-   toward 2700; "turn it up" → brightness_pct=100 *or* current+25).
-2. Relative adjustments need the current state. The cache already
-   has `EntityState.attributes` available on the candidate list —
-   thread those through to the prompt so the LLM can compute
-   "current + 25".
-3. Pass `service_data` through to `HAClient.call_service` — the
-   method already accepts it as a kwarg, so plumbing is trivial.
-4. Tests: a handful of phrasings (brightness absolute, brightness
-   relative, color by name, color temperature, fan speed).
-5. Audit row should include service_data for debuggability.
-
-File: `glados/intent/disambiguator.py` (prompt + schema + call),
-`glados/ha/ws_client.py` / `glados/ha/conversation.py` (call_service
-passthrough check), `tests/test_disambiguator.py` (new cases).
-
-### P0: Follow-up turns without a device keyword bypass Tier 1 / 2 entirely (high)
-
-Operator report 2026-04-19 (same session):
-
-    (after GLaDOS had just acted on the desk lamp)
-    User: "It's still too dark. Turn it up more."
-    GLaDOS: "Increasing the office desk monitor lamp to maximum illumination.
-             That should suffice."
-
-No `tier=1` or `tier=2` audit row for that utterance. Tier 3
-(chitchat) handled it, hallucinated a status confirmation, and
-never called a tool.
-
-Root cause: `rules.looks_like_home_command()` is keyword-based.
-"Turn it up more" has no device word and no activity phrase →
-returns False → `api_wrapper` skips Tier 1 + Tier 2 per the
-chitchat-fast-path work from Phase 6 Change 12 (commit `df84d07`).
-
-**Options, in order of preference:**
-
-- **Option A (recommended): context carryover.** When the prior
-  assistant turn resolved a home command successfully (Tier 1
-  `ok:*` or Tier 2 `ok:execute`), let the next user turn inherit
-  home-command intent for one turn even if it has no keyword.
-  Implement in `api_wrapper` at the precheck site, not in
-  `looks_like_home_command()` itself — keep the helper pure.
-- **Option B: trust the fresh HA conversation_id.** If HA's
-  prior `conversation_id` is within the cache freshness window
-  (5 s), Tier 1 should fire regardless of keyword matching; HA's
-  own intent engine can handle "it" from context.
-- **Option C (weakest): extend keyword list.** `brighter`,
-  `dimmer`, `warmer`, `cooler`, `louder`, `quieter`, `more`,
-  `less`, `up`, `down`, "turn it". Brittle but cheap.
-
-A + B together is the right call. C should only backstop them.
-
-Tests: add a multi-turn case — first turn "turn on the lights"
-(keyword hit), second turn "a little dimmer" (no keyword) —
-assert tier_2 was consulted on both.
-
-### Validate single-T4 as the supported default single-GPU path (high)
-
-Late 2026-04-19 consolidation work identified T4 #1 as a working
-single-GPU target for the entire GLaDOS stack when vision is
-disabled:
-
-- `qwen2.5:14b-instruct-q4_K_M` (chat + Tier 2 disambiguator) — ~9.0 GB
-- `qwen2.5:3b-instruct-q4_K_M` (persona rewriter) — ~1.9 GB
-- `nomic-embed-text` (ChromaDB) — optional, ~0.3 GB
-- Leaves ~4 GB headroom on a 16 GB T4 for KV cache.
-
-CUDA Ollama is stable (unlike the B60/IPEX stall — see next entry).
-Operator already consolidated services: B60 Ollama stopped, T4 #0
-Ollama orphan killed, T4 #1 keeps 14B + 3B resident. Chat works
-at ~19 s warm via commit `23a4d92`'s glados_config.yaml URL sync.
-
-Next-session work:
-
-1. Run chat + Tier 2 + Tier 1 + autonomy end-to-end against the
-   unified `11436` endpoint for a full evening of live use; log
-   any timeouts or queue-contention issues.
-2. Document T4-single as the **recommended** single-GPU target in
-   README (currently the README says "a single Ollama at
-   OLLAMA_URL hosts everything" but doesn't speak to which GPU).
-3. Decide whether to ship the `.env.example` / compose defaults
-   unchanged (favours the generic `http://ollama:11434` same-stack
-   pattern) or add a commented-out "split onto separate Ollama"
-   hint block.
-4. If single-T4 holds up, the B60/IPEX debug below drops to low
-   priority — only matters for operators who specifically want
-   Arc acceleration.
-
-### B60 / IPEX-LLM Ollama is genuinely slow (medium — relegated if single-T4 works)
-
-Discovered 2026-04-19 while verifying the chat-priority gate
-(commit `ad24c20`). The gate correctly holds autonomy off during
-chat, but the underlying B60 Ollama at `the AIBox LAN host:11434` is
-returning 50–90s wall times for trivial requests that Ollama's own
-stats say should be near-instant:
-
-    SMALL JSON call ("return {color: red}"): 99s wall
-      total_duration=99s  prompt_eval=0.28s  eval=0.28s
-    NO JSON ("say hello"): 52s wall
-      total_duration=52s  eval=0.0s
-    NO JSON warm: 91s wall
-
-The 99 % of wall time unaccounted for by prefill + generation lives
-somewhere in Ollama's queueing, IPEX runtime dispatch, or Arc
-driver stall. It is NOT the priority gate, not the disambiguator
-prompt size, not the model — `qwen2.5:14b-instruct-q4_K_M` is
-sitting at 16 GB VRAM with `expires=2318...` (effectively
-permanent keep_alive).
-
-Impact: unified-Ollama deployments that would otherwise work fine
-on single-GPU hardware are blocked until this is understood. The
-operator's split config (autonomy → T4 #1 at 11436, vision →
-T4 #0 at 11435, chat → B60 at 11434) is unaffected because T4s
-respond normally.
-
-Debug next session:
-1. Restart the B60 Ollama instance cold and retest. Maybe it's
-   accumulated garbage state.
-2. Check IPEX-LLM release notes / known issues around JSON grammar
-   constraints + Qwen 2.5 14B Q4.
-3. Compare `ollama ps` + resource stats while a request is
-   mid-flight to see if the model is swapped to CPU under the
-   hood.
-4. Try `llama3.1:8b-instruct-q4_K_M` (smaller, no grammar) for
-   a shape-comparable control.
-5. If IPEX is the problem, the fallback is CUDA Ollama on a
-   spare T4 — but that negates the point of Option C.
-
-### Tier 3 latency is still painful (~45–240s per turn) (medium)
-
-Even after the 2026-04-18 autonomy-noise filter + tool-catalog
-skip, a cold `Tell me a joke` streams for 60–240s on
-`qwen2.5:14b-instruct-q4_K_M`. Prefix pollution is no longer the
-issue (message count is down to 16 for a fresh chitchat turn);
-this is real LLM time. Profiling needed, not guessing. Candidates
-worth investigating in this order:
-
-1. **Model-loading check.** First-request cold starts are ~3–5
-   minutes because keep_alive didn't persist the new model.
-   Confirm `keep_alive=-1` is actually being honoured on the B60
-   Ollama (check `/api/ps` `expires_at` field) and that chat
-   requests aren't colliding with autonomy-loop prefill.
+1. **Keep-alive hygiene.** Verify the container is sending
+   `keep_alive=-1` (or whatever the configured value is) on chat
+   requests so a first-turn reload doesn't re-penalise operators
+   whenever the upstream evicts the model. Read `expires_at` back
+   from `/api/ps` where available for observability.
 2. **Prompt size.** Personality preprompt + few-shots is still
    ~10 messages even for chitchat. A single compact system
-   message + the user turn should be sufficient for "tell me a
-   joke"-class prompts and would cut prefill by an order of
-   magnitude. Measure token count before/after.
+   message + the user turn should be sufficient for
+   "tell me a joke"-class prompts and would cut prefill by an
+   order of magnitude. Measure token count before/after in our
+   own telemetry.
 3. **KV cache reuse.** Each SSE roundtrip re-submits full
-   history. If Ollama's num_ctx / ctx-cache reuse isn't set up,
-   every turn pays the full prefill cost. Instrument
-   `prompt_eval_count` / `prompt_eval_duration` from Ollama's
-   response stats on a few successive turns to see if caching
-   is kicking in.
-4. **Hardware.** B60 via IPEX-LLM. Verify the model is running
-   on the Arc GPU (not spilling to CPU). Per-token latency
-   should sit around 30 ms at steady state; if it's 200 ms,
-   the Arc backend isn't engaged.
+   history. Instrument `prompt_eval_count` / `prompt_eval_duration`
+   from Ollama's response stats on a few successive turns so we
+   can tell if the upstream is reusing cache across our requests;
+   if not, our `num_ctx` / request-shape choices may be defeating
+   it.
 
-Result of this work: a roadmap entry with a number. Right now
-the roadmap says "45–240s" because nobody has measured.
+All of the above is changes to *our* request formation and *our*
+observability — not debugging of the upstream LLM service.
 
 ### Stop the autonomy loop from writing to the chat conversation store (medium)
 
@@ -561,32 +444,37 @@ faster model for chat without disturbing autonomy.
 
 ## Model Independence (medium)
 
-**Context:** The container's `personality_preprompt` in `glados_config.yaml`
-contains the full GLaDOS system prompt. AIBox's Ollama `glados:latest`
-Modelfile ALSO contains the same system prompt. The container sends the
-persona to Ollama on every request, and the Modelfile re-injects it —
-double-injection wasting ~1200 tokens of context.
+**Context:** The container's `personality_preprompt` in
+`glados_config.yaml` contains the full GLaDOS system prompt. A
+historical custom Ollama Modelfile (`glados:latest`) also contained
+the same system prompt — causing double-injection (~1200 wasted
+tokens of context) when the container ran against that model.
 
-**Goal:** The container should be the sole source of persona. Operators
-should be able to point GLaDOS at any base Ollama model (`qwen2.5:14b`,
-`llama3.1:8b`, `mistral-nemo:12b`) and get the GLaDOS persona from the
-container's config alone.
+Production has moved to `qwen3:14b` (no custom Modelfile SYSTEM),
+so the double-injection is no longer active. What remains is:
 
-**Validation done (2026-04-17):** Pointed container at `qwen2.5:14b-instruct-q4_K_M`
-with no Modelfile SYSTEM. Persona WAS injected successfully — model knew
-about Aperture Science, home management role. Character adherence was
-weaker than with the Modelfile-tuned version. Modelfile's `PARAMETER`
+**Goal:** Keep the container as the sole source of persona, and
+make parameter override (temperature, top_p) available on the
+payload so operators can point GLaDOS at any base Ollama model
+(`qwen3:14b`, `llama3.1:8b`, `mistral-nemo:12b`, …) and get
+strong persona adherence from the container's config alone.
+
+**Validation done (2026-04-17):** Pointed container at
+`qwen2.5:14b-instruct-q4_K_M` with no Modelfile SYSTEM. Persona
+WAS injected successfully — model knew about Aperture Science,
+home management role. Character adherence was weaker than with
+the historical Modelfile-tuned version. Modelfile's `PARAMETER`
 settings (temperature, top_p) noticeably affect persona strength.
 
 **Implementation:**
-- Send `options.temperature`, `options.top_p`, etc. in the Ollama request
-  payload from the container (already done for `num_ctx`)
-- Remove or document-deprecate the Modelfile approach
-- Update session handoff docs to specify base model, not custom Modelfile
-- Test with multiple base models, document which work best for tool calling
+- Send `options.temperature`, `options.top_p`, etc. in the Ollama
+  request payload from the container (already done for `num_ctx`)
+- Test with multiple base models, document which work best for
+  tool calling
+- Remove any lingering Modelfile-era guidance from handoff docs
 
-**Dependency:** None. Container already injects persona; just needs
-parameter override in payload.
+**Dependency:** None. Container already injects persona; just
+needs parameter override in payload.
 
 ---
 
@@ -847,25 +735,34 @@ changes:
 
 ---
 
-## Stage 4: Voice Pipeline (existing plan, unchanged)
+## Stage 4: Voice Pipeline — container-side work
 
-Register GLaDOS Kokoro voice in speaches, wire HA STT/TTS to use the
-container's `/v1/audio/speech` proxy. Voice input from HA satellites /
-ESPHome devices.
+The container-side portion: ensure `/v1/audio/speech` proxy shape
+and headers are compatible with HA's STT/TTS client so HA can be
+pointed at the container as its speech provider. Voice input from
+HA satellites / ESPHome devices arrives through HA and reaches the
+container via the existing conversation bridge; nothing new
+required on our side for voice input routing.
 
-Requires: voice training or voice model import in speaches.
+Voice-model availability, Kokoro registration, and any STT/TTS
+engine tuning happen on the upstream Speaches service and are out
+of this repo's scope.
 
 ---
 
-## Stage 5-10 (see architecture-plan.md)
+## Later-stage integrations
 
-- Stage 5: Containerize remaining non-GPU infrastructure (largely done
-  via the current Docker host deployment)
-- Stage 6: Host migration / GPU passthrough resolution
-- Stage 7: Containerize Ollama + speaches with GPU
-- Stage 8: Open WebUI integration
-- Stage 9: Discord unification
-- Stage 10: Persona layer documentation
+- **Open WebUI integration** — proxy and auth shape so Open WebUI
+  can drive the container's chat endpoint.
+- **Discord unification** — single source of truth for Discord
+  bot behaviour (currently split across separate projects).
+- **Persona layer documentation** — end-to-end write-up of how
+  persona, emotion, rewriter, and TTS params compose, for
+  operators building their own personas.
+
+(Earlier stage numbers referenced upstream-infrastructure work
+— containerizing Ollama/Speaches, GPU passthrough — which is out
+of scope for this repo.)
 
 ---
 

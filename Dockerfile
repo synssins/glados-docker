@@ -1,14 +1,16 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="GLaDOS"
-LABEL org.opencontainers.image.description="GLaDOS persona middleware — OpenAI-compatible AI assistant. Pure CPU; delegates LLM inference to Ollama and speech synthesis to speaches."
+LABEL org.opencontainers.image.description="GLaDOS persona middleware — OpenAI-compatible AI assistant. CPU; bundled local TTS (VITS ONNX); delegates LLM inference to Ollama."
 LABEL org.opencontainers.image.source="https://github.com/synssins/glados-docker"
 
-# This container is CPU-only middleware. It does not run any ML inference:
-#   - LLM inference is delegated to Ollama via OLLAMA_URL
-#   - Speech synthesis is delegated to speaches via SPEACHES_URL
-#   - Memory is stored in ChromaDB via CHROMADB_URL
-# GPU access provides no benefit and is not supported.
+# Container runs:
+#   - Local VITS TTS inference on CPU (bundled glados.onnx + ONNX phonemizer)
+#   - BGE embedding retrieval on CPU (for entity semantic matching)
+# Delegates externally:
+#   - LLM inference → Ollama (OLLAMA_URL)
+#   - Memory storage → ChromaDB (CHROMADB_URL)
+# GPU access provides no benefit for the workloads we run here.
 
 WORKDIR /app
 
@@ -37,6 +39,11 @@ RUN curl -fsSL --retry 5 --retry-delay 2 -o /app/models/bge-small-en-v1.5.onnx \
         https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx \
     && curl -fsSL --retry 5 --retry-delay 2 -o /app/models/bge-small-en-v1.5.tokenizer.json \
         https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json
+
+# GLaDOS TTS voice + ONNX phonemizer — bundled for self-contained TTS.
+# ~135 MB (glados.onnx 63.5 MB + phomenizer_en.onnx 61 MB + pickles).
+# Ported from dnhkng/GLaDOS. No espeak, no HF, no Speaches required.
+COPY models/TTS/ ./models/TTS/
 
 # Application source
 COPY glados/ ./glados/

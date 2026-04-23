@@ -36,10 +36,21 @@ belong in `C:\src\SESSION_STATE.md`, never in the committed code.
 ## 1. Project state snapshot (2026-04-23)
 
 - **Deployed on the operator's Docker host**: `ghcr.io/synssins/glados-docker:latest`
-  at commit `dbf40c7`. Healthy.
-- **Engine models**: chat, Tier 2 disambiguator, and persona rewriter
-  all on `qwen3:14b` via a single Ollama endpoint.
-- **Tests**: 1157 passed / 5 skipped. `pytest -q` runs in ~42 s on AIBox.
+  at commit `52a57e5`. Healthy. (Prior snapshots reference commit
+  hashes that no longer exist — history was rewritten with
+  `git-filter-repo` during the 2026-04-23 secrets scrub.)
+- **Scope discipline:** this repo is a consumer of external
+  services (Ollama, Home Assistant, Speaches, ChromaDB, MQTT).
+  Those services run on separate systems with stock firmware from
+  this container's perspective — we treat each as an opaque HTTP
+  endpoint. GPU hardware, model-file tuning on Ollama, HA config,
+  Speaches phoneme lexicon, etc. are **out of scope**. All work
+  stays inside this repo's code, configs, tests, Dockerfile, and
+  CI.
+- **Engine models**: chat, Tier 2 disambiguator, and persona
+  rewriter all point at `qwen3:14b` on a single configured Ollama
+  endpoint (URL set per operator deployment).
+- **Tests**: 1157 passed / 5 skipped. `pytest -q` runs in ~42 s.
 - **Phase 8.x remediation plan complete.** 8.0 → 8.14 all shipped.
 - **Phase Emotion A–I complete** (2026-04-22 / 2026-04-23) —
   deterministic repetition math, semantic clustering, command
@@ -58,17 +69,21 @@ belong in `C:\src\SESSION_STATE.md`, never in the committed code.
   manual-dispatch-only for the live battery.
 - **Secrets in repo**: `HA_TOKEN`, `GLADOS_SSH_PASSWORD`,
   `SNYK_TOKEN` in Actions Secrets. Do not commit tokens to source.
+  **Hard rule:** never commit tokens, passwords, LAN IPs, real HA
+  entity names, personal domains, or operator identity — in code,
+  tests, docs, OR commit messages/bodies. Prior sessions violated
+  this and the entire history had to be rewritten via
+  `git-filter-repo`. Custom gitleaks rules now catch the operator's
+  specific patterns (see `.gitleaks.toml`).
 
 ### Known open items (not urgent)
 
-- Piper-side phoneme lexicon for context-dependent homographs
-  (`live` / `read` / `lead`) — outside this container, Speaches
-  scope.
 - Quip library content at 156 lines; plan target was ~450.
 - Harness scratch dir at `C:\src\glados-test-battery` should
   eventually land in its own git repo.
 - TTS pronunciation defaults expansion as operators surface more
-  Piper-slurred cases.
+  Piper-slurred cases (container-side pronunciation overrides,
+  not the upstream Piper voice).
 
 ---
 

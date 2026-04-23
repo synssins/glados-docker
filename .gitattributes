@@ -1,8 +1,6 @@
 # Force LF line endings for all text files in the repo
 # Prevents CRLF/LF churn when working across Windows and Linux hosts
-
 * text=auto eol=lf
-
 # Explicitly LF
 *.py eol=lf
 *.yaml eol=lf
@@ -13,7 +11,6 @@
 *.txt eol=lf
 *.sh eol=lf
 Dockerfile eol=lf
-
 # Binary — no line ending conversion
 *.png binary
 *.jpg binary
@@ -26,3 +23,5 @@ Dockerfile eol=lf
 *.onnx binary
 *.bin binary
 *.pkl binary
+models/TTS/*.onnx filter=lfs diff=lfs merge=lfs -text
+models/TTS/*.pkl filter=lfs diff=lfs merge=lfs -text

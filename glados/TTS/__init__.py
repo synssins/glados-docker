@@ -1,27 +1,25 @@
 """Text-to-Speech (TTS) synthesis components.
 
-This module provides a protocol-based interface for text-to-speech synthesis
-and a factory function to create synthesizer instances.
+Self-contained in-container TTS. Local ONNX inference via
+`SpeechSynthesizer` (tts_glados.py) — no external Speaches dependency,
+no espeak, no HuggingFace cache.
 
-In the container, all synthesis is delegated to speaches over HTTP — the
-container does not run ONNX inference. See `tts_speaches.SpeachesSynthesizer`.
+Model files live under `GLADOS_TTS_MODELS_DIR` (default
+`/app/models/TTS`). Each voice is a `<name>.onnx` + `<name>.json`
+pair. Discovery walks the dir at import-time for `list_available_voices`.
 
-Classes:
-    SpeechSynthesizerProtocol: Protocol defining the TTS interface
-
-Functions:
-    get_speech_synthesizer: Factory returning a speaches-backed synthesizer
-    list_available_voices: Query speaches for the current voice list
+The legacy Speaches HTTP backend is retained behind an opt-in env flag
+(`TTS_BACKEND=speaches`) for operators who still point at an external
+Speaches. Default is `local`.
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Protocol
 
-import httpx
 import numpy as np
-from loguru import logger
 from numpy.typing import NDArray
 
 
@@ -31,45 +29,57 @@ class SpeechSynthesizerProtocol(Protocol):
     def generate_speech_audio(self, text: str) -> NDArray[np.float32]: ...
 
 
-def _speaches_base_url() -> str:
-    return os.environ.get("SPEACHES_URL", "http://host.docker.internal:8800").rstrip("/")
+def _models_dir() -> Path:
+    return Path(os.environ.get("GLADOS_TTS_MODELS_DIR", "/app/models/TTS"))
+
+
+def _backend() -> str:
+    return os.environ.get("TTS_BACKEND", "local").lower()
 
 
 def list_available_voices() -> list[str]:
-    """Query speaches for the set of registered voices.
+    """Enumerate voice stems from the local models dir.
 
-    Returns a stable fallback list if speaches is unreachable, so config
+    Returns ``["glados"]`` as a fallback if the dir is absent so config
     validation and WebUI dropdowns don't fail at startup.
     """
-    url = f"{_speaches_base_url()}/v1/audio/speech/voices"
-    try:
-        resp = httpx.get(url, timeout=5.0)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Could not list speaches voices ({}) — returning fallback", exc)
-        return ["glados"]
-
-    if isinstance(data, list):
-        voices = [v["name"] if isinstance(v, dict) and "name" in v else str(v) for v in data]
-    elif isinstance(data, dict) and "voices" in data:
-        voices = [v["name"] if isinstance(v, dict) and "name" in v else str(v) for v in data["voices"]]
-    else:
-        voices = ["glados"]
+    base = _models_dir()
+    voices: list[str] = []
+    if base.exists():
+        for p in base.glob("*.onnx"):
+            if p.stem.endswith("phomenizer_en") or p.stem.startswith("phomenizer"):
+                continue  # skip the phonemizer model
+            voices.append(p.stem)
+        sub = base / "voices"
+        if sub.exists():
+            for p in sub.glob("*.onnx"):
+                voices.append(p.stem)
     return sorted(set(voices)) or ["glados"]
 
 
 def get_speech_synthesizer(voice: str = "glados") -> SpeechSynthesizerProtocol:
-    """Factory returning a speaches-backed synthesizer for the given voice.
+    """Factory returning a local synth by default. ``TTS_BACKEND=speaches``
+    flips to the legacy HTTP client for operators pointing at an external
+    Speaches service."""
+    if _backend() == "speaches":
+        from .tts_speaches import SpeachesSynthesizer
+        return SpeachesSynthesizer(voice=voice)
 
-    The voice name is a speaches-side identifier. Until the GLaDOS Kokoro
-    voice is registered in speaches (Stage 4 work), operators can point at
-    any stock speaches voice (e.g. `af_heart`) and GLaDOS's character will
-    still come through via the LLM system prompt.
-    """
-    from .tts_speaches import SpeachesSynthesizer
-
-    return SpeachesSynthesizer(voice=voice)
+    from .tts_glados import SpeechSynthesizer
+    base = _models_dir()
+    # Allow voice="glados" to resolve to top-level glados.onnx, or a
+    # named voice like "startrek-computer" from the voices/ subdir.
+    top_level = base / f"{voice}.onnx"
+    sub_level = base / "voices" / f"{voice}.onnx"
+    if top_level.exists():
+        model_path = top_level
+    elif sub_level.exists():
+        model_path = sub_level
+    else:
+        # fall back to the default glados.onnx — better than crashing at
+        # import time if the operator's config references an unknown voice
+        model_path = base / "glados.onnx"
+    return SpeechSynthesizer(model_path=model_path)
 
 
 __all__ = ["SpeechSynthesizerProtocol", "get_speech_synthesizer", "list_available_voices"]
