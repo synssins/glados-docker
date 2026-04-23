@@ -140,15 +140,32 @@ def get_tts_params() -> dict[str, float]:
         Dict with length_scale, noise_scale, noise_w.
 
     Resolution order:
-      1. PAD override if set for this thread (Phase Emotion-G —
-         clobbers random attitude params when emotion state is
-         deep-negative so the voice itself escalates).
-      2. Current attitude's tts dict if one rolled this turn.
-      3. Default baseline.
+      1. Explicit thread-local PAD override (set by a chat handler
+         that wants to clobber the live state lookup — kept for
+         testability and for callers that pre-compute).
+      2. Live PAD state via current_pad_state() — when emotion is
+         deep-negative, pad_to_tts_override() returns a menacing
+         profile that the live TTS synth picks up uniformly across
+         streaming + non-streaming paths without per-path wiring.
+      3. Current attitude's tts dict if one rolled this turn.
+      4. Default baseline.
     """
     override = getattr(_thread_local, "pad_override", None)
     if override:
         return dict(override)
+    # Live PAD lookup — avoids per-path plumbing. Safe on startup:
+    # current_pad_state() returns None until the EmotionAgent
+    # registers its provider, and pad_to_tts_override() is a pure
+    # function of PAD floats.
+    try:
+        from glados.autonomy.emotion_state import current_pad_state
+        _pad = current_pad_state()
+        if _pad is not None:
+            live = pad_to_tts_override(_pad.pleasure, _pad.arousal, _pad.dominance)
+            if live:
+                return dict(live)
+    except Exception:
+        pass
     attitude = get_current_attitude()
     if attitude:
         tts = attitude.get("tts")
@@ -161,10 +178,9 @@ def get_tts_params() -> dict[str, float]:
 def set_pad_override(params: dict[str, float] | None) -> None:
     """Store (or clear) the thread-local PAD TTS override.
 
-    Called by the chat handler after the attitude roll so TTS
-    synthesis downstream picks up the overridden params via
-    get_tts_params(). Pass None to clear for turns where PAD is
-    neutral/positive and the random attitude should win.
+    Mostly kept for tests; production code doesn't need to call this
+    any more — get_tts_params() now consults live PAD state directly.
+    Pass None to clear.
     """
     if params is None:
         if hasattr(_thread_local, "pad_override"):
