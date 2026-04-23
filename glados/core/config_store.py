@@ -599,8 +599,8 @@ class TestHarnessConfig(BaseModel):
 
     # fnmatch globs — leading/trailing ``*`` wildcards OK.
     noise_entity_patterns: list[str] = [
-        "switch.midea_ac_*_display",
-        "sensor.midea_ac_*_*",
+        "switch.hvac_*_display",
+        "sensor.hvac_*_*",
         "*_sonos_*",
         "*_wled_*_reverse",
         "*_button_indication",

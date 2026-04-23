@@ -1692,7 +1692,7 @@ prefix rules for camera/doorbell/driveway groups).
 
 Live-verified keywords: "downstairs" → `ground_level`,
 "main floor" → `main_level`, "upstairs" → `bedroom_level`,
-"backyard" → `back_yard`.
+"outdoor" → `back_yard`.
 
 Commits: `22b27fb`, `df3780a`, `4754fc3`, `1b4e83b`, `99cf86f`.
 
@@ -2158,8 +2158,8 @@ semantics without catching it until next deploy.
   Two fields:
   - `noise_entity_patterns: list[str]` — fnmatch globs the harness
     must strip from the diff set before scoring. Defaults ship the
-    operator-confirmed noisy families (`switch.midea_ac_*_display`,
-    `sensor.midea_ac_*_*`, `*_sonos_*`, `*_wled_*_reverse`,
+    operator-confirmed noisy families (`switch.hvac_unit_*_display`,
+    `sensor.hvac_unit_*_*`, `*_sonos_*`, `*_wled_*_reverse`,
     `*_button_indication`, `*_node_identify`).
   - `require_direction_match: bool = True` — when True, scoring only
     credits entity-direction matches on the actual targeted entity

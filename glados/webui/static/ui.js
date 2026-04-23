@@ -1503,7 +1503,7 @@ function _cfgRenderTestHarnessForm() {
     '<div class="cfg-field">'
     + '<label class="cfg-label" for="th-patterns">Noise entity patterns'
     + ' <span style="color:var(--text-dim);font-weight:normal;">'
-    + '(fnmatch globs, one per line — e.g. <code>switch.midea_ac_*_display</code>)'
+    + '(fnmatch globs, one per line — e.g. <code>switch.hvac_unit_*_display</code>)'
     + '</span></label>'
     + '<textarea id="th-patterns" rows="8" style="width:100%;background:var(--bg-input);'
     + 'color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;'

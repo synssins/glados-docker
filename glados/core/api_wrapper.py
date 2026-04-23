@@ -406,7 +406,7 @@ def _find_base_wav(config: dict, scenario_name: str, entity_id: str | None, stat
 
     Supports multiple base WAV variants per state. When a state has multiple
     texts in announcements.yaml, numbered files are generated (e.g.
-    ``lock__front_door_lock__locked__01.wav``). This function looks for
+    ``lock__entry_door_lock__locked__01.wav``). This function looks for
     numbered variants first and picks one at random. Falls back to the
     single un-numbered file for backwards compatibility.
     """
@@ -432,7 +432,7 @@ def _find_base_wav(config: dict, scenario_name: str, entity_id: str | None, stat
         # Entity with states dict
         if "states" in entity and state is not None:
             state_slug = _sanitize(str(state))
-            # Try numbered variants first (e.g. lock__front_door_lock__locked__01.wav)
+            # Try numbered variants first (e.g. lock__entry_door_lock__locked__01.wav)
             pattern = f"{scenario_name}__{name_slug}__{state_slug}__*.wav"
             variants = sorted(bases_dir.glob(pattern))
             if variants:

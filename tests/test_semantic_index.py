@@ -639,8 +639,8 @@ class TestDeviceDiversityOperatorGates:
         out = apply_device_diversity(hits, "desk lamp", top_k=3)
         ids = [h.entity_id for h in out]
         assert "light.task_lamp_one" in ids[:3]
-        # At most one bedroom_strip entity should survive to top-3.
-        bedroom_count = sum(1 for i in ids if "bedroom_strip" in i)
+        # At most one room_a_strip entity should survive to top-3.
+        bedroom_count = sum(1 for i in ids if "room_a_strip" in i)
         assert bedroom_count <= 1
 
     # ── Gate 3: segment-qualified queries still return the segment ──
@@ -927,7 +927,7 @@ class TestRetrieveForPlanner:
         out = _stub_idx.retrieve_for_planner("desk lamp", k=3)
         ids = [h.entity_id for h in out]
         assert "light.task_lamp_one" in ids[:3]
-        bedroom_count = sum(1 for i in ids if "bedroom_strip" in i)
+        bedroom_count = sum(1 for i in ids if "room_a_strip" in i)
         assert bedroom_count <= 1
 
 

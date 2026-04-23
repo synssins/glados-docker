@@ -32,7 +32,10 @@ def test_defaults_ship_operator_known_noise_globs() -> None:
     """
     th = TestHarnessConfig()
     patterns = th.noise_entity_patterns
-    assert any("midea" in p for p in patterns), patterns
+    # Shipped defaults cover common operator-known noise entities: an
+    # HVAC-style pattern, sonos chatter, WLED housekeeping, and zigbee
+    # button-ping topics. Exact prefixes are operator-tunable.
+    assert any("hvac" in p for p in patterns), patterns
     assert any("sonos" in p for p in patterns), patterns
     assert any("wled" in p and "reverse" in p for p in patterns), patterns
     assert any("button_indication" in p for p in patterns), patterns

@@ -127,9 +127,9 @@ class TestShippedAreaKeywords:
         assert hint.area_id in {"area_yard", "area_patio", "area_frontyd"}
         assert hint.source == "area_keyword"
 
-    def test_backyard_is_more_specific(self) -> None:
+    def test_outdoor_is_more_specific(self) -> None:
         hint = infer_area_floor(
-            "turn on the backyard lights",
+            "turn on the outdoor lights",
             floor_names=FLOORS, area_names=AREAS,
         )
         assert hint.area_id == "area_yard"

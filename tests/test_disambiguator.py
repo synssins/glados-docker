@@ -354,7 +354,7 @@ class TestQualifierFilterIntegration:
         user_msg = next(
             m["content"] for m in captured_messages[0] if m["role"] == "user"
         )
-        assert "office_desk_monitor_lamp" in user_msg
+        assert "task_lamp_one" in user_msg
         assert "uplighter" not in user_msg.lower()
 
     def test_filter_falls_back_when_no_candidate_matches_qualifier(self) -> None:
@@ -397,8 +397,8 @@ class TestQualifierFilterIntegration:
         # Both candidates should be in the prompt — the filter saw
         # zero matches for 'desk' and fell back to the full list.
         user_msg = next(m["content"] for m in captured[0] if m["role"] == "user")
-        assert "bedroom_ceiling" in user_msg
-        assert "kitchen_overhead" in user_msg
+        assert "room_a_ceiling" in user_msg
+        assert "ceiling_lights" in user_msg
 
 
 # ---------------------------------------------------------------------------
@@ -1404,7 +1404,7 @@ class TestSemanticIndexIntegration:
         user_msg = next(
             m["content"] for m in captured[0] if m["role"] == "user"
         )
-        assert "office_desk_monitor_lamp" in user_msg
+        assert "task_lamp_one" in user_msg
 
     def test_falls_back_to_fuzzy_when_index_not_ready(self) -> None:
         """Background index build hasn't finished → disambiguator
@@ -1778,7 +1778,7 @@ class TestSpeechEntityIdLeakGuard:
         disambig, _, _ = _make(
             cache_states=[
                 _state("light.bedroom_main", "Master Bedroom Main", state="on"),
-                _state("light.bedroom_reading", "Bedroom Reading Lamp", state="on"),
+                _state("light.room_a_reading", "Bedroom Reading Lamp", state="on"),
             ],
             llm_response=(
                 '{"decision":"clarify",'
