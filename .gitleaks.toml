@@ -1,11 +1,69 @@
-# Extends gitleaks' built-in ruleset — only add allowlist entries here.
-# Full default rules: https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+# Extends gitleaks' built-in ruleset. Custom rules below catch patterns
+# that default gitleaks regexes miss but have historically snuck into
+# this repo (SSH password literal, LAN IP defaults, HA entity IDs,
+# DNS names, personal emails).
+# Full default rules:
+#   https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
 [extend]
 useDefault = true
+
+
+# ── Custom rules ───────────────────────────────────────────────────
+
+[[rules]]
+id = "hardcoded-ssh-password-literal"
+description = "Hardcoded SSH/WebUI password assignment (PASS = \"...\" or password: \"...\")"
+regex = '''(?i)(?:PASS|PASSWORD|GLADOS_SSH_PASSWORD)\s*[:=]\s*["'][^"']{6,}["']'''
+keywords = ["PASS", "password"]
+tags = ["password", "hardcoded"]
+
+[[rules]]
+id = "operator-lan-ip"
+description = "Operator LAN addresses — must come from env vars / secrets, never code"
+regex = '''\b192\.168\.1\.(?:75|100|104|150)\b'''
+tags = ["pii", "infrastructure"]
+
+[[rules]]
+id = "operator-dns-name"
+description = "Operator personal DNS records — must not appear in tracked files"
+regex = '''(?i)\bdenofsyn\.com\b'''
+tags = ["pii"]
+
+[[rules]]
+id = "operator-personal-email"
+description = "Operator personal email — commit author in history only, not in source"
+regex = '''(?i)\bchris@denofsyn\.com\b'''
+tags = ["pii", "email"]
+
+[[rules]]
+id = "ha-long-lived-token"
+description = "Home Assistant long-lived access token (JWT-shape, HS256, iss+iat+exp)"
+regex = '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}'''
+tags = ["token", "ha"]
+
+[[rules]]
+id = "real-ha-entity-ids"
+description = "Known operator-specific HA entity IDs that should not be committed"
+regex = '''(?:light|switch|scene|media_player|binary_sensor|camera|lock|cover|climate|sensor)\.(?:office_desk_monitor_lamp|living_room_arc_lamp|kitchen_cabinet|kitchen_overhead|bedroom_ceiling|bedroom_reading_lamp|bedroom_closet|bedroom_strip_seg_\d+|front_door_contact_sensor_contact|back_door_contact_sensor_contact|front_doorbell_speaking_detected|yale_smart_lock_with_matter|g4_doorbell_high|g4_doorbell_speaker|g4_doorbell_person_detected|midea_ac_\d+_display|pixel_9_pro_xl_car_name|sm_n986u1_is_charging|alan_t_state_\d+|backyard_(?:animal|barking|car_alarm|car_horn|glass_break|is_dark|motion|spot)_detected|office_c97a_\d+|living_room_2)'''
+tags = ["pii", "ha-entity"]
+
+
+# ── Allowlist ──────────────────────────────────────────────────────
 
 [allowlist]
 description = "Paths and patterns that are safe to ignore"
 paths = [
   '''\.env\.example$''',
   '''\.gitleaks\.toml$''',
+  '''configs/config\.example\.yaml$''',
+  # Interactive password-setter — reads from getpass stdin, no
+  # hardcoded secret. Matched by the PASS-literal rule on the
+  # string "Enter new WebUI password: ".
+  '''glados/tools/set_password\.py$''',
+]
+
+# Placeholder tokens used in docstrings / examples
+regexes = [
+  '''YOUR_LONG_LIVED_HA_TOKEN''',
+  '''YOUR_PASSWORD_HERE''',
 ]
