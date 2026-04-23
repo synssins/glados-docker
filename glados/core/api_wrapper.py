@@ -3376,7 +3376,16 @@ class APIHandler(BaseHTTPRequestHandler):
                 _strip_thinking(response_text)
             )
 
-        self._send_json({
+        # Phase Emotion-G: surface the current TTS params so out-of-
+        # process callers (WebUI chat) can forward them to speaches.
+        # get_tts_params() reads live PAD state so the override lands
+        # without per-caller plumbing.
+        try:
+            _tts_params = get_tts_params()
+        except Exception:
+            _tts_params = None
+
+        resp_body = {
             "id": f"chatcmpl-{request_id}",
             "object": "chat.completion",
             "created": int(time.time()),
@@ -3387,7 +3396,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 "finish_reason": "stop",
             }],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        })
+        }
+        if _tts_params:
+            resp_body["tts_params"] = _tts_params
+        self._send_json(resp_body)
 
 
 # ---------------------------------------------------------------------------
