@@ -811,6 +811,31 @@ class TestPADToTTSOverride:
         assert attitude.get_tts_params() == baseline
         assert attitude.get_pad_override() is None
 
+    def test_get_tts_params_reads_live_pad_state(self):
+        """get_tts_params must consult current_pad_state() directly so
+        both streaming and non-streaming chat paths pick up the
+        override without per-path wiring. Fixes the 2026-04-22 bug
+        where the thread-local set in api_wrapper didn't reach the
+        non-streaming engine path's TTS call."""
+        from glados.core import attitude
+        # Clear any thread-local override
+        attitude.set_pad_override(None)
+        # Register a deep-negative PAD state
+        state = EmotionState(pleasure=-0.85, arousal=0.7, dominance=0.5)
+        set_pad_state_provider(lambda: state)
+        try:
+            # get_tts_params should return the menacing profile
+            got = attitude.get_tts_params()
+            expected = attitude.pad_to_tts_override(-0.85)
+            assert got == expected
+            # Flip to pleased — override no longer applies
+            state.pleasure = 0.5
+            got2 = attitude.get_tts_params()
+            assert got2 != expected  # fell through to baseline/attitude
+        finally:
+            set_pad_state_provider(lambda: None)
+            attitude.set_pad_override(None)
+
     def test_pad_override_is_thread_isolated(self):
         """Different threads must not leak TTS params across each
         other; attitude uses threading.local and the override joins
