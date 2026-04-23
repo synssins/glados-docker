@@ -168,3 +168,43 @@ def get_default_tts() -> dict[str, float]:
 def is_loaded() -> bool:
     """Check if attitudes have been loaded."""
     return _loaded
+
+
+# ── PAD → Piper TTS override ────────────────────────────────────────────
+#
+# When the emotion state is negative enough, the random attitude's TTS
+# params are clobbered with a profile that makes Piper SOUND different:
+# slower + flatter for menacing, clipped + colder for hostile. Operators
+# hear the escalation even when they don't parse the words.
+#
+# Boundaries mirror pad_band_name() in glados.autonomy.emotion_state so
+# TTS and text-side directives stay in lockstep. Tuning target was
+# "dangerously quiet" = noticeably slower and flatter than baseline;
+# "hostile" = crisp and snappy; "annoyed" = slightly faster than neutral.
+
+def pad_to_tts_override(
+    pleasure: float,
+    arousal: float = 0.0,
+    dominance: float = 0.0,
+) -> dict[str, float] | None:
+    """Return Piper synthesis params for deep-negative emotional states.
+
+    Returns a dict matching {length_scale, noise_scale, noise_w} when
+    the state is negative enough to warrant an audible tonal shift.
+    Otherwise returns None so the caller keeps the random attitude's
+    params or the configured default baseline.
+    """
+    if pleasure <= -0.7:
+        # Menacing / dangerously quiet: slow, deliberate, eerie-flat.
+        # Higher length_scale = each phoneme held longer = slower speech.
+        # Lower noise_scale = less pitch variation = flatter delivery.
+        return {"length_scale": 1.15, "noise_scale": 0.42, "noise_w": 0.65}
+    if pleasure <= -0.5:
+        # Openly hostile: clipped, colder, noticeably snappier than baseline.
+        return {"length_scale": 0.88, "noise_scale": 0.50, "noise_w": 0.75}
+    if pleasure <= -0.3:
+        # Annoyed: slightly faster, less inflection.
+        return {"length_scale": 0.95, "noise_scale": 0.55, "noise_w": 0.80}
+    _ = arousal  # reserved for future rate-coupling on arousal axis
+    _ = dominance  # reserved for future pitch-coupling on dominance axis
+    return None

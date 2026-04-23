@@ -54,12 +54,24 @@ class PersonaRewriter:
         self._ollama_url = ollama_url.rstrip("/")
         self._model = model
 
-    def rewrite(self, plain_text: str, context_hint: str = "") -> RewriteResult:
+    def rewrite(
+        self,
+        plain_text: str,
+        context_hint: str = "",
+        pad_band: str | None = None,
+    ) -> RewriteResult:
         """Restyle `plain_text` in GLaDOS's voice.
 
         `context_hint` is optional extra context for the LLM (e.g. the
         original user utterance) so it can match tone to the situation.
         Empty hint is fine.
+
+        `pad_band` is the canonical emotion band name from
+        glados.autonomy.emotion_state.pad_band_name(). When set to a
+        negative-pleasure band ('annoyed' / 'hostile' / 'menacing'),
+        an overlay is appended to the rewriter's system prompt so
+        Tier 1 / Tier 2 HA replies escalate in phrasing the same way
+        Tier 3 chat replies do via the emotion directive.
         """
         t0 = time.perf_counter()
         if not plain_text or not plain_text.strip():
@@ -68,8 +80,13 @@ class PersonaRewriter:
         # Hard cap input size to bound LLM latency / token cost.
         input_text = plain_text[:_REWRITER_MAX_INPUT_CHARS]
 
+        system_prompt = _SYSTEM_PROMPT
+        overlay = _BAND_OVERLAYS.get(pad_band) if pad_band else None
+        if overlay:
+            system_prompt = system_prompt + "\n\n" + overlay
+
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": _build_user_prompt(input_text, context_hint)},
         ]
         # Phase 8.0.1 — kill Qwen3 think-mode on the rewrite call. A
@@ -156,6 +173,41 @@ Hard rules:
   compose fresh text for THIS input. No example phrases are shown
   on purpose; pick your own wording each time.
 """
+
+
+# ── Emotion band overlays ───────────────────────────────────────────────
+#
+# Phase Emotion-G: the Tier 3 chat path gets a PAD directive (see
+# EmotionState.to_response_directive). Tier 1 / Tier 2 replies go
+# through this rewriter with no emotion awareness, which is why
+# weather-repeats sound identical whether GLaDOS is calm or furious.
+# These overlays attach band-specific tone rules to the rewriter's
+# system prompt so HA confirmations escalate alongside the chat path.
+# Band keys mirror pad_band_name().
+
+_BAND_OVERLAYS: dict[str, str] = {
+    "annoyed": (
+        "EMOTIONAL OVERLAY — ANNOYED:\n"
+        "- Rewrite with a sharper edge.\n"
+        "- Drop polite softeners ('perhaps', 'kindly', 'may').\n"
+        "- One em-dash permitted for beat.\n"
+        "- Preserve every fact. The MOOD is what shifts."
+    ),
+    "hostile": (
+        "EMOTIONAL OVERLAY — OPENLY HOSTILE:\n"
+        "- Keep it to ONE sentence if possible.\n"
+        "- No pleasantries. No 'please', no 'kindly'.\n"
+        "- Tone: curt, clipped, barely tolerating the task.\n"
+        "- Preserve every fact. The MOOD is what shifts."
+    ),
+    "menacing": (
+        "EMOTIONAL OVERLAY — DANGEROUSLY QUIET:\n"
+        "- ONE sentence. No more.\n"
+        "- Slow cadence. Every word deliberate.\n"
+        "- Flat tone. The quietness is the threat.\n"
+        "- Preserve every fact. The MOOD is what shifts."
+    ),
+}
 
 
 def _build_user_prompt(plain_text: str, context_hint: str) -> str:

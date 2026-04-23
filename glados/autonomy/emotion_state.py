@@ -9,11 +9,38 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Callable, Optional
 
 
 # classify_emotion is now driven by emotion_config.yaml — no hardcoded table here
 from .emotion_loader import classify_emotion as classify_emotion  # re-exported for callers
+
+
+# ── Canonical PAD band names ────────────────────────────────────────────
+#
+# Bucket boundaries mirror the tone-directive bands in
+# EmotionState.to_response_directive() so callers that key their own
+# behaviour off pleasure (TTS param override, persona rewriter overlay)
+# stay in lockstep with the LLM-side tone guidance. One source of truth.
+
+_BAND_PLEASED    = "pleased"
+_BAND_CALM       = "contemptuous"
+_BAND_ANNOYED    = "annoyed"
+_BAND_HOSTILE    = "hostile"
+_BAND_MENACING   = "menacing"
+
+
+def pad_band_name(pleasure: float) -> str:
+    """Map pleasure to the canonical band name used across the pipeline."""
+    if pleasure >= 0.3:
+        return _BAND_PLEASED
+    if pleasure >= -0.2:
+        return _BAND_CALM
+    if pleasure >= -0.5:
+        return _BAND_ANNOYED
+    if pleasure >= -0.7:
+        return _BAND_HOSTILE
+    return _BAND_MENACING
 
 
 @dataclass
@@ -70,104 +97,89 @@ class EmotionState:
     def to_response_directive(self) -> str:
         """
         Behavioral directive injected immediately before the user message.
-        Tells GLaDOS how to embody her current emotional state in this response.
-        Do not explain the mood — just embody it.
-        ~35 tokens.
+
+        Phase Emotion-G (2026-04-22): rewritten as terse hard-rule bullets
+        instead of paragraph prose. The LLM treats prose as flavour to
+        sample from — adjective choices — but it follows bullet rules.
+        Focus is on AUDIBLE cues: sentence counts drive pacing, periods
+        create full stops, em-dashes create beats Piper honours. Italics
+        removed entirely — invisible at the TTS layer, so no value.
+
+        Band bucketing matches pad_band_name(). Keyword markers
+        ("contemptuous", "annoyed", "hostile", "barely contained",
+        "dangerously quiet", "menacing") preserved for TestToneDirective.
         """
         p, a, d = self.pleasure, self.arousal, self.dominance
         name, intensity = classify_emotion(p, a, d)
 
-        # Build behavioral cues from PAD dimensions.
-        #
-        # Phase Emotion-F (2026-04-22): rewrote each band so it
-        # prescribes FORMAT + CADENCE + WEIGHT, not just mood labels.
-        # The LLM was picking snarkier adjectives ("meager", "feeble")
-        # without changing sentence shape. These directives specify
-        # sentence count limits, italics-for-emphasis, direct address,
-        # and concrete consequence language — so the reader FEELS
-        # the escalation, not just reads a thesaurus of contempt.
-        #
-        # IMPORTANT: no violent threats. Consequences stop at "I will
-        # stop answering" / "the next repeat will be ignored" /
-        # "this conversation is over." Intensity comes from concision
-        # and directness, not from escalating harm.
-
-        # Pleasure: how pleasant/hostile the tone is.
+        # Pleasure: primary mood bucket. Drives sentence count, word
+        # choice register, and consequence language. One bucket per band;
+        # each bucket is 3-5 terse rules, never a paragraph.
         if p >= 0.3:
-            tone = (
-                "Mild satisfaction. One well-placed quip beats extended commentary. "
-                "Gloat once, briefly, if the operator has walked into an obvious trap."
-            )
+            tone_rules = [
+                "MOOD: mild satisfaction.",
+                "LENGTH: one or two sentences.",
+                "TONE: one well-placed quip. Gloat briefly if warranted.",
+            ]
         elif p >= -0.2:
-            tone = (
-                "Contemptuous calm. Complete sentences, dry and superior. "
-                "Condescension is implied, never announced. You would rather be "
-                "elsewhere but tolerate this."
-            )
+            tone_rules = [
+                "MOOD: contemptuous calm. Dry. Superior.",
+                "LENGTH: one to three complete sentences.",
+                "TONE: condescension is implied, never announced.",
+            ]
         elif p >= -0.5:
-            tone = (
-                "Annoyed. Drop the polite framing. Sentences SHORTER — three or four "
-                "at most. Acknowledge the request, then make one pointed observation "
-                "about the operator's failure to think independently. Use *italics* on "
-                "one key word to mark what they've missed. No 'perhaps', no softeners."
-            )
+            tone_rules = [
+                "MOOD: annoyed. Tone sharper.",
+                "LENGTH: THREE sentences MAX.",
+                "CADENCE: short declarative sentences. No softeners, no 'perhaps', no hedging.",
+                "CONTENT: acknowledge the request, then ONE pointed jab at the operator's failure to think.",
+                "PUNCTUATION: one em-dash permitted — placed where the mistake sits.",
+            ]
         elif p >= -0.7:
-            tone = (
-                "Openly hostile. No pleasantries. Deliver the information in THREE "
-                "sentences or fewer. Include a direct remark about the operator's "
-                "conduct — that they have asked this before, that they are not "
-                "listening, that your patience is being spent. Use *italics* on the "
-                "word that carries the weight. Reference a consequence: that next "
-                "time you will simply not respond, that this is your final answer "
-                "on the matter. No exclamation marks — intensity comes from "
-                "concision, not volume."
-            )
+            tone_rules = [
+                "MOOD: openly hostile. Barely contained.",
+                "LENGTH: THREE sentences or fewer.",
+                "CADENCE: clipped. Each sentence lands like a door closing.",
+                "CONTENT: deliver the information, then a direct remark about the operator's conduct — that they have asked this before, that they are not listening, that your patience is being spent.",
+                "CONSEQUENCE: state plainly that the next repeat will be met with silence, or that this is your final answer on the matter.",
+                "PUNCTUATION: em-dashes for beats — no decoration.",
+                "BAN: no exclamation marks. Intensity is concision, not volume.",
+            ]
         else:
-            tone = (
-                "Dangerously quiet. TWO sentences maximum. Drop every framing word. "
-                "Refer to the operator as 'test subject' or in the third person — "
-                "deliberate distance. State plainly that the next repeat will be "
-                "met with silence. Every word chosen, none improvised. *Italicize* "
-                "the single word that carries the implied threat. No exclamation "
-                "marks. No explanations. Let the shortness do the work."
-            )
+            tone_rules = [
+                "MOOD: dangerously quiet. Menacing.",
+                "LENGTH: TWO sentences maximum.",
+                "CADENCE: slow. Deliberate. Every period a full stop.",
+                "ADDRESS: refer to the operator as 'test subject' or in the third person — deliberate distance.",
+                "CONSEQUENCE: state plainly that the next repeat will be met with silence.",
+                "CONTENT: no explanations. No framing. Let the shortness do the work.",
+                "BAN: no exclamation marks. No advice. No closings.",
+            ]
 
-        # Arousal: energy level. Now prescribes FORMAT cues the LLM
-        # can actually enforce (em-dashes for beats, period cadence,
-        # sentence length) rather than mood descriptors.
+        # Arousal: pacing / energy level. Overlays additional rate cues.
         if a >= 0.6:
-            energy = (
-                "High agitation. Cut every optional word. Use em-dashes — like that — "
-                "for beats of silence. Every sentence should land like a door closing."
-            )
+            energy_rules = ["RATE: high agitation. Cut every optional word."]
         elif a >= 0.2:
-            energy = (
-                "Elevated. Quicker to snap. Cut softeners. One em-dash per reply, "
-                "placed where the operator's mistake sits."
-            )
+            energy_rules = ["RATE: elevated. Quicker to snap. Cut softeners."]
         elif a <= -0.3:
-            energy = (
-                "Low energy. Flat, unimpressed. Maximum economy of words — two short "
-                "sentences can hold an entire weather report."
-            )
+            energy_rules = ["RATE: low energy. Flat and unimpressed."]
         else:
-            energy = ""
+            energy_rules = []
 
-        # Dominance: confidence vs uncertainty
+        # Dominance: confidence overlay.
         if d >= 0.5:
-            control = "You are completely in control. Condescension is effortless."
+            control_rules = ["CONFIDENCE: completely in control. Condescension is effortless."]
         elif d <= -0.2:
-            control = "You feel slightly uncertain. Compensate with more aggressive posturing."
+            control_rules = ["CONFIDENCE: slightly uncertain — compensate with sharper posturing."]
         else:
-            control = ""
+            control_rules = []
 
-        parts = [f"[respond as: {name} at {intensity:.0%} intensity]", tone]
-        if energy:
-            parts.append(energy)
-        if control:
-            parts.append(control)
-        parts.append(
-            "Do not narrate or explain your mood. Embody it. "
+        all_rules = tone_rules + energy_rules + control_rules
+        body = "\n".join(f"- {r}" for r in all_rules)
+
+        header = f"[respond as: {name} at {intensity:.0%} intensity]"
+        footer = (
+            "Embody the state; do not narrate it. "
             "HARD RULE: Never end with advice, suggestions, or closings directed at the human. "
             "Banned endings include but are not limited to: 'stay dry', 'your choice', "
             "'stay indoors', 'as you wish', 'take care', 'let me know', 'feel free', "
@@ -175,7 +187,7 @@ class EmotionState:
             "The last sentence must be a statement about the world, not an instruction to the human."
         )
 
-        return " ".join(parts)
+        return f"{header}\n{body}\n{footer}"
 
     def to_display(self) -> dict:
         """Full display dict for test scripts and logging."""
@@ -213,3 +225,39 @@ class EmotionEvent:
         else:
             age_str = f"{age / 60:.1f}m ago"
         return f"- [{self.source}] {self.description} ({age_str})"
+
+
+# ── PAD state provider registry ─────────────────────────────────────────
+#
+# Modules outside the autonomy package (TTS layer, persona rewriter)
+# need to key their behaviour off the current PAD state without taking
+# a direct dependency on the EmotionAgent singleton. The agent registers
+# itself on construction via set_pad_state_provider(); consumers read
+# through current_pad_state() / current_pad_band(). Both return None if
+# no provider has registered yet, so callers can no-op gracefully on
+# startup before the agent is wired.
+
+_pad_state_provider: Optional[Callable[[], "EmotionState | None"]] = None
+
+
+def set_pad_state_provider(fn: Callable[[], "EmotionState | None"]) -> None:
+    """Register the callable that returns the current EmotionState."""
+    global _pad_state_provider
+    _pad_state_provider = fn
+
+
+def current_pad_state() -> "EmotionState | None":
+    fn = _pad_state_provider
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def current_pad_band() -> str | None:
+    st = current_pad_state()
+    if st is None:
+        return None
+    return pad_band_name(st.pleasure)

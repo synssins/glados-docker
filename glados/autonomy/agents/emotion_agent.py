@@ -22,7 +22,7 @@ from loguru import logger
 from .._clock import emotion_now
 from ..config import EmotionConfig, HEXACOConfig
 from ..emotion_loader import load_emotion_config, EmotionHEXACO
-from ..emotion_state import EmotionEvent, EmotionState
+from ..emotion_state import EmotionEvent, EmotionState, set_pad_state_provider
 
 
 # Phase Emotion-E: pure helper so tests and the instance method share
@@ -297,6 +297,11 @@ class EmotionAgent(Subagent):
         self._personality_prompt = build_personality_prompt(self._ecfg.hexaco)
         self._trigger = threading.Event()
         self._repetition_tracker = self._build_repetition_tracker()
+        # Register as the process-wide PAD state provider so TTS + persona
+        # rewriter can key off current pleasure without importing the
+        # agent directly. Last-registered-wins is fine — there is at
+        # most one EmotionAgent per process.
+        set_pad_state_provider(lambda: self._state)
 
     def _build_repetition_tracker(self) -> "RepetitionTracker":
         """Build a semantic-aware tracker if BGE embeddings are
