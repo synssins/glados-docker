@@ -752,7 +752,7 @@ class MQTTConfig(BaseModel):
     anonymously (useful for local dev brokers without auth).
 
     Typical HA Mosquitto setup:
-      broker_host = 10.0.0.20
+      broker_host = <HA host address>
       broker_port = 1883
       auth_enabled = true
       username = glados-bridge

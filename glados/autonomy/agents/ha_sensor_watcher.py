@@ -104,7 +104,7 @@ class HomeAssistantSensorSubagent(Subagent):
     def __init__(
         self,
         config: SubagentConfig,
-        ha_ws_url: str = "ws://10.0.0.20:8123/api/websocket",
+        ha_ws_url: str = "",  # caller must provide; no committed default
         ha_token: str = "",
         entity_categories: dict[str, str] | None = None,
         debounce_seconds: float = 5.0,
@@ -153,7 +153,9 @@ class HomeAssistantSensorSubagent(Subagent):
             _audio = Path(os.environ.get("GLADOS_AUDIO", "/app/audio_files"))
             self._maintenance_audio_dir = _audio / "glados_announcements" / "maintenance"
             self._serve_dir = _audio / "glados_ha"
-            self._serve_host = "10.0.0.10"
+            # Fall back to an unroutable placeholder. Real deployments
+            # always resolve serve_host via cfg.serve_host above.
+            self._serve_host = os.environ.get("GLADOS_SERVE_HOST", "localhost")
             self._serve_port = 5051
             self._eid_maintenance = "input_boolean.glados_maintenance_mode"
             self._eid_maintenance_speaker = "input_text.glados_maintenance_speaker"

@@ -1345,16 +1345,31 @@ class Glados:
             # Play via HA media_player — query HA directly for maintenance state
             try:
                 import httpx
-                ha_url = getattr(self.audio_io, "ha_url", "http://10.0.0.20:8123")
-                ha_token = getattr(self.audio_io, "ha_token", "***REVOKED-HA-TOKEN***")
-                serve_host = getattr(self.audio_io, "serve_host", "10.0.0.10")
+                ha_url = getattr(self.audio_io, "ha_url", None)
+                ha_token = getattr(self.audio_io, "ha_token", None)
+                serve_host = getattr(self.audio_io, "serve_host", None)
                 serve_port = getattr(self.audio_io, "serve_port", 5051)
+                if not ha_url or not ha_token or not serve_host:
+                    # No fallback — audio_io must be configured with real
+                    # credentials. Committing defaults is a security leak
+                    # (2026-04-23 incident: a real long-lived HA token
+                    # sat in this file for 11 days).
+                    logger.warning(
+                        "startup-audio: ha_url / ha_token / serve_host "
+                        "missing from audio_io; skipping HA playback"
+                    )
+                    return
 
                 # Resolve speaker: check HA maintenance state directly (beats the race)
                 override = self._resolve_startup_speaker(ha_url, ha_token)
                 if override is not None and len(override) == 0:
                     return  # silent mode — skip entirely
-                entities = override or getattr(self.audio_io, "media_player_entities", ["media_player.living_speaker"])
+                entities = override or getattr(self.audio_io, "media_player_entities", [])
+                if not entities:
+                    logger.warning(
+                        "startup-audio: no media_player entities configured; skipping"
+                    )
+                    return
 
                 media_url = f"http://{serve_host}:{serve_port}/{chosen.name}"
                 httpx.post(

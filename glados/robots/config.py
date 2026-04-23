@@ -13,7 +13,7 @@ from pydantic import BaseModel
 class RobotNodeConfig(BaseModel):
     """Configuration for a single ESP32 robot node."""
 
-    url: str                                # e.g. "http://192.168.100.181"
+    url: str                                # e.g. "http://robot.local"
     enabled: bool = True
     name: str = ""                          # Human-readable (auto-populated from node if blank)
     token: str = ""                         # Per-node auth override (falls back to global auth_token)
