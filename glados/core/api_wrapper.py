@@ -49,6 +49,31 @@ _engine: Glados | None = None
 _api_lock = threading.Lock()
 _response_timeout: float = 45.0
 
+# Lazy singleton for /v1/audio/transcriptions — avoids paying the
+# ~2 s ONNX session init at container startup for operators who don't
+# use voice input or the doorbell screener.
+_container_transcriber = None
+_container_transcriber_lock = threading.Lock()
+
+
+def _get_container_transcriber():
+    """Return a process-wide CTC transcriber, initializing on first use.
+
+    Uses the bundled `models/ASR/nemo-parakeet_tdt_ctc_110m.onnx`.
+    Thread-safe; subsequent callers reuse the same instance.
+    """
+    global _container_transcriber
+    if _container_transcriber is None:
+        with _container_transcriber_lock:
+            if _container_transcriber is None:
+                from glados.ASR.ctc_asr import AudioTranscriber as CTCTranscriber
+                _container_transcriber = CTCTranscriber()
+                logger.info(
+                    "Container STT transcriber initialized (CTC, {})",
+                    _container_transcriber.__class__.__name__,
+                )
+    return _container_transcriber
+
 # Matches <think>...</think>, <thinking>...</thinking>, <reasoning>...</reasoning>
 # including cross-line content. Qwen3 (and GLM-4.7, DeepSeek, MiniMax) emit
 # these blocks when "thinking mode" is active and they must not reach the UI.
@@ -2377,8 +2402,78 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_emotion_push_event()
         elif self.path == "/v1/audio/speech":
             self._handle_audio_speech()
+        elif self.path == "/v1/audio/transcriptions":
+            self._handle_audio_transcriptions()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
+
+    def _handle_audio_transcriptions(self) -> None:
+        """OpenAI-compatible STT endpoint. Accepts multipart/form-data
+        with a `file` field (WAV/MP3/ogg) and returns `{"text": "..."}`.
+        Uses the bundled CTC transcriber — no external Speaches.
+
+        The transcriber is a lazy module-level singleton so the ~2 s
+        ONNX session init happens on first request only.
+        """
+        import cgi
+        import io
+        import tempfile
+
+        ctype = self.headers.get("Content-Type", "")
+        if not ctype.lower().startswith("multipart/form-data"):
+            self._send_json({"error": {"message": "expected multipart/form-data"}}, 400)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length <= 0:
+                self._send_json({"error": {"message": "empty body"}}, 400)
+                return
+            env = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype,
+                   "CONTENT_LENGTH": str(length)}
+            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
+                                    environ=env, keep_blank_values=True)
+        except Exception as exc:
+            self._send_json({"error": {"message": f"multipart parse failed: {exc}"}}, 400)
+            return
+
+        file_field = form["file"] if "file" in form else None
+        if file_field is None or not getattr(file_field, "file", None):
+            self._send_json({"error": {"message": "`file` field is required"}}, 400)
+            return
+
+        audio_bytes = file_field.file.read()
+        if not audio_bytes:
+            self._send_json({"error": {"message": "empty audio file"}}, 400)
+            return
+
+        suffix = ".wav"
+        filename = getattr(file_field, "filename", "") or ""
+        if "." in filename:
+            suffix = "." + filename.rsplit(".", 1)[-1].lower()
+
+        try:
+            transcriber = _get_container_transcriber()
+        except Exception as exc:
+            logger.exception("STT transcriber init failed")
+            self._send_json({"error": {"message": f"transcriber unavailable: {exc}"}}, 503)
+            return
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                f.write(audio_bytes)
+                tmp_path = Path(f.name)
+            text = transcriber.transcribe_file(tmp_path) or ""
+            self._send_json({"text": text.strip()})
+        except Exception as exc:
+            logger.exception("STT transcription failed")
+            self._send_json({"error": {"message": str(exc)}}, 500)
+        finally:
+            if tmp_path and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     def _handle_audio_speech(self) -> None:
         """OpenAI-compatible TTS endpoint. Synthesizes locally via the

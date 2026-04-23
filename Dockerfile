@@ -45,6 +45,15 @@ RUN curl -fsSL --retry 5 --retry-delay 2 -o /app/models/bge-small-en-v1.5.onnx \
 # Ported from dnhkng/GLaDOS. No espeak, no HF, no Speaches required.
 COPY models/TTS/ ./models/TTS/
 
+# Parakeet CTC ASR + Silero VAD — bundled for self-contained STT.
+# ~440 MB. Enables /v1/audio/transcriptions without external Speaches.
+COPY models/ASR/ ./models/ASR/
+
+# Pin the models root so `resource_path()` resolves regardless of cwd
+# or how the package was installed (parents[3] fallback doesn't line
+# up with the container's `/app/glados/utils/…` layout).
+ENV GLADOS_MODELS=/app/models
+
 # Application source
 COPY glados/ ./glados/
 COPY configs/config.example.yaml ./configs/config.example.yaml

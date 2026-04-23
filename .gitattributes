@@ -25,3 +25,4 @@ Dockerfile eol=lf
 *.pkl binary
 models/TTS/*.onnx filter=lfs diff=lfs merge=lfs -text
 models/TTS/*.pkl filter=lfs diff=lfs merge=lfs -text
+models/ASR/*.onnx filter=lfs diff=lfs merge=lfs -text

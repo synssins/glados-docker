@@ -58,11 +58,14 @@ logs/
 
 # Data and models — too large for git, host-mounted volumes
 data/
-# `models/` is gitignored by default, but models/TTS/ is an exception:
-# the GLaDOS voice + ONNX phonemizer are bundled in the image so the
-# container is self-contained (tracked via Git LFS — see .gitattributes).
+# `models/` is gitignored by default, but models/TTS/ and models/ASR/
+# are exceptions: the GLaDOS voice + ONNX phonemizer + CTC transcriber
+# + Silero VAD are bundled in the image so the container is
+# self-contained (tracked via Git LFS — see .gitattributes). BGE is
+# fetched at build time, not committed.
 models/*
 !models/TTS/
+!models/ASR/
 models/TTS/bge-*
 audio_files/
 
