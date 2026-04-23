@@ -340,7 +340,7 @@ New config keys in `glados_config.yaml`:
 ```yaml
 auth:
   require_api_session: true
-  lan_allowlist: ["192.168.1.0/24"]
+  lan_allowlist: ["10.0.0.0/24"]
 ```
 
 ---

@@ -2,7 +2,7 @@
 
 **Status as of 2026-04-19 end-of-session:** partial fix deployed; core architectural question still open.
 
-**Live image:** `ghcr.io/synssins/glados-docker:latest` @ commit `734e1f7`, running on 10.0.0.50.
+**Live image:** `ghcr.io/synssins/glados-docker:latest` @ commit `734e1f7`, running on the operator Docker host.
 
 **Test count:** 374 passing.
 
@@ -258,7 +258,7 @@ Read docs/disambiguation-research.md first — it documents the
 full chain of fixes attempted this session and the open
 architectural question.
 
-Container image 734e1f7 is live on 10.0.0.50. Retest
+Container image 734e1f7 is live on the operator Docker host. Retest
 sequence on the webui chat:
 
   1. "Turn the desk lamp down by half"

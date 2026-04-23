@@ -452,7 +452,7 @@ Next-session work:
 
 Discovered 2026-04-19 while verifying the chat-priority gate
 (commit `ad24c20`). The gate correctly holds autonomy off during
-chat, but the underlying B60 Ollama at `10.0.0.10:11434` is
+chat, but the underlying B60 Ollama at `the AIBox LAN host:11434` is
 returning 50–90s wall times for trivial requests that Ollama's own
 stats say should be near-instant:
 

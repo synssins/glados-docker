@@ -1,7 +1,7 @@
 # GLaDOS Test-Battery — Findings & Remediation Plan
 
 **Date:** 2026-04-19 overnight session; revised 2026-04-20 after operator feedback; session-delivery log last updated 2026-04-20 late afternoon.
-**Trigger:** 435-utterance live battery against `a13e9bd` on 10.0.0.50. Pass rate 55.9% (243 PASS / 154 FAIL / 38 QUERY_OK), with systemic failures concentrated entirely on Tier 2.
+**Trigger:** 435-utterance live battery against `a13e9bd` on the operator Docker host. Pass rate 55.9% (243 PASS / 154 FAIL / 38 QUERY_OK), with systemic failures concentrated entirely on Tier 2.
 **Status:** Phase 8.0 delivered + infrastructure cleanups beyond original scope; Phase 8.1–8.9 queued.
 
 ---
@@ -16,7 +16,7 @@ Work actually shipped in this session, in chronological order. Reference for Pha
 - **Models on B60 (ollama-ipex, port 11434):** `qwen3:8b` (5.2 GB Q4_K_M), `qwen3:14b` (9.3 GB Q4_K_M), `qwen2.5vl:7b` (6.0 GB Q4_K_M). Production operator-selected model is `qwen3:14b` as of session end.
 - **OpenWebUI deployed** as Docker container `open-webui` on port 3000 for out-of-GLaDOS manual testing.
 
-### Container fixes (all pushed, built, deployed to 10.0.0.50)
+### Container fixes (all pushed, built, deployed to the operator Docker host)
 
 | Commit | Subject |
 |---|---|
@@ -48,7 +48,7 @@ Work actually shipped in this session, in chronological order. Reference for Pha
 - **Phase 8.1 COMPLETE** (2026-04-20 late evening). Change 14.1 in `docs/CHANGES.md`. Twin dedup by HA device_id, 11-pair opposing-token penalty, operator-editable WebUI card under Integrations → Home Assistant with hot-reload via new `/api/reload-disambiguation-rules`. 551 tests pass.
 - **Phase 8.2 COMPLETE** (2026-04-20 late evening). Change 14.2. 28-verb command set + 5 shipped ambient-state regexes expand the precheck gate; operator-editable extras on a new "Command recognition" card on the Personality page with a live test input. `/api/precheck/test` endpoint. Same reload path as 8.1. 569 tests pass.
 - **Phase 8.3 COMPLETE** (2026-04-20). Semantic retrieval via BGE-small-en-v1.5 ONNX over a 3482-entity corpus, device-diversity filter on top-K, qualifier-scan gated behind primary-retrieval-empty. Cuts planner prompt from ~3000 to ~400 tokens. Gate-2 live probe confirmed.
-- **Phase 8.4 COMPLETE** (2026-04-20). StateVerifier waits for `state_changed` after every `call_service`; strict mode replaces optimistic speech with an honest-failure line when a transition doesn't land. `verification_mode` / `verification_timeout_s` exposed in the WebUI Disambiguation rules card with hot-reload. Live-verified on 10.0.0.50. 697 tests pass.
+- **Phase 8.4 COMPLETE** (2026-04-20). StateVerifier waits for `state_changed` after every `call_service`; strict mode replaces optimistic speech with an honest-failure line when a transition doesn't land. `verification_mode` / `verification_timeout_s` exposed in the WebUI Disambiguation rules card with hot-reload. Live-verified on the operator Docker host. 697 tests pass.
 - **Phase 8.5 COMPLETE** (2026-04-21). Utterance → area/floor inference via `area_inference.py`; 4-floor split-level house keyword table; SemanticIndex `_entity_area_ids`/`_entity_floor_ids` parallel arrays with persist/load (schema v2); entity→device area cascade resolves ~290 entities HA publishes area_id sparsely on. Operator-editable `floor_aliases`/`area_aliases` on the Disambiguation rules card. Live-verified: `downstairs → ground_level`, `upstairs → bedroom_level`, `backyard → back_yard`. 727 tests pass.
 - **Phase 8.6 COMPLETE** (2026-04-21, reframed). Scoping showed all 9 compound battery FAILs had "0 state changes" — the LLM silently dropped actions before emission, not a loop issue. Pure planner/executor rename would not have helped. Fixed at two layers: (a) two concrete compound few-shots in the disambiguator system prompt + "CRITICAL: one action per verb" directive, (b) `min_expected_action_count()` helper + retry-once-on-dropout when `len(parsed_actions) < expected`. Live-probe of 5 compound utterances showed all 5 emit the correct action count; no retries fired because few-shots alone fixed it. 740 tests pass.
 - **Phase 8.7 COMPLETE** (2026-04-21). Quip library + composer + three response modes replacing LLM-pass-through: `quip` (pick a Portal-voice line from `configs/quips/`, never leaks device names), `LLM_safe` (dedicated narrow Qwen3 call that sees only intent + outcome + mood), and `chime`/`silent` (audio-side hooks). WebUI Response behavior card under Audio & Speakers + Quip editor card under Personality (GET/PUT/DELETE/test API with path-escape protection). Live-verified: quip mode (`"Off. Efficient."`), LLM_safe mode (`"The device has been activated."`, `"Three of your lighting systems have been dimmed, but the fourth remains unchanged."`), all device-name-free. 788 tests pass. Seed content ~60 lines; content expansion to ~450 lines is a deferred follow-up.
@@ -288,7 +288,7 @@ Each phase re-runs the 435-test battery AND `home-assistant-datasets` before mer
 
 **Tests:** 23 unit tests for `StateVerifier`, 6 for `expected_from_service_call` (including the `brightness_pct → brightness 0-255` translation that caught a live false-negative), 5 for the Disambiguator integration. Full suite 697 passed / 3 skipped.
 
-**Live-verified on 10.0.0.50:** happy path (`turn off` → state_verified=true, elapsed_s ≈ 0.06), scene path (skipped, state_verified=null, speech preserved), and the brightness_pct fix (`"Set the desk lamp to 10%"` moved from state_verified=false/timed_out:3.0s → state_verified=true, elapsed_s=0.05).
+**Live-verified on the operator Docker host:** happy path (`turn off` → state_verified=true, elapsed_s ≈ 0.06), scene path (skipped, state_verified=null, speech preserved), and the brightness_pct fix (`"Set the desk lamp to 10%"` moved from state_verified=false/timed_out:3.0s → state_verified=true, elapsed_s=0.05).
 
 **Commits:** [d9d385e](https://github.com/synssins/glados-docker/commit/d9d385e) (StateVerifier + wiring), [a7a2ea6](https://github.com/synssins/glados-docker/commit/a7a2ea6) (audit plumbing), [73ba1a7](https://github.com/synssins/glados-docker/commit/73ba1a7) (brightness_pct → brightness translation).
 
@@ -495,7 +495,7 @@ Output grammar-constrained (Qwen3 native) to English only, no JSON wrapping.
 **Tests:** +11 new container-side (`tests/test_test_harness_config.py`), +14 harness-side scoring, +13 adapter. 970 passed / 3 skipped on the container; 38/38 on harness side.
 
 **Deferred** (explicitly out of scope, require infra the operator doesn't yet have):
-- Nightly full-battery run against live HA — needs a self-hosted GitHub Actions runner on 192.168.1.x subnet. The private HA token + GLaDOS SSH creds in SESSION_STATE would have to live on that runner.
+- Nightly full-battery run against live HA — needs a self-hosted GitHub Actions runner on the operator LAN subnet. The private HA token + GLaDOS SSH creds in SESSION_STATE would have to live on that runner.
 - 30-test sanity subset on every PR — same constraint.
 
 ---

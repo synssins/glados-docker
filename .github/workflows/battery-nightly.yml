@@ -1,9 +1,9 @@
 name: Battery (self-hosted, manual dispatch only)
 
 # Runs the private 435-row GLaDOS battery against the deployed container
-# on 10.0.0.50 + the HA instance on 10.0.0.20 via a self-hosted
-# runner on AIBox (`glados-lan` label). Cloud runners can't reach those
-# IPs; only the AIBox agent can.
+# on the operator's LAN via a self-hosted runner (`glados-lan` label).
+# Cloud runners can't reach LAN hosts; only the self-hosted agent can.
+# Host addresses come from GitHub Actions secrets — never hard-coded.
 #
 # MANUAL DISPATCH ONLY — no cron. The battery flips real physical
 # lights and switches in an occupied household; running it on a
@@ -40,17 +40,21 @@ jobs:
     timeout-minutes: 60
 
     env:
-      HA_URL: http://10.0.0.20:8123
+      # All host addresses come from GitHub Actions secrets/vars so the
+      # operator's LAN topology isn't committed to the repo. Required
+      # secrets: HA_URL, HA_TOKEN, GLADOS_API_URL, GLADOS_SSH_HOST,
+      # GLADOS_SSH_PASSWORD. Required vars: GLADOS_HARNESS_DIR.
+      HA_URL: ${{ secrets.HA_URL }}
       HA_TOKEN: ${{ secrets.HA_TOKEN }}
-      GLADOS_API: http://10.0.0.50:8015/v1/chat/completions
-      GLADOS_TEST_HARNESS_URL: http://10.0.0.50:8015/api/test-harness/noise-patterns
-      GLADOS_SSH_HOST: 10.0.0.50
+      GLADOS_API: ${{ secrets.GLADOS_API_URL }}/v1/chat/completions
+      GLADOS_TEST_HARNESS_URL: ${{ secrets.GLADOS_API_URL }}/api/test-harness/noise-patterns
+      GLADOS_SSH_HOST: ${{ secrets.GLADOS_SSH_HOST }}
       GLADOS_SSH_USER: root
       GLADOS_SSH_PASSWORD: ${{ secrets.GLADOS_SSH_PASSWORD }}
       PYTHONIOENCODING: utf-8
       MAX_TESTS: ${{ inputs.max_tests || '50' }}
       START_IDX: ${{ inputs.start_idx || '0' }}
-      HARNESS_DIR: C:\src\glados-test-battery
+      HARNESS_DIR: ${{ vars.GLADOS_HARNESS_DIR }}
 
     steps:
       - name: Checkout container repo

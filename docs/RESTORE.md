@@ -10,7 +10,7 @@
 
 The WebUI refactor splits `glados/webui/tts_ui.py` (11,393 lines, monolithic HTML+CSS+JS+Python) into per-page modules and extracts static assets. If the refactor leaves the working tree broken mid-flight — stale f-string concatenation, missing imports, 500s from the WebUI — use the commands below to get back to a known-good state.
 
-The deployed container on `10.0.0.50` runs `ghcr.io/synssins/glados-docker:latest` which is pinned to the pre-refactor image. **Production is not at risk from local refactor work.** This file is strictly about the working tree.
+The deployed container on `the operator Docker host` runs `ghcr.io/synssins/glados-docker:latest` which is pinned to the pre-refactor image. **Production is not at risk from local refactor work.** This file is strictly about the working tree.
 
 ## Uncommitted files at checkpoint time
 
