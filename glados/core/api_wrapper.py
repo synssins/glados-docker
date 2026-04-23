@@ -2293,8 +2293,26 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_test_harness_noise_patterns()
         elif self.path == "/api/emotion/state":
             self._handle_get_emotion_state()
+        elif self.path == "/v1/voices" or self.path == "/v1/audio/voices":
+            self._handle_voices()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
+
+    def _handle_voices(self) -> None:
+        """Enumerate the TTS voices the container can synthesize
+        locally. Reads `list_available_voices()` which scans the
+        bundled `models/TTS/` directory. No external service hit.
+        """
+        try:
+            from glados.TTS import list_available_voices
+            voices = list_available_voices()
+            self._send_json({
+                "voices": [{"id": v, "name": v} for v in voices],
+                "object": "list",
+            })
+        except Exception as exc:
+            logger.exception("voices enumeration failed")
+            self._send_json({"error": {"message": str(exc)}}, 500)
 
     def _handle_test_harness_noise_patterns(self) -> None:
         """Phase 8.9 — return the operator-edited noise-entity globs
@@ -2357,8 +2375,74 @@ class APIHandler(BaseHTTPRequestHandler):
             self._handle_emotion_reset()
         elif self.path == "/api/emotion/push-event":
             self._handle_emotion_push_event()
+        elif self.path == "/v1/audio/speech":
+            self._handle_audio_speech()
         else:
             self._send_json({"error": {"message": "Not found"}}, 404)
+
+    def _handle_audio_speech(self) -> None:
+        """OpenAI-compatible TTS endpoint. Synthesizes locally via the
+        bundled VITS ONNX voice — no Speaches HTTP round-trip. Accepts:
+            input (required, str) — text to synthesize
+            voice (optional, str, default "glados") — voice name stem
+            response_format (optional, "mp3"|"wav"|"ogg", default "mp3")
+            length_scale / noise_scale / noise_w (optional floats) —
+                Piper inference params; override voice defaults.
+        """
+        import io
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except Exception as exc:
+            self._send_json({"error": {"message": f"invalid JSON: {exc}"}}, 400)
+            return
+
+        text = (payload.get("input") or "").strip()
+        if not text:
+            self._send_json({"error": {"message": "`input` is required"}}, 400)
+            return
+        voice = payload.get("voice") or "glados"
+        fmt = (payload.get("response_format") or "mp3").lower()
+        if fmt not in ("mp3", "wav", "ogg"):
+            self._send_json({"error": {"message": f"unsupported response_format: {fmt}"}}, 400)
+            return
+
+        kwargs: dict[str, float] = {}
+        for k in ("length_scale", "noise_scale", "noise_w"):
+            if k in payload and payload[k] is not None:
+                try:
+                    kwargs[k] = float(payload[k])
+                except (TypeError, ValueError):
+                    pass
+
+        try:
+            import soundfile as sf
+            from glados.TTS import get_speech_synthesizer
+            synth = get_speech_synthesizer(voice)
+            audio = synth.generate_speech_audio(text, **kwargs)
+            if audio.size == 0:
+                self._send_json({"error": {"message": "synthesis produced empty audio"}}, 500)
+                return
+            buf = io.BytesIO()
+            sf.write(buf, audio, synth.sample_rate, format=fmt.upper())
+            buf.seek(0)
+            data = buf.read()
+        except FileNotFoundError as exc:
+            self._send_json({"error": {"message": f"voice '{voice}' not found: {exc}"}}, 404)
+            return
+        except Exception as exc:
+            logger.exception("audio/speech synthesis failed")
+            self._send_json({"error": {"message": str(exc)}}, 500)
+            return
+
+        content_type = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}[fmt]
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="speech.{fmt}"')
+        self.end_headers()
+        self.wfile.write(data)
 
     def _handle_reload_disambiguation_rules(self) -> None:
         """Re-read disambiguation.yaml and hot-swap the live rules on
