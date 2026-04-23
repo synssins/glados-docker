@@ -420,10 +420,38 @@ class ModelOptionsConfig(BaseModel):
         }
 
 
+class EmotionTTSBand(BaseModel):
+    """Piper TTS parameter triple for one emotional-state band.
+
+    Defaults match Piper's baseline so a band with all-default values
+    produces no audible override — the rolled-attitude or default_tts
+    path wins instead. Operator tunes individual values to shape how
+    GLaDOS SOUNDS when that band applies.
+    """
+    length_scale: float = 1.0
+    noise_scale: float = 0.667
+    noise_w: float = 0.8
+
+
+class EmotionTTSConfig(BaseModel):
+    """Per-band TTS overrides keyed off pleasure.
+
+    Band boundaries live in glados.autonomy.emotion_state.pad_band_name
+    — changing them there is the single source of truth; this struct
+    only holds the Piper params that each band produces. When every
+    field in a band equals the Piper baseline (1.0 / 0.667 / 0.8) the
+    override is effectively disabled for that band (silent no-op).
+    """
+    annoyed:  EmotionTTSBand = EmotionTTSBand()
+    hostile:  EmotionTTSBand = EmotionTTSBand()
+    menacing: EmotionTTSBand = EmotionTTSBand()
+
+
 class PersonalityConfig(BaseModel):
     default_tts: TTSParams = TTSParams()
     hexaco: HEXACOPersonality = HEXACOPersonality()
     emotion: EmotionPersonality = EmotionPersonality()
+    emotion_tts: EmotionTTSConfig = EmotionTTSConfig()
     attitudes: list[AttitudeEntry] = []
     preprompt: list[PrepromptEntry] = []
     model_options: ModelOptionsConfig = ModelOptionsConfig()

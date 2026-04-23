@@ -2633,8 +2633,20 @@ class APIHandler(BaseHTTPRequestHandler):
         """Hot-swap the engine in THIS process. Called by the WebUI process
         (tts_ui.py, port 8052) after a config save so changes take effect
         without any container restart. Has to be an HTTP boundary because
-        tts_ui and api_wrapper run as separate processes."""
+        tts_ui and api_wrapper run as separate processes.
+
+        Also refreshes the process-level GladosConfigStore singleton so
+        consumers that read `cfg.<section>` directly (e.g. pad_to_tts_override
+        reading cfg.personality.emotion_tts) see the new on-disk values.
+        Without this, runtime changes to personality.yaml applied through
+        the WebUI would only reach the engine rebuild path — not the
+        standalone helpers that query cfg on every call.
+        """
         try:
+            try:
+                cfg.reload()
+            except Exception as cfg_exc:
+                logger.warning("Reload-engine: cfg.reload raised {}; proceeding", cfg_exc)
             ok = reload_engine()
             if ok:
                 self._send_json({"ok": True, "reloaded": True})

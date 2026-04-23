@@ -753,48 +753,92 @@ class TestPADToTTSOverride:
     match pad_band_name(); params must be monotonic (slower / flatter
     as pleasure gets more negative)."""
 
+    def _configure_bands(self, annoyed=None, hostile=None, menacing=None):
+        """Inject non-default values into cfg.personality.emotion_tts for
+        this test. Returns a (restore_fn) teardown hook. Tests that rely
+        on an override must call this — the shipped default is all-Piper-
+        defaults which deliberately returns None (silent no-op)."""
+        from glados.core.config_store import cfg
+        from glados.core.config_store import EmotionTTSBand
+        prev = cfg.personality.emotion_tts.model_copy(deep=True)
+        if annoyed:
+            cfg.personality.emotion_tts.annoyed = EmotionTTSBand(**annoyed)
+        if hostile:
+            cfg.personality.emotion_tts.hostile = EmotionTTSBand(**hostile)
+        if menacing:
+            cfg.personality.emotion_tts.menacing = EmotionTTSBand(**menacing)
+
+        def _restore():
+            cfg.personality.emotion_tts.annoyed = prev.annoyed
+            cfg.personality.emotion_tts.hostile = prev.hostile
+            cfg.personality.emotion_tts.menacing = prev.menacing
+        return _restore
+
     def test_positive_returns_none(self):
         from glados.core.attitude import pad_to_tts_override
         assert pad_to_tts_override(0.5) is None
         assert pad_to_tts_override(0.0) is None
         assert pad_to_tts_override(-0.29) is None
 
-    def test_annoyed_band_shape(self):
+    def test_all_default_band_returns_none(self):
+        """Fresh shipped config has every band at Piper defaults so the
+        override is effectively disabled — no audible voice change until
+        the operator tunes. This is the 'quiet no-op' contract."""
         from glados.core.attitude import pad_to_tts_override
-        out = pad_to_tts_override(-0.4)
-        assert out is not None
-        assert set(out) == {"length_scale", "noise_scale", "noise_w"}
+        assert pad_to_tts_override(-0.4) is None
+        assert pad_to_tts_override(-0.6) is None
+        assert pad_to_tts_override(-0.9) is None
 
-    def test_hostile_band_is_clipped(self):
+    def test_configured_annoyed_band_shape(self):
         from glados.core.attitude import pad_to_tts_override
-        annoyed = pad_to_tts_override(-0.4)
-        hostile = pad_to_tts_override(-0.6)
-        # Hostile clips speech (faster length_scale) than annoyed
-        assert hostile["length_scale"] < annoyed["length_scale"]
-        # Less vocal variation too
-        assert hostile["noise_scale"] < annoyed["noise_scale"]
-
-    def test_menacing_band_has_override(self):
-        """Menacing band must produce SOME non-default TTS params.
-        Exact shape is operator-tunable — don't lock specific values
-        here, only that an override is present and distinct from
-        baseline defaults."""
-        from glados.core.attitude import pad_to_tts_override
-        menacing = pad_to_tts_override(-0.9)
-        baseline_default = {"length_scale": 1.0, "noise_scale": 0.667, "noise_w": 0.8}
-        assert menacing is not None
-        # At least one param must differ from default or there's no
-        # audible distinction.
-        assert any(
-            menacing[k] != baseline_default[k]
-            for k in ("length_scale", "noise_scale", "noise_w")
+        restore = self._configure_bands(
+            annoyed={"length_scale": 0.9, "noise_scale": 0.5, "noise_w": 0.7},
         )
+        try:
+            out = pad_to_tts_override(-0.4)
+            assert out is not None
+            assert set(out) == {"length_scale", "noise_scale", "noise_w"}
+            assert out["length_scale"] == 0.9
+        finally:
+            restore()
+
+    def test_configured_hostile_clips_faster_than_annoyed(self):
+        from glados.core.attitude import pad_to_tts_override
+        restore = self._configure_bands(
+            annoyed={"length_scale": 0.95, "noise_scale": 0.55, "noise_w": 0.8},
+            hostile={"length_scale": 0.88, "noise_scale": 0.50, "noise_w": 0.75},
+        )
+        try:
+            annoyed = pad_to_tts_override(-0.4)
+            hostile = pad_to_tts_override(-0.6)
+            assert hostile["length_scale"] < annoyed["length_scale"]
+            assert hostile["noise_scale"] < annoyed["noise_scale"]
+        finally:
+            restore()
+
+    def test_configured_menacing_band_surfaces(self):
+        from glados.core.attitude import pad_to_tts_override
+        restore = self._configure_bands(
+            menacing={"length_scale": 1.1, "noise_scale": 0.4, "noise_w": 0.6},
+        )
+        try:
+            out = pad_to_tts_override(-0.9)
+            assert out is not None
+            assert out["length_scale"] == 1.1
+        finally:
+            restore()
 
     def test_bucket_boundary_matches_pad_band(self):
         """Override kicks in at p<=-0.3 — the 'annoyed' band boundary."""
         from glados.core.attitude import pad_to_tts_override
-        assert pad_to_tts_override(-0.29) is None
-        assert pad_to_tts_override(-0.30) is not None
+        restore = self._configure_bands(
+            annoyed={"length_scale": 0.9, "noise_scale": 0.5, "noise_w": 0.7},
+        )
+        try:
+            assert pad_to_tts_override(-0.29) is None
+            assert pad_to_tts_override(-0.30) is not None
+        finally:
+            restore()
 
     def test_set_pad_override_propagates_to_get_tts_params(self):
         """Downstream TTS reads get_tts_params(); the thread-local
@@ -827,6 +871,10 @@ class TestPADToTTSOverride:
         from glados.core import attitude
         # Clear any thread-local override
         attitude.set_pad_override(None)
+        # Configure a non-default menacing band so the override fires
+        restore = self._configure_bands(
+            menacing={"length_scale": 1.1, "noise_scale": 0.4, "noise_w": 0.6},
+        )
         # Register a deep-negative PAD state
         state = EmotionState(pleasure=-0.85, arousal=0.7, dominance=0.5)
         set_pad_state_provider(lambda: state)
@@ -835,11 +883,13 @@ class TestPADToTTSOverride:
             got = attitude.get_tts_params()
             expected = attitude.pad_to_tts_override(-0.85)
             assert got == expected
+            assert expected is not None  # sanity — configure_bands worked
             # Flip to pleased — override no longer applies
             state.pleasure = 0.5
             got2 = attitude.get_tts_params()
             assert got2 != expected  # fell through to baseline/attitude
         finally:
+            restore()
             set_pad_state_provider(lambda: None)
             attitude.set_pad_override(None)
 
