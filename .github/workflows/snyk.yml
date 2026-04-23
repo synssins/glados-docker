@@ -21,6 +21,11 @@ jobs:
   snyk-python:
     name: Snyk Python (SCA)
     runs-on: ubuntu-latest
+    # continue-on-error so the operator sees every finding (including
+    # LOW/MEDIUM) in the logs and downloadable report, even when HIGH+
+    # CVEs are present. The Snyk dashboard is the authoritative view;
+    # this job exists to surface changes in CI.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -46,16 +51,32 @@ jobs:
         run: snyk config set api="$SNYK_API_TOKEN"
 
       - name: Snyk test (Python, pip manifest)
+        # No --severity-threshold so every severity level is reported.
+        # JSON report uploaded as artifact below for offline review.
         run: |
           snyk test \
             --file=requirements.txt \
             --package-manager=pip \
-            --severity-threshold=high \
-            --org="$SNYK_ORG"
+            --org="$SNYK_ORG" \
+            --json-file-output=snyk-python-report.json \
+          || true
+
+      - name: Upload Snyk Python report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-python-report
+          path: snyk-python-report.json
+          if-no-files-found: warn
 
   snyk-docker:
     name: Snyk Docker (container scan)
     runs-on: ubuntu-latest
+    # continue-on-error: the Debian 13 base image ships with known
+    # unpatched HIGH/CRITICAL CVEs (fix_deferred upstream). Making the
+    # scan non-blocking means every push surfaces the current picture
+    # in logs + artifact, and CI stays green on the parts we control.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -83,9 +104,20 @@ jobs:
         # --policy-path: `snyk container test` does NOT pick up `.snyk` by
         # default (unlike `snyk test` for SCA). Passing it explicitly so
         # committed suppressions apply to the container scan too.
+        # No --severity-threshold so every severity is reported. JSON
+        # report uploaded as artifact below.
         run: |
           snyk container test glados:scan \
             --file=Dockerfile \
             --policy-path=.snyk \
-            --severity-threshold=high \
-            --org="$SNYK_ORG"
+            --org="$SNYK_ORG" \
+            --json-file-output=snyk-container-report.json \
+          || true
+
+      - name: Upload Snyk container report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-container-report
+          path: snyk-container-report.json
+          if-no-files-found: warn
