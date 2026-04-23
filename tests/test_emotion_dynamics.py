@@ -24,6 +24,7 @@ from dataclasses import replace
 import pytest
 
 from glados.autonomy.agents.emotion_agent import (
+    CommandFloodTracker,
     RepetitionTracker,
     make_embedding_similarity,
     repetition_pad_delta,
@@ -833,3 +834,182 @@ class TestRewriterPADBandOverlay:
         import inspect
         sig = inspect.signature(PersonaRewriter.rewrite)
         assert "pad_band" in sig.parameters
+
+
+# ── Command flood tracker (mixed rapid-fire detector) ───────────────────
+
+
+class TestCommandFloodTracker:
+    """Phase Emotion-H: catches rapid-fire DIFFERENT commands that
+    RepetitionTracker scores as zero repeats. Operator spec: 'repeated
+    commands of any kind, even just a lot of commands in a row.'"""
+
+    def _tracker(self, now_ref: list[float]) -> CommandFloodTracker:
+        """Deterministic-clock tracker — tests advance now_ref[0]."""
+        return CommandFloodTracker(clock=lambda: now_ref[0])
+
+    def test_below_threshold_fires_nothing(self):
+        now = [100.0]
+        t = self._tracker(now)
+        for _ in range(3):
+            assert t.record() is None
+            now[0] += 5
+
+    def test_fourth_command_in_window_fires_notable(self):
+        """4 commands within 120s trips the lowest band."""
+        now = [100.0]
+        t = self._tracker(now)
+        for _ in range(3):
+            t.record()
+            now[0] += 10
+        result = t.record()  # 4th command
+        assert result is not None
+        label, weight = result
+        assert label == "NOTABLE"
+        assert weight == pytest.approx(0.25)
+
+    def test_six_commands_trip_escalating(self):
+        now = [100.0]
+        t = self._tracker(now)
+        for _ in range(5):
+            t.record()
+            now[0] += 10
+        result = t.record()  # 6th
+        assert result is not None
+        assert result[0] == "ESCALATING"
+        assert result[1] == pytest.approx(0.50)
+
+    def test_eight_commands_trip_severe(self):
+        now = [100.0]
+        t = self._tracker(now)
+        for _ in range(7):
+            t.record()
+            now[0] += 10
+        result = t.record()  # 8th
+        assert result is not None
+        assert result[0] == "SEVERE"
+        assert result[1] == pytest.approx(0.80)
+
+    def test_commands_outside_window_drop_off(self):
+        """A slow conversation must NOT compound into a flood. Commands
+        paced 60s apart stay below the 4-in-120s threshold because the
+        oldest ones age out faster than new ones arrive."""
+        now = [100.0]
+        t = self._tracker(now)
+        results = []
+        for _ in range(6):
+            results.append(t.record())
+            now[0] += 60
+        # At every step, at most 3 timestamps are inside the 120s window.
+        # Nothing should ever fire a flood band.
+        assert all(r is None for r in results), f"slow pace fired flood: {results}"
+
+    def test_count_in_window_helper(self):
+        now = [100.0]
+        t = self._tracker(now)
+        t.record(); now[0] += 1
+        t.record(); now[0] += 1
+        t.record()
+        assert t.count_in_window() == 3
+        now[0] += 121  # advance past window
+        assert t.count_in_window() == 0
+
+    def test_mixed_commands_are_counted_the_same(self):
+        """The tracker is content-agnostic — semantically-distinct
+        commands in rapid succession count as a flood too."""
+        now = [100.0]
+        t = self._tracker(now)
+        for _ in range(3):
+            t.record()
+            now[0] += 1
+        result = t.record()
+        # Content of the commands is irrelevant; only density matters.
+        assert result is not None
+        assert result[0] == "NOTABLE"
+
+
+class TestEmotionAgentFloodIntegration:
+    """EmotionAgent.build_event_description composes repetition and
+    flood signals: either may tag; the larger weight wins. Same tag
+    format so tick's deterministic delta path picks up either path
+    identically."""
+
+    def _make_agent_with_flood(self, bands=None):
+        """Build an EmotionAgent-like stub that shares the flood
+        integration logic. Avoids constructing the full agent (which
+        reads config from disk and wires LLM). We subclass the real
+        class and no-op __init__ — the integration logic we need lives
+        in build_event_description only."""
+        from glados.autonomy.agents.emotion_agent import (
+            EmotionAgent, RepetitionTracker, CommandFloodTracker,
+        )
+        from glados.autonomy.emotion_loader import EmotionConfig
+
+        class _Fake(EmotionAgent):
+            def __init__(self, bands=None):  # type: ignore[no-untyped-def]
+                self._ecfg = EmotionConfig()
+                self._repetition_tracker = RepetitionTracker(self._ecfg)
+                now_ref = [100.0]
+                self._flood_tracker = CommandFloodTracker(
+                    clock=lambda: now_ref[0],
+                    bands=bands or (
+                        (8, "SEVERE", 0.80),
+                        (6, "ESCALATING", 0.50),
+                        (4, "NOTABLE", 0.25),
+                    ),
+                )
+                self._now_ref = now_ref
+
+        return _Fake(bands=bands)
+
+    def test_flood_fires_on_distinct_commands(self):
+        """Four different commands in a row — no semantic overlap — the
+        flood tag appears on the fourth."""
+        agent = self._make_agent_with_flood()
+        messages = [
+            "turn on the lights",
+            "play some music",
+            "set volume to forty percent",
+            "what time is it",  # <- 4th
+        ]
+        descs = []
+        for m in messages:
+            descs.append(agent.build_event_description(m))
+            agent._now_ref[0] += 5
+        assert "[SEVERITY:" not in descs[0]
+        assert "[SEVERITY:" not in descs[1]
+        assert "[SEVERITY:" not in descs[2]
+        assert "NOTABLE" in descs[3]
+        assert "rapid-fire" in descs[3].lower()
+
+    def test_repetition_weight_wins_when_larger(self):
+        """If repetition tagged weight 1.0 and flood only tagged 0.25
+        on the same turn, repetition wins (keep the more specific tag)."""
+        agent = self._make_agent_with_flood()
+        # Fire 5 identical messages to drive repetition to weight 1.0
+        for _ in range(5):
+            agent.build_event_description("what is the weather")
+            agent._now_ref[0] += 5
+        # On the 6th, both trackers fire. Repetition (weight 1.0) wins.
+        desc = agent.build_event_description("what is the weather")
+        assert "CRITICAL" in desc or "weight:1.00" in desc
+        assert "rapid-fire" not in desc.lower()
+
+    def test_flood_wins_when_larger(self):
+        """Novel commands (zero repetition weight) always let flood win."""
+        agent = self._make_agent_with_flood()
+        distinct = [
+            "turn on the kitchen lights",
+            "set the bedroom temp to seventy",
+            "start the dishwasher",
+            "lock the front door",
+            "pause music",
+            "next track",  # 6th, triggers ESCALATING
+        ]
+        desc = ""
+        for m in distinct:
+            desc = agent.build_event_description(m)
+            agent._now_ref[0] += 3
+        assert "ESCALATING" in desc
+        assert "weight:0.50" in desc
+        assert "rapid-fire" in desc.lower()
