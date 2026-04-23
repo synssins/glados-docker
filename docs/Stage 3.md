@@ -22,8 +22,9 @@ best-practice research, codebase reality check) surfaced the following pivots:
 
 Deployment context that shapes the threat model:
 
-- **Container is LAN-only.** `glados.example.com` is a split-horizon DNS
-  record resolving internally; there are no port forwards or DMZ rules.
+- **Container is LAN-only.** The operator's hostname is a split-horizon
+  DNS record resolving internally; there are no port forwards or DMZ
+  rules.
   Several "Critical" findings from the security review drop to Medium
   because of this — but the microphone-channel attacks (TV ads, ultrasonic
   injection, prompt injection via chat) are unchanged by network topology.

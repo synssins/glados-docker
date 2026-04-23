@@ -185,7 +185,7 @@ manual PEM upload path and live certificate status display.
 
 ### Verified working on operator's Docker host (10.0.0.50)
 
-- Let's Encrypt cert issued for `glados.example.com` (E7 issuer)
+- Let's Encrypt cert issued for operator hostname (E7 issuer)
 - HTTPS returns 200, valid chain, expires Jul 16, 2026
 - HA MCP tool calls execute end-to-end (e.g. `HassTurnOff` on kitchen
   cabinet light switch confirmed)
@@ -711,14 +711,12 @@ remains in `/api/tags` for fallback — operator's call when to
 - `c5f4ae0` — Commit 5: UX polish (toasts, engine-status, display font)
 - `0758174` — Commit 6: docs
 
-Note: an author-rewrite pass on 2026-04-18 (mailmap swap of
-`operator <operator@example.com>` → `synssins <synssins@gmail.com>`
-across all 71 commits) changed every hash on `main`. The hashes above
-are post-rewrite; the earlier SESSION_STATE prompt mentioned pre-rewrite
-hashes (`6984ac2` / `670e94f` / `eeca0ab` / `88a19a6` / `3c60aa4` /
-`2630a34`) that no longer exist on origin.
-
-**Plan file:** `C:\Users\Administrator\.claude\plans\mellow-purring-kitten.md`
+Note: an author-rewrite pass on 2026-04-18 (mailmap swap to the
+public-repo author identity) changed every hash on `main` across all
+71 commits. The hashes above are post-rewrite; the earlier
+SESSION_STATE prompt mentioned pre-rewrite hashes (`6984ac2` /
+`670e94f` / `eeca0ab` / `88a19a6` / `3c60aa4` / `2630a34`) that no
+longer exist on origin.
 
 ### What landed
 
