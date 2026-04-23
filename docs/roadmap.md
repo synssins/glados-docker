@@ -646,6 +646,62 @@ models and populate a dropdown.
 
 ---
 
+## Emotion system follow-ups (TODO — 2026-04-23)
+
+Three items surfaced during Phase Emotion A–I (see CHANGES.md
+Change 22) that are worth picking up later but were not blockers.
+
+### "Acknowledged but didn't perform" signal (small)
+
+**Context:** operator-approved frustration scenario — GLaDOS
+verbally commits to an action ("Turning off the lights now") but
+the action doesn't actually fire at HA. Today the emotion agent
+only sees the text reply; it can't tell that the device never
+changed state. Legitimate escalation trigger when it happens.
+
+**Suggested scope:**
+
+- HA state-verification hook compares the resolver's promised
+  state delta against the mirror cache N seconds later.
+- On mismatch, push an EmotionEvent with a `[SEVERITY:NOTABLE]`
+  tag and short description ("promised off, light still on").
+- Feeds the existing deterministic-delta path without any LLM
+  involvement.
+
+**Not scoped yet.** Would need a small verification job scheduler
+and careful de-duplication against the regular command-ack race
+(`call_service` timeouts sometimes indicate late success, not
+failure — see Tier 2 no-ack handling).
+
+### Emotion classifier PAD region retuning (cosmetic)
+
+**Context:** during Phase Emotion probes, `classification.name`
+stayed on "Contemptuous Calm" even at P=−1.0 / A=+1.0. The
+directive and TTS override both key off pleasure bands directly
+(not the classifier label) so behaviour is correct — but the
+operator-facing dashboard label is misleading.
+
+**Suggested scope:** `configs/emotion_config.yaml` defines PAD
+regions → human-readable emotion names. Add regions for the
+hostile / menacing ends of the PAD cube so the live state slot
+shows "Hostile Impatience" / "Sinister Menace" when those bands
+actually apply.
+
+### Tier-1 weather response caching (small)
+
+**Context:** identical weather replies came back on back-to-back
+asks during probe testing ("the weather is currently…" word-for-
+word). Not an emotion issue — the HA/weather-cache path returns
+cached data and the persona rewriter happens to produce similar
+output. Flagged here because it hurts the "variations feel
+different" quality bar the emotion work was trying to hit.
+
+**Suggested scope:** rewriter-side anti-parrot — track the last
+N Tier-1 weather outputs and re-roll if the new candidate
+matches word-for-word.
+
+---
+
 ## Unit-conversion quick responses (TODO — 2026-04-22)
 
 **Context:** operator often asks GLaDOS for quick unit conversions —

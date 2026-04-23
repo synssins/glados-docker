@@ -14,7 +14,7 @@ Before making changes to this repo, read these files in order:
    is live right now." Re-read every session.
 2. **`docs/CHANGES.md`** — chronological change log. Every structural
    change documented with rationale and side effects. Most recent
-   entry at the bottom (currently Change 21, 2026-04-21).
+   entry at the bottom (currently Change 22, 2026-04-23).
 3. **`docs/battery-findings-and-remediation-plan.md`** — Phase 8.x
    battery analysis and remediation plan (complete as of 2026-04-21).
    Useful for understanding the voice-agent quality bar the operator
@@ -33,16 +33,19 @@ belong in `C:\src\SESSION_STATE.md`, never in the committed code.
 
 ---
 
-## 1. Project state snapshot (2026-04-21)
+## 1. Project state snapshot (2026-04-23)
 
 - **Deployed on `10.0.0.50`**: `ghcr.io/synssins/glados-docker:latest`
-  at commit `cc009c9`. Healthy.
+  at commit `dbf40c7`. Healthy.
 - **Engine models**: chat, Tier 2 disambiguator, and persona rewriter
   all on `qwen3:14b` via a single Ollama endpoint.
-- **Tests**: 1069 passed / 3 skipped. Suite grew ~120 tests this
-  session (2026-04-21). `pytest -q` runs in ~42 s on AIBox.
+- **Tests**: 1157 passed / 5 skipped. `pytest -q` runs in ~42 s on AIBox.
 - **Phase 8.x remediation plan complete.** 8.0 → 8.14 all shipped.
-  No queued feature work from the plan.
+- **Phase Emotion A–I complete** (2026-04-22 / 2026-04-23) —
+  deterministic repetition math, semantic clustering, command
+  flood detector, hard-rule response directive, PAD→Piper audio
+  override, rewriter band overlay, and operator-tunable config
+  via Personality → Voice production. See CHANGES.md Change 22.
 - **Self-hosted GitHub Actions runner** installed on AIBox
   (`10.0.0.10`) — service
   `actions.runner.synssins-glados-docker.aibox-glados-lan`, label

@@ -2688,3 +2688,260 @@ Remaining open (noted, not urgent):
 - TTS pronunciation defaults as operators surface more cases.
 
 ---
+
+## Change 22 — Phase Emotion A-I: deterministic escalation + audibly-expressed mood (2026-04-22 / 2026-04-23)
+
+### Context
+
+Operator calibration target for the emotional response system:
+
+> *"Four requests in a row should be enough to take her from normal
+> to pretty upset. She would be at her worst after 5 or 6. It takes
+> her several hours to cool down. Variations of the same request —
+> 'weather' / 'what's the forecast' / 'how hot is it outside' —
+> should all be seen as the same."*
+
+And, following the first live trajectory test:
+
+> *"I am not seeing the language she is using as particularly dark.
+> In Portal 2 she literally says 'kill you'. I don't want that, but
+> I do want her to get upset to that point. Is there a way to force
+> emphasize the way she speaks, intensity, etc when she gets angry?
+> Not yelling, but definitely more intense?"*
+
+And, after the PAD→TTS override landed:
+
+> *"She slows down way too much. It's not necessarily what I want
+> to hear. Adjust the speed up on the emotional response so it
+> doesn't slow down as much."*
+
+And, after operator wanted live iteration:
+
+> *"Needs to be part of the WebUI, configurable. Save reloads it."*
+
+### A/B/C/D/E — Deterministic test methodology + repetition math
+
+Phase A landed a 52-test deterministic battery in
+`tests/test_emotion_dynamics.py` covering the weight curve, severity
+labels, the RepetitionTracker, tone directive bands, cooldown math,
+and PAD clamp bounds. Numbers ran deterministically, no LLM.
+
+Phase B upgraded the RepetitionTracker with a semantic similarity
+predicate backed by BGE-small-en-v1.5 ONNX embeddings
+(`make_embedding_similarity`, cosine ≥ 0.70). Paraphrases
+("what's the weather" / "can you tell me the forecast" /
+"how hot is it outside") now cluster as one repetition group that
+Jaccard would miss. Graceful fallback to Jaccard when ONNX or the
+model file isn't available.
+
+Phase C landed `scripts/emotion_probe.py` — an operator probe that
+logs into the WebUI, fires N semantically-equivalent variants,
+grades response text for tone markers (neutral / annoyed / hostile /
+menacing), and prints an escalation report. Default messages are
+Tier-3-forcing (philosophical prompts) so the probe measures the
+LLM's reaction to mood, not HA's weather cache.
+
+Phase D added observability / test-support endpoints:
+`GET /api/emotion/state`, `POST /api/emotion/reset`,
+`POST /api/emotion/push-event`. The probe reads PAD trajectory
+between requests and resets to baseline at run start. A
+`GLADOS_EMOTION_CLOCK_OVERRIDE` env hook was added (`_clock.py`)
+so tests can time-travel through the cooldown lock without
+real waits.
+
+Phase E replaced the LLM call for repetition-tagged events with
+a pure deterministic delta. `repetition_pad_delta(weight)` returns
+a `(dP, dA, dD)` triple calibrated so the compound PAD across
+weight(2..5) ≈ 0.125 / 0.354 / 0.650 / 1.000 puts GLaDOS into the
+"annoyed" band by repeat 4 and the "hostile" band (engaging the
+3-hour cooldown lock) by repeat 5. Coefficients: ΔP = −0.30·w,
+ΔA = +0.25·w, ΔD = +0.03·w. The tick now partitions events:
+weight-tagged → deterministic delta; novel → LLM. A live probe
+confirmed the trajectory: P+0.100 → −0.631 across 8 weather
+variants, every delta exact to formula.
+
+### F — Hard-rule directive (text side)
+
+`EmotionState.to_response_directive()` rewritten as bullet-style
+rules instead of paragraph prose. The prior version described the
+mood ("contemptuous calm", "annoyed"); the LLM read that as
+flavour to paraphrase rather than constraints to follow. Bullets
+are instructions the model honours.
+
+Italics guidance removed entirely — invisible at the TTS layer, so
+no value. Focus shifted to AUDIBLE cues: sentence counts drive
+pacing, period cadence creates full stops, em-dashes create beats
+Piper honours. Band keyword markers ("contemptuous", "annoyed",
+"hostile", "barely contained", "dangerously quiet", "menacing")
+preserved so `TestToneDirective` band assertions still pass.
+
+### G — PAD → Piper audio override + rewriter overlay
+
+Three coupled changes so the emotional state actually LANDS at the
+operator's ear, not just in log dashboards:
+
+1. **`pad_to_tts_override()`** in `glados/core/attitude.py` maps
+   deep-negative PAD to Piper synthesis params (`length_scale`,
+   `noise_scale`, `noise_w`). Bands: `annoyed` (P ≤ −0.3),
+   `hostile` (P ≤ −0.5), `menacing` (P ≤ −0.7).
+
+2. **Tier 1/Tier 2 persona rewriter PAD-awareness.**
+   `PersonaRewriter.rewrite()` gains a `pad_band` parameter and
+   appends band-specific overlays to its system prompt
+   (`_BAND_OVERLAYS`). `CommandResolver._persona_rewrite` reads
+   the live band via `emotion_state.current_pad_band()` and
+   threads it through. HA confirmations ("Turned off the kitchen
+   light") now escalate alongside the Tier 3 chat directive — the
+   weather-repeat probe was previously static because Tier 1
+   never saw any mood context.
+
+3. **Single source of truth.** New `pad_band_name(pleasure)` in
+   `glados/autonomy/emotion_state.py` returns the canonical band
+   label; directive bucketing, TTS mapping, and rewriter overlay
+   all key off the same function.
+
+**Module-level PAD state provider.** `set_pad_state_provider(fn)` /
+`current_pad_state()` / `current_pad_band()` let non-autonomy
+modules (TTS, persona rewriter) read the live state without a
+direct `EmotionAgent` import. Agent registers itself on
+construction.
+
+### G-fixes — plumbing the override to every TTS path
+
+The first draft mutated a local `attitude_tts` dict and emitted it
+on the SSE stream. Live deploy proved three gaps:
+
+- **Non-streaming chat** (WebUI `/api/chat` → api_wrapper's
+  `stream:false` path) goes through `llm_processor.py` which calls
+  `get_tts_params()` off the attitude module's thread-local — never
+  crossed the SSE handler. Fixed by making `get_tts_params()`
+  consult `current_pad_state()` directly.
+- **Cross-process boundary.** The WebUI POSTs plain text to
+  speaches itself from a different Python process than api_wrapper
+  and was sending DEFAULT Piper params regardless of engine state.
+  Fixed by surfacing `tts_params` in the api_wrapper chat response
+  JSON; WebUI forwards top-level `length_scale` / `noise_scale` /
+  `noise_w` matching the shape `tts_speaches.py` uses from the
+  engine-side path.
+- **Engine reload vs config singleton.** `/api/reload-engine`
+  rebuilt the engine but left `cfg` stale on the api_wrapper side.
+  Added `cfg.reload()` to the reload-engine handler so standalone
+  consumers (the live-lookup path in `get_tts_params`) see fresh
+  YAML.
+
+### H — CommandFloodTracker (density signal)
+
+RepetitionTracker catches same-intent paraphrases but scores a
+rapid-fire sequence of DIFFERENT commands as zero repeats. Operator
+spec: repeated commands of any kind, even just a lot of commands
+in a row.
+
+New `CommandFloodTracker` in `glados/autonomy/agents/emotion_agent.py`:
+rolling 120s window, bounded deque, first-match-wins band table
+(4 → NOTABLE / weight 0.25, 6 → ESCALATING / 0.50,
+8 → SEVERE / 0.80). `EmotionAgent.build_event_description()` merges
+repetition + flood signals; larger weight wins. Tag format matches
+RepetitionTracker's so the tick's deterministic-delta path applies
+to either signal with no branching.
+
+`scripts/emotion_probe.py --flood` fires 8 semantically-distinct
+commands spaced 10s apart so the 120s window catches the sequence.
+
+### I — Live operator tuning via personality.yaml + WebUI
+
+Hardcoded band values were replaced with a config-driven lookup so
+the operator can tune audible behaviour without commits.
+
+- **`EmotionTTSBand`** and **`EmotionTTSConfig`** pydantic models
+  on `PersonalityConfig`. Each band is the Piper triple
+  (length_scale / noise_scale / noise_w) with defaults mirroring
+  Piper baseline exactly (1.00 / 0.667 / 0.80). A band whose three
+  fields all equal baseline is treated as "no override" — returns
+  None so the rolled attitude or default_tts wins. Silent no-op
+  contract.
+- **`pad_to_tts_override`** reads `cfg.personality.emotion_tts`
+  live on every call.
+- **Personality → Voice production** WebUI tab gains an
+  **Emotional TTS overrides** card. Three expandable sub-cards
+  (Annoyed / Openly hostile / Dangerously quiet), each with three
+  labelled sliders and a Reset button that snaps that band back to
+  Piper defaults. Save uses the existing Personality page save
+  button — `update_section` writes the YAML, `/api/reload-engine`
+  rebuilds. Effective on the next chat turn.
+
+### Calibration pass (operator feedback)
+
+Over the live tuning session the menacing profile landed at
+`length_scale=1.05`, `noise_scale=0.90`, `noise_w=0.95` — subtle
+slow, expressive pitch swings, natural rhythm. Operator then
+requested a reset to Piper defaults so future tuning starts from a
+neutral baseline through the new WebUI. Shipped state: every band
+at 1.00 / 0.667 / 0.80 — no audible override. Running emotion
+state reset to `neutral` preset post-deploy.
+
+### Live verification
+
+- `POST /api/emotion/reset` + 8× `/api/emotion/push-event` → state
+  saturates to P=−1.0, A=+1.0, D=+0.75, cooldown locked 3h.
+- `POST /v1/chat/completions` (menacing state, pre-tuning-reset)
+  returns JSON with
+  `tts_params: {length_scale: 1.15, noise_scale: 0.42, noise_w: 0.65}`.
+- Direct speaches probe at three length_scales (0.88 / 1.00 / 1.15)
+  produced wav durations 3.52s / 3.70s / 4.02s on identical text —
+  speaches honours the param.
+- WebUI `/api/chat` stderr instrumentation confirmed the full
+  chain: `tts_params` reach the request to speaches.
+
+### Tests
+
+`tests/test_emotion_dynamics.py` — 91 tests cover the weight
+curve, severity labels, repetition detection (Jaccard + BGE
+semantic), tone directive bands + HARD RULE ban-list, cooldown
+math, clock override, deterministic repetition delta, flood
+tracker (7 tests), flood+repetition merge (3 tests), PAD band
+classifier, PAD state provider, PAD→TTS override including the
+all-default silent-no-op contract, rewriter overlay keys, thread-
+local isolation of explicit overrides.
+
+**Full suite: 1157 passed / 5 skipped** (was 1069 / 3; +88 since
+Change 21). `pytest -q` runs in ~42 s.
+
+### Commits (in order)
+
+- [`4019824`](https://github.com/synssins/glados-docker/commit/4019824) — Phase Emotion-A: deterministic emotion-dynamics unit tests
+- [`bec9218`](https://github.com/synssins/glados-docker/commit/bec9218) — Phase Emotion-B: semantic repetition tracking via BGE embeddings
+- [`2919f76`](https://github.com/synssins/glados-docker/commit/2919f76) — Phase Emotion-C: operator probe script for live escalation testing
+- [`4c2bb0e`](https://github.com/synssins/glados-docker/commit/4c2bb0e) — Phase Emotion-D: observability endpoints + clock-override hook
+- [`3451142`](https://github.com/synssins/glados-docker/commit/3451142) — emotion_probe: fix payload shape + Tier-3-forcing defaults
+- [`7fb48e3`](https://github.com/synssins/glados-docker/commit/7fb48e3) — emotion_probe: use /api/emotion endpoints for richer reporting
+- [`fa699ea`](https://github.com/synssins/glados-docker/commit/fa699ea) — Phase Emotion-E: deterministic PAD delta for repetition events
+- [`7fb624a`](https://github.com/synssins/glados-docker/commit/7fb624a) — Phase Emotion-E fix: push-event signature mismatch
+- [`d4d5dd3`](https://github.com/synssins/glados-docker/commit/d4d5dd3) — Phase Emotion-F: directive prescribes format+cadence
+- [`aa207cf`](https://github.com/synssins/glados-docker/commit/aa207cf) — Phase Emotion-G: hard-rule directive + PAD→Piper override + rewriter PAD-awareness
+- [`afbac50`](https://github.com/synssins/glados-docker/commit/afbac50) — fix: PAD override must reach TTS synth via thread-local, not just SSE
+- [`0eb1127`](https://github.com/synssins/glados-docker/commit/0eb1127) — fix: get_tts_params reads live PAD state so non-streaming chat path works
+- [`1d427f8`](https://github.com/synssins/glados-docker/commit/1d427f8) — fix: WebUI chat path forwards PAD TTS params to speaches
+- [`19fce88`](https://github.com/synssins/glados-docker/commit/19fce88) — cleanup: remove WebUI TTS debug print (verified end-to-end)
+- [`36728dd`](https://github.com/synssins/glados-docker/commit/36728dd) — Phase Emotion-H: CommandFloodTracker — density-based escalation
+- [`a9f392d`](https://github.com/synssins/glados-docker/commit/a9f392d) — tune: menacing length_scale 1.15 → 1.05 per operator feedback
+- [`092ca76`](https://github.com/synssins/glados-docker/commit/092ca76) — tune: menacing noise_scale 0.42→0.90, noise_w 0.65→0.95
+- [`32baa01`](https://github.com/synssins/glados-docker/commit/32baa01) — Phase Emotion-I config: emotion_tts bands driven by personality.yaml
+- [`dbf40c7`](https://github.com/synssins/glados-docker/commit/dbf40c7) — Phase Emotion-I UI: Emotional TTS card on Personality → Voice production
+
+### Remaining (noted, not urgent)
+
+- **"Acknowledged but didn't perform"** signal — operator-approved
+  scenario where GLaDOS verbally commits to an action but the
+  action never actually fires. Currently un-tracked; would need a
+  HA-side verification hook feeding the emotion agent.
+- **Emotion classifier PAD region retuning**
+  (`configs/emotion_config.yaml` tables) — the classifier label
+  stayed on "Contemptuous Calm" even at P=−1.0 / A=+1.0 during
+  probes. Cosmetic (the directive + TTS override both key off
+  pleasure bands, not the label), but worth fixing for operator-
+  facing logs.
+- **Tier 1 weather response caching** — identical weather replies
+  returned on back-to-back asks. Not an emotion issue; flagged
+  during probe testing.
+
+---

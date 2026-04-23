@@ -188,7 +188,34 @@ persona layer against real-world chat. Highlights:
   through the TTS chain so the non-streaming API scanner doesn't
   return autonomy-produced assistant text as the user's reply.
 
-Full detail in `docs/CHANGES.md` (Changes 15 – 21).
+### Phase Emotion A–I (2026-04-22 / 2026-04-23)
+
+A full pass through the emotional-response system so GLaDOS
+reacts audibly, not just in logs:
+
+- **Deterministic repetition math** — `repetition_pad_delta()`
+  turns weight-tagged events into exact PAD deltas without an
+  LLM call. Calibrated to the operator's "4 repeats = pretty
+  upset, 5–6 = her worst" spec.
+- **Semantic repetition clustering** — BGE-small-en-v1.5 ONNX
+  cosine ≥ 0.70 catches paraphrases ("weather" / "forecast" /
+  "how hot is it") that Jaccard misses.
+- **Command flood detector** — density-based counter (4/6/8
+  commands in 120 s → NOTABLE/ESCALATING/SEVERE) so rapid-fire
+  mixed commands escalate alongside semantic repeats.
+- **Hard-rule response directive** — PAD state injected as
+  bullet-style behavioural rules (sentence count, cadence,
+  consequence language) rather than paragraph mood labels.
+- **PAD → Piper synthesis override** — negative-pleasure bands
+  clobber `length_scale` / `noise_scale` / `noise_w` so she
+  SOUNDS different when upset. Rewriter also gets a per-band
+  overlay so Tier 1/Tier 2 HA confirmations escalate.
+- **Operator-tunable from WebUI** — `cfg.personality.emotion_tts`
+  (three bands × three Piper params) editable from
+  Personality → Voice production. Save writes the YAML and
+  hot-reloads the engine on the next chat turn.
+
+Full detail in `docs/CHANGES.md` (Changes 15 – 22).
 
 ### Other docs
 
