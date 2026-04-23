@@ -180,6 +180,10 @@ class HomeAssistantSensorJobConfig(BaseModel):
     announcement_scenario, speaker."""
 
     def model_post_init(self, __context) -> None:
+        # Pull addressing from the shipped config store. If it's not
+        # available (import loop / bootstrap order), leave the URLs
+        # unset — the caller will surface a missing-config error.
+        # No site-specific IP defaults are committed.
         try:
             from glados.core.config_store import cfg
             if not self.ha_ws_url:
@@ -189,8 +193,6 @@ class HomeAssistantSensorJobConfig(BaseModel):
             if not self.vision_api_url:
                 self.vision_api_url = cfg.service_url("vision")
         except Exception:
-            if not self.ha_ws_url:
-                self.ha_ws_url = "ws://10.0.0.20:8123/api/websocket"
             if not self.vision_api_url:
                 self.vision_api_url = "http://localhost:8016"
 

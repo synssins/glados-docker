@@ -172,8 +172,8 @@ class Hub75Display:
             return
 
         ip = self._cfg.wled_ip
-        if ip in ("10.0.0.100", "0.0.0.0", ""):
-            logger.warning("HUB75: WLED IP is placeholder ({}) — display will not connect", ip)
+        if ip in ("0.0.0.0", ""):
+            logger.warning("HUB75: WLED IP is unset — display will not connect")
 
         # Initialise components
         delay_s = getattr(self._cfg, 'ddp_inter_packet_delay_ms', 1.5) / 1000.0

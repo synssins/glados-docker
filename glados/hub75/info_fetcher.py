@@ -33,7 +33,7 @@ class InfoFetcher:
     Args:
         data: The shared :class:`InfoPanelData` to populate.
         weather_cache_path: Path to the weather cache JSON file.
-        ha_url: Home Assistant base URL (e.g. ``http://10.0.0.20:8123``).
+        ha_url: Home Assistant base URL (e.g. ``http://homeassistant.local:8123``).
         ha_token: Long-lived access token for HA REST API.
         home_entities: List of ``(entity_id, ok_state)`` tuples to poll.
         weather_interval: Seconds between weather cache reads.
@@ -46,7 +46,7 @@ class InfoFetcher:
         weather_cache_path: str = str(
             Path(os.environ.get("GLADOS_DATA", "/app/data")) / "weather_cache.json"
         ),
-        ha_url: str = "http://10.0.0.20:8123",
+        ha_url: str = "",
         ha_token: str = "",
         home_entities: list[tuple[str, str]] | None = None,
         weather_interval: float = 60.0,
@@ -56,13 +56,9 @@ class InfoFetcher:
         self._weather_path = Path(weather_cache_path)
         self._ha_url = ha_url.rstrip("/")
         self._ha_token = ha_token
-        self._home_entities = home_entities or [
-            ("cover.vehicle_door", "closed"),
-            ("cover.vehicle_door_two", "closed"),
-            ("lock.entry_lock", "locked"),
-            ("binary_sensor.entry_door_contact", "off"),
-            ("binary_sensor.back_entry_contact", "off"),
-        ]
+        # Operator supplies their own entity list via home_entities. The
+        # shipped default is empty so no site-specific IDs live in code.
+        self._home_entities = home_entities or []
         self._weather_interval = weather_interval
         self._home_interval = home_interval
         self._running = False

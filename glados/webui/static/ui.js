@@ -879,7 +879,7 @@ function _cfgRenderMqtt() {
   html += '<div class="mqtt-row">'
     + '<div class="mqtt-field">'
     +   '<label class="mqtt-label" for="cfg-mqtt-host">Broker host</label>'
-    +   '<input id="cfg-mqtt-host" type="text" value="' + escHtml(c.broker_host || '') + '" placeholder="10.0.0.20">'
+    +   '<input id="cfg-mqtt-host" type="text" value="' + escHtml(c.broker_host || '') + '" placeholder="homeassistant.local">'
     + '</div>'
     + '<div class="mqtt-field mqtt-port">'
     +   '<label class="mqtt-label" for="cfg-mqtt-port">Port</label>'
