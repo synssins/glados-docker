@@ -71,7 +71,7 @@ _AREA_KEYWORDS: dict[str, tuple[str, ...]] = {
     "outdoors":  ("outside", "outdoor", "yard", "patio", "deck", "porch", "garden"),
     "outdoor":   ("outside", "outdoor", "yard", "patio", "deck", "porch", "garden"),
     "yard":      ("yard", "outdoor", "outside"),
-    "backyard":  ("backyard", "back yard", "rear yard"),
+    "rear yard": ("yard", "back yard", "rear yard"),
     "front yard": ("front yard", "frontyard", "front"),
 }
 

@@ -62,7 +62,7 @@ class MemoryStore:
         mem = MemoryStore(host="localhost", port=8000)
 
         # Write episodic event
-        mem.add_episodic("Front door opened", {"entity": "binary_sensor.front_door"})
+        mem.add_episodic("Front door opened", {"entity": "binary_sensor.entry_door"})
 
         # Write semantic fact
         mem.add_semantic("The operator prefers lights at 40% brightness in the evening")

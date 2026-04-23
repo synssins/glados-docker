@@ -45,14 +45,14 @@ ENTITY_ASSIGNMENTS: dict[str, str] = {
 # with one of these prefixes + "_" (or equals it exactly) and has no
 # area yet, gets the mapped area. Applied AFTER the explicit list so
 # explicit-list targets always win. Matched against the object_id
-# (the part after the domain), so "backyard" matches switch.backyard
-# and switch.backyard_motion but NOT switch.back_yard_motion.
+# (the part after the domain), so "outdoor" matches switch.outdoor
+# and switch.outdoor_motion_zone but NOT switch.back_yard_motion.
 PREFIX_ASSIGNMENTS: list[tuple[str, str]] = [
-    ("backyard",       "Back Yard"),
+    ("outdoor",       "Back Yard"),
     ("wood_shop",      "Wood Shop"),
     ("front_driveway", "Driveway"),
-    ("front_doorbell", "Porch"),
-    ("g4_doorbell",    "Porch"),
+    ("front_bell", "Porch"),
+    ("front_bell",    "Porch"),
     ("mini_mill",      "Wood Shop"),
 ]
 

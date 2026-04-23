@@ -165,7 +165,7 @@ def _utterance_pin_candidates(
     explicitly named via a segment qualifier in the utterance.
 
     Example: utterance "bedroom strip segment 3 red" with hits for
-    `bedroom_strip_seg_3` and `bedroom_strip_seg_4` → pin seg_3.
+    `room_a_strip_seg_3` and `room_a_strip_seg_4` → pin seg_3.
     When the utterance doesn't mention any segment token at all,
     the set is empty and every group gets normal collapse.
     """

@@ -639,7 +639,7 @@ class HomeAssistantSensorSubagent(Subagent):
         """Query HA to auto-discover detection binary_sensors for configured cameras.
 
         For each camera entity (e.g., camera.front_bell_high), derives the device
-        prefix (g4_doorbell) and finds matching binary_sensor.*_detected entities.
+        prefix (front_bell) and finds matching binary_sensor.*_detected entities.
         Populates _vision_entities, _detection_types, and _entity_categories.
 
         Also discovers event.* entities (e.g., doorbell ring) for configured cameras.
@@ -661,7 +661,7 @@ class HomeAssistantSensorSubagent(Subagent):
             return
 
         for camera_name, cam_cfg in sd.cameras.items():
-            # Derive device prefix: camera.front_bell_high -> g4_doorbell
+            # Derive device prefix: camera.front_bell_high -> front_bell
             cam_entity = cam_cfg.entity
             prefix = cam_entity.replace("camera.", "").replace("_high", "")
 
@@ -670,12 +670,12 @@ class HomeAssistantSensorSubagent(Subagent):
                 if eid.startswith("binary_sensor.") and eid.endswith("_detected"):
                     sensor_name = eid.replace("binary_sensor.", "")
                     # Check if this sensor belongs to this camera's device
-                    # Handles both exact prefix (g4_doorbell_person_detected)
-                    # and alternate prefixes (front_doorbell_speaking_detected)
+                    # Handles both exact prefix (front_bell_person)
+                    # and alternate prefixes (front_bell_speaking)
                     if prefix not in sensor_name:
                         continue
 
-                    # Extract detection type: g4_doorbell_person_detected -> person
+                    # Extract detection type: front_bell_person -> person
                     # Remove the prefix and "_detected" suffix
                     remainder = sensor_name
                     if remainder.startswith(prefix + "_"):
@@ -1411,7 +1411,7 @@ class HomeAssistantSensorSubagent(Subagent):
         announcements.
 
         Args:
-            camera_id: Vision service camera identifier (e.g., "front_door").
+            camera_id: Vision service camera identifier (e.g., "entry_door").
             entity_id: HA entity that triggered this (for logging).
             detection_type: What was detected (e.g., "person", "package").
                 If provided, the vision service uses SECONDARY mode with a
