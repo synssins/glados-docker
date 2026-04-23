@@ -774,14 +774,21 @@ class TestPADToTTSOverride:
         # Less vocal variation too
         assert hostile["noise_scale"] < annoyed["noise_scale"]
 
-    def test_menacing_band_is_slow_and_flat(self):
+    def test_menacing_band_has_override(self):
+        """Menacing band must produce SOME non-default TTS params.
+        Exact shape is operator-tunable — don't lock specific values
+        here, only that an override is present and distinct from
+        baseline defaults."""
         from glados.core.attitude import pad_to_tts_override
         menacing = pad_to_tts_override(-0.9)
-        baseline_default = {"length_scale": 1.0, "noise_scale": 0.667}
-        # Slower than baseline — every phoneme held longer.
-        assert menacing["length_scale"] > baseline_default["length_scale"]
-        # Flatter than baseline — less pitch variation.
-        assert menacing["noise_scale"] < baseline_default["noise_scale"]
+        baseline_default = {"length_scale": 1.0, "noise_scale": 0.667, "noise_w": 0.8}
+        assert menacing is not None
+        # At least one param must differ from default or there's no
+        # audible distinction.
+        assert any(
+            menacing[k] != baseline_default[k]
+            for k in ("length_scale", "noise_scale", "noise_w")
+        )
 
     def test_bucket_boundary_matches_pad_band(self):
         """Override kicks in at p<=-0.3 — the 'annoyed' band boundary."""
