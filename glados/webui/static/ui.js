@@ -2803,6 +2803,16 @@ function cfgRenderPersonality(data) {
     html += cfgBuildForm(data.default_tts, 'personality', 'default_tts');
     html += '</div>';
   }
+
+  // Phase Emotion-I: per-band TTS overrides. When GLaDOS's pleasure
+  // drops into annoyed / hostile / menacing territory, these Piper
+  // params clobber the rolled attitude so her VOICE reflects the mood.
+  // Each band ships at Piper defaults (1.0 / 0.667 / 0.8) which is a
+  // silent no-op until the operator tunes.
+  if (data.emotion_tts) {
+    html += _cfgRenderEmotionTTS(data.emotion_tts);
+  }
+
   html += '</div>';  // end voice panel
 
   html += '</div>';  // end page-tab-panels
@@ -2815,6 +2825,117 @@ function cfgRenderPersonality(data) {
 // existing cfgSaveSection('personality') regardless of active tab.
 function _cfgSavePersonalityTab() {
   return cfgSaveSection('personality');
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// Phase Emotion-I (2026-04-23) — Emotional TTS overrides card.
+// ════════════════════════════════════════════════════════════════
+// Three bands (annoyed / hostile / menacing) × three Piper params
+// (length_scale / noise_scale / noise_w). A band left at defaults
+// (1.0 / 0.667 / 0.8) is a silent no-op.
+//
+// Sliders feed cfgCollectForm via data-path / data-type. Saving the
+// Personality page lands in personality.yaml under `emotion_tts.*`
+// and api_wrapper does a cfg.reload()+engine rebuild so the change
+// takes effect on the very next chat turn.
+
+const _EMOTION_TTS_BANDS = [
+  {
+    key: 'annoyed',
+    label: 'Annoyed',
+    desc: 'Fires at pleasure ≤ −0.3 (mild irritation — three to five repeat requests).',
+  },
+  {
+    key: 'hostile',
+    label: 'Openly hostile',
+    desc: 'Fires at pleasure ≤ −0.5 (cooldown engages — four to five repeats).',
+  },
+  {
+    key: 'menacing',
+    label: 'Dangerously quiet',
+    desc: 'Fires at pleasure ≤ −0.7 (five or more repeats, full saturation).',
+  },
+];
+
+const _EMOTION_TTS_PARAM_META = {
+  length_scale: {
+    label: 'Length scale (speed)',
+    desc: 'Lower is faster, 1.0 is baseline, higher is slower. Try 0.88 for snappy and 1.05 for subtly drawn out.',
+    min: 0.50, max: 1.50, step: 0.01, default: 1.0,
+  },
+  noise_scale: {
+    label: 'Noise scale (pitch variation)',
+    desc: 'Lower is flatter and more monotone, 0.667 is baseline, higher is more sing-song and expressive.',
+    min: 0.10, max: 1.00, step: 0.01, default: 0.667,
+  },
+  noise_w: {
+    label: 'Noise W (rhythm variation)',
+    desc: 'Lower is more metronomic/clinical, 0.8 is baseline, higher is more naturally varied syllable timing.',
+    min: 0.10, max: 1.00, step: 0.01, default: 0.8,
+  },
+};
+
+function _cfgRenderEmotionTTS(data) {
+  let html = '<div class="cfg-group"><div class="cfg-group-title">Emotional TTS overrides</div>';
+  html += '<div class="cfg-field-desc" style="margin-bottom:12px;">'
+    + 'Shape how GLaDOS sounds when her pleasure drops into each negative band. '
+    + 'A band left at Piper defaults (1.00 / 0.667 / 0.80) is a silent no-op — '
+    + 'only tuned bands override the rolled attitude. Values save into '
+    + '<code>personality.yaml</code> under <code>emotion_tts</code>; save takes '
+    + 'effect on the next chat turn (no container restart).'
+    + '</div>';
+
+  for (const band of _EMOTION_TTS_BANDS) {
+    const bandData = data[band.key] || {};
+    html += '<div class="cfg-subgroup" style="margin-top:var(--sp-3);padding:var(--sp-3);background:var(--bg-elev-1,#1f1f1f);border:1px solid var(--border,#333);border-radius:var(--rad-md,4px);">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--sp-2);">';
+    html +=   '<div>'
+           +    '<div class="cfg-group-title" style="font-size:1em;">' + escHtml(band.label) + '</div>'
+           +    '<div class="cfg-field-desc" style="margin:4px 0 0 0;">' + escHtml(band.desc) + '</div>'
+           +  '</div>';
+    html +=   '<button type="button" class="cfg-save-btn" style="background:#333;font-size:0.85em;padding:4px 10px;" '
+           +    'onclick="_cfgResetEmotionTTSBand(\'' + band.key + '\')" '
+           +    'title="Reset this band to Piper defaults (silent no-op)">Reset</button>';
+    html += '</div>';
+
+    for (const paramKey of ['length_scale', 'noise_scale', 'noise_w']) {
+      const meta = _EMOTION_TTS_PARAM_META[paramKey];
+      const value = (bandData[paramKey] == null) ? meta.default : Number(bandData[paramKey]);
+      const display = value.toFixed(3);
+      const fieldId = 'cfg-personality-emotion_tts-' + band.key + '-' + paramKey;
+      const dataPath = 'emotion_tts.' + band.key + '.' + paramKey;
+      html += '<div class="trait-row">'
+           +   '<div class="trait-head">'
+           +     '<label class="trait-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
+           +     '<output class="trait-value" id="' + fieldId + '-value">' + display + '</output>'
+           +   '</div>'
+           +   '<input id="' + fieldId + '" data-path="' + dataPath + '" data-type="number" type="range" '
+           +     'min="' + meta.min + '" max="' + meta.max + '" step="' + meta.step + '" value="' + value + '" '
+           +     'oninput="document.getElementById(\'' + fieldId + '-value\').textContent = parseFloat(this.value).toFixed(3);">'
+           +   '<div class="trait-desc">' + escHtml(meta.desc) + '</div>'
+           + '</div>';
+    }
+    html += '</div>';
+  }
+
+  html += '</div>';  // end cfg-group
+  return html;
+}
+
+function _cfgResetEmotionTTSBand(bandKey) {
+  // Snap every slider in this band back to the Piper defaults. Operator
+  // still has to click the page Save button — matches the behaviour of
+  // the other edit-then-commit fields on the Personality page.
+  for (const paramKey of ['length_scale', 'noise_scale', 'noise_w']) {
+    const meta = _EMOTION_TTS_PARAM_META[paramKey];
+    const fieldId = 'cfg-personality-emotion_tts-' + bandKey + '-' + paramKey;
+    const input = document.getElementById(fieldId);
+    const output = document.getElementById(fieldId + '-value');
+    if (input) input.value = meta.default;
+    if (output) output.textContent = Number(meta.default).toFixed(3);
+  }
+  showToast('Reset ' + bandKey + ' band to defaults. Click Save to apply.', 'info');
 }
 
 
