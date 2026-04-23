@@ -789,6 +789,51 @@ class TestPADToTTSOverride:
         assert pad_to_tts_override(-0.29) is None
         assert pad_to_tts_override(-0.30) is not None
 
+    def test_set_pad_override_propagates_to_get_tts_params(self):
+        """Downstream TTS reads get_tts_params(); the thread-local
+        override must take precedence over rolled attitude params and
+        the default baseline so the voice actually changes."""
+        from glados.core import attitude
+        # Clean slate
+        attitude.set_pad_override(None)
+        baseline = attitude.get_tts_params()
+        # Set a deliberate override
+        override = {"length_scale": 1.23, "noise_scale": 0.33, "noise_w": 0.44}
+        attitude.set_pad_override(override)
+        try:
+            got = attitude.get_tts_params()
+            assert got == override
+            # Round-trip through getter
+            assert attitude.get_pad_override() == override
+        finally:
+            attitude.set_pad_override(None)
+        # After clear, we're back to baseline
+        assert attitude.get_tts_params() == baseline
+        assert attitude.get_pad_override() is None
+
+    def test_pad_override_is_thread_isolated(self):
+        """Different threads must not leak TTS params across each
+        other; attitude uses threading.local and the override joins
+        that contract."""
+        import threading
+        from glados.core import attitude
+
+        results: dict[str, dict | None] = {}
+
+        def worker():
+            attitude.set_pad_override({
+                "length_scale": 9.9, "noise_scale": 0.01, "noise_w": 0.0,
+            })
+            results["worker"] = attitude.get_pad_override()
+
+        # Main thread starts with no override
+        attitude.set_pad_override(None)
+        t = threading.Thread(target=worker)
+        t.start(); t.join()
+        # Worker's override must not reach main thread
+        assert attitude.get_pad_override() is None
+        assert results["worker"]["length_scale"] == 9.9
+
 
 # ── Persona rewriter band overlay ───────────────────────────────────────
 

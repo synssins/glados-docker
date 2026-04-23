@@ -138,8 +138,17 @@ def get_tts_params() -> dict[str, float]:
 
     Returns:
         Dict with length_scale, noise_scale, noise_w.
-        Falls back to default_tts if no attitude is active.
+
+    Resolution order:
+      1. PAD override if set for this thread (Phase Emotion-G —
+         clobbers random attitude params when emotion state is
+         deep-negative so the voice itself escalates).
+      2. Current attitude's tts dict if one rolled this turn.
+      3. Default baseline.
     """
+    override = getattr(_thread_local, "pad_override", None)
+    if override:
+        return dict(override)
     attitude = get_current_attitude()
     if attitude:
         tts = attitude.get("tts")
@@ -147,6 +156,27 @@ def get_tts_params() -> dict[str, float]:
             return dict(tts)  # Return a copy
     with _lock:
         return dict(_default_tts)
+
+
+def set_pad_override(params: dict[str, float] | None) -> None:
+    """Store (or clear) the thread-local PAD TTS override.
+
+    Called by the chat handler after the attitude roll so TTS
+    synthesis downstream picks up the overridden params via
+    get_tts_params(). Pass None to clear for turns where PAD is
+    neutral/positive and the random attitude should win.
+    """
+    if params is None:
+        if hasattr(_thread_local, "pad_override"):
+            del _thread_local.pad_override
+    else:
+        _thread_local.pad_override = dict(params)
+
+
+def get_pad_override() -> dict[str, float] | None:
+    """Return the thread-local PAD override, or None if not set."""
+    v = getattr(_thread_local, "pad_override", None)
+    return dict(v) if v else None
 
 
 def list_attitudes() -> list[dict[str, Any]]:
