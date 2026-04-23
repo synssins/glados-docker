@@ -241,11 +241,12 @@ def pad_to_tts_override(
     params or the configured default baseline.
     """
     if pleasure <= -0.7:
-        # Menacing / dangerously quiet: slightly slowed, eerie-flat.
-        # Operator feedback 2026-04-23: 1.15 was too draggy. The
-        # flatness from noise_scale=0.42 carries the cold-dead-voice
-        # feel; length_scale only needs a nudge above baseline.
-        return {"length_scale": 1.05, "noise_scale": 0.42, "noise_w": 0.65}
+        # Menacing / dangerously quiet.
+        # Operator tuning 2026-04-23 round 2: try expressive instead
+        # of flat — noise_scale 0.90 gives Portal-2-taunt pitch swings
+        # and noise_w 0.95 gives natural rhythm. If too sing-song,
+        # drop noise_scale back toward 0.5.
+        return {"length_scale": 1.05, "noise_scale": 0.90, "noise_w": 0.95}
     if pleasure <= -0.5:
         # Openly hostile: clipped, colder, noticeably snappier than baseline.
         return {"length_scale": 0.88, "noise_scale": 0.50, "noise_w": 0.75}
