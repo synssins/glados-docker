@@ -228,31 +228,48 @@ def is_loaded() -> bool:
 # "dangerously quiet" = noticeably slower and flatter than baseline;
 # "hostile" = crisp and snappy; "annoyed" = slightly faster than neutral.
 
+_PIPER_DEFAULTS = {"length_scale": 1.0, "noise_scale": 0.667, "noise_w": 0.8}
+
+
 def pad_to_tts_override(
     pleasure: float,
     arousal: float = 0.0,
     dominance: float = 0.0,
 ) -> dict[str, float] | None:
-    """Return Piper synthesis params for deep-negative emotional states.
+    """Return Piper synthesis params for negative-pleasure emotional bands.
 
-    Returns a dict matching {length_scale, noise_scale, noise_w} when
-    the state is negative enough to warrant an audible tonal shift.
-    Otherwise returns None so the caller keeps the random attitude's
-    params or the configured default baseline.
+    Values are read live from `cfg.personality.emotion_tts` so the
+    operator can tune them via the WebUI without a code change. A band
+    whose three fields all equal Piper's baseline (1.0 / 0.667 / 0.8)
+    is treated as "no override" — returns None so the rolled attitude
+    or configured default_tts wins.
     """
+    if pleasure > -0.3:
+        _ = arousal; _ = dominance  # reserved for future A/D coupling
+        return None
+
+    # Import lazily — the config store imports this module transitively
+    # via some paths during startup; a top-level import could deadlock.
+    try:
+        from glados.core.config_store import cfg as _cfg
+        bands = _cfg.personality.emotion_tts
+    except Exception:
+        return None
+
     if pleasure <= -0.7:
-        # Menacing / dangerously quiet.
-        # Operator tuning 2026-04-23 round 2: try expressive instead
-        # of flat — noise_scale 0.90 gives Portal-2-taunt pitch swings
-        # and noise_w 0.95 gives natural rhythm. If too sing-song,
-        # drop noise_scale back toward 0.5.
-        return {"length_scale": 1.05, "noise_scale": 0.90, "noise_w": 0.95}
-    if pleasure <= -0.5:
-        # Openly hostile: clipped, colder, noticeably snappier than baseline.
-        return {"length_scale": 0.88, "noise_scale": 0.50, "noise_w": 0.75}
-    if pleasure <= -0.3:
-        # Annoyed: slightly faster, less inflection.
-        return {"length_scale": 0.95, "noise_scale": 0.55, "noise_w": 0.80}
-    _ = arousal  # reserved for future rate-coupling on arousal axis
-    _ = dominance  # reserved for future pitch-coupling on dominance axis
-    return None
+        band = bands.menacing
+    elif pleasure <= -0.5:
+        band = bands.hostile
+    else:
+        band = bands.annoyed
+
+    params = {
+        "length_scale": float(band.length_scale),
+        "noise_scale":  float(band.noise_scale),
+        "noise_w":      float(band.noise_w),
+    }
+    # All-default band → treat as disabled. Keeps the attitude roll /
+    # default_tts path in play for ops that haven't tuned that band.
+    if all(abs(params[k] - _PIPER_DEFAULTS[k]) < 1e-6 for k in params):
+        return None
+    return params
