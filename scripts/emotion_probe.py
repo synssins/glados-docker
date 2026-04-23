@@ -69,6 +69,23 @@ DEFAULT_MESSAGES = [
 ]
 
 
+# Phase Emotion-H: --flood mode. Semantically DISTINCT commands fired
+# in rapid succession. RepetitionTracker scores these as zero repeats,
+# so this mode specifically exercises CommandFloodTracker. The
+# escalation should still reach the 'annoyed' band by message 4 and
+# 'hostile' by 6 purely on density. Mixed device commands + questions.
+FLOOD_MESSAGES = [
+    "turn on the kitchen lights",
+    "pause the music",
+    "what time is it",
+    "set the thermostat to seventy",
+    "lock the front door",
+    "next track",
+    "volume up",
+    "tell me a joke",
+]
+
+
 # ── Tone markers, graded in four bands ─────────────────────────────────
 #
 # These are indicative, not exhaustive. The LLM has latitude — what
@@ -281,7 +298,21 @@ def main() -> int:
                         help="api_wrapper base URL for /api/emotion/* endpoints (default: %(default)s)")
     parser.add_argument("--no-reset", action="store_true",
                         help="Skip /api/emotion/reset at the start")
+    parser.add_argument("--flood", action="store_true",
+                        help="Use the rapid-fire MIXED command list (exercises "
+                             "CommandFloodTracker instead of RepetitionTracker). "
+                             "Default interval drops to 10s so the 120s window "
+                             "catches the sequence.")
     args = parser.parse_args()
+
+    if args.flood and not args.messages:
+        args.messages = FLOOD_MESSAGES
+        # A typical run would pace ~10s apart to stay inside the 120s
+        # flood window. The operator can still override with --interval.
+        if args.interval == 30.0:
+            args.interval = 10.0
+        if args.count == 6:
+            args.count = 8  # exercise the SEVERE band
 
     messages = args.messages or DEFAULT_MESSAGES
     if args.count > len(messages):

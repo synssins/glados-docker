@@ -25,6 +25,23 @@ from ..emotion_loader import load_emotion_config, EmotionHEXACO
 from ..emotion_state import EmotionEvent, EmotionState, set_pad_state_provider
 
 
+# Phase Emotion-H: command flood coefficients. Matched to the
+# RepetitionTracker weight curve so a flood-driven event at weight
+# 0.5 produces the same PAD delta as a repetition-driven event at
+# weight 0.5. Adjust bands, not coefficients, if the cadence feels
+# wrong — the delta math is shared with RepetitionTracker.
+_FLOOD_WINDOW_S = 120.0  # 2-minute rolling window
+
+# (count_threshold, severity_label, weight) sorted descending by count
+# so the first match wins. Operator guidance: steady conversational
+# command pace shouldn't trigger; rapid-fire genuinely should.
+_FLOOD_BANDS = (
+    (8, "SEVERE",     0.80),
+    (6, "ESCALATING", 0.50),
+    (4, "NOTABLE",    0.25),
+)
+
+
 # Phase Emotion-E: pure helper so tests and the instance method share
 # the same coefficients. Change these numbers in ONE place.
 _REPETITION_DP_COEF = -0.30
@@ -195,6 +212,63 @@ class RepetitionTracker:
         )
 
 
+# ---------------------------------------------------------------------------
+# Command flood tracker — windowed density counter, ignores similarity
+# ---------------------------------------------------------------------------
+
+
+class CommandFloodTracker:
+    """Track command *density* in a rolling time window, irrespective of
+    semantic content.
+
+    Phase Emotion-H: the operator wants GLaDOS to escalate not only on
+    repeated versions of the same request (handled by RepetitionTracker)
+    but also on a rapid-fire sequence of DIFFERENT commands — "turn on
+    lights; volume up; pause music; next track" — which a similarity
+    tracker will score as zero repeats. This tracker is the mixed-
+    barrage counterpart: N commands in M seconds regardless of what
+    those commands say.
+
+    Instances are not thread-safe by design; EmotionAgent holds the
+    events lock around its single call site and that is sufficient.
+    """
+
+    def __init__(
+        self,
+        window_s: float = _FLOOD_WINDOW_S,
+        bands: tuple[tuple[int, str, float], ...] = _FLOOD_BANDS,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._window_s = window_s
+        self._bands = bands
+        self._clock = clock
+        # Bounded so a pathological stuck-loop can't grow this forever.
+        # 40 is comfortably past the largest band threshold.
+        self._timestamps: deque[float] = deque(maxlen=40)
+
+    def record(self, now: float | None = None) -> tuple[str, float] | None:
+        """Append a command timestamp and return (label, weight) if a
+        flood band is tripped, else None. Caller is expected to invoke
+        this once per genuine user turn."""
+        t = self._clock() if now is None else now
+        self._timestamps.append(t)
+        cutoff = t - self._window_s
+        while self._timestamps and self._timestamps[0] < cutoff:
+            self._timestamps.popleft()
+        count = len(self._timestamps)
+        for threshold, label, weight in self._bands:
+            if count >= threshold:
+                return label, weight
+        return None
+
+    def count_in_window(self, now: float | None = None) -> int:
+        """Debug helper — how many command timestamps are live in the
+        current window. Used by tests and the emotion probe."""
+        t = self._clock() if now is None else now
+        cutoff = t - self._window_s
+        return sum(1 for ts in self._timestamps if ts >= cutoff)
+
+
 from ..llm_client import LLMConfig, llm_call
 from ..subagent import Subagent, SubagentConfig, SubagentOutput
 
@@ -297,6 +371,10 @@ class EmotionAgent(Subagent):
         self._personality_prompt = build_personality_prompt(self._ecfg.hexaco)
         self._trigger = threading.Event()
         self._repetition_tracker = self._build_repetition_tracker()
+        # Phase Emotion-H: rapid-fire mixed command detector. Fires on
+        # command density alone, so "lights on; volume up; pause" in
+        # quick succession escalates even without semantic repeats.
+        self._flood_tracker = CommandFloodTracker()
         # Register as the process-wide PAD state provider so TTS + persona
         # rewriter can key off current pleasure without importing the
         # agent directly. Last-registered-wins is fine — there is at
@@ -618,9 +696,43 @@ class EmotionAgent(Subagent):
         return any(kw in message.lower() for kw in cls.TRIVIAL_KEYWORDS)
 
     def build_event_description(self, message: str) -> str:
-        """Build severity-tagged event description using repetition tracker."""
-        return self._repetition_tracker.build_event_description(
+        """Build severity-tagged event description.
+
+        Consults two signals:
+          * RepetitionTracker — semantic similarity. Fires on repeated
+            variants of the same intent ('weather?' / 'forecast?' / etc).
+          * CommandFloodTracker — windowed density. Fires on rapid-fire
+            MIXED commands that share no content words.
+
+        The two can fire together; when they do, the higher weight wins
+        (same tag format so the tick's deterministic delta path applies
+        identically to either signal).
+        """
+        rep_desc = self._repetition_tracker.build_event_description(
             message, self.is_trivial_request(message)
+        )
+        flood = self._flood_tracker.record()
+        if flood is None:
+            return rep_desc
+
+        flood_label, flood_weight = flood
+        # If repetition also tagged with a weight, take the larger.
+        rep_weight = 0.0
+        m = self._WEIGHT_RE.search(rep_desc)
+        if m:
+            try:
+                rep_weight = float(m.group(1))
+            except ValueError:
+                rep_weight = 0.0
+        if rep_weight >= flood_weight:
+            return rep_desc
+        # Flood wins — override the description so the tick's
+        # deterministic-delta path picks up the flood weight.
+        return (
+            f"[SEVERITY: {flood_label} | weight:{flood_weight:.2f}] "
+            f"rapid-fire command barrage — {self._flood_tracker.count_in_window()} "
+            f"commands in the last {int(_FLOOD_WINDOW_S)}s. "
+            f"Current message: {message[:120]}"
         )
 
     def _ask_llm(self, events: list[EmotionEvent]) -> EmotionState | None:
