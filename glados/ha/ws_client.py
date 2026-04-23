@@ -280,12 +280,32 @@ class HAClient:
         except Exception as exc:
             logger.warning("HA WS read loop ended: {}", exc)
 
+    def _refresh_token(self) -> None:
+        """Re-read the HA token from the live config store before each
+        (re)connect. Without this the singleton HAClient keeps the
+        token it was constructed with at server boot — a WebUI save
+        rotates the token on disk but this in-process client would
+        keep retrying with the stale value until the container
+        restarts. Live incident 2026-04-23."""
+        try:
+            from glados.core.config_store import cfg
+            current = cfg.ha_token
+            if current and current != self._token:
+                logger.info("HA WS: detected rotated token; refreshing in-process value")
+                self._token = current
+        except Exception as exc:
+            logger.debug("HA WS: token refresh lookup skipped ({})", exc)
+
     async def _authenticate(self, ws: Any) -> None:
         # HA sends auth_required first.
         raw = await ws.recv()
         msg = json.loads(raw)
         if msg.get("type") != "auth_required":
             raise RuntimeError(f"HA did not request auth (got {msg!r})")
+        # Pull the freshest token from the config store every auth
+        # handshake so rotation-via-WebUI takes effect on the next
+        # reconnect attempt without a container restart.
+        self._refresh_token()
         await ws.send(json.dumps({"type": "auth", "access_token": self._token}))
         raw = await ws.recv()
         resp = json.loads(raw)
