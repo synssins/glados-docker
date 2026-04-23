@@ -1863,9 +1863,11 @@ class Handler(BaseHTTPRequestHandler):
             for _k in ("length_scale", "noise_scale", "noise_w"):
                 if _k in tts_params:
                     _tts_payload[_k] = tts_params[_k]
-            logger.info(
-                "webui._chat TTS request: tts_params_received={} payload_keys={} url={}",
-                tts_params, list(_tts_payload.keys()), _svc_tts_speech(),
+            import sys as _sys
+            print(
+                f"[DEBUG] webui._chat TTS req: tts_params={tts_params} "
+                f"payload_keys={list(_tts_payload.keys())} url={_svc_tts_speech()}",
+                file=_sys.stderr, flush=True,
             )
             tts_body = json.dumps(_tts_payload).encode()
             tts_req = urllib.request.Request(_svc_tts_speech(), data=tts_body,
