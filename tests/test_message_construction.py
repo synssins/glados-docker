@@ -48,17 +48,33 @@ class TestModelOptionsConfig:
         assert opts.temperature == 0.3
         assert opts.num_ctx == 8192
 
-    def test_env_overrides_yaml(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """env-overrides-YAML pattern — same as HA token. Operator can
-        retune persona strength per deployment without editing committed
-        YAML."""
+    def test_yaml_wins_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Policy change 2026-04-23: YAML (WebUI Save) is authoritative
+        for every operator-facing field. Env values only seed pydantic
+        defaults when YAML is missing the field entirely. Same
+        reasoning as HomeAssistantGlobal — prevents a stale
+        OLLAMA_TEMPERATURE in compose from silently reverting
+        WebUI-saved tuning on the next engine reload."""
         monkeypatch.setenv("OLLAMA_TEMPERATURE", "0.4")
         monkeypatch.setenv("OLLAMA_TOP_P", "0.8")
         monkeypatch.setenv("OLLAMA_NUM_CTX", "32768")
         monkeypatch.setenv("OLLAMA_REPEAT_PENALTY", "1.05")
-        # Pass deliberately-wrong YAML values so we can prove env wins.
+        # YAML values MUST win over env now.
         opts = ModelOptionsConfig(temperature=0.99, top_p=0.99,
                                    num_ctx=1, repeat_penalty=2.0)
+        assert opts.temperature == 0.99
+        assert opts.top_p == 0.99
+        assert opts.num_ctx == 1
+        assert opts.repeat_penalty == 2.0
+
+    def test_env_seeds_when_yaml_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Initial-install contract: empty YAML means env values fill
+        in the defaults so the container boots with sensible values."""
+        monkeypatch.setenv("OLLAMA_TEMPERATURE", "0.4")
+        monkeypatch.setenv("OLLAMA_TOP_P", "0.8")
+        monkeypatch.setenv("OLLAMA_NUM_CTX", "32768")
+        monkeypatch.setenv("OLLAMA_REPEAT_PENALTY", "1.05")
+        opts = ModelOptionsConfig()
         assert opts.temperature == 0.4
         assert opts.top_p == 0.8
         assert opts.num_ctx == 32768

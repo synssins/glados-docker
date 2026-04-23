@@ -45,6 +45,33 @@ def _env(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
+def _env_float(key: str, default: float) -> float:
+    """Return env var value cast to float, or default if unset/invalid.
+    Module-level defaults use this so a malformed env value (e.g.
+    `OLLAMA_TEMPERATURE=abc`) logs a warning instead of crashing boot.
+    """
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid {}={!r}; using default {}", key, raw, default)
+        return default
+
+
+def _env_int(key: str, default: int) -> int:
+    """Integer-typed counterpart to _env_float."""
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid {}={!r}; using default {}", key, raw, default)
+        return default
+
+
 # ---------------------------------------------------------------------------
 # Deprecation helpers — Stage 3 Phase 6
 # ---------------------------------------------------------------------------
@@ -81,29 +108,35 @@ _GLADOS_ASSETS = _env("GLADOS_ASSETS", f"{_GLADOS_ROOT}/assets")
 # ---------------------------------------------------------------------------
 
 class HomeAssistantGlobal(BaseModel):
-    url: str = _env("HA_URL", "http://homeassistant.local:8123")
-    ws_url: str = _env("HA_WS_URL", "ws://homeassistant.local:8123/api/websocket")
-    token: str = _env("HA_TOKEN", "")
+    """Home Assistant endpoint + long-lived access token.
 
-    @model_validator(mode="after")
-    def _env_overrides_yaml(self) -> "HomeAssistantGlobal":
-        """Environment variables always win over committed YAML for HA
-        credentials. Rationale: the real token belongs in deploy-time
-        secrets (.env / compose env_file), not in `configs/global.yaml`
-        which is checked into git alongside other config. Operators who
-        put a placeholder in YAML ("eyJhbG...") will have it overridden
-        by the real env value without needing to edit the YAML.
-        """
-        env_token = os.environ.get("HA_TOKEN", "").strip()
-        if env_token:
-            self.token = env_token
-        env_url = os.environ.get("HA_URL", "").strip()
-        if env_url:
-            self.url = env_url
-        env_ws = os.environ.get("HA_WS_URL", "").strip()
-        if env_ws:
-            self.ws_url = env_ws
-        return self
+    Precedence (changed 2026-04-23 per operator policy):
+      1. Values saved via the WebUI → `configs/global.yaml` are
+         **always** authoritative.
+      2. Environment variables (HA_URL, HA_WS_URL, HA_TOKEN) seed the
+         INITIAL boot only — they are the pydantic field defaults.
+         Once YAML has values, env is ignored on every subsequent
+         load. This makes the WebUI Save button actually persist.
+
+    Security stance: `configs/global.yaml` is gitignored so the
+    token never leaves the host. To rotate the token, operators
+    use the WebUI. Updating HA_TOKEN in the compose `.env` after a
+    WebUI save does NOT re-take effect — that's deliberate. If you
+    need to reset the seed (e.g. recovery from a corrupted YAML),
+    delete the field from `configs/global.yaml` and restart; the
+    env value will fill in the blank.
+    """
+    # default_factory so env is read on every model construction, not
+    # once at class-definition time. Real container boots see the env
+    # at import time either way; the factory matters for tests that
+    # mock env AFTER import and for rare reload scenarios.
+    url: str = Field(
+        default_factory=lambda: _env("HA_URL", "http://homeassistant.local:8123")
+    )
+    ws_url: str = Field(
+        default_factory=lambda: _env("HA_WS_URL", "ws://homeassistant.local:8123/api/websocket")
+    )
+    token: str = Field(default_factory=lambda: _env("HA_TOKEN", ""))
 
 
 class NetworkGlobal(BaseModel):
@@ -384,31 +417,16 @@ class ModelOptionsConfig(BaseModel):
     affect how strongly the container's personality_preprompt steers the
     model's voice.
 
-    Env-overrides-YAML pattern: `OLLAMA_TEMPERATURE`, `OLLAMA_TOP_P`,
-    `OLLAMA_NUM_CTX`, `OLLAMA_REPEAT_PENALTY` win when set. Operator can
-    leave the YAML as a sensible default and override per-deployment.
+    Precedence (aligned with HomeAssistantGlobal on 2026-04-23):
+      YAML (WebUI Save) is always authoritative. Env variables
+      (`OLLAMA_TEMPERATURE`, `OLLAMA_TOP_P`, `OLLAMA_NUM_CTX`,
+      `OLLAMA_REPEAT_PENALTY`) seed the initial pydantic defaults
+      only and are ignored once YAML carries a value.
     """
-    temperature: float = 0.7
-    top_p: float = 0.9
-    num_ctx: int = 16384
-    repeat_penalty: float = 1.1
-
-    @model_validator(mode="after")
-    def _env_overrides_yaml(self) -> "ModelOptionsConfig":
-        for env_key, attr, cast in [
-            ("OLLAMA_TEMPERATURE", "temperature", float),
-            ("OLLAMA_TOP_P", "top_p", float),
-            ("OLLAMA_NUM_CTX", "num_ctx", int),
-            ("OLLAMA_REPEAT_PENALTY", "repeat_penalty", float),
-        ]:
-            raw = os.environ.get(env_key, "").strip()
-            if not raw:
-                continue
-            try:
-                setattr(self, attr, cast(raw))
-            except (TypeError, ValueError):
-                logger.warning("Ignoring invalid {}={!r}", env_key, raw)
-        return self
+    temperature: float = Field(default_factory=lambda: _env_float("OLLAMA_TEMPERATURE", 0.7))
+    top_p: float = Field(default_factory=lambda: _env_float("OLLAMA_TOP_P", 0.9))
+    num_ctx: int = Field(default_factory=lambda: _env_int("OLLAMA_NUM_CTX", 16384))
+    repeat_penalty: float = Field(default_factory=lambda: _env_float("OLLAMA_REPEAT_PENALTY", 1.1))
 
     def to_ollama_options(self) -> dict[str, Any]:
         """Build the `options` dict sent in the Ollama POST body."""

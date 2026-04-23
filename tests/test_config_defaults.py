@@ -84,19 +84,75 @@ def test_memory_defaults_use_docker_service_name() -> None:
     assert m.chromadb_port == 8000
 
 
-# ── Env overrides ──────────────────────────────────────────────────────
+# ── Source-of-truth precedence (WebUI > env) ──────────────────────────
+# Policy (locked 2026-04-23): YAML is always authoritative. Env values
+# ONLY seed pydantic field defaults on fresh install when YAML is
+# missing the field entirely. Once the WebUI has saved a value, env
+# updates have no effect — this prevents stale compose env vars from
+# silently reverting WebUI-saved tokens on the next container reload.
 
 
-def test_ha_env_wins_over_yaml_placeholder() -> None:
-    # Operators put a placeholder token in YAML; the real token arrives
-    # via HA_TOKEN env. The model_validator flips the default precedence.
-    with _env(HA_TOKEN="real-token-xyz", HA_URL="http://ha.example:8123"):
+def test_ha_yaml_wins_over_env_when_both_set() -> None:
+    """HA_TOKEN env MUST NOT override a value present in YAML. Earlier
+    behaviour inverted this and caused a live incident where the WebUI
+    'Save' button silently did nothing after the operator rotated the
+    HA long-lived token (2026-04-23)."""
+    with _env(HA_TOKEN="stale-env-token", HA_URL="http://env.example:8123"):
         ha = HomeAssistantGlobal.model_validate({
-            "url": "http://10.0.0.20:8123",
-            "token": "eyJh...PLACEHOLDER",
+            "url": "http://ha-from-yaml.example:8123",
+            "token": "fresh-yaml-token",
         })
-        assert ha.token == "real-token-xyz"
-        assert ha.url == "http://ha.example:8123"
+        assert ha.token == "fresh-yaml-token"
+        assert ha.url == "http://ha-from-yaml.example:8123"
+
+
+def test_ha_env_seeds_when_yaml_field_missing() -> None:
+    """Fresh install contract: if YAML has never been saved, env values
+    seed the defaults so the container boots with something sensible."""
+    with _env(HA_TOKEN="seed-token", HA_URL="http://seed.example:8123"):
+        ha = HomeAssistantGlobal.model_validate({})
+        assert ha.token == "seed-token"
+        assert ha.url == "http://seed.example:8123"
+
+
+def test_ha_empty_yaml_string_still_overrides_env() -> None:
+    """Even an explicit empty string from YAML is authoritative.
+    Operators can clear a field via WebUI without env silently
+    re-populating it."""
+    with _env(HA_TOKEN="env-token"):
+        ha = HomeAssistantGlobal.model_validate({"token": ""})
+        assert ha.token == ""
+
+
+def test_model_options_yaml_wins_over_env() -> None:
+    """Same precedence for Ollama tuning knobs — WebUI Save persists
+    regardless of OLLAMA_* env vars in the compose file."""
+    from glados.core.config_store import ModelOptionsConfig
+    with _env(OLLAMA_TEMPERATURE="0.1", OLLAMA_NUM_CTX="2048"):
+        opts = ModelOptionsConfig.model_validate({
+            "temperature": 0.95,
+            "num_ctx": 32768,
+        })
+        assert opts.temperature == 0.95
+        assert opts.num_ctx == 32768
+
+
+def test_model_options_env_seeds_when_yaml_missing() -> None:
+    from glados.core.config_store import ModelOptionsConfig
+    with _env(OLLAMA_TEMPERATURE="0.35", OLLAMA_NUM_CTX="4096"):
+        opts = ModelOptionsConfig.model_validate({})
+        assert opts.temperature == 0.35
+        assert opts.num_ctx == 4096
+
+
+def test_model_options_invalid_env_falls_back_to_default() -> None:
+    """Boot must not crash if someone sets OLLAMA_TEMPERATURE=abc."""
+    from glados.core.config_store import _env_float, _env_int
+    assert _env_float("DEFINITELY_UNSET_KEY", 0.5) == 0.5
+    with _env(BAD_FLOAT="not-a-number"):
+        assert _env_float("BAD_FLOAT", 0.7) == 0.7
+    with _env(BAD_INT="xyz"):
+        assert _env_int("BAD_INT", 99) == 99
 
 
 def test_autonomy_vision_default_to_interactive_when_env_unset() -> None:
