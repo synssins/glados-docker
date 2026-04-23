@@ -1844,14 +1844,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(502, {"error": f"GLaDOS API error: {e}"})
             return
 
+        # Phase Emotion-G: api_wrapper surfaces current TTS params
+        # (length_scale / noise_scale / noise_w) derived from live
+        # emotion state. Forward them to speaches at the top level —
+        # same shape tts_speaches.py uses so Piper honours the PAD-
+        # driven override on this speech. extra_body is NOT the right
+        # key here (litestar-side validation wants top-level fields).
+        tts_params = chat_data.get("tts_params") or {}
+
         # 2. Generate TTS audio
         audio_url = None
         try:
-            tts_body = json.dumps({
+            _tts_payload: dict = {
                 "input": glados_text,
                 "voice": "glados",
                 "response_format": "wav",
-            }).encode()
+            }
+            for _k in ("length_scale", "noise_scale", "noise_w"):
+                if _k in tts_params:
+                    _tts_payload[_k] = tts_params[_k]
+            tts_body = json.dumps(_tts_payload).encode()
             tts_req = urllib.request.Request(_svc_tts_speech(), data=tts_body,
                                              headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(tts_req, timeout=60) as tts_resp:
