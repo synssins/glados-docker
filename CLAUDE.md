@@ -35,7 +35,7 @@ belong in `C:\src\SESSION_STATE.md`, never in the committed code.
 
 ## 1. Project state snapshot (2026-04-23)
 
-- **Deployed on `10.0.0.50`**: `ghcr.io/synssins/glados-docker:latest`
+- **Deployed on the operator's Docker host**: `ghcr.io/synssins/glados-docker:latest`
   at commit `dbf40c7`. Healthy.
 - **Engine models**: chat, Tier 2 disambiguator, and persona rewriter
   all on `qwen3:14b` via a single Ollama endpoint.
@@ -46,8 +46,8 @@ belong in `C:\src\SESSION_STATE.md`, never in the committed code.
   flood detector, hard-rule response directive, PAD→Piper audio
   override, rewriter band overlay, and operator-tunable config
   via Personality → Voice production. See CHANGES.md Change 22.
-- **Self-hosted GitHub Actions runner** installed on AIBox
-  (`10.0.0.10`) — service
+- **Self-hosted GitHub Actions runner** installed on the AIBox LAN
+  host — service
   `actions.runner.synssins-glados-docker.aibox-glados-lan`, label
   `glados-lan`. **Manual dispatch only.** Cron was removed because
   the battery flips physical lights in an occupied house. Operator
@@ -196,7 +196,8 @@ This repo ships via GHCR. The automation is:
    `ghcr.io/synssins/glados-docker:latest`.
 3. `.github/workflows/tests.yml` runs the pytest suite on the
    same push.
-4. `scripts/deploy_ghcr.py` SSHes to `10.0.0.50`, pulls the
+4. `scripts/deploy_ghcr.py` SSHes to the operator's Docker host (env
+   GLADOS_SSH_HOST), pulls the
    new image, recreates the container. Credentials in
    `SESSION_STATE.md`.
 5. Verify `/health` on port 8015 AND 8052, live-probe affected

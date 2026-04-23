@@ -183,7 +183,7 @@ manual PEM upload path and live certificate status display.
   Let's Encrypt form (domain, email, provider, API token, Request button),
   manual upload pickers, advanced path overrides, restart reminder
 
-### Verified working on operator's Docker host (10.0.0.50)
+### Verified working on operator's Docker host (the operator Docker host)
 
 - Let's Encrypt cert issued for operator hostname (E7 issuer)
 - HTTPS returns 200, valid chain, expires Jul 16, 2026
@@ -672,7 +672,7 @@ model. This change actually executed that swap on the operator's
 hardware:
 
 1. Unloaded `glados:latest` from the AIBox interactive Ollama
-   (`10.0.0.10:11434`) via `POST /api/generate {keep_alive: 0}`.
+   (`the AIBox LAN host:11434`) via `POST /api/generate {keep_alive: 0}`.
 2. Loaded `qwen2.5:14b-instruct-q4_K_M` on the same Ollama with
    `keep_alive: -1` (persistent, year 2318 expiry). VRAM dropped
    from 11.55 GB (glados:latest) to 10.38 GB (base) — Modelfile
@@ -1076,7 +1076,7 @@ Option C — unified by default, split still possible:
 - Code already implemented the fallback chain — no logic change.
 - Prod: removed the explicit `OLLAMA_AUTONOMY_URL` /
   `OLLAMA_VISION_URL` env entries from the deployed compose on
-  10.0.0.50. Autonomy was already effectively unified via the
+  the operator Docker host. Autonomy was already effectively unified via the
   services.yaml URL; vision needed the model pulled onto B60 first
   (`ollama pull llama3.2-vision:latest` against the interactive
   instance, ~7.8 GB, lands alongside qwen2.5:14b with comfortable
@@ -1685,7 +1685,7 @@ area facets because HA publishes `area_id` sparsely at the state
 level. `retrieve()`/`retrieve_for_planner()` take optional
 `area_id`/`floor_id` filter hints.
 
-HA registry on `10.0.0.50` cleaned up via
+HA registry on `the operator Docker host` cleaned up via
 `scripts/ha_cleanup_rename_and_assign.py`: `Theater` renamed to
 `Basement`; 287 orphan entities assigned (18 explicit + 269 via 6
 prefix rules for camera/doorbell/driveway groups).
@@ -2217,7 +2217,7 @@ semantics without catching it until next deploy.
 - New `.github/workflows/tests.yml` — runs `pytest -q --tb=short`
   with `pip install -e '.[dev]'` on every PR and on every push to
   main. 970-test container suite now gates merges. Battery itself
-  (which needs live HA + deployed container on 192.168.1.x) is not
+  (which needs live HA + deployed container on the operator LAN) is not
   runnable on a public runner; that would require a self-hosted
   runner on the operator's network and is deferred — the plan's
   "30-test sanity subset on PR" remains aspirational.
@@ -2269,7 +2269,7 @@ Harness scratch dir (not git-tracked; lives at
 Shipped in the same session once the scorer surface landed.
 Operator opted in with "single-admin private LAN, I own the
 trust surface — install it." Runner on AIBox at
-`10.0.0.10` as the Windows service
+`the AIBox LAN host` as the Windows service
 `actions.runner.synssins-glados-docker.aibox-glados-lan`
 (delayed auto-start, runs as ``NT AUTHORITY\NETWORK SERVICE``).
 Labels: ``self-hosted, glados-lan, windows, x64``. Secrets
