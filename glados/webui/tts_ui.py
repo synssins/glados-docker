@@ -2524,17 +2524,15 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             status["tts"] = False
 
-        # ChromaDB: use the configured host:port (glados-chromadb:8000
-        # when in compose, overrideable via CHROMADB_HOST / CHROMADB_PORT).
-        # v2 heartbeat only — v1 was retired in ChromaDB 1.x and returns 410.
+        # ChromaDB: embedded (in-process) — no HTTP heartbeat. Verify the
+        # PersistentClient directory exists and is writable; the engine
+        # holds an open client singleton so if the engine is healthy and
+        # the path is writable, ChromaDB is effectively up.
         try:
-            ch_host = _cfg.memory.chromadb_host
-            ch_port = _cfg.memory.chromadb_port
-            req = urllib.request.Request(
-                f"http://{ch_host}:{ch_port}/api/v2/heartbeat"
-            )
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                status["chromadb"] = resp.status < 400
+            from pathlib import Path as _P
+            ch_path = _P(getattr(_cfg.memory, "chromadb_path", "/app/data/chromadb"))
+            # Directory exists and is writable → client can operate
+            status["chromadb"] = ch_path.exists() and os.access(ch_path, os.W_OK)
         except Exception:
             status["chromadb"] = False
 

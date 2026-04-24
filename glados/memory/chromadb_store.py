@@ -76,26 +76,49 @@ class MemoryStore:
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 8000,
+        persistent_path: str | None = None,
+        # Back-compat args — ignored when persistent_path is set (default).
+        # Kept in the signature so legacy callers (engine.py passing
+        # host=/port= from cfg.memory.chromadb_host/port) don't break
+        # during the env-cleanup transition.
+        host: str | None = None,
+        port: int | None = None,
     ) -> None:
-        # VibeSec: connection details from caller (config), not hardcoded
-        self._host = host
-        self._port = port
-        self._client: chromadb.HttpClient | None = None
+        import os as _os
+        self._persistent_path = (
+            persistent_path
+            or _os.environ.get("CHROMADB_PATH")
+            or "/app/data/chromadb"
+        )
+        self._client: Any | None = None
         self._collections: dict[str, Any] = {}
+        # Surface the legacy host/port for logging + health-check back-
+        # compat, but the embedded client doesn't actually use them.
+        self._legacy_host = host
+        self._legacy_port = port
 
-    def _get_client(self) -> chromadb.HttpClient:
-        """Lazy-connect to ChromaDB with connection validation."""
+    def _get_client(self) -> Any:
+        """Lazy-create an embedded ChromaDB PersistentClient.
+
+        The container runs ChromaDB in-process via its DuckDB+SQLite
+        backend. No separate service. Data persists under the operator's
+        `data/` volume at `/app/data/chromadb/` — same volume that
+        already holds `conversation.db`, `learned_context.db`, and
+        `entity_embeddings.npz`.
+        """
         if self._client is None:
-            self._client = chromadb.HttpClient(
-                host=self._host,
-                port=self._port,
+            from pathlib import Path
+            Path(self._persistent_path).mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(
+                path=self._persistent_path,
                 settings=ChromaSettings(
                     anonymized_telemetry=False,
+                    allow_reset=False,
                 ),
             )
-            logger.info("ChromaDB connected at {}:{}", self._host, self._port)
+            logger.info(
+                "ChromaDB (embedded) ready at {}", self._persistent_path,
+            )
         return self._client
 
     def _get_collection(self, name: str) -> Any:

@@ -1,15 +1,17 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="GLaDOS"
-LABEL org.opencontainers.image.description="GLaDOS persona middleware — OpenAI-compatible AI assistant. CPU; bundled local TTS (VITS ONNX); delegates LLM inference to Ollama."
+LABEL org.opencontainers.image.description="GLaDOS persona middleware — OpenAI-compatible AI assistant. Self-contained: TTS/STT/ChromaDB all embedded. Delegates LLM inference to Ollama."
 LABEL org.opencontainers.image.source="https://github.com/synssins/glados-docker"
 
 # Container runs:
 #   - Local VITS TTS inference on CPU (bundled glados.onnx + ONNX phonemizer)
-#   - BGE embedding retrieval on CPU (for entity semantic matching)
+#   - Local Parakeet CTC STT on CPU (bundled model)
+#   - BGE embedding retrieval on CPU (entity semantic matching)
+#   - ChromaDB in-process via PersistentClient (bundled all-MiniLM-L6-v2
+#     for vector embeddings). No separate chromadb service required.
 # Delegates externally:
-#   - LLM inference → Ollama (OLLAMA_URL)
-#   - Memory storage → ChromaDB (CHROMADB_URL)
+#   - LLM inference → Ollama (OLLAMA_URL from YAML)
 # GPU access provides no benefit for the workloads we run here.
 
 WORKDIR /app
@@ -54,13 +56,28 @@ COPY models/ASR/ ./models/ASR/
 # up with the container's `/app/glados/utils/…` layout).
 ENV GLADOS_MODELS=/app/models
 
+# ChromaDB default embedding model — bundled so first use doesn't need
+# a 79 MB network download to chroma-onnx-models.s3.amazonaws.com. This
+# is what `all-MiniLM-L6-v2` ChromaDB resolves to when you insert any
+# document without passing an explicit embedding function. Stored at
+# the exact path ChromaDB expects (`~/.cache/chroma/onnx_models/...`).
+RUN mkdir -p /home/glados/.cache/chroma/onnx_models/all-MiniLM-L6-v2 \
+    && curl -fsSL --retry 5 --retry-delay 2 \
+        -o /tmp/chroma-minilm.tar.gz \
+        https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz \
+    && tar -xzf /tmp/chroma-minilm.tar.gz \
+        -C /home/glados/.cache/chroma/onnx_models/all-MiniLM-L6-v2 \
+    && rm /tmp/chroma-minilm.tar.gz
+
 # Application source
 COPY glados/ ./glados/
 COPY configs/config.example.yaml ./configs/config.example.yaml
 COPY scripts/ ./scripts/
 
 # Non-root user with home dir (subagent memory writes to ~/.glados/)
-RUN useradd -r -u 1000 -g root -m glados && chown -R glados:root /app
+# Also owns the pre-populated ChromaDB cache.
+RUN useradd -r -u 1000 -g root -m glados \
+    && chown -R glados:root /app /home/glados/.cache
 USER glados
 
 EXPOSE 8015 8052

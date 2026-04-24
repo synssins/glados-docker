@@ -510,15 +510,14 @@ class Glados:
         from ..memory import MemoryStore
         from .memory_context import MemoryContext, MemoryContextConfig
         from .config_store import cfg as _mem_cfg_store
-        _mem_host = getattr(_mem_cfg_store.memory, "chromadb_host", "localhost")
-        _mem_port = getattr(_mem_cfg_store.memory, "chromadb_port", 8000)
+        _mem_path = getattr(_mem_cfg_store.memory, "chromadb_path", "/app/data/chromadb")
         _mem_store: MemoryStore | None = None
         try:
-            _mem_store = MemoryStore(host=_mem_host, port=_mem_port)
+            _mem_store = MemoryStore(persistent_path=_mem_path)
             _mem_store.health_check()
-            logger.info("ChromaDB memory store connected at {}:{}", _mem_host, _mem_port)
+            logger.info("ChromaDB (embedded) memory store ready at {}", _mem_path)
         except Exception as exc:
-            logger.warning("ChromaDB unavailable — memory context disabled: {}", exc)
+            logger.warning("ChromaDB (embedded) unavailable — memory context disabled: {}", exc)
             _mem_store = None
         self.memory_store: MemoryStore | None = _mem_store
         # Stage 3 Phase E: now that memory_store exists, give the

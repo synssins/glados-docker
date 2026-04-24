@@ -486,8 +486,21 @@ class DiscordConfig(BaseModel):
 
 
 class MemoryConfig(BaseModel):
-    chromadb_host: str = _env("CHROMADB_HOST", "chromadb")
-    chromadb_port: int = int(_env("CHROMADB_PORT", "8000"))
+    # Embedded ChromaDB path (PersistentClient runs in-process). Default
+    # sits under the operator's `data/` volume alongside conversation.db
+    # + learned_context.db. Operator never needs to change this.
+    chromadb_path: str = _env("CHROMADB_PATH", "/app/data/chromadb")
+    # Legacy host/port — kept for backward compatibility with older
+    # operator YAMLs that reference them. Unused by the runtime once
+    # the embedded client lands; deprecation-warned at load time.
+    chromadb_host: str = Field(
+        default_factory=lambda: _env("CHROMADB_HOST", ""),
+        deprecated=True,
+    )
+    chromadb_port: int = Field(
+        default_factory=lambda: int(_env("CHROMADB_PORT", "0") or "0"),
+        deprecated=True,
+    )
     retrieval_count: int = 5
     episodic_ttl_hours: int = 168
     summarization_threshold_hours: int = 72

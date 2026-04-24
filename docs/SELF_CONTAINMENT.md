@@ -1,0 +1,240 @@
+# Self-Containment Project
+
+Working document for the "minimum-setup, self-contained GLaDOS container"
+initiative. Updated continuously while this is an active project.
+
+**Last updated:** 2026-04-24
+**Active branch:** `main`
+**Deployed commit at start of project:** `a134723`
+
+---
+
+## Goal
+
+A single Docker container that ships with all ML inference bundled and
+needs only a minimal `compose.yml`:
+
+```yaml
+services:
+  glados:
+    image: ghcr.io/synssins/glados-docker:latest
+    container_name: glados
+    restart: unless-stopped
+    ports:
+      - "8015:8015"   # Chat API + /v1/audio/speech + /v1/audio/transcriptions
+      - "8052:8052"   # WebUI
+      - "5051:5051"   # Audio file server (for HA media_player playback)
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DOCKERCONFDIR}/glados/configs:/app/configs
+      - ${DOCKERCONFDIR}/glados/data:/app/data
+      - ${DOCKERCONFDIR}/glados/logs:/app/logs
+      - ${DOCKERCONFDIR}/glados/audio_files:/app/audio_files
+      - ${DOCKERCONFDIR}/glados/certs:/app/certs
+    environment:
+      - TZ=${TZ:-UTC}
+```
+
+Everything else lives inside the container and is editable via the WebUI,
+with YAML as the authoritative source of truth.
+
+---
+
+## Architecture decisions
+
+### YAML is authoritative
+
+Every runtime configuration value lives in `/app/configs/*.yaml`. The
+`config_store` reads these live; the WebUI writes them on Save; changes
+that affect engine state trigger a hot-reload. Env vars (when present)
+act as *fallback defaults* only — YAML wins whenever a value is set.
+
+This enables the live-reload token-rotation pattern shipped in commit
+`52a57e5` (`ha_ws: refresh token from cfg on every auth handshake`).
+Moving secrets to `.env` would break this.
+
+### Everything self-contained
+
+The container runs its own ML inference rather than calling external
+services. Already done this session:
+
+- **TTS** — local VITS ONNX via `glados/TTS/tts_glados.py` + bundled
+  phonemizer. No Speaches HTTP round-trip. See
+  [CHANGES.md → self-contained TTS](../CHANGES.md).
+- **STT** — local Parakeet CTC ONNX via `glados/ASR/ctc_asr.py` +
+  Silero VAD. No Speaches STT HTTP round-trip. POST
+  `/v1/audio/transcriptions` handler in `api_wrapper.py`.
+- **BGE embeddings** — already bundled in the image (added earlier
+  for Tier 2 semantic retrieval).
+
+Still pending:
+- **ChromaDB** — running as separate container today. This doc's next
+  step embeds it via `PersistentClient`.
+- **Vision** — out of scope for now. Still points at AIBox (which is
+  offline), so feature is dormant. Bundling a vision ONNX (~5-8 GB)
+  would make the container very large; decision deferred.
+
+### What stays external
+
+- **Ollama** (operator's deployment — not in-container scope). The
+  container points at `${OLLAMA_URL}` in YAML; any Ollama instance on
+  the LAN works.
+- **Home Assistant** — the container is *an HA integration*, not HA
+  itself.
+- **MQTT broker** (optional, for the peer-bus integration) — external.
+
+---
+
+## Session chronology (2026-04-23 → 2026-04-24)
+
+### Day 1 — AIBox retirement + TTS self-containment
+
+1. **AIBox services audit** — identified what was running on the host
+   at `<external_host>`:
+   - `glados-api`, `glados-tts`, `glados-stt`, `glados-vision`
+   - `gladys-api`, `gladys-discord`, `gladys-observer`
+   - `ollama-ipex-llm` (Arc B60, port 11434), `ollama-glados` (T4, 11436)
+   - `com.docker.service` + Docker containers (`glados`, `open-webui`,
+     two chromadbs)
+   - Native `speaches` Python process on port 8800
+   - GitHub Actions self-hosted runner
+2. **Shutdown** — stopped everything except Ollama on 11434 and the
+   GHA runner. Shut down Docker Desktop entirely. Migrated `open-webui`
+   to native Windows via `nssm` service at `C:\AI\open-webui\.venv`.
+3. **TTS voice extraction** — initial confusion: I assumed Speaches
+   served a GLaDOS Piper voice and started packaging that path. Wrong.
+   The actual working GLaDOS TTS lived inside `C:\AI\GLaDOS\` (the
+   legacy dnhkng/GLaDOS Python project) as bundled ONNX files.
+   Corrected course.
+4. **TTS bundled into container** — copied `glados.onnx`,
+   `phomenizer_en.onnx`, four pickle files from
+   `C:\AI\GLaDOS\models\TTS\` into `models/TTS/` (Git LFS). Ported
+   `tts_glados.py` + `phonemizer.py`. Rewrote
+   `glados/TTS/__init__.py` factory to default to local synth.
+   Added `/v1/audio/speech` + `/v1/voices` routes to `api_wrapper`.
+   **RTF 0.08 verified** (1.32 s audio in 0.11 s CPU synth after
+   2.9 s cold init).
+5. **STT bundled into container** — copied `nemo-parakeet_tdt_ctc_110m.onnx`,
+   Silero VAD, config into `models/ASR/` (Git LFS). The ASR
+   Python code was already in the container from a prior port; only
+   the models + endpoint were missing. Added
+   `POST /v1/audio/transcriptions` to `api_wrapper` with auto-resample
+   (input → 16 kHz for CTC). Skipped TDT encoder (1.2 GB) — CTC
+   alone is sufficient.
+
+### Day 2 — Doorbell debug + screener hardening
+
+1. **Doorbell.yaml + SERVE_HOST** — neither existed in the live
+   container after the moves. Created `doorbell.yaml` with real
+   G4 doorbell speaker entity + RTSPS stream. Set `SERVE_HOST=<internal_host>`
+   in global.yaml (env alone wasn't enough — YAML overrode).
+   Published port 5051 in compose.
+2. **HA token discovery** — env `HA_TOKEN` was an old/revoked token
+   (401 on REST). Live token lives in `global.yaml`; WS path reads
+   that per-handshake via commit `52a57e5`. Any code path that
+   needs an HA token should use `cfg.ha_token`, not `os.environ["HA_TOKEN"]`.
+3. **LLM eval empty-JSON bug** — doorbell screener sent
+   `format: "json"` to Ollama, qwen3:14b consistently punted to `{}`.
+   Fix: drop the grammar constraint, add `_extract_json` helper that
+   strips `<think>` preambles and markdown fences, parse first
+   balanced `{...}`. Retry once on empty. Bumped timeout 30 s → 60 s.
+4. **First-press-after-restart bug** — pressing the physical doorbell
+   fired a state_changed on `event.g4_doorbell_doorbell`, but
+   `_on_state_change` filter at line 528 dropped events where
+   `old_state == "unknown"`. First-ever press after container restart
+   always has `old_state="unknown"` (no cached history). Fix: inserted
+   doorbell fast path before the generic filter, triggers screener
+   unconditionally on any state_changed of a `doorbell_ring` typed
+   entity. [ha_sensor_watcher.py:520ff](../glados/autonomy/agents/ha_sensor_watcher.py).
+
+### End-of-day state (2026-04-24)
+
+- **Deployed commit:** `a134723` on `<internal_host>`
+- **AIBox state:** Ollama on `:11434` + GHA runner + native open-webui
+  on `:3000`. Everything else stopped.
+- **Container state:** TTS ✅ embedded, STT ✅ embedded, doorbell pipeline
+  ✅ wired end-to-end (awaiting real-press acceptance test).
+
+---
+
+## Remaining work (prioritized)
+
+### Phase 1 — ChromaDB embed (active; this commit)
+
+Replace `chromadb.HttpClient` with `chromadb.PersistentClient`.
+Pre-bundle `all-MiniLM-L6-v2` embedding model. Migrate existing data
+from `glados-chromadb` container's volume. Remove `glados-chromadb`
+from compose. See this file's active change.
+
+### Phase 2 — Env var purge + YAML consolidation
+
+Goal: compose env block shrinks to `TZ=${TZ:-UTC}`.
+
+Removals from compose:
+- `OLLAMA_URL`, `OLLAMA_AUTONOMY_URL`, `OLLAMA_VISION_URL` — YAML
+- `SPEACHES_URL`, `SPEACHES_TIMEOUT`, `SPEACHES_TTS_MODEL` — dead, delete
+- `HA_URL`, `HA_TOKEN` — YAML (YAML is already authoritative)
+- `VISION_URL` — YAML
+- `SERVE_HOST` — already moved to YAML
+- `GLADOS_CONFIG` — move to Dockerfile ENV
+
+Dockerfile bakes path defaults: `GLADOS_ROOT`, `GLADOS_CONFIG_DIR`,
+`GLADOS_DATA`, `GLADOS_LOGS`, `GLADOS_AUDIO`, `GLADOS_MODELS`,
+`GLADOS_TTS_MODELS_DIR`, `SERVE_PORT`.
+
+Code audit: `config_store.py` every `_env(...)` call — keep as
+default-only fallback, verify YAML wins when populated. Delete dead
+Speaches env reads.
+
+### Phase 3 — First-run bootstrap
+
+When `configs/global.yaml` is missing (fresh volume), container seeds
+defaults. When `ha.token` is empty, WebUI is still reachable — operator
+sets token there, live-reload picks it up ~30 s later.
+
+No startup wizard needed — the live-reload path already handles this.
+Just need the default-seed on fresh volume.
+
+### Phase 4 — Doorbell acceptance test
+
+Real button press → greeting at door → capture → CTC transcribe →
+LLM classify → indoor announcement. All in-container. No external
+services except Ollama and HA. Pending operator availability.
+
+### Phase 5 — Documentation sweep
+
+- `README.md` — minimal compose example, remove Speaches setup steps
+- `CLAUDE.md` — update "scope discipline" bullet: TTS/STT/Chroma
+  all in-container
+- `docs/roadmap.md` — mark self-containment items done
+- `SESSION_STATE.md` — current deploy commit
+
+---
+
+## Deploy workflow (unchanged)
+
+1. Commit + push to `main`
+2. GHA self-hosted runner (on AIBox `<external_host>`) builds via
+   `.github/workflows/build.yml`, LFS-aware since commit `9afd5d8`
+3. Image published to `ghcr.io/synssins/glados-docker:latest`
+4. `scripts/deploy_ghcr.py` SSHes to `<internal_host>`, pulls, recreates
+5. Verify `/health` on 8015, live-probe affected behaviour
+
+Credentials: operator-specific values live in `C:\src\SESSION_STATE.md`
+(not committed). Envvars: `GLADOS_SSH_HOST`, `GLADOS_SSH_PASSWORD`,
+`GLADOS_COMPOSE_PATH`.
+
+---
+
+## Operator preferences — calibration for this project
+
+- Surgical changes, reviewable chunks. One structural change per
+  commit.
+- Diagnose before acting. Live-probe, never assume.
+- No secrets in git. `.gitleaks.toml` rules active.
+- WebUI is the operator interface. YAML is the storage. Env is the
+  deployment-time override and only for values that must exist before
+  YAML is loaded (paths, container port bindings).
+- Don't push work onto the operator when automation exists. Container
+  commit/push/SSH-deploy runs via `scripts/deploy_ghcr.py` using
+  documented credentials.
