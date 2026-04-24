@@ -461,7 +461,7 @@ _RATE_LIMIT_WINDOW_S = 60
 
 # Public paths -- no session cookie required.
 # Matches AUTH_DESIGN.md SS3.4. /api/chat and /chat_audio/* require chat.send.
-_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout"})
+_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts"})
 
 _PUBLIC_PREFIXES = (
     # STT + TTS service endpoints (operator decision 2026-04-24)
@@ -1666,6 +1666,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/health":
             self._send_json(200, {"status": "ok"})
+            return
+        if self.path == "/tts":
+            from glados.webui.pages.tts_standalone import TTS_STANDALONE_HTML
+            body = TTS_STANDALONE_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         # Security fix (2026-04-20) — the menu rebuild made `/` serve
