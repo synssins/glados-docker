@@ -586,29 +586,21 @@ def _get_session_cookie(handler: BaseHTTPRequestHandler) -> dict | None:
 def _is_authenticated(handler: BaseHTTPRequestHandler) -> bool:
     """Check if the request is authenticated.
 
-    Prior behavior treated "auth enabled but no password hash set"
-    as auto-authenticated — intended as a bootstrap convenience
-    but functionally an open door: if the hash was wiped or never
-    initialised, every request passed. Now fail-closed: when auth
-    is enabled and no hash exists, deny and let the operator run
-    `docker exec -it glados python -m glados.tools.set_password`
-    to configure one. Auth can still be fully disabled via
-    `auth.enabled=false` in global.yaml for development.
+    Fail-closed when no users are configured. The login form remains
+    reachable so the operator can still complete the first-run wizard
+    or run set_password (deprecated path).
     """
     if not _cfg.auth.enabled:
         return True
-    if not _cfg.auth.password_hash:
-        # No password configured; refuse. The login page surfaces
-        # the setup instruction so the admin isn't stranded.
+    if not _cfg.auth.users:
         return False
     return _get_session_cookie(handler) is not None
 
 
 def _auth_password_configured() -> bool:
-    """True when a password hash is set. Login page uses this to
-    show a setup hint instead of the normal form when the admin
-    hasn't run set_password yet."""
-    return bool(_cfg.auth.password_hash)
+    """True when at least one user is configured. Login page uses this
+    to show the setup hint instead of the form on a fresh install."""
+    return bool(_cfg.auth.users)
 
 
 # â”€â”€ Login page HTML â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

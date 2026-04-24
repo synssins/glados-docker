@@ -881,8 +881,8 @@ def _synthesize_legacy_admin(raw: dict) -> dict:
 
     See docs/AUTH_DESIGN.md §10.1.
     """
-    import time as _time
-    out = dict(raw)
+    import copy as _copy, time as _time
+    out = _copy.deepcopy(raw)
 
     # session_timeout_hours → session_timeout
     hrs = out.get("session_timeout_hours", 0)
@@ -896,6 +896,9 @@ def _synthesize_legacy_admin(raw: dict) -> dict:
 
     legacy_hash = out.get("password_hash", "")
     if legacy_hash:
+        # No historical creation date is available for the legacy
+        # single-password deployment; stamp the migration moment as
+        # a sentinel rather than leaving it 0.
         out["users"] = [{
             "username": "admin",
             "display_name": "admin",
