@@ -125,8 +125,7 @@ class SetAdminPasswordStep:
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
 
-        from glados.core.config_store import cfg
-        cfg.reload()
+        # Caller (the wizard dispatcher) reloads cfg after a DONE result.
         return StepResult.DONE
 
 

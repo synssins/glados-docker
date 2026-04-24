@@ -315,10 +315,10 @@ def test_setup_post_invalid_rerenders_with_error(fresh_configs):
 
 
 def test_login_redirects_to_setup_on_fresh_install(fresh_configs):
-    """On fresh install, /login GET should 302 to /setup before rendering."""
-    # We don't have a clean way to invoke do_GET without a real socket;
-    # instead verify the helper logic: when users[] empty AND bootstrap_allowed,
-    # the redirect should fire. Test reads the live cfg state and asserts.
-    from glados.core.config_store import cfg
-    assert cfg.auth.users == []
-    assert cfg.auth.bootstrap_allowed is True
+    """do_GET("/login") on a fresh install must 302 to /setup before
+    rendering the login form."""
+    from glados.webui.tts_ui import Handler
+    h = _make_get_handler("/login")
+    Handler.do_GET(h)
+    assert ("status", 302) in h._sent
+    assert _location_header(h) == "/setup"
