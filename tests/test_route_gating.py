@@ -89,6 +89,7 @@ def test_require_perm_no_session_redirects_for_html(admin_users):
     assert require_perm(h, "webui.view") is False
     h.send_response.assert_called_once_with(302)
     h.send_header.assert_any_call("Location", "/login")
+    h.end_headers.assert_called_once()
 
 
 def test_require_perm_auth_disabled_always_allows(monkeypatch):
@@ -99,8 +100,9 @@ def test_require_perm_auth_disabled_always_allows(monkeypatch):
     assert require_perm(h, "admin") is True
 
 
-def test_require_perm_disabled_user_treated_as_no_session(monkeypatch):
-    """If a user is in the YAML but disabled, treat as unauthenticated."""
+def test_resolve_user_disabled_in_yaml_returns_none(monkeypatch):
+    """If session row points at alice, but YAML says alice.disabled=True,
+    the resolver must return None (treated as unauthenticated)."""
     auth = AuthGlobal(
         enabled=True,
         session_secret="s" * 64,
@@ -108,17 +110,40 @@ def test_require_perm_disabled_user_treated_as_no_session(monkeypatch):
                           password_hash="$argon2id$x", disabled=True)],
     )
     monkeypatch.setattr(cfg._global, "auth", auth)
+
+    # Mock sessions.verify to return a valid session for "alice"
+    from glados.auth import sessions as auth_sessions
+    monkeypatch.setattr(
+        auth_sessions, "verify",
+        lambda token: (True, {"username": "alice", "session_id": "sid",
+                              "role_at_issue": "admin"}),
+    )
+
     from glados.webui.tts_ui import _resolve_user_for_request
-    # Session row says alice; YAML says alice is disabled. Should resolve to None.
-    h = MagicMock()
-    h.headers = {"Cookie": ""}
-    # We bypass the cookie lookup by feeding a pre-populated _resolved_user as
-    # an explicit None to verify the disabled branch via the actual lookup.
-    # For now, this test asserts via the cache — pre-populate sentinel and
-    # verify cache passes through.
-    h._resolved_user = None  # simulating "lookup returned None due to disabled"
-    result = _resolve_user_for_request(h)
+    handler = MagicMock()
+    handler.headers = {"Cookie": "glados_session=anything"}
+    # No _resolved_user attribute → cache miss → real lookup runs
+    if hasattr(handler, "_resolved_user"):
+        del handler._resolved_user
+
+    result = _resolve_user_for_request(handler)
     assert result is None
+
+
+def test_require_perm_chat_user_denied_html_admin_path(chat_user_present):
+    """HTML routes return 403 HTML body, not JSON."""
+    from glados.webui.tts_ui import require_perm
+    h = _handler_with_session({"username": "alice", "role": "chat",
+                               "session_id": "abc"})
+    h.path = "/admin-page-html"   # any non-/api/ path
+    assert require_perm(h, "admin") is False
+    h.send_response.assert_called_once_with(403)
+    # Content-Type header set to text/html
+    type_calls = [c for c in h.send_header.call_args_list
+                  if c.args[0] == "Content-Type"]
+    assert any("text/html" in c.args[1] for c in type_calls)
+    h.end_headers.assert_called_once()
+    h.wfile.write.assert_called_once()
 
 
 # ── Public/private route map sanity ────────────────────────────

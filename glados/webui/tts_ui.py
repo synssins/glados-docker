@@ -606,6 +606,9 @@ def _auth_password_configured() -> bool:
 
 # Permission check (Task 4)
 
+_UNSET = object()  # sentinel for _resolved_user cache miss vs explicit None
+
+
 def _extract_session_cookie(handler) -> str:
     """Pull the glados_session value from the Cookie header, '' if absent."""
     cookie_header = handler.headers.get("Cookie", "")
@@ -624,8 +627,8 @@ def _resolve_user_for_request(handler) -> dict | None:
     Caches on the handler so repeat checks within one request don't
     re-query auth.db.
     """
-    cached = getattr(handler, "_resolved_user", "__unset__")
-    if cached != "__unset__":
+    cached = getattr(handler, "_resolved_user", _UNSET)
+    if cached is not _UNSET:
         return cached
 
     from glados.auth import sessions as _sessions
@@ -1552,8 +1555,8 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_get()
             return
 
-        # API endpoints explicitly allow-listed as public (chat
-        # streaming, TTS generator, audio file fetches, health).
+        # API endpoints explicitly allow-listed as public (TTS service,
+        # STT service, audio file fetches, health).
         # Everything else requires auth.
         if _is_public_route(self.path):
             self._dispatch_get()
@@ -1615,7 +1618,6 @@ class Handler(BaseHTTPRequestHandler):
             self._post_tts_draft()
         elif p == "/api/tts/save-to-category":
             self._post_tts_save_to_category()
-        # --- Protected routes below ---
         elif p == "/api/modes":
             self._set_modes()
         elif p == "/api/restart":
