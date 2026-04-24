@@ -56,18 +56,14 @@ COPY models/ASR/ ./models/ASR/
 # up with the container's `/app/glados/utils/…` layout).
 ENV GLADOS_MODELS=/app/models
 
-# ChromaDB default embedding model — bundled so first use doesn't need
-# a 79 MB network download to chroma-onnx-models.s3.amazonaws.com. This
-# is what `all-MiniLM-L6-v2` ChromaDB resolves to when you insert any
-# document without passing an explicit embedding function. Stored at
-# the exact path ChromaDB expects (`~/.cache/chroma/onnx_models/...`).
-RUN mkdir -p /home/glados/.cache/chroma/onnx_models/all-MiniLM-L6-v2 \
-    && curl -fsSL --retry 5 --retry-delay 2 \
+# Download ChromaDB default embedding model to /tmp; move into place
+# after the glados user exists so ownership is correct. (Doing the
+# mkdir in /home/glados/ before `useradd -m` breaks: useradd skips
+# skel copy when the dir already exists, leaving /home/glados owned
+# by root and preventing subagents from creating ~/.glados/.)
+RUN curl -fsSL --retry 5 --retry-delay 2 \
         -o /tmp/chroma-minilm.tar.gz \
-        https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz \
-    && tar -xzf /tmp/chroma-minilm.tar.gz \
-        -C /home/glados/.cache/chroma/onnx_models/all-MiniLM-L6-v2 \
-    && rm /tmp/chroma-minilm.tar.gz
+        https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz
 
 # Application source
 COPY glados/ ./glados/
@@ -75,9 +71,12 @@ COPY configs/config.example.yaml ./configs/config.example.yaml
 COPY scripts/ ./scripts/
 
 # Non-root user with home dir (subagent memory writes to ~/.glados/)
-# Also owns the pre-populated ChromaDB cache.
 RUN useradd -r -u 1000 -g root -m glados \
-    && chown -R glados:root /app /home/glados/.cache
+    && mkdir -p /home/glados/.cache/chroma/onnx_models/all-MiniLM-L6-v2 \
+    && tar -xzf /tmp/chroma-minilm.tar.gz \
+        -C /home/glados/.cache/chroma/onnx_models/all-MiniLM-L6-v2 \
+    && rm /tmp/chroma-minilm.tar.gz \
+    && chown -R glados:root /app /home/glados
 USER glados
 
 EXPOSE 8015 8052
