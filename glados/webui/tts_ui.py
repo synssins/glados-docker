@@ -452,16 +452,17 @@ _login_fails_lock = threading.Lock()
 _RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW_S = 60
 
-# Public paths that don't require auth
-_PUBLIC_PATHS = frozenset({"/login", "/health"})
+# Public paths -- no session cookie required.
+# Matches AUTH_DESIGN.md SS3.4. /api/chat and /chat_audio/* require chat.send.
+_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout"})
 
-# Public route prefixes â€” TTS/Chat accessible without auth
 _PUBLIC_PREFIXES = (
-    "/api/generate", "/api/chat", "/api/stt",
-    "/api/files", "/api/attitudes", "/api/speakers", "/api/voices",
-    "/files/", "/chat_audio/", "/chat_audio_stream/",
-    "/api/auth/",
-    "/static/",
+    # STT + TTS service endpoints (operator decision 2026-04-24)
+    "/api/stt",
+    "/api/generate", "/api/voices", "/api/speakers",
+    "/api/attitudes", "/api/files", "/files/",
+    # Infrastructure
+    "/api/auth/", "/static/",
 )
 
 
@@ -662,7 +663,7 @@ def require_perm(handler, perm: str) -> bool:
 
     On denial, writes 401 (no session) or 403 (session but missing
     perm) and returns False. Handlers short-circuit on False, same
-    calling convention as the legacy _require_auth.
+    calling convention as the legacy auth check.
     """
     from glados.webui.permissions import user_has_perm
     from glados.core.config_store import cfg as _cfg_live
@@ -1299,19 +1300,6 @@ class Handler(BaseHTTPRequestHandler):
 
     # â”€â”€ Auth helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    def _require_auth(self) -> bool:
-        """Check auth; if not authenticated, redirect to login. Returns True if OK."""
-        if _is_authenticated(self):
-            return True
-        # API calls get 401 JSON; browser requests get redirect
-        if self.path.startswith("/api/"):
-            self._send_json(401, {"error": "Authentication required"})
-        else:
-            self.send_response(302)
-            self.send_header("Location", "/login")
-            self.end_headers()
-        return False
-
     def _serve_login(self):
         """Serve the login page HTML. When no password is configured
         (fresh deploy or wiped hash), inject a setup instruction so
@@ -1559,7 +1547,7 @@ class Handler(BaseHTTPRequestHandler):
         # login page redirects here after a successful POST so the
         # session cookie is already set for real admin users.
         if self.path in ("/", "/index.html"):
-            if not self._require_auth():
+            if not require_perm(self, "webui.view"):
                 return
             self._dispatch_get()
             return
@@ -1571,7 +1559,13 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_get()
             return
 
-        if not self._require_auth():
+        if self.path.startswith(("/chat_audio/", "/chat_audio_stream/")):
+            if not require_perm(self, "chat.send"):
+                return
+            self._dispatch_get()
+            return
+
+        if not require_perm(self, "admin"):
             return
         self._dispatch_get()
 
@@ -1581,13 +1575,17 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_login()
             return
 
-        # TTS/Chat POST routes are public
         if _is_public_route(self.path):
             self._dispatch_post()
             return
 
-        # Protected routes â€” require auth
-        if not self._require_auth():
+        if self.path in ("/api/chat", "/api/chat/stream"):
+            if not require_perm(self, "chat.send"):
+                return
+            self._dispatch_post()
+            return
+
+        if not require_perm(self, "admin"):
             return
         self._dispatch_post()
 
@@ -1673,7 +1671,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(404, "Not found")
 
     def do_PUT(self):
-        if not self._require_auth():
+        if not require_perm(self, "admin"):
             return
         if self.path.startswith("/api/config/"):
             section = self.path.split("/api/config/", 1)[1]
@@ -1693,7 +1691,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(404, "Not found")
 
     def do_DELETE(self):
-        if not self._require_auth():
+        if not require_perm(self, "admin"):
             return
         if self.path.startswith("/api/files/"):
             self._delete_file()
