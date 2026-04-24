@@ -90,7 +90,7 @@ Still pending:
 ### Day 1 — AIBox retirement + TTS self-containment
 
 1. **AIBox services audit** — identified what was running on the host
-   at `<external_host>`:
+   at `<aibox-host>`:
    - `glados-api`, `glados-tts`, `glados-stt`, `glados-vision`
    - `gladys-api`, `gladys-discord`, `gladys-observer`
    - `ollama-ipex-llm` (Arc B60, port 11434), `ollama-glados` (T4, 11436)
@@ -126,7 +126,7 @@ Still pending:
 
 1. **Doorbell.yaml + SERVE_HOST** — neither existed in the live
    container after the moves. Created `doorbell.yaml` with real
-   G4 doorbell speaker entity + RTSPS stream. Set `SERVE_HOST=<internal_host>`
+   G4 doorbell speaker entity + RTSPS stream. Set `SERVE_HOST=<docker-host>`
    in global.yaml (env alone wasn't enough — YAML overrode).
    Published port 5051 in compose.
 2. **HA token discovery** — env `HA_TOKEN` was an old/revoked token
@@ -149,7 +149,7 @@ Still pending:
 
 ### End-of-day state (2026-04-24)
 
-- **Deployed commit:** `a134723` on `<internal_host>`
+- **Deployed commit:** `a134723` on `<docker-host>`
 - **AIBox state:** Ollama on `:11434` + GHA runner + native open-webui
   on `:3000`. Everything else stopped.
 - **Container state:** TTS ✅ embedded, STT ✅ embedded, doorbell pipeline
@@ -214,10 +214,10 @@ services except Ollama and HA. Pending operator availability.
 ## Deploy workflow (unchanged)
 
 1. Commit + push to `main`
-2. GHA self-hosted runner (on AIBox `<external_host>`) builds via
+2. GHA self-hosted runner (on AIBox `<aibox-host>`) builds via
    `.github/workflows/build.yml`, LFS-aware since commit `9afd5d8`
 3. Image published to `ghcr.io/synssins/glados-docker:latest`
-4. `scripts/deploy_ghcr.py` SSHes to `<internal_host>`, pulls, recreates
+4. `scripts/deploy_ghcr.py` SSHes to `<docker-host>`, pulls, recreates
 5. Verify `/health` on 8015, live-probe affected behaviour
 
 Credentials: operator-specific values live in `C:\src\SESSION_STATE.md`
