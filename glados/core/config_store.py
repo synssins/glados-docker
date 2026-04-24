@@ -868,6 +868,51 @@ class MQTTConfig(BaseModel):
     reconnect_delay_s: int = 5
 
 
+def _synthesize_legacy_admin(raw: dict) -> dict:
+    """Convert legacy single-password-hash YAML into the new multi-user
+    shape before pydantic validation. Idempotent on already-new YAML.
+
+    Rules:
+    - If raw.users is already set, pass-through unchanged.
+    - Else if raw.password_hash is non-empty, synthesize users=[{admin}]
+      with hash_algorithm=bcrypt-legacy and bootstrap_allowed=false.
+    - Else leave users=[] and bootstrap_allowed=true (fresh install).
+    - Convert session_timeout_hours → session_timeout string.
+
+    See docs/AUTH_DESIGN.md §10.1.
+    """
+    import time as _time
+    out = dict(raw)
+
+    # session_timeout_hours → session_timeout
+    hrs = out.get("session_timeout_hours", 0)
+    if hrs and "session_timeout" not in out:
+        out["session_timeout"] = f"{hrs}h"
+
+    existing_users = out.get("users")
+    if existing_users:
+        out.setdefault("bootstrap_allowed", False)
+        return out
+
+    legacy_hash = out.get("password_hash", "")
+    if legacy_hash:
+        out["users"] = [{
+            "username": "admin",
+            "display_name": "admin",
+            "role": "admin",
+            "password_hash": legacy_hash,
+            "hash_algorithm": out.get("hash_algorithm", "bcrypt-legacy"),
+            "disabled": False,
+            "created_at": int(_time.time()),
+        }]
+        out["bootstrap_allowed"] = False
+    else:
+        out["users"] = []
+        out.setdefault("bootstrap_allowed", True)
+
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Unified config store
 # ---------------------------------------------------------------------------
@@ -952,6 +997,10 @@ class GladosConfigStore:
             logger.debug("Config not found, using defaults: {}", path)
             return model_cls()
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        # AuthGlobal ships through a migration synthesizer so legacy
+        # single-password YAML deployments come up with a users[] list.
+        if "auth" in raw and model_cls is GlobalConfig:
+            raw["auth"] = _synthesize_legacy_admin(raw.get("auth") or {})
         return model_cls.model_validate(raw)
 
     def _ensure_loaded(self) -> None:
