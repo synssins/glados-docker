@@ -42,6 +42,13 @@ from loguru import logger
 from glados.core.config_store import cfg as _cfg
 from glados.observability import AuditEvent, Origin, audit
 
+# Wizard registry — Phase 1 ships one step.
+from glados.webui.setup.steps.admin_password import SetAdminPasswordStep
+from glados.webui.setup import wizard as _wizard
+from glados.webui.setup.shell import render_shell as _render_shell
+
+_WIZARD_STEPS = (SetAdminPasswordStep(),)
+
 # Service URLs and models are read live via these helpers so that a
 # config save (LLM & Services page, etc.) takes effect without any
 # process restart. Do NOT replace with module-level constants — those
@@ -1419,6 +1426,115 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Set-Cookie", "; ".join(cookie_parts))
         self.end_headers()
 
+
+    # ── First-run wizard ──────────────────────────────────────────────────────────────
+
+    def _dispatch_setup(self):
+        """Routes for the first-run wizard. See AUTH_DESIGN.md §5.1."""
+        from glados.core.config_store import cfg as _cfg_live
+
+        if not _cfg_live.auth.bootstrap_allowed:
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.end_headers()
+            return
+
+        # GET /setup → redirect to first required step
+        if self.path.rstrip("/") == "/setup" and self.command == "GET":
+            nxt = _wizard.resolve_next_step(_WIZARD_STEPS, _cfg_live)
+            if nxt is None:
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+            self.send_response(302)
+            self.send_header("Location", f"/setup/{nxt.name}")
+            self.end_headers()
+            return
+
+        # /setup/<step_name>
+        if self.path.startswith("/setup/"):
+            step_name = self.path[len("/setup/"):].strip("/").split("?", 1)[0]
+            step = next((s for s in _WIZARD_STEPS if s.name == step_name), None)
+            if step is None or not step.is_required(_cfg_live):
+                self.send_response(302)
+                self.send_header("Location", "/setup")
+                self.end_headers()
+                return
+
+            if self.command == "GET":
+                Handler._render_wizard_step(self, step, error="", sticky_form=None)
+                return
+
+            if self.command == "POST":
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length).decode("utf-8") if length else ""
+                form = {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
+                result = step.process(self, form)
+                if result == _wizard.StepResult.ERROR:
+                    err = getattr(self, "_wizard_error", "Invalid input.")
+                    sticky = getattr(self, "_wizard_form", None)
+                    Handler._render_wizard_step(self, step, error=err, sticky_form=sticky)
+                    return
+
+                _cfg_live.reload()
+                nxt = _wizard.resolve_next_step(_WIZARD_STEPS, _cfg_live)
+                if nxt is None:
+                    Handler._complete_wizard_session(self, form.get("username", "").strip())
+                    return
+                self.send_response(302)
+                self.send_header("Location", f"/setup/{nxt.name}")
+                self.end_headers()
+                return
+
+        Handler._send_error(self, 404, "Not Found")
+
+    def _render_wizard_step(self, step, error: str, sticky_form: dict | None):
+        content = step.render(self, error=error, sticky_form=sticky_form)
+        html_doc = _render_shell(
+            title=step.title, step_num=1, total_steps=len(_WIZARD_STEPS),
+            content=content,
+        )
+        body = html_doc.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _complete_wizard_session(self, username: str):
+        """After the final wizard step, issue a session cookie and 302 to /."""
+        from glados.auth import sessions as _sessions
+        from glados.core.config_store import cfg as _cfg_live
+
+        user = next(
+            (u for u in _cfg_live.auth.users if u.username == username),
+            None,
+        )
+        if user is None:
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.end_headers()
+            return
+
+        ua = self.headers.get("User-Agent", "")[:500]
+        ip = self.client_address[0] if self.client_address else ""
+        token = _sessions.create(
+            username=username, role=user.role,
+            remote_addr=ip, user_agent=ua,
+        )
+
+        self.send_response(302)
+        self.send_header("Location", "/")
+        cookie_parts = [
+            f"glados_session={token}", f"Max-Age={_SESSION_LONG_S}",
+            "Path=/", "HttpOnly", "SameSite=Strict",
+        ]
+        if SSL_CERT and SSL_CERT.exists():
+            cookie_parts.append("Secure")
+        self.send_header("Set-Cookie", "; ".join(cookie_parts))
+        self.end_headers()
+
     # â”€â”€ Routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _get_auth_status(self):
@@ -1532,8 +1648,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(302)
                 self.send_header("Location", "/")
                 self.end_headers()
-            else:
-                self._serve_login()
+                return
+            from glados.core.config_store import cfg as _cfg_live
+            if not _cfg_live.auth.users and _cfg_live.auth.bootstrap_allowed:
+                self.send_response(302)
+                self.send_header("Location", "/setup")
+                self.end_headers()
+                return
+            self._serve_login()
+            return
+
+        if self.path == "/setup" or self.path.startswith("/setup/"):
+            self._dispatch_setup()
             return
         if self.path == "/logout":
             self._handle_logout()
@@ -1576,6 +1702,10 @@ class Handler(BaseHTTPRequestHandler):
         # Login is public
         if self.path == "/login":
             self._handle_login()
+            return
+
+        if self.path == "/setup" or self.path.startswith("/setup/"):
+            self._dispatch_setup()
             return
 
         if _is_public_route(self.path):

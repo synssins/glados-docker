@@ -88,7 +88,7 @@ def fresh_configs(tmp_path, monkeypatch):
     auth_db.ensure_schema()
 
     from glados.core.config_store import cfg
-    cfg.reload()
+    cfg.load(configs_dir=str(configs))
     yield {"configs": configs, "data": data}
 
 
