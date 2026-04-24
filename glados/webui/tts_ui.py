@@ -552,6 +552,23 @@ def _clear_fails(ip: str) -> None:
         _login_fails.pop(ip, None)
 
 
+def _merge_write_user_hash(username: str, new_hash: str, algorithm: str) -> None:
+    """Update a single user's password_hash + hash_algorithm in global.yaml
+    via merge-write — leaves every other field untouched."""
+    config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
+    path = Path(config_dir) / "global.yaml"
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    users = raw.setdefault("auth", {}).setdefault("users", [])
+    for u in users:
+        if u.get("username") == username:
+            u["password_hash"] = new_hash
+            u["hash_algorithm"] = algorithm
+            break
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
+
+
 def _get_session_cookie(handler: BaseHTTPRequestHandler) -> dict | None:
     """Extract and verify the session cookie from the request."""
     cookie_header = handler.headers.get("Cookie", "")
@@ -640,6 +657,7 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
     color: #aaa;
     margin-bottom: 6px;
   }
+  .field input[type="text"],
   .field input[type="password"] {
     width: 100%;
     padding: 10px 12px;
@@ -651,6 +669,7 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
     outline: none;
     transition: border-color 0.2s;
   }
+  .field input[type="text"]:focus,
   .field input[type="password"]:focus { border-color: #ff6600; }
   .remember {
     display: flex;
@@ -693,8 +712,12 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
   <div class="error" id="error"></div>
   <form id="loginForm" method="POST" action="/login">
     <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autofocus required>
+    </div>
+    <div class="field">
       <label for="password">Password</label>
-      <input type="password" id="password" name="password" autofocus required>
+      <input type="password" id="password" name="password" required>
     </div>
     <div class="remember">
       <input type="checkbox" id="remember" name="remember" value="1">
@@ -716,6 +739,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
       method: 'POST',
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
       body: new URLSearchParams({
+        username: document.getElementById('username').value,
         password: document.getElementById('password').value,
         remember: document.getElementById('remember').checked ? '1' : '0'
       })
@@ -1229,56 +1253,68 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle_login(self):
-        """Process POST /login â€” validate password, set session cookie."""
-        client_ip = self.client_address[0]
+        """POST /login -- validate username + password, set session cookie."""
+        from glados.auth import hashing as _hashing, sessions as _sessions
+        from glados.auth import user_state as _user_state
+        from glados.core.config_store import cfg as _cfg_live
 
-        # Rate limit check
-        if _check_rate_limit(client_ip):
-            self._send_json(429, {"ok": False, "error": "Too many attempts. Try again in 60 seconds."})
-            return
-
-        # Read form body
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length).decode("utf-8") if length else ""
+        # Parse form
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
         params = urllib.parse.parse_qs(body)
+        username = (params.get("username", [""])[0] or "").strip()
         password = params.get("password", [""])[0]
-        remember = params.get("remember", ["0"])[0] == "1"
 
-        # Validate
-        if not _cfg.auth.password_hash or not password:
-            _record_fail(client_ip)
-            self._send_json(401, {"ok": False, "error": "Invalid password"})
+        # Rate limit (existing helpers from this module)
+        ip = self.client_address[0] if self.client_address else "?"
+        if _check_rate_limit(ip):
+            self._send_json(429, {"ok": False, "error": "Too many failed attempts. Try again later."})
             return
 
-        try:
-            valid = _bcrypt.checkpw(password.encode("utf-8"), _cfg.auth.password_hash.encode("ascii"))
-        except Exception:
-            valid = False
+        # Look up user (exact case-sensitive match, must not be disabled)
+        user = next(
+            (u for u in _cfg_live.auth.users
+             if u.username == username and not u.disabled),
+            None,
+        )
+        if not user:
+            _record_fail(ip)
+            if username:
+                _user_state.record_failure(username)
+            self._send_json(401, {"ok": False, "error": "Invalid credentials"})
+            return
 
+        # Verify password
+        valid, rehash_needed = _hashing.verify_password(password, user.password_hash)
         if not valid:
-            _record_fail(client_ip)
-            self._send_json(401, {"ok": False, "error": "Invalid password"})
+            _record_fail(ip)
+            _user_state.record_failure(username)
+            self._send_json(401, {"ok": False, "error": "Invalid credentials"})
             return
 
-        # Success — create session
-        _clear_fails(client_ip)
-        token = _create_session(remember=remember)
-        # Operator-requested 2026-04-20: sessions never expire. Use
-        # the long cookie Max-Age unconditionally so the browser
-        # keeps the cookie across restarts; the signed token itself
-        # carries exp=0 so the server never treats it as expired.
-        max_age = _SESSION_LONG_S
+        _clear_fails(ip)
+        _user_state.record_success(username, ip)
+
+        # Rehash bcrypt-legacy on first successful login
+        if rehash_needed:
+            new_hash = _hashing.hash_password(password)
+            _merge_write_user_hash(username, new_hash, "argon2id")
+            _cfg_live.reload()
+
+        # Create session
+        ua = (self.headers.get("User-Agent") or "")[:500]
+        token = _sessions.create(
+            username=username, role=user.role,
+            remote_addr=ip, user_agent=ua,
+        )
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         cookie_parts = [
             f"glados_session={token}",
-            f"Max-Age={max_age}",
-            "Path=/",
-            "HttpOnly",
-            "SameSite=Strict",
+            f"Max-Age={_SESSION_LONG_S}",
+            "Path=/", "HttpOnly", "SameSite=Strict",
         ]
-        # Add Secure flag when running HTTPS
         if SSL_CERT and SSL_CERT.exists():
             cookie_parts.append("Secure")
         self.send_header("Set-Cookie", "; ".join(cookie_parts))
