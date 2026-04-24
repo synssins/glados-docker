@@ -599,18 +599,48 @@ class DoorbellScreener:
         from glados.core.llm_directives import apply_model_family_directives
         messages = apply_model_family_directives(messages, model)
 
+        # NOTE: no `format: "json"`. Ollama's grammar constraint
+        # collapses qwen3:14b into emitting `{}` (a 2-token null object)
+        # instead of the four-field schema. Without the constraint the
+        # same prompt produces the full schema in ~1.5 s; the prompt +
+        # one-shots are strong enough on their own. Response body is
+        # stripped of qwen3 `<think>` preambles before JSON parsing.
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "format": "json",
             "options": {
                 "temperature": 0.6,
-                "num_predict": 256,
+                "num_predict": 512,
             },
         }
 
         url = f"{ollama_url}/api/chat"
+        import re as _re
+        _THINK_RE = _re.compile(r"<think>.*?</think>", _re.DOTALL | _re.IGNORECASE)
+
+        def _extract_json(raw: str) -> dict:
+            """Strip qwen3 think blocks + markdown fences, then parse the
+            first {...} object in the remaining text."""
+            txt = _THINK_RE.sub("", raw or "").strip()
+            if txt.startswith("```"):
+                # Drop fence markers
+                txt = _re.sub(r"^```(?:json)?\s*", "", txt)
+                txt = _re.sub(r"```\s*$", "", txt).strip()
+            # Find the first balanced JSON object
+            start = txt.find("{")
+            if start < 0:
+                raise json.JSONDecodeError("no JSON object in response", txt, 0)
+            depth = 0
+            for i in range(start, len(txt)):
+                ch = txt[i]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return json.loads(txt[start:i+1])
+            raise json.JSONDecodeError("unbalanced JSON object", txt, start)
 
         def _call_ollama(msgs: list[dict]) -> dict:
             body = dict(payload)
@@ -622,7 +652,7 @@ class DoorbellScreener:
             with urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode())
                 content = result.get("message", {}).get("content", "")
-                return json.loads(content)
+                return _extract_json(content)
 
         def _is_usable(obj: dict) -> bool:
             """Reject `{}` and partial schemas. Model sometimes punts on
