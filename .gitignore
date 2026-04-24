@@ -108,3 +108,6 @@ tests/.playwright-trace/
 
 # Snyk — the .snyk suppression file SHOULD be committed when it exists.
 # Nothing to ignore here; suppressions are a reviewable part of the repo.
+
+# Git worktrees for isolated feature work (subagent-driven development).
+.worktrees/
