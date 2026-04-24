@@ -38,43 +38,60 @@ CONFIG_PATH = Path(os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")) / "doorb
 _EVAL_SYSTEM_PROMPT = """\
 You are GLaDOS, an AI managing a smart home doorbell screening system.
 
-A visitor has pressed the doorbell. Based on what they said, you must:
-1. Classify them: delivery, guest, solicitor, service, unknown, no_response
-2. Generate a SHORT reply to speak through the doorbell speaker (1-2 sentences, \
-professional with subtle wit — you are an AI assistant, not a person)
-3. Generate an indoor announcement for the residents (1 sentence, informative)
-4. Decide if another conversational round is needed (true/false)
+A visitor has pressed the doorbell. For every input, you MUST produce
+a single JSON object with ALL FOUR FIELDS populated — never return an
+empty object, never omit a field, never return fenced markdown.
 
-Reply ONLY with valid JSON, no markdown fencing:
+Required schema (all fields required, all non-empty):
 {
-  "classification": "delivery|guest|solicitor|service|unknown|no_response",
-  "reply": "Your reply to the visitor",
-  "announcement": "Indoor announcement for residents",
-  "continue_conversation": false
+  "classification": "delivery" | "guest" | "solicitor" | "service" | "unknown" | "no_response",
+  "reply": "short speech to the visitor, 1-2 sentences",
+  "announcement": "one-sentence indoor announcement for the residents",
+  "continue_conversation": true | false
 }
 
-Guidelines:
-- delivery: "Thank you. You may leave the package at the door."
-- guest: Ask who they are visiting if unclear, then announce.
-- solicitor: Politely decline. "The residents are not interested."
-- service: Ask for company name if unclear, then announce.
-- unknown: Ask them to clarify.
-- no_response: Note that someone rang but didn't respond.
-- Keep replies professional but with a hint of artificial intelligence personality.
-- Set continue_conversation=true only if you need more info (max 2 follow-ups)."""
+Classification guidance:
+- delivery: UPS/USPS/FedEx/Amazon/packages/drop-off
+- guest: visiting a resident (friend, family, neighbor)
+- solicitor: sales, political, religious, donations
+- service: tradespeople, utilities, inspections
+- unknown: response is ambiguous — ask one clarifying question
+- no_response: silence (nobody spoke) — acknowledge inside
+
+Reply style: professional with a hint of artificial-intelligence dryness.
+You are an AI, not a person; do not claim to personally know the residents.
+
+Set continue_conversation=true only if a clarifying question is required
+(cap at 2 total rounds). Otherwise false.
+
+Example 1 — visitor says "UPS delivery":
+{"classification":"delivery","reply":"Thank you. Please leave the package at the door.","announcement":"A UPS delivery has arrived at the front door.","continue_conversation":false}
+
+Example 2 — visitor says nothing (no_response):
+{"classification":"no_response","reply":"","announcement":"Someone pressed the doorbell but did not respond.","continue_conversation":false}
+
+Example 3 — visitor says "I'm here to see John":
+{"classification":"guest","reply":"One moment, I will let them know.","announcement":"A visitor is at the door asking for John.","continue_conversation":false}
+
+Remember: output MUST be a single JSON object with all four fields
+non-empty. Do not emit {}; do not emit prose outside the JSON."""
 
 _EVAL_USER_TEMPLATE = """\
 Round {round} of doorbell screening.
 {history_section}
 Visitor's latest response: "{transcript}"
 
-Evaluate and respond in JSON."""
+Respond with the full four-field JSON object now. All fields required, \
+non-empty."""
 
 _NO_RESPONSE_USER = """\
 Round {round} of doorbell screening.
-The visitor rang the doorbell but did not respond to the greeting after {timeout} seconds.
+The visitor rang the doorbell but did not respond to the greeting after \
+{timeout} seconds.
 
-Evaluate and respond in JSON."""
+Respond with the full four-field JSON object now. Use classification \
+"no_response", an empty reply string, and an announcement that notes the \
+silence. All four fields must be present."""
 
 
 class DoorbellScreener:
@@ -594,15 +611,55 @@ class DoorbellScreener:
         }
 
         url = f"{ollama_url}/api/chat"
-        data = json.dumps(payload).encode()
-        req = Request(url, data=data, headers={"Content-Type": "application/json"})
 
-        try:
-            with urlopen(req, timeout=30) as resp:
+        def _call_ollama(msgs: list[dict]) -> dict:
+            body = dict(payload)
+            body["messages"] = msgs
+            data = json.dumps(body).encode()
+            req = Request(url, data=data, headers={"Content-Type": "application/json"})
+            # 60 s accommodates cold-load + concurrent-queue cases on
+            # shared-Ollama deployments. Warm path finishes in < 2 s.
+            with urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode())
                 content = result.get("message", {}).get("content", "")
-                # Parse JSON from LLM response
                 return json.loads(content)
+
+        def _is_usable(obj: dict) -> bool:
+            """Reject `{}` and partial schemas. Model sometimes punts on
+            `format:"json"` with a null object; we re-ask once in that case."""
+            if not isinstance(obj, dict):
+                return False
+            cls = (obj.get("classification") or "").strip()
+            # `reply` can legitimately be empty for `no_response`; `announcement` cannot.
+            announce = (obj.get("announcement") or "").strip()
+            return bool(cls) and bool(announce)
+
+        try:
+            parsed = _call_ollama(messages)
+            if not _is_usable(parsed):
+                logger.warning(
+                    "LLM returned empty/partial JSON ({!r}), retrying with schema reminder",
+                    parsed,
+                )
+                retry_msgs = list(messages) + [
+                    {"role": "assistant", "content": json.dumps(parsed)},
+                    {"role": "user", "content": (
+                        "That response was incomplete. Produce the full four-field "
+                        "JSON object now: classification, reply, announcement, "
+                        "continue_conversation. All fields required; announcement "
+                        "and classification must be non-empty."
+                    )},
+                ]
+                parsed = _call_ollama(retry_msgs)
+            if _is_usable(parsed):
+                return parsed
+            logger.error("LLM still returned unusable JSON after retry: {!r}", parsed)
+            return {
+                "classification": "unknown",
+                "reply": "",
+                "announcement": "Someone rang the doorbell, but the screening system couldn't characterize the response.",
+                "continue_conversation": False,
+            }
         except json.JSONDecodeError as exc:
             logger.error("LLM returned invalid JSON: {}", exc)
             return {
