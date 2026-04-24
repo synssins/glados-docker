@@ -62,6 +62,8 @@ def verify(token: str) -> tuple[bool, dict[str, Any] | None]:
         payload = _serializer().loads(token)
     except BadSignature:
         return False, None
+    if not isinstance(payload, dict):
+        return False, None
     sid = payload.get("sid")
     if not sid:
         return False, None

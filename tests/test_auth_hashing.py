@@ -1,5 +1,4 @@
 """Tests for the Argon2id + legacy-bcrypt-verify wrapper."""
-import pytest
 from glados.auth.hashing import hash_password, verify_password, needs_rehash
 
 
@@ -40,3 +39,12 @@ def test_needs_rehash_true_for_bcrypt():
 def test_needs_rehash_false_for_argon2id():
     h = hash_password("x" * 8)
     assert not needs_rehash(h)
+
+
+def test_verify_password_bcrypt_wrong_password_no_rehash():
+    """A failed bcrypt verify must NOT signal needs_rehash."""
+    import bcrypt
+    legacy = bcrypt.hashpw(b"correct", bcrypt.gensalt()).decode("ascii")
+    ok, rehash = verify_password("wrong", legacy)
+    assert not ok
+    assert not rehash, "failed bcrypt verify must not trigger rehash"
