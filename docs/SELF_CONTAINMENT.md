@@ -3,9 +3,10 @@
 Working document for the "minimum-setup, self-contained GLaDOS container"
 initiative. Updated continuously while this is an active project.
 
-**Last updated:** 2026-04-24
+**Last updated:** 2026-04-24 (evening — post-Phase-2)
 **Active branch:** `main`
 **Deployed commit at start of project:** `a134723`
+**Deployed commit now:** `2f245eb`
 
 ---
 
@@ -147,53 +148,82 @@ Still pending:
    unconditionally on any state_changed of a `doorbell_ring` typed
    entity. [ha_sensor_watcher.py:520ff](../glados/autonomy/agents/ha_sensor_watcher.py).
 
+### Day 2 evening — Phase 1 (ChromaDB embed) + Phase 2 (env purge)
+
+6. **ChromaDB embedded** — replaced `chromadb.HttpClient` with
+   `chromadb.PersistentClient` at `/app/data/chromadb/`. Bundled
+   `sentence-transformers/all-MiniLM-L6-v2` into the image so first
+   use has no network dependency. Deleted the separate
+   `glados-chromadb` compose service (backup at
+   `docker-compose.yml.bak.pre-chroma-embed`). Verified writes +
+   queries round-trip correctly in-process. Commits `05f881b` +
+   `db39d56` + `7d6cf68` (chown fix).
+7. **Household facts migrated to ChromaDB** — Pet1's descriptive
+   content moved out of `personality_preprompt` into atomic ChromaDB
+   `semantic` records (6 facts). Validated via chat: GLaDOS now
+   retrieves facts on demand and no longer conflates unrelated
+   prose ("raids litter box for oranges" hallucination is gone).
+   Then bulk-migrated remaining pets + ResidentA + ResidentB + location =
+   15 more atomic facts. Preprompt's HOUSEHOLD KNOWLEDGE section
+   collapsed from a 320-word prose block to a single-line roster +
+   one-sentence EMOTIONAL TONE rule. ~400 tokens/turn saved on
+   every LLM call. **Nothing about ResidentA's father appears anywhere
+   in preprompt or ChromaDB** (operator-explicit exclusion).
+8. **Env-var purge (Phase 2)** — compose env block shrank from 8
+   lines to 1 (`TZ=${TZ}`). Dockerfile now bakes
+   `GLADOS_ROOT`/`GLADOS_CONFIG`/`GLADOS_CONFIG_DIR`/`GLADOS_DATA`/
+   `GLADOS_LOGS`/`GLADOS_AUDIO`/`GLADOS_ASSETS`/`GLADOS_TTS_MODELS_DIR`/
+   `GLADOS_PORT`/`WEBUI_PORT`/`SERVE_PORT`/`TTS_BACKEND` as image
+   defaults. `ServicesConfig.tts.url` and `stt.url` defaults flipped
+   to `http://localhost:8015` (the container's own api_wrapper).
+   Dead Speaches env reads removed from config defaults.
+   Operator-facing compose stanza now matches the target "minimum
+   setup" block documented at the top of this file. Commit `2f245eb`.
+
 ### End-of-day state (2026-04-24)
 
-- **Deployed commit:** `a134723` on `<docker-host>`
+- **Deployed commit:** `2f245eb` on `<docker-host>`
 - **AIBox state:** Ollama on `:11434` + GHA runner + native open-webui
   on `:3000`. Everything else stopped.
-- **Container state:** TTS ✅ embedded, STT ✅ embedded, doorbell pipeline
-  ✅ wired end-to-end (awaiting real-press acceptance test).
+- **Container state:** TTS ✅ embedded, STT ✅ embedded, ChromaDB ✅
+  embedded, doorbell pipeline ✅ wired end-to-end, household facts ✅
+  atomic in ChromaDB, compose env block ✅ minimal.
+- **Memory page:** 21 household facts across 9 subjects + 56 legacy
+  canon records = 77 semantic records.
+- **SELF_CONTAINMENT.md phases:**
+  - Phase 1 (ChromaDB embed) ✅
+  - Phase 2 (env purge) ✅
+  - Phase 3 (first-run bootstrap) — deferred, not urgent (live
+    deploy is fully configured; this phase matters for *new*
+    deployments on empty volumes)
+  - Phase 4 (real-press doorbell acceptance test) — pending
+    operator availability
+  - Phase 5 (README/CLAUDE/roadmap refresh) — pending
 
 ---
 
 ## Remaining work (prioritized)
 
-### Phase 1 — ChromaDB embed (active; this commit)
+### ACTIVE — Auth rebuild (new initiative, next session)
 
-Replace `chromadb.HttpClient` with `chromadb.PersistentClient`.
-Pre-bundle `all-MiniLM-L6-v2` embedding model. Migrate existing data
-from `glados-chromadb` container's volume. Remove `glados-chromadb`
-from compose. See this file's active change.
+Current auth is a single bcrypt hash in `configs/global.yaml` with a
+session cookie. No per-operator identity, no MFA, no OIDC, no rate
+limiting, no recovery path that doesn't require shell access. Not
+acceptable for WebUI-through-reverse-proxy or multi-operator
+scenarios. New session will research supported libraries + design
+a first-run credential bootstrap + configurable session expiry.
+See the prompt at the root of this doc's companion project
+(not committed; passed to the next session directly).
 
-### Phase 2 — Env var purge + YAML consolidation
-
-Goal: compose env block shrinks to `TZ=${TZ:-UTC}`.
-
-Removals from compose:
-- `OLLAMA_URL`, `OLLAMA_AUTONOMY_URL`, `OLLAMA_VISION_URL` — YAML
-- `SPEACHES_URL`, `SPEACHES_TIMEOUT`, `SPEACHES_TTS_MODEL` — dead, delete
-- `HA_URL`, `HA_TOKEN` — YAML (YAML is already authoritative)
-- `VISION_URL` — YAML
-- `SERVE_HOST` — already moved to YAML
-- `GLADOS_CONFIG` — move to Dockerfile ENV
-
-Dockerfile bakes path defaults: `GLADOS_ROOT`, `GLADOS_CONFIG_DIR`,
-`GLADOS_DATA`, `GLADOS_LOGS`, `GLADOS_AUDIO`, `GLADOS_MODELS`,
-`GLADOS_TTS_MODELS_DIR`, `SERVE_PORT`.
-
-Code audit: `config_store.py` every `_env(...)` call — keep as
-default-only fallback, verify YAML wins when populated. Delete dead
-Speaches env reads.
-
-### Phase 3 — First-run bootstrap
+### Phase 3 — First-run bootstrap (deferred)
 
 When `configs/global.yaml` is missing (fresh volume), container seeds
-defaults. When `ha.token` is empty, WebUI is still reachable — operator
-sets token there, live-reload picks it up ~30 s later.
-
+defaults. When `ha.token` is empty, WebUI is still reachable —
+operator sets token there, live-reload picks it up ~30 s later.
 No startup wizard needed — the live-reload path already handles this.
-Just need the default-seed on fresh volume.
+Just need the default-seed on fresh volume. **Tied to the auth
+rebuild above** — first-run-ever includes password setup as well
+as HA token + URL.
 
 ### Phase 4 — Doorbell acceptance test
 
