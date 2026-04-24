@@ -78,10 +78,16 @@ def test_services_defaults_use_docker_service_names() -> None:
     assert s.vision.url == "http://glados-vision:8016"
 
 
-def test_memory_defaults_use_docker_service_name() -> None:
+def test_memory_defaults_use_embedded_chromadb() -> None:
+    """ChromaDB is embedded via PersistentClient as of 2026-04-24; the
+    legacy host/port fields are kept for back-compat with older
+    operator YAMLs but default to empty (deprecated)."""
     m = MemoryConfig()
-    assert m.chromadb_host == "chromadb"
-    assert m.chromadb_port == 8000
+    assert m.chromadb_path == "/app/data/chromadb"
+    # Legacy fields default to empty — still present so old YAMLs
+    # carrying them don't fail validation.
+    assert m.chromadb_host == ""
+    assert m.chromadb_port == 0
 
 
 # ── Source-of-truth precedence (WebUI > env) ──────────────────────────
