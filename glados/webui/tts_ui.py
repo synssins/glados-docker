@@ -1633,6 +1633,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._get_training_log()
             else:
                 self._send_error(404, "Not found")
+        elif p == "/api/users":
+            if not require_perm(self, "admin"): return
+            from glados.webui.pages import users as _users_page
+            self._send_json(200, {"users": _users_page.list_users()})
         else:
             self._send_error(404, "Not found")
 
@@ -1808,6 +1812,50 @@ class Handler(BaseHTTPRequestHandler):
             self._training_snapshot()
         elif p == "/api/training/stop":
             self._training_stop()
+        # POST /api/users — create
+        elif p == "/api/users":
+            if not require_perm(self, "admin"): return
+            from glados.webui.pages import users as _users_page
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+                return
+            ok, err = _users_page.create_user(
+                username=(body.get("username") or "").strip(),
+                display_name=(body.get("display_name") or "").strip(),
+                role=body.get("role", "chat"),
+                password=body.get("password") or "",
+            )
+            if not ok:
+                code = 409 if "already exists" in err else 400
+                self._send_json(code, {"ok": False, "error": err})
+                return
+            from glados.core.config_store import cfg as _cfg_live
+            _cfg_live.reload()
+            self._send_json(201, {"ok": True})
+        # POST /api/users/<u>/password — admin resets a user's password
+        elif p.startswith("/api/users/") and p.endswith("/password"):
+            if not require_perm(self, "admin"): return
+            from glados.webui.pages import users as _users_page
+            from glados.auth import sessions as _sessions
+            username = p[len("/api/users/"):-len("/password")]
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+                return
+            ok, err = _users_page.reset_password(username, body.get("new_password") or "")
+            if not ok:
+                code = 404 if "not found" in err else 400
+                self._send_json(code, {"ok": False, "error": err})
+                return
+            _sessions.revoke_all_for_user(username)
+            from glados.core.config_store import cfg as _cfg_live
+            _cfg_live.reload()
+            self._send_json(200, {"ok": True})
         else:
             self._send_error(404, "Not found")
 
@@ -1828,6 +1876,29 @@ class Handler(BaseHTTPRequestHandler):
             self._put_chime()
         elif self.path == "/api/canon":
             self._put_canon()
+        # PUT /api/users/<u> — update role / display_name / disabled
+        elif self.path.startswith("/api/users/") and not self.path.endswith("/password"):
+            from glados.webui.pages import users as _users_page
+            username = self.path[len("/api/users/"):]
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+                return
+            ok, err = _users_page.update_user(
+                username,
+                role=body.get("role"),
+                display_name=body.get("display_name"),
+                disabled=body.get("disabled"),
+            )
+            if not ok:
+                code = 404 if "not found" in err else 400
+                self._send_json(code, {"ok": False, "error": err})
+                return
+            from glados.core.config_store import cfg as _cfg_live
+            _cfg_live.reload()
+            self._send_json(200, {"ok": True})
         else:
             self._send_error(404, "Not found")
 
@@ -1844,6 +1915,17 @@ class Handler(BaseHTTPRequestHandler):
             self._delete_chime()
         elif self.path == "/api/canon" or self.path.startswith("/api/canon?"):
             self._delete_canon()
+        elif self.path.startswith("/api/users/"):
+            from glados.webui.pages import users as _users_page
+            username = self.path[len("/api/users/"):]
+            ok, err = _users_page.delete_user(username)
+            if not ok:
+                code = 404 if "not found" in err else 400
+                self._send_json(code, {"ok": False, "error": err})
+                return
+            from glados.core.config_store import cfg as _cfg_live
+            _cfg_live.reload()
+            self._send_json(200, {"ok": True})
         else:
             self._send_error(404, "Not found")
 
