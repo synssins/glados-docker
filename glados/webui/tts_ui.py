@@ -603,6 +603,103 @@ def _auth_password_configured() -> bool:
     return bool(_cfg.auth.users)
 
 
+# Permission check (Task 4)
+
+def _extract_session_cookie(handler) -> str:
+    """Pull the glados_session value from the Cookie header, '' if absent."""
+    cookie_header = handler.headers.get("Cookie", "")
+    if not cookie_header:
+        return ""
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith("glados_session="):
+            return part[len("glados_session="):]
+    return ""
+
+
+def _resolve_user_for_request(handler) -> dict | None:
+    """Return {'username', 'role', 'session_id'} or None.
+
+    Caches on the handler so repeat checks within one request don't
+    re-query auth.db.
+    """
+    cached = getattr(handler, "_resolved_user", "__unset__")
+    if cached != "__unset__":
+        return cached
+
+    from glados.auth import sessions as _sessions
+    from glados.core.config_store import cfg as _cfg_live
+
+    token = _extract_session_cookie(handler)
+    if not token:
+        handler._resolved_user = None
+        return None
+
+    valid, row = _sessions.verify(token)
+    if not valid or not row:
+        handler._resolved_user = None
+        return None
+
+    user = next(
+        (u for u in _cfg_live.auth.users
+         if u.username == row["username"] and not u.disabled),
+        None,
+    )
+    if user is None:
+        handler._resolved_user = None
+        return None
+
+    handler._resolved_user = {
+        "username": user.username,
+        "role": user.role,
+        "session_id": row["session_id"],
+    }
+    return handler._resolved_user
+
+
+def require_perm(handler, perm: str) -> bool:
+    """Enforce `perm` on `handler`. Returns True if allowed.
+
+    On denial, writes 401 (no session) or 403 (session but missing
+    perm) and returns False. Handlers short-circuit on False, same
+    calling convention as the legacy _require_auth.
+    """
+    from glados.webui.permissions import user_has_perm
+    from glados.core.config_store import cfg as _cfg_live
+    from glados.auth import bypass as _bypass
+
+    if _bypass.active():
+        return True
+
+    if not _cfg_live.auth.enabled:
+        return True
+
+    user = _resolve_user_for_request(handler)
+    if user is None:
+        if handler.path.startswith("/api/"):
+            handler._send_json(401, {"error": "Authentication required"})
+        else:
+            handler.send_response(302)
+            handler.send_header("Location", "/login")
+            handler.end_headers()
+        return False
+
+    if not user_has_perm(user["role"], perm):
+        if handler.path.startswith("/api/"):
+            handler._send_json(403, {
+                "error": "Forbidden",
+                "required_permission": perm,
+            })
+        else:
+            handler.send_response(403)
+            handler.send_header("Content-Type", "text/html")
+            handler.end_headers()
+            handler.wfile.write(b"<h1>403 Forbidden</h1>")
+        return False
+
+    return True
+
+
 # â”€â”€ Login page HTML â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 LOGIN_PAGE = r"""<!DOCTYPE html>
