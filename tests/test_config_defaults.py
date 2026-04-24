@@ -68,14 +68,18 @@ def test_ha_defaults_use_mdns() -> None:
     assert ha.token == ""
 
 
-def test_services_defaults_use_docker_service_names() -> None:
+def test_services_defaults_self_contained() -> None:
+    """TTS and STT default to the container's own api_wrapper port —
+    both are served in-process via the bundled VITS + CTC ONNX models.
+    Ollama defaults remain Docker service names (external LLM is still
+    a required dependency). Vision defaults to empty (optional)."""
     s = ServicesConfig()
     assert s.ollama_interactive.url == "http://ollama:11434"
     assert s.ollama_autonomy.url == "http://ollama:11434"
     assert s.ollama_vision.url == "http://ollama:11434"
-    assert s.tts.url == "http://speaches:8800"
-    assert s.stt.url == "http://speaches:8800"
-    assert s.vision.url == "http://glados-vision:8016"
+    assert s.tts.url == "http://localhost:8015"
+    assert s.stt.url == "http://localhost:8015"
+    assert s.vision.url == ""
 
 
 def test_memory_defaults_use_embedded_chromadb() -> None:
@@ -188,8 +192,8 @@ def test_services_yaml_url_still_wins_over_default() -> None:
         "ollama_interactive": {"url": "http://10.0.0.10:11434"},
     })
     assert s.ollama_interactive.url == "http://10.0.0.10:11434"
-    # Untouched fields still resolve from pydantic defaults.
-    assert s.tts.url == "http://speaches:8800"
+    # Untouched fields still resolve from pydantic defaults (self-contained).
+    assert s.tts.url == "http://localhost:8015"
 
 
 # ── Backward compat: existing YAML still parses ────────────────────────

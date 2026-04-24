@@ -56,6 +56,23 @@ COPY models/ASR/ ./models/ASR/
 # up with the container's `/app/glados/utils/…` layout).
 ENV GLADOS_MODELS=/app/models
 
+# Bake all path defaults here so compose.yml doesn't need to set them.
+# Operators can still override per-container via compose env, but the
+# default-minimal compose (just TZ + volumes + ports) works out of
+# the box.
+ENV GLADOS_ROOT=/app \
+    GLADOS_CONFIG=/app/configs/glados_config.yaml \
+    GLADOS_CONFIG_DIR=/app/configs \
+    GLADOS_DATA=/app/data \
+    GLADOS_LOGS=/app/logs \
+    GLADOS_AUDIO=/app/audio_files \
+    GLADOS_ASSETS=/app/audio_files \
+    GLADOS_TTS_MODELS_DIR=/app/models/TTS \
+    GLADOS_PORT=8015 \
+    WEBUI_PORT=8052 \
+    SERVE_PORT=5051 \
+    TTS_BACKEND=local
+
 # Download ChromaDB default embedding model to /tmp; move into place
 # after the glados user exists so ownership is correct. (Doing the
 # mkdir in /home/glados/ before `useradd -m` breaks: useradd skips

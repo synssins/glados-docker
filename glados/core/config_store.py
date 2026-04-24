@@ -287,20 +287,31 @@ class ServiceEndpoint(BaseModel):
 
 
 class ServicesConfig(BaseModel):
+    # TTS / STT default to the container's own api_wrapper endpoint.
+    # `/v1/audio/speech` and `/v1/audio/transcriptions` are both served
+    # in-process against the bundled VITS + CTC ONNX models. No external
+    # Speaches involved. Operator can override these via YAML to point
+    # at a remote service if they really want to.
     tts: ServiceEndpoint = ServiceEndpoint(
-        url=_env("SPEACHES_URL", "http://speaches:8800"),
-        voice=_env("TTS_VOICE", "glados"),
-        model=_env("TTS_MODEL", "hexgrad/Kokoro-82M"),
+        url=f"http://localhost:{_env('GLADOS_PORT', '8015')}",
+        voice="glados",
+        model="local",
     )
     stt: ServiceEndpoint = ServiceEndpoint(
-        url=_env("SPEACHES_URL", "http://speaches:8800"),
-        model=_env("STT_MODEL", "Systran/faster-whisper-small"),
+        url=f"http://localhost:{_env('GLADOS_PORT', '8015')}",
+        model="local-ctc",
     )
     api_wrapper: ServiceEndpoint = ServiceEndpoint(
         url=f"http://localhost:{_env('GLADOS_PORT', '8015')}"
     )
+    # External-service defaults. `_env(...)` remains only as the fallback
+    # when the operator hasn't set the YAML value. Once YAML is populated
+    # (and on this deployment it is), these env reads are not consulted.
+    # Per the self-containment policy (docs/SELF_CONTAINMENT.md),
+    # compose.yml should not set these env vars — let YAML be the source
+    # of truth so WebUI edits take effect without a compose change.
     vision: ServiceEndpoint = ServiceEndpoint(
-        url=_env("VISION_URL", "http://glados-vision:8016")
+        url=_env("VISION_URL", "")
     )
     ollama_interactive: ServiceEndpoint = ServiceEndpoint(
         url=_env("OLLAMA_URL", "http://ollama:11434")
