@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from loguru import logger
@@ -182,11 +182,45 @@ class SSLGlobal(BaseModel):
     acme_api_token: str = _env("DNS_API_TOKEN", "")
 
 
+class RateLimitsConfig(BaseModel):
+    login_window_seconds: int = 60
+    login_max_attempts: int = 5
+    service_window_seconds: int = 60
+    service_max_requests: int = 10
+
+
+class UserConfig(BaseModel):
+    username: str
+    display_name: str = ""
+    role: Literal["admin", "chat"] = "chat"
+    password_hash: str = ""
+    hash_algorithm: Literal["argon2id", "bcrypt-legacy"] = "argon2id"
+    disabled: bool = False
+    created_at: int = 0
+
+    @model_validator(mode="after")
+    def _fill_display_name(self) -> "UserConfig":
+        if not self.display_name:
+            object.__setattr__(self, "display_name", self.username)
+        return self
+
+
 class AuthGlobal(BaseModel):
     enabled: bool = True
-    password_hash: str = ""
     session_secret: str = ""
-    session_timeout_hours: int = 24
+    session_timeout: str = "30d"
+    session_idle_timeout: str = "0"
+    rate_limits: RateLimitsConfig = Field(default_factory=RateLimitsConfig)
+    bootstrap_allowed: bool = True
+    users: list[UserConfig] = Field(default_factory=list)
+
+    # DEPRECATED — retained for one release cycle to accept legacy YAML.
+    # Migration synthesizer (Task 3) converts these into `users[]` on load.
+    password_hash: str = Field(default="", deprecated=True)
+    hash_algorithm: Literal["argon2id", "bcrypt-legacy"] = Field(
+        default="argon2id", deprecated=True,
+    )
+    session_timeout_hours: int = Field(default=0, deprecated=True)
 
 
 class AuditGlobal(BaseModel):
