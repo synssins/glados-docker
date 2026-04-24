@@ -520,6 +520,29 @@ class HomeAssistantSensorSubagent(Subagent):
         old_state = old_state_obj.get("state", "unknown")
         new_state = new_state_obj.get("state", "unknown")
 
+        # Doorbell ring FAST PATH — must run before the unknown/debounce
+        # filters below. `event.*_doorbell` entities carry a timestamp as
+        # state, and the very first press after a container restart has
+        # old_state="unknown" (no prior event cached). The generic filter
+        # would drop that first press; for doorbell rings we want every
+        # trigger through. Debounce is handled downstream by the
+        # DoorbellScreener's own cooldown window.
+        if (entity_id in self._vision_entities
+                and self._detection_types.get(entity_id) == "doorbell_ring"):
+            # Any state_changed on an event.*_doorbell entity means "ring"
+            # (HA updates the state to the trigger timestamp on every press).
+            # We don't require old_state != new_state because a fresh press
+            # always produces a distinct timestamp — and if old_state is
+            # "unknown" that's simply a first-press-after-restart, which
+            # absolutely should fire.
+            if new_state not in ("", "unavailable"):
+                logger.success(
+                    "HA Sensor: doorbell ring detected ({} -> {}); triggering screening",
+                    entity_id, new_state,
+                )
+                self._trigger_doorbell_screening(entity_id)
+                return
+
         # Skip if state didn't actually change
         if old_state == new_state:
             return
