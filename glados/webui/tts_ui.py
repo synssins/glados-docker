@@ -441,15 +441,10 @@ CHAT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 import bcrypt as _bcrypt
 
-# Auth config (reloaded on each check to pick up changes)
-_AUTH_ENABLED = _cfg.auth.enabled
-_AUTH_PASSWORD_HASH = _cfg.auth.password_hash
-_AUTH_SESSION_SECRET = _cfg.auth.session_secret
-_AUTH_SESSION_TIMEOUT_H = _cfg.auth.session_timeout_hours
-
-# Session durations
-_SESSION_SHORT_S = _AUTH_SESSION_TIMEOUT_H * 3600       # normal session (24h default)
-_SESSION_LONG_S = 30 * 24 * 3600                        # "stay logged in" (30 days)
+# Auth config is read live from _cfg on every check. NO module-level
+# aliases — earlier code captured _cfg.auth.* at import which silently
+# broke live-reload. See docs/AUTH_DESIGN.md §2.7.
+_SESSION_LONG_S = 30 * 24 * 3600                        # "stay logged in" cookie Max-Age (30 days)
 
 # Rate limiting: {ip: (fail_count, last_fail_time)}
 _login_fails: dict[str, tuple[int, float]] = {}
@@ -480,7 +475,7 @@ def _is_public_route(path: str) -> bool:
 def _sign_session(payload: str) -> str:
     """Create an HMAC-signed session token."""
     sig = hmac.new(
-        _AUTH_SESSION_SECRET.encode(), payload.encode(), hashlib.sha256
+        _cfg.auth.session_secret.encode(), payload.encode(), hashlib.sha256
     ).hexdigest()
     return f"{payload}.{sig}"
 
@@ -494,7 +489,7 @@ def _verify_session(token: str) -> dict | None:
         return None
     payload_str, sig = parts
     expected = hmac.new(
-        _AUTH_SESSION_SECRET.encode(), payload_str.encode(), hashlib.sha256
+        _cfg.auth.session_secret.encode(), payload_str.encode(), hashlib.sha256
     ).hexdigest()
     if not hmac.compare_digest(sig, expected):
         return None
@@ -583,9 +578,9 @@ def _is_authenticated(handler: BaseHTTPRequestHandler) -> bool:
     to configure one. Auth can still be fully disabled via
     `auth.enabled=false` in global.yaml for development.
     """
-    if not _AUTH_ENABLED:
+    if not _cfg.auth.enabled:
         return True
-    if not _AUTH_PASSWORD_HASH:
+    if not _cfg.auth.password_hash:
         # No password configured; refuse. The login page surfaces
         # the setup instruction so the admin isn't stranded.
         return False
@@ -596,7 +591,7 @@ def _auth_password_configured() -> bool:
     """True when a password hash is set. Login page uses this to
     show a setup hint instead of the normal form when the admin
     hasn't run set_password yet."""
-    return bool(_AUTH_PASSWORD_HASH)
+    return bool(_cfg.auth.password_hash)
 
 
 # â”€â”€ Login page HTML â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1250,13 +1245,13 @@ class Handler(BaseHTTPRequestHandler):
         remember = params.get("remember", ["0"])[0] == "1"
 
         # Validate
-        if not _AUTH_PASSWORD_HASH or not password:
+        if not _cfg.auth.password_hash or not password:
             _record_fail(client_ip)
             self._send_json(401, {"ok": False, "error": "Invalid password"})
             return
 
         try:
-            valid = _bcrypt.checkpw(password.encode("utf-8"), _AUTH_PASSWORD_HASH.encode("ascii"))
+            valid = _bcrypt.checkpw(password.encode("utf-8"), _cfg.auth.password_hash.encode("ascii"))
         except Exception:
             valid = False
 
