@@ -5,6 +5,7 @@ from glados.core.duration import parse_duration, NEVER
 
 @pytest.mark.parametrize("s, expected", [
     ("never", NEVER),
+    ("NEVER", NEVER),
     ("0", 0),
     ("60", 60),
     ("30s", 30),
@@ -22,7 +23,3 @@ def test_parse_duration_valid(s, expected):
 def test_parse_duration_invalid_raises(s):
     with pytest.raises(ValueError):
         parse_duration(s)
-
-
-def test_never_sentinel():
-    assert NEVER is None

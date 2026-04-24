@@ -16,6 +16,7 @@ from loguru import logger
 
 from glados.core.config_store import (
     AuditGlobal,
+    AuthGlobal,
     GlobalConfig,
     HomeAssistantGlobal,
     MemoryConfig,
@@ -426,3 +427,33 @@ def test_auth_user_config_rejects_unknown_role():
     from glados.core.config_store import UserConfig
     with pytest.raises(pydantic.ValidationError):
         UserConfig(username="x", password_hash="h", role="superuser")
+
+
+def test_auth_global_deprecated_fields_emit_warnings() -> None:
+    """Legacy YAML with password_hash / hash_algorithm / session_timeout_hours
+    must emit a loguru WARNING — same pattern every other model with
+    deprecated fields uses (NetworkGlobal, AuditGlobal, etc.)."""
+    with _capture_warnings() as msgs:
+        AuthGlobal.model_validate({
+            "password_hash": "$2b$12$legacyhash",
+            "hash_algorithm": "argon2id",
+            "session_timeout_hours": 24,
+        })
+    joined = "\n".join(msgs)
+    assert "password_hash" in joined, (
+        f"Expected deprecation warning for password_hash; got: {joined!r}"
+    )
+    assert "session_timeout_hours" in joined, (
+        f"Expected deprecation warning for session_timeout_hours; got: {joined!r}"
+    )
+    assert "deprecated" in joined.lower(), (
+        f"Expected 'deprecated' in warning text; got: {joined!r}"
+    )
+
+
+def test_auth_global_no_warning_on_default_construction() -> None:
+    """Instantiating AuthGlobal with no YAML must be silent — fresh
+    installs shouldn't see deprecation noise for the legacy fields."""
+    with _capture_warnings() as msgs:
+        AuthGlobal()
+    assert msgs == [], f"Expected no warnings on default construction, got: {msgs!r}"

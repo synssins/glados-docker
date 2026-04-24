@@ -201,7 +201,7 @@ class UserConfig(BaseModel):
     @model_validator(mode="after")
     def _fill_display_name(self) -> "UserConfig":
         if not self.display_name:
-            object.__setattr__(self, "display_name", self.username)
+            self.display_name = self.username
         return self
 
 
@@ -221,6 +221,15 @@ class AuthGlobal(BaseModel):
         default="argon2id", deprecated=True,
     )
     session_timeout_hours: int = Field(default=0, deprecated=True)
+
+    @model_validator(mode="after")
+    def _warn_deprecated(self) -> "AuthGlobal":
+        _warn_deprecated_yaml(self, {
+            "password_hash": "migrated to users[].password_hash (Task 3 migration synthesizer)",
+            "hash_algorithm": "migrated to users[].hash_algorithm (Task 3 migration synthesizer)",
+            "session_timeout_hours": "replaced by session_timeout (e.g. '24h')",
+        })
+        return self
 
 
 class AuditGlobal(BaseModel):
