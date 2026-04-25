@@ -31,7 +31,8 @@ def source() -> str:
     ("config.audio-speakers", "Audio &amp; Speakers"),
     ("config.personality", "Personality"),
     ("config.memory", "Memory"),
-    ("config.ssl", "SSL"),
+    # Phase 2 Chunk 1A: SSL and Users moved into System tabs; no longer
+    # top-level sidebar entries.
     ("config.raw", "Raw YAML"),
 ])
 def test_sidebar_contains_phase6_nav_entry(source: str, nav_key: str, label: str) -> None:
@@ -46,6 +47,9 @@ def test_sidebar_contains_phase6_nav_entry(source: str, nav_key: str, label: str
     "config.services",
     "config.speakers",
     "config.audio",
+    # Phase 2 Chunk 1A: SSL and Users moved into System tabs.
+    "config.ssl",
+    "config.users",
 ])
 def test_removed_nav_entries_no_longer_rendered_in_sidebar(source: str, removed_key: str) -> None:
     # Narrow the search to the sidebar <nav-children> block; topbar shortcut
@@ -70,6 +74,9 @@ def test_removed_nav_entries_no_longer_rendered_in_sidebar(source: str, removed_
     ("config.services", "config.llm-services"),
     ("config.speakers", "config.audio-speakers"),
     ("config.audio", "config.audio-speakers"),
+    # Phase 2 Chunk 1A: SSL and Users are now System sub-tabs.
+    ("config.ssl", "config.system"),
+    ("config.users", "config.system"),
 ])
 def test_legacy_key_migrates_to_phase6_equivalent(source: str, legacy: str, target: str) -> None:
     pattern = re.compile(

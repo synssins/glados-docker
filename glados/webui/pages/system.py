@@ -57,6 +57,10 @@ HTML = r"""
             onclick="showPageTab('system','maintenance')">Maintenance</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="account"
             onclick="showPageTab('system','account');_loadSessions()">Account</button>
+    <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="ssl"
+            onclick="showPageTab('system','ssl');_loadSslIntoSystemTab()">SSL</button>
+    <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="users"
+            onclick="showPageTab('system','users');_loadUsersIntoSystemTab()">Users</button>
   </nav>
 
   <div class="page-tab-panels">
@@ -270,6 +274,16 @@ HTML = r"""
           Loading&hellip;
         </div>
       </div>
+    </div>
+
+    <!-- ════════════════ SSL tab ════════════════ -->
+    <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="ssl">
+      <div id="systemSslMount"></div>
+    </div>
+
+    <!-- ════════════════ Users tab ════════════════ -->
+    <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="users">
+      <div id="systemUsersMount"></div>
     </div>
 
   </div>

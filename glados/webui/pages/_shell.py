@@ -48,9 +48,7 @@ SHELL_TOP = r"""<!DOCTYPE html>
       <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')">Personality</a>
       <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')">Memory</a>
       <a class="nav-item" data-nav-key="config.logs" onclick="navigateTo('config.logs')">Logs</a>
-      <a class="nav-item" data-nav-key="config.ssl" onclick="navigateTo('config.ssl')">SSL</a>
       <a class="nav-item" data-nav-key="config.raw" onclick="navigateTo('config.raw')">Raw YAML</a>
-      <a class="nav-item" data-nav-key="config.users" onclick="navigateTo('config.users')">Users</a>
     </div>
     <!-- Training removed: piper_train is a host-native tool, not available in container -->
   </div>

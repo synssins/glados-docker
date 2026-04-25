@@ -1874,8 +1874,33 @@ function _cfgSaveCurrentSystemTab() {
     case 'maintenance':
       showToast('Maintenance actions save immediately; no separate save needed.', 'info');
       return;
+    case 'ssl':    return cfgSaveSsl();
+    case 'users':
+      showToast('User actions save immediately via their own buttons.', 'info');
+      return;
     default: return;
   }
+}
+
+function _loadSslIntoSystemTab() {
+  cfgLoadAll().then(function() {
+    var ssl = (_cfgData.global && _cfgData.global.ssl) ? _cfgData.global.ssl : {};
+    var mount = document.getElementById('systemSslMount');
+    if (mount) mount.innerHTML = cfgRenderSsl(ssl);
+  });
+}
+
+function _loadUsersIntoSystemTab() {
+  var mount = document.getElementById('systemUsersMount');
+  if (!mount) return;
+  if (mount.children.length === 0) {
+    // First visit: clone the users content from the legacy panel.
+    var src = document.getElementById('tab-config-users');
+    if (src) {
+      mount.innerHTML = src.innerHTML;
+    }
+  }
+  if (typeof usersLoadAll === 'function') usersLoadAll();
 }
 
 // Page-save dispatcher for Audio & Speakers. Routes by active tab
@@ -4371,7 +4396,6 @@ function _panelIdFor(key) {
   if (key === 'config.system') return 'tab-config-system';
   if (key === 'config.memory') return 'tab-config-memory';
   if (key === 'config.logs')   return 'tab-config-logs';
-  if (key === 'config.users')  return 'tab-config-users';
   if (key && key.indexOf('config.') === 0) return 'tab-config';
   return 'tab-' + key;
 }
@@ -4390,6 +4414,8 @@ function _migrateLegacyKey(k) {
   if (k === 'config.services')  return 'config.llm-services';
   if (k === 'config.speakers')  return 'config.audio-speakers';
   if (k === 'config.audio')     return 'config.audio-speakers';
+  if (k === 'config.ssl')       return 'config.system';
+  if (k === 'config.users')     return 'config.system';
   return k;
 }
 
@@ -4408,6 +4434,9 @@ function navToggleConfig() {
 let _activeNavKey = 'chat';
 
 function navigateTo(key) {
+  // Capture legacy sub-tab intent before migration collapses the key.
+  var _sslRedirect   = (key === 'config.ssl');
+  var _usersRedirect = (key === 'config.users');
   key = _migrateLegacyKey(key);
   // Leaving Logs? Tear down the 10 s polling timer so we don't keep
   // hitting /api/logs/tail when the operator's on another page.
@@ -4451,13 +4480,13 @@ function navigateTo(key) {
     loadSystemServices();
     startRobotAutoRefresh();
     if (typeof loadSystemConfigCards === 'function') loadSystemConfigCards();
+    if (_sslRedirect)   { showPageTab('system', 'ssl');   _loadSslIntoSystemTab(); }
+    if (_usersRedirect) { showPageTab('system', 'users'); _loadUsersIntoSystemTab(); }
   } else if (key === 'config.memory') {
     // Memory page UI arrives in Phase 5 Commit 3; placeholder for now.
     if (typeof memoryLoadAll === 'function') memoryLoadAll();
   } else if (key === 'config.logs') {
     if (typeof logsOnTabActivate === 'function') logsOnTabActivate();
-  } else if (key === 'config.users') {
-    if (typeof usersLoadAll === 'function') usersLoadAll();
   } else if (key.indexOf('config.') === 0) {
     const section = key.substring('config.'.length);
     _cfgCurrentSection = section;
