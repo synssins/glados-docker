@@ -1036,6 +1036,28 @@ def _get_pronunciation_converter():
         return None
 
 
+def _normalize_dashes(text: str) -> str:
+    """Replace en/em-dashes with comma+space so Piper produces a natural pause.
+
+    Piper does not insert prosodic breaks on Unicode dashes; operators report
+    em-dashes (—) come out as a long buzz or get dropped entirely. The persona
+    rewriter (qwen3:14b) loves em-dashes stylistically. We strip them before
+    synthesis so the audio gets a comma-shaped pause; the text the operator
+    sees in transcripts is unchanged.
+    """
+    if not text:
+        return text
+    s = text
+    # Em-dash and en-dash → ", "
+    s = re.sub(r"\s*[\u2014\u2013]\s*", ", ", s)
+    # Spaced hyphen-minus used as a dash substitute → ", "
+    # Plain hyphens inside compound words (e.g. "tea-cup") are left alone.
+    s = re.sub(r" - ", ", ", s)
+    # Collapse runs like ',,' or ', ,' or ', ,,' to a single ','
+    s = re.sub(r",(\s*,)+", ",", s)
+    return s
+
+
 def _apply_pronunciation_to_text(text: str) -> str:
     """Apply the engine's pronunciation overrides to text headed for TTS.
 
@@ -1043,6 +1065,7 @@ def _apply_pronunciation_to_text(text: str) -> str:
     for the same input. See ``glados/api/tts.py:generate_speech`` for the
     primary call site.
     """
+    text = _normalize_dashes(text)
     converter = _get_pronunciation_converter()
     if converter is None:
         return text
