@@ -290,13 +290,14 @@ body {
 
 /* ── Page shell ────────────────────────────────────────────────
    UI-polish Task 1: single geometry wrapper rendered inside every
-   .tab-content block. Constrains max-width, centres on wide
-   viewports, and gives every page a consistent grid rhythm.
-   Replaces the ad-hoc .container max-width that used to live on
-   .main-content. */
+   .tab-content block. Caps width on wide displays so lines of text
+   don't stretch past a comfortable reading measure, but flushes
+   left so content sits next to the sidebar — not pushed into the
+   middle of the viewport. Below the cap, content fills available
+   width naturally; padding tightens at tablet/mobile breakpoints. */
 .page-shell {
   max-width: var(--content-max, 1440px);
-  margin: 0 auto;
+  margin: 0;
   padding: var(--sp-5);
   display: grid;
   gap: var(--sp-4);
