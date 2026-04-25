@@ -130,12 +130,10 @@ def test_audio_speakers_renders_save_buttons_for_both_backing_sections(source: s
         "_cfgSaveSpeakersPicker must POST to the /api/config/speakers "
         "endpoint so the speakers YAML is still the backing store"
     )
-    # The Audio section continues to use the generic cfgSaveSection
-    # route (no picker UI), so its assertion stays as-was.
-    assert re.search(
-        r"cfgSaveSection\(\\?'audio\\?',\s*\\?'cfg-save-result-audio\\?'\)",
-        source,
-    ), "Audio & Speakers page must save the Audio form to the 'audio' backing"
+    # Audio tab removed 2026-04-25 (operator polish sweep): directory paths
+    # are configured in docker YAML, no need to expose them in the UI.
+    # audio section is still saved via the backend; the tab just doesn't
+    # appear in the Audio & Speakers page anymore.
 
 
 # ── cfgSaveSection accepts an optional result-element id ───────────────

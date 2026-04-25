@@ -398,10 +398,19 @@ function cfgRenderSection(section) {
     return;
   }
   const meta = SECTION_META[section] || SECTION_META[backing] || {};
-  let html = '<div class="cfg-section-header">'
-    + '<div class="cfg-section-title">' + escHtml(meta.title || section) + '</div>'
-    + '<div class="cfg-section-desc">' + escHtml(meta.desc || '') + '</div>'
-    + '</div>';
+
+  // personality and ssl have their own full-page chrome (page-header + tabs
+  // for personality; standalone renderer for ssl) — skip the shared header
+  // and trailing save button so they don't double-render.
+  const hasOwnChrome = (backing === 'personality' || section === 'ssl');
+
+  let html = '';
+  if (!hasOwnChrome) {
+    html += '<div class="cfg-section-header">'
+      + '<div class="cfg-section-title">' + escHtml(meta.title || section) + '</div>'
+      + '<div class="cfg-section-desc">' + escHtml(meta.desc || '') + '</div>'
+      + '</div>';
+  }
 
   if (backing === 'services') {
     html += cfgRenderServices(data);
@@ -420,7 +429,7 @@ function cfgRenderSection(section) {
     html += cfgBuildForm(data, backing, '', skipKeys);
   }
 
-  if (section !== 'ssl') {
+  if (!hasOwnChrome) {
     const label = meta.title || backing;
     html += '<div class="cfg-save-row">'
       + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'' + backing + '\')">Save ' + escHtml(label) + '</button>'
@@ -723,7 +732,7 @@ function _cfgRenderWeather() {
   html +=     '</div>';
   html +=     '<div class="mqtt-field" style="flex:0 0 auto;">';
   html +=       '<label class="mqtt-label">&nbsp;</label>';
-  html +=       '<button class="btn" style="background:var(--bg-input);padding:var(--sp-2) var(--sp-4);" onclick="_cfgWeatherGeocode()">Look up</button>';
+  html +=       '<button class="btn btn-primary" style="padding:var(--sp-2) var(--sp-4);" onclick="_cfgWeatherGeocode()">Look up</button>';
   html +=     '</div>';
   html +=   '</div>';
   html +=   '<div id="wx-candidates" class="trait-desc" style="margin-top:var(--sp-2);"></div>';
@@ -751,7 +760,7 @@ function _cfgRenderWeather() {
   html += '<div class="mqtt-subgroup">Current reading</div>';
   html += '<div id="wx-preview" class="trait-desc" style="font-size:0.84rem;">Loading&hellip;</div>';
   html += '<div class="controls" style="margin-top:var(--sp-2);">';
-  html +=   '<button class="btn" style="background:var(--bg-input);" onclick="_cfgRenderWeatherPreview()">Refresh preview</button>';
+  html +=   '<button class="btn btn-primary" onclick="_cfgRenderWeatherPreview()">Refresh preview</button>';
   html += '</div>';
 
   body.innerHTML = html;
@@ -1117,7 +1126,7 @@ function _disambPopulate(data) {
     +   '<code>north/south</code>, <code>east/west</code>).'
     + '</div>';
   html += '<div id="cfg-disamb-pairs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;"></div>';
-  html += '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddPair()">+ Add pair</button>';
+  html += '<button type="button" class="cfg-save-btn" onclick="_disambAddPair()">+ Add pair</button>';
   // Phase 8.3.5 — operator-editable extra segment tokens used by
   // the device-diversity filter on top-K retrieval. Merges with
   // the shipped defaults (seg, segment, zone, channel, strip,
@@ -1130,7 +1139,7 @@ function _disambPopulate(data) {
     +   '<code>pixel</code>) if your strip entities use a different naming convention.'
     + '</div>'
     + '<div id="cfg-disamb-tokens" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddToken()">+ Add token</button>';
+    + '<button type="button" class="cfg-save-btn" onclick="_disambAddToken()">+ Add token</button>';
   // Phase 8.4 — post-execute state verification.
   html += '<div class="cfg-field-label" style="margin-top:18px;">Post-execute state verification</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:8px;">'
@@ -1167,13 +1176,13 @@ function _disambPopulate(data) {
     +   'Utterance keyword &rarr; floor-registry name (e.g. <code>main level &rarr; Main Level</code>).'
     + '</div>'
     + '<div id="cfg-disamb-floor-aliases" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddFloorAlias()">+ Add floor alias</button>';
+    + '<button type="button" class="cfg-save-btn" onclick="_disambAddFloorAlias()">+ Add floor alias</button>';
   html += '<div class="cfg-field-label" style="margin-top:14px;">Area aliases</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
     +   'Utterance keyword &rarr; area-registry name (e.g. <code>mom&rsquo;s room &rarr; Master Bedroom</code>).'
     + '</div>'
     + '<div id="cfg-disamb-area-aliases" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddAreaAlias()">+ Add area alias</button>';
+    + '<button type="button" class="cfg-save-btn" onclick="_disambAddAreaAlias()">+ Add area alias</button>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
     + '<button class="cfg-save-btn" onclick="cfgSaveDisambiguation()">Save Disambiguation rules</button>'
     + '<span id="cfg-save-result-disamb" class="cfg-result"></span>'
@@ -1199,7 +1208,7 @@ function _disambRenderAliasRow(host, kind, keyword, target) {
     + '<input type="text" class="cfg-disamb-alias-keyword" value="' + escAttr(keyword) + '" placeholder="e.g. living floor" style="flex:1;">'
     + '<span style="opacity:0.6;">&rarr;</span>'
     + '<input type="text" class="cfg-disamb-alias-target" value="' + escAttr(target) + '" placeholder="e.g. Main Level" style="flex:1;">'
-    + '<button type="button" title="Remove alias" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove alias">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -1221,7 +1230,7 @@ function _disambRenderTokenRow(host, t) {
   row.style.cssText = 'display:flex;gap:6px;align-items:center;';
   row.innerHTML = ''
     + '<input type="text" class="cfg-disamb-token" value="' + escAttr(t) + '" placeholder="e.g. pixel" style="flex:1;">'
-    + '<button type="button" title="Remove token" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove token">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -1240,7 +1249,7 @@ function _disambRenderPairRow(host, a, b) {
     + '<input type="text" class="cfg-disamb-pair-a" value="' + escAttr(a) + '" placeholder="e.g. upstairs" style="flex:1;">'
     + '<span style="opacity:0.6;">&harr;</span>'
     + '<input type="text" class="cfg-disamb-pair-b" value="' + escAttr(b) + '" placeholder="e.g. downstairs" style="flex:1;">'
-    + '<button type="button" title="Remove pair" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove pair">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -1540,77 +1549,16 @@ function loadSystemConfigCards() {
   const run = () => {
     _cfgRenderSystemMaintForm();
     _cfgRenderSystemAuthAuditForm();
-    _cfgRenderTestHarnessForm();
   };
   if (have) { run(); }
   else if (typeof cfgLoadAll === 'function') { cfgLoadAll().then(run); }
 }
 
-// Phase 8.9 — Test harness card. Simple two-field editor: patterns
-// (textarea, one glob per line) + direction-match toggle. Saves to
-// /api/config/test_harness.
-function _cfgRenderTestHarnessForm() {
-  const host = document.getElementById('testHarnessForm');
-  if (!host) return;
-  const th = _cfgData.test_harness || {};
-  const patterns = Array.isArray(th.noise_entity_patterns)
-    ? th.noise_entity_patterns.join('\n') : '';
-  const require = th.require_direction_match !== false;
-  host.innerHTML =
-    '<div class="cfg-field">'
-    + '<label class="cfg-label" for="th-patterns">Noise entity patterns'
-    + ' <span style="color:var(--fg-secondary);font-weight:normal;">'
-    + '(fnmatch globs, one per line — e.g. <code>switch.hvac_unit_*_display</code>)'
-    + '</span></label>'
-    + '<textarea id="th-patterns" rows="8" style="width:100%;background:var(--bg-input);'
-    + 'color:var(--fg-primary);border:1px solid var(--border-default);border-radius:4px;padding:8px;'
-    + 'font-family:monospace;font-size:0.82rem;">'
-    + escHtml(patterns) + '</textarea>'
-    + '</div>'
-    + '<div class="cfg-field" style="margin-top:10px;">'
-    + '<label style="display:flex;align-items:center;gap:8px;">'
-    + '<input type="checkbox" id="th-direction"' + (require ? ' checked' : '') + '>'
-    + '<span>Require direction match (recommended)</span>'
-    + '</label>'
-    + '<div class="mode-desc" style="margin-top:4px;">'
-    + 'When on, harness requires the targeted entity to end in the expected state. '
-    + 'When off, any state change counts — use only for A/B comparison against the pre-8.9 scorer.'
-    + '</div>'
-    + '</div>';
-}
-
-async function cfgSaveTestHarness() {
-  const resultEl = document.getElementById('cfg-save-result-test-harness');
-  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
-  const raw = document.getElementById('th-patterns');
-  const dir = document.getElementById('th-direction');
-  if (!raw || !dir) return;
-  const patterns = raw.value.split('\n').map(s => s.trim()).filter(Boolean);
-  const body = {
-    noise_entity_patterns: patterns,
-    require_direction_match: !!dir.checked,
-  };
-  try {
-    const r = await fetch('/api/config/test_harness', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-    });
-    const txt = await r.text();
-    let resp = {};
-    try { resp = JSON.parse(txt); } catch (_) { resp = { error: txt }; }
-    if (r.ok) {
-      _cfgData.test_harness = body;
-      if (resultEl) resultEl.textContent = '';
-      showToast('Test-harness config saved.', 'success');
-    } else if (resultEl) {
-      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
-      resultEl.className = 'cfg-result err';
-    }
-  } catch (e) {
-    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
-  }
-}
+// Test harness UI removed 2026-04-25 (operator-directed polish sweep).
+// The /api/test-harness/noise-patterns GET endpoint is KEPT — the
+// external test battery (glados-test-battery/harness.py) depends on it.
+// test_harness.yaml is still read/written by config_store; the UI just
+// no longer exposes it.
 
 function _cfgRenderSystemMaintForm() {
   const me = (_cfgData.global || {}).mode_entities || {};
@@ -1737,10 +1685,9 @@ function _cfgRenderAudioSpeakers() {
 
   const TABS = [
     { id: 'speakers',      label: 'Speakers' },
-    { id: 'audio',         label: 'Audio' },
     { id: 'response',      label: 'Response behavior' },
     { id: 'pronunciation', label: 'Pronunciation' },
-    { id: 'chimes',        label: 'Chimes' },
+    { id: 'chimes',        label: 'Sounds' },
   ];
   const activeTabId = _loadPageTab('audio-speakers', 'speakers');
 
@@ -1784,22 +1731,6 @@ function _cfgRenderAudioSpeakers() {
         +  '</div>';
   html +=   '<div id="startupSpeakers" style="opacity:0.5;">Loading&hellip;</div>';
   html +=   '<div id="startupSpeakersStatus" style="font-size:0.75rem;color:var(--orange);margin-top:6px;min-height:1.2em;"></div>';
-  html += '</div>';
-  html += '</div>';
-
-  // ── Audio tab ─────────────────────────────────────────────
-  html += '<div class="page-tab-panel' + (activeTabId === 'audio' ? ' active' : '') + '" data-page-tab-panel-group="audio-speakers" data-tab="audio">';
-  html += '<div class="card">';
-  html += '<div class="cfg-subsection-title">Audio engine</div>';
-  html += '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    + 'Low-level audio settings &mdash; sentence pacing, cache sizes, directory paths, streaming pacing knobs. '
-    + 'Most fields are advanced; toggle <em>Show Advanced Settings</em> to reveal the full set.'
-    + '</div>';
-  html += cfgBuildForm(audio, 'audio', '');
-  html += '<div class="cfg-save-row">'
-    + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'audio\', \'cfg-save-result-audio\')">Save Audio</button>'
-    + '<span id="cfg-save-result-audio" class="cfg-result"></span>'
-    + '</div>';
   html += '</div>';
   html += '</div>';
 
@@ -1858,16 +1789,18 @@ function _cfgRenderAudioSpeakers() {
   setTimeout(_cfgLoadChimes, 0);
 }
 
-// Page-save dispatcher for System (Phase 6.5.3). Status and
+// Page-save dispatcher for System (Phase 6.5.3). Status, Hardware, and
 // Maintenance have no direct save; Mode saves auth+audit, Services
-// saves the service endpoint grid, Hardware saves test harness.
+// saves the service endpoint grid.
 function _cfgSaveCurrentSystemTab() {
   const active = document.querySelector('[data-page-tab-group="system"].active');
   const id = active ? active.getAttribute('data-tab') : 'status';
   switch (id) {
     case 'mode':     return cfgSaveSystemAuthAudit();
     case 'services': return _cfgSaveSystemServices();
-    case 'hardware': return cfgSaveTestHarness();
+    case 'hardware':
+      showToast('Hardware tab has no saveable fields. Toggle changes apply immediately.', 'info');
+      return;
     case 'status':
       showToast('Status tab is read-only. Restart buttons on each service save-by-action.', 'info');
       return;
@@ -1911,7 +1844,6 @@ function _cfgSaveCurrentAudioSpeakersTab() {
   const id = active ? active.getAttribute('data-tab') : 'speakers';
   switch (id) {
     case 'speakers':      return _cfgSaveSpeakersPicker();
-    case 'audio':         return cfgSaveSection('audio', 'cfg-save-result-audio');
     case 'response':
     case 'pronunciation': {
       // Click the card's own Save button if present.
@@ -1921,7 +1853,7 @@ function _cfgSaveCurrentAudioSpeakersTab() {
       return;
     }
     case 'chimes':
-      showToast('Chime uploads and deletes save immediately. No separate save needed.', 'info');
+      showToast('Sound uploads and deletes save immediately. No separate save needed.', 'info');
       return;
     default: return;
   }
@@ -1960,7 +1892,7 @@ function _chimesPopulate(data) {
         + '</td>'
         + '<td style="padding:4px 8px;">'
         +   '<button class="btn-small" onclick="_chimesPlay(\'' + encodeURIComponent(f.name) + '\')" style="font-size:0.72rem;padding:3px 10px;margin-right:6px;">Play</button>'
-        +   '<button class="btn-small" onclick="_chimesDelete(\'' + encodeURIComponent(f.name) + '\')" style="font-size:0.72rem;padding:3px 10px;background:#c0392b;">Delete</button>'
+        +   '<button class="btn btn-danger" onclick="_chimesDelete(\'' + encodeURIComponent(f.name) + '\')" style="font-size:0.72rem;padding:3px 10px;">Delete</button>'
         + '</td>'
         + '</tr>'
       ).join('')
@@ -2976,7 +2908,7 @@ function _cfgRenderEmotionTTS(data) {
            +    '<div class="cfg-group-title" style="font-size:1em;">' + escHtml(band.label) + '</div>'
            +    '<div class="cfg-field-desc" style="margin:4px 0 0 0;">' + escHtml(band.desc) + '</div>'
            +  '</div>';
-    html +=   '<button type="button" class="cfg-save-btn" style="background:#333;font-size:0.85em;padding:4px 10px;" '
+    html +=   '<button type="button" class="cfg-save-btn" style="font-size:0.85em;padding:4px 10px;" '
            +    'onclick="_cfgResetEmotionTTSBand(\'' + band.key + '\')" '
            +    'title="Reset this band to Piper defaults (silent no-op)">Reset</button>';
     html += '</div>';
@@ -3091,8 +3023,8 @@ function _quipRenderTree(data) {
   html += '<div style="flex:2;min-width:320px;display:flex;flex-direction:column;gap:8px;">';
   html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
     + '<input type="text" id="cfg-quip-path" placeholder="command_ack/turn_on/normal.txt" style="flex:1;min-width:220px;">'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_quipLoadFromPath()">Open</button>'
-    + '<button type="button" class="cfg-save-btn" style="background:#a33;" onclick="_quipDelete()">Delete</button>'
+    + '<button type="button" class="cfg-save-btn" onclick="_quipLoadFromPath()">Open</button>'
+    + '<button type="button" class="btn btn-danger" onclick="_quipDelete()">Delete</button>'
     + '</div>';
   html += '<textarea id="cfg-quip-editor" style="width:100%;min-height:280px;font-family:monospace;background:#1a1a1a;color:#ddd;border:1px solid #333;padding:8px;"></textarea>';
   html += '<div class="cfg-save-row"><button class="cfg-save-btn" onclick="_quipSave()">Save file</button>'
@@ -3115,7 +3047,7 @@ function _quipRenderTree(data) {
     +   '<option value="cranky">cranky</option>'
     +   '<option value="amused">amused</option>'
     + '</select>'
-    + '<button class="cfg-save-btn" style="background:#333;" onclick="_quipDryRun()">Pick a line</button>'
+    + '<button class="cfg-save-btn" onclick="_quipDryRun()">Pick a line</button>'
     + '</div>'
     + '<div id="cfg-quip-test-result" style="margin-top:8px;font-family:monospace;color:#9cdcfe;"></div>';
   body.innerHTML = html;
@@ -3267,8 +3199,8 @@ function _canonRenderTree(data) {
   html += '<div style="flex:2;min-width:320px;display:flex;flex-direction:column;gap:8px;">';
   html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
     + '<input type="text" id="cfg-canon-path" placeholder="<topic>.txt" style="flex:1;min-width:220px;">'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_canonLoadFromPath()">Open</button>'
-    + '<button type="button" class="cfg-save-btn" style="background:#a33;" onclick="_canonDelete()">Delete</button>'
+    + '<button type="button" class="cfg-save-btn" onclick="_canonLoadFromPath()">Open</button>'
+    + '<button type="button" class="btn btn-danger" onclick="_canonDelete()">Delete</button>'
     + '</div>';
   html += '<textarea id="cfg-canon-editor" style="width:100%;min-height:300px;font-family:monospace;background:#1a1a1a;color:#ddd;border:1px solid #333;padding:8px;" placeholder="# Optional comment line.\n\nFirst canon entry. One to three sentences.\n\nSecond canon entry. Blank line separates."></textarea>';
   html += '<div class="cfg-save-row"><button class="cfg-save-btn" onclick="_canonSave()">Save file</button>'
@@ -3279,7 +3211,7 @@ function _canonRenderTree(data) {
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">Enter an utterance; the panel shows whether the canon gate fires and which entries would be injected into the LLM context.</div>'
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
     + '<input type="text" id="cfg-canon-test-utt" placeholder="How did you cope with being a potato?" style="flex:1;min-width:280px;">'
-    + '<button class="cfg-save-btn" style="background:#333;" onclick="_canonDryRun()">Retrieve</button>'
+    + '<button class="cfg-save-btn" onclick="_canonDryRun()">Retrieve</button>'
     + '</div>'
     + '<div id="cfg-canon-test-result" style="margin-top:8px;font-family:monospace;font-size:0.9em;color:#ddd;"></div>';
   body.innerHTML = html;
@@ -3420,13 +3352,13 @@ function _cmdrecPopulate(data) {
     +   'light, set, put, dial, slide, push, pull, close, open, shut, drop).'
     + '</div>'
     + '<div id="cfg-cmdrec-verbs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_cmdrecAddVerb()">+ Add verb</button>';
+    + '<button type="button" class="cfg-save-btn" onclick="_cmdrecAddVerb()">+ Add verb</button>';
   html += '<div class="cfg-field-label" style="margin-top:14px;">Extra ambient-state patterns (regex)</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
     +   'Case-insensitive Python regex. Invalid patterns are rejected on save.'
     + '</div>'
     + '<div id="cfg-cmdrec-patterns" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_cmdrecAddPattern()">+ Add pattern</button>';
+    + '<button type="button" class="cfg-save-btn" onclick="_cmdrecAddPattern()">+ Add pattern</button>';
   html += '<div class="cfg-field-label" style="margin-top:18px;">Test input</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
     +   'Type a phrase and see whether the current precheck (defaults + any edits above once saved) would recognise it.'
@@ -3453,7 +3385,7 @@ function _cmdrecRenderVerbRow(host, v) {
   row.style.cssText = 'display:flex;gap:6px;align-items:center;';
   row.innerHTML = ''
     + '<input type="text" class="cfg-cmdrec-verb" value="' + escAttr(v) + '" placeholder="e.g. nudge" style="flex:1;">'
-    + '<button type="button" title="Remove verb" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove verb">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -3465,7 +3397,7 @@ function _cmdrecRenderPatternRow(host, p) {
   row.style.cssText = 'display:flex;gap:6px;align-items:center;';
   row.innerHTML = ''
     + '<input type="text" class="cfg-cmdrec-pattern" value="' + escAttr(p) + '" placeholder="e.g. \\\\bthe cats? (?:need|want)\\\\b" style="flex:1;font-family:monospace;">'
-    + '<button type="button" title="Remove pattern" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove pattern">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -4175,7 +4107,7 @@ function _memFactCard(r) {
       + '  age=' + age + '</div>'
     + '<div class="mem-fact-actions">'
     +   '<button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-    +   ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
+    +   ' <button class="btn btn-danger" style="font-size:0.8rem;padding:0.3rem 0.6rem;" onclick="memDelete(\'' + id + '\')">Delete</button>'
     + '</div></div>';
 }
 
@@ -4292,12 +4224,12 @@ function _memRecentItem(r) {
     html += '<div class="mem-fact-actions">'
       + '<button class="btn-small" onclick="memUpdateWording(\'' + id + '\')">Update wording from latest mention</button>'
       + ' <button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-      + ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
+      + ' <button class="btn btn-danger" style="font-size:0.8rem;padding:0.3rem 0.6rem;" onclick="memDelete(\'' + id + '\')">Delete</button>'
       + '</div>';
   } else {
     html += '<div class="mem-fact-actions">'
       + '<button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-      + ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
+      + ' <button class="btn btn-danger" style="font-size:0.8rem;padding:0.3rem 0.6rem;" onclick="memDelete(\'' + id + '\')">Delete</button>'
       + '</div>';
   }
   html += '</div>';
@@ -4357,7 +4289,7 @@ function _memPendingCard(r) {
     + '<div class="mem-fact-actions">'
     +   '<button class="btn-small" onclick="memPromote(\'' + id + '\')">Approve</button>'
     +   ' <button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-    +   ' <button class="btn-small" style="background:#c0392b;" onclick="memReject(\'' + id + '\')">Reject</button>'
+    +   ' <button class="btn btn-danger" style="font-size:0.8rem;padding:0.3rem 0.6rem;" onclick="memReject(\'' + id + '\')">Reject</button>'
     + '</div></div>';
 }
 
