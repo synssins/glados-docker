@@ -559,18 +559,48 @@ def _clear_fails(ip: str) -> None:
 
 
 def _merge_write_user_hash(username: str, new_hash: str, algorithm: str) -> None:
-    """Update a single user's password_hash + hash_algorithm in global.yaml
-    via merge-write — leaves every other field untouched."""
+    """Update a user's password_hash + hash_algorithm in global.yaml via
+    merge-write. If the user isn't in the YAML's users[] yet (first
+    rehash of a synthesized legacy admin), the entry is created and the
+    legacy top-level password_hash is cleared — completing the migration.
+    """
     config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
     path = Path(config_dir) / "global.yaml"
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    users = raw.setdefault("auth", {}).setdefault("users", [])
+    auth = raw.setdefault("auth", {})
+    users = auth.setdefault("users", [])
+
+    found = False
     for u in users:
         if u.get("username") == username:
             u["password_hash"] = new_hash
             u["hash_algorithm"] = algorithm
+            found = True
             break
+
+    if not found:
+        # First-rehash for the synthesized legacy admin — persist the
+        # entry to YAML so subsequent loads don't depend on the legacy
+        # field. Role defaults to admin since the legacy single-password
+        # account always was an admin.
+        users.append({
+            "username": username,
+            "display_name": username,
+            "role": "admin",
+            "password_hash": new_hash,
+            "hash_algorithm": algorithm,
+            "disabled": False,
+            "created_at": int(time.time()),
+        })
+
+    # Migration cleanup: once the user's hash lives in users[], the
+    # top-level legacy password_hash field is no longer needed. Clearing
+    # it makes the YAML fully new-shape and idempotent on subsequent
+    # synthesizer runs.
+    if auth.get("password_hash"):
+        auth["password_hash"] = ""
+
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
 
@@ -1741,30 +1771,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "ok"})
             return
         if self.path == "/tts":
-            from glados.webui.pages.tts_standalone import TTS_STANDALONE_HTML
-            body = _inject_bypass_banner(TTS_STANDALONE_HTML.encode("utf-8"))
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_response(302)
+            self.send_header("Location", "/")
             self.end_headers()
-            self.wfile.write(body)
             return
 
-        # / and /index.html: serve the SPA for authenticated users;
-        # render the landing page (with Sign in + Speech tools links)
-        # for unauthenticated visitors instead of redirecting to /login.
+        # / and /index.html: always serve the SPA shell.
+        # Auth-gating is handled client-side via updateAuthUI() in ui.js;
+        # unauth users see only TTS Generator in the sidebar with a Sign in
+        # button at bottom-left.
         if self.path in ("/", "/index.html"):
-            if not _is_authenticated(self):
-                from glados.webui.pages.landing import LANDING_HTML
-                body = LANDING_HTML.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if not require_perm(self, "webui.view"):
-                return
             self._dispatch_get()
             return
 

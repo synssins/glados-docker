@@ -63,8 +63,9 @@ document.getElementById('ttsForm').addEventListener('submit', async (e) => {
       body: JSON.stringify({text}),
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const blob = await resp.blob();
-    audio.src = URL.createObjectURL(blob);
+    const data = await resp.json();
+    audio.src = data.url;
+    audio.load();
     audio.classList.add('visible');
     audio.play();
     status.textContent = 'Ready.';

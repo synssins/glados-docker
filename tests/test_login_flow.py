@@ -161,3 +161,33 @@ def test_login_with_disabled_user_denied(fresh_state):
     Handler._handle_login(h)
 
     assert h._json_response[0] == 401
+
+
+def test_legacy_admin_login_persists_to_yaml(fresh_state):
+    """First login by synthesized legacy admin must write the user
+    into YAML users[] AND clear the top-level password_hash."""
+    legacy = bcrypt.hashpw(b"hunter2goes", bcrypt.gensalt()).decode("ascii")
+    (fresh_state["configs"] / "global.yaml").write_text(yaml.safe_dump({
+        "auth": {
+            "enabled": True,
+            "session_secret": "s" * 64,
+            "password_hash": legacy,
+            "session_timeout_hours": 24,
+        },
+    }))
+    cfg.reload()
+    # Synthesizer should put admin in cfg.auth.users
+    assert any(u.username == "admin" for u in cfg.auth.users)
+
+    from glados.webui.tts_ui import Handler
+    h = _make_login_handler({"username": "admin", "password": "hunter2goes"})
+    Handler._handle_login(h)
+    assert ("status", 200) in h._sent_responses
+
+    raw = yaml.safe_load((fresh_state["configs"] / "global.yaml").read_text())
+    assert any(u["username"] == "admin" for u in raw["auth"]["users"])
+    admin = next(u for u in raw["auth"]["users"] if u["username"] == "admin")
+    assert admin["hash_algorithm"] == "argon2id"
+    assert admin["password_hash"].startswith("$argon2id$")
+    # Legacy field cleared
+    assert raw["auth"].get("password_hash", "") == ""

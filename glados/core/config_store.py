@@ -869,46 +869,47 @@ class MQTTConfig(BaseModel):
 
 
 def _synthesize_legacy_admin(raw: dict) -> dict:
-    """Convert legacy single-password-hash YAML into the new multi-user
-    shape before pydantic validation. Idempotent on already-new YAML.
+    """Convert legacy single-password-hash YAML into the new multi-user shape.
 
-    Rules:
-    - If raw.users is already set, pass-through unchanged.
-    - Else if raw.password_hash is non-empty, synthesize users=[{admin}]
-      with hash_algorithm=bcrypt-legacy and bootstrap_allowed=false.
-    - Else leave users=[] and bootstrap_allowed=true (fresh install).
-    - Convert session_timeout_hours → session_timeout string.
+    Idempotent. Three cases:
+      1. Fresh install (no users, no legacy hash): leave users=[],
+         bootstrap_allowed=true (wizard fires).
+      2. Legacy hash present (with or without users[]): ensure an admin
+         entry derived from the legacy hash appears in users[]. The
+         actual YAML write happens at first successful login (see
+         _merge_write_user_hash) which clears the legacy field.
+      3. Fully migrated (users[] has admin, no legacy hash): pass
+         through unchanged.
 
-    See docs/AUTH_DESIGN.md §10.1.
+    See docs/AUTH_DESIGN.md §10.
     """
     import copy as _copy, time as _time
     out = _copy.deepcopy(raw)
 
-    # session_timeout_hours → session_timeout
+    # session_timeout_hours -> session_timeout
     hrs = out.get("session_timeout_hours", 0)
     if hrs and "session_timeout" not in out:
         out["session_timeout"] = f"{hrs}h"
 
-    existing_users = out.get("users")
-    if existing_users:
-        out.setdefault("bootstrap_allowed", False)
-        return out
-
     legacy_hash = out.get("password_hash", "")
+    existing_users = list(out.get("users") or [])
+
     if legacy_hash:
-        # No historical creation date is available for the legacy
-        # single-password deployment; stamp the migration moment as
-        # a sentinel rather than leaving it 0.
-        out["users"] = [{
-            "username": "admin",
-            "display_name": "admin",
-            "role": "admin",
-            "password_hash": legacy_hash,
-            "hash_algorithm": out.get("hash_algorithm", "bcrypt-legacy"),
-            "disabled": False,
-            "created_at": int(_time.time()),
-        }]
-        out["bootstrap_allowed"] = False
+        has_admin = any(u.get("role") == "admin" for u in existing_users)
+        if not has_admin:
+            existing_users.insert(0, {
+                "username": "admin",
+                "display_name": "admin",
+                "role": "admin",
+                "password_hash": legacy_hash,
+                "hash_algorithm": out.get("hash_algorithm", "bcrypt-legacy"),
+                "disabled": False,
+                "created_at": int(_time.time()),
+            })
+
+    if existing_users:
+        out["users"] = existing_users
+        out.setdefault("bootstrap_allowed", False)
     else:
         out["users"] = []
         out.setdefault("bootstrap_allowed", True)

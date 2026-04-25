@@ -1,4 +1,9 @@
-"""Tests for the standalone unauthenticated /tts page."""
+"""Tests for the /tts route after Fix #3.
+
+/tts now 302-redirects to / so the SPA shell renders with TTS Generator
+as the default active panel. The standalone page module is kept but no
+longer served directly.
+"""
 import io
 from unittest.mock import MagicMock
 
@@ -19,49 +24,38 @@ def _make_get_handler(path):
     return h
 
 
-def test_tts_in_public_paths():
-    from glados.webui.tts_ui import _PUBLIC_PATHS
-    assert "/tts" in _PUBLIC_PATHS
-
-
-def test_tts_get_returns_200_with_html(monkeypatch):
-    """Unauth GET /tts must return 200 + text/html with the form markup."""
+def test_tts_get_returns_302_to_root():
+    """GET /tts must 302 to / (SPA shell, TTS panel is default for unauth)."""
     from glados.webui.tts_ui import Handler
     h = _make_get_handler("/tts")
     Handler.do_GET(h)
 
-    statuses = [e for e in h._sent if e[0] == "status"]
-    assert ("status", 200) in statuses
+    statuses = [e[1] for e in h._sent if e[0] == "status"]
+    assert 302 in statuses, f"Expected 302, got {statuses}"
 
-    content_types = [e[2] for e in h._sent
-                     if e[0] == "header" and e[1] == "Content-Type"]
-    assert any("text/html" in ct for ct in content_types)
-
-    body = h.wfile.getvalue()
-    assert b"<form" in body or b"<textarea" in body
-    assert b"/api/generate" in body  # form posts to TTS endpoint
+    locations = [e[2] for e in h._sent if e[0] == "header" and e[1] == "Location"]
+    assert locations == ["/"], f"Expected redirect to /, got {locations}"
 
 
-def test_tts_html_does_not_include_spa_sidebar():
-    """The standalone page is minimal — no SPA shell, no Chat/Memory/Configuration nav."""
-    from glados.webui.pages.tts_standalone import TTS_STANDALONE_HTML
-    assert "id=\"sidebar\"" not in TTS_STANDALONE_HTML
-    assert "Chat" not in TTS_STANDALONE_HTML or "<title>" in TTS_STANDALONE_HTML
-    # If "Chat" appears it must be in title/heading only, not as a nav link;
-    # the second clause permits the title to mention "GLaDOS" without nav.
+def test_tts_get_does_not_return_200():
+    """GET /tts must NOT return 200 with the old standalone HTML."""
+    from glados.webui.tts_ui import Handler
+    h = _make_get_handler("/tts")
+    Handler.do_GET(h)
+
+    statuses = [e[1] for e in h._sent if e[0] == "status"]
+    assert 200 not in statuses
 
 
-def test_tts_html_uses_audio_element():
-    """The page should render an <audio> element to play synthesised speech."""
+def test_tts_standalone_module_audio_element():
+    """The standalone module (kept for reference) still has an <audio> element."""
     from glados.webui.pages.tts_standalone import TTS_STANDALONE_HTML
     assert "<audio" in TTS_STANDALONE_HTML
 
 
-def test_tts_get_does_not_require_session():
-    """Confirm /tts does NOT 401 even with no cookie."""
-    from glados.webui.tts_ui import Handler
-    h = _make_get_handler("/tts")
-    Handler.do_GET(h)
-    statuses = [e[1] for e in h._sent if e[0] == "status"]
-    assert 401 not in statuses
-    assert 302 not in statuses
+def test_tts_standalone_module_uses_json_url():
+    """Fix #1: standalone page JS must use resp.json() + data.url, not resp.blob()."""
+    from glados.webui.pages.tts_standalone import TTS_STANDALONE_HTML
+    assert "resp.json()" in TTS_STANDALONE_HTML
+    assert "data.url" in TTS_STANDALONE_HTML
+    assert "resp.blob()" not in TTS_STANDALONE_HTML

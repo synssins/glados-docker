@@ -27,17 +27,13 @@ SHELL_TOP = r"""<!DOCTYPE html>
     <span>Control</span>
   </div>
   <div class="nav-items">
-    <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')">
+    <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')" data-requires-auth="true" style="display:none;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       Chat
     </a>
-    <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')" data-requires-admin="true" style="display:none;">
+    <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
       TTS Generator
-    </a>
-    <a class="nav-item" href="/tts" data-chat-only="true" style="display:none;">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-      Speech (TTS)
     </a>
     <a class="nav-item nav-parent" data-nav-key="config" onclick="navToggleConfig()" data-requires-admin="true" style="display:none;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>

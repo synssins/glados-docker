@@ -40,6 +40,11 @@ function updateAuthUI() {
     el.style.display = isChatUser ? '' : 'none';
   });
 
+  // Show/hide auth-required sidebar items (visible only when authenticated)
+  document.querySelectorAll('[data-requires-auth]').forEach(el => {
+    el.style.display = _isAuthenticated ? '' : 'none';
+  });
+
   // Update lock icons (legacy — no longer used for config items but kept for other uses)
   const locks = document.querySelectorAll('.lock-icon');
   locks.forEach(l => {
@@ -4457,7 +4462,7 @@ function navigateTo(key) {
 // switchTab(). Routes through the new key mapping.
 function switchTab(name) { navigateTo(_migrateLegacyKey(name)); }
 
-// Check auth on load, THEN restore saved tab (default: Chat).
+// Check auth on load, THEN restore saved tab (default: TTS for unauth, Chat for auth).
 checkAuth().then(() => {
   let restored = false;
   try {
@@ -4470,7 +4475,7 @@ checkAuth().then(() => {
       }
     }
   } catch(e) {}
-  if (!restored) navigateTo('chat');
+  if (!restored) navigateTo(_isAuthenticated ? 'chat' : 'tts');
   // Phase 5: sidebar engine status dot.
   startEngineStatusPoll();
 });

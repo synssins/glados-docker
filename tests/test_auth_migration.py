@@ -52,3 +52,38 @@ def test_auth_global_loads_legacy_via_synthesizer():
     a = AuthGlobal.model_validate(raw)
     assert len(a.users) == 1
     assert a.users[0].hash_algorithm == "bcrypt-legacy"
+
+
+def test_synthesizer_seeds_admin_when_users_present_but_no_admin():
+    """Operator-hit case: ResidentA (chat) was added but admin migration
+    never persisted. Synthesizer must re-seed admin from the dormant
+    legacy password_hash."""
+    raw = {
+        "enabled": True,
+        "password_hash": "$2b$12$dormantlegacy",
+        "session_secret": "s" * 64,
+        "users": [{
+            "username": "ResidentA", "role": "chat",
+            "password_hash": "$argon2id$x", "hash_algorithm": "argon2id",
+        }],
+    }
+    out = _synthesize_legacy_admin(raw)
+    usernames = [u["username"] for u in out["users"]]
+    assert "admin" in usernames
+    assert "ResidentA" in usernames
+    admin = next(u for u in out["users"] if u["username"] == "admin")
+    assert admin["role"] == "admin"
+    assert admin["hash_algorithm"] == "bcrypt-legacy"
+
+
+def test_synthesizer_skips_admin_seed_when_admin_already_present():
+    raw = {
+        "enabled": True,
+        "password_hash": "$2b$12$legacy",
+        "users": [{"username": "ops", "role": "admin",
+                   "password_hash": "$argon2id$x"}],
+    }
+    out = _synthesize_legacy_admin(raw)
+    usernames = [u["username"] for u in out["users"]]
+    assert "admin" not in usernames  # didn't double-seed
+    assert "ops" in usernames
