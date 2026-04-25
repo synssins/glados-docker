@@ -1695,6 +1695,17 @@ class Handler(BaseHTTPRequestHandler):
             if not require_perm(self, "admin"): return
             from glados.webui.pages import users as _users_page
             self._send_json(200, {"users": _users_page.list_users()})
+        elif p == "/api/sessions":
+            from glados.auth import sessions as _sessions
+            user = _resolve_user_for_request(self)
+            if user is None:
+                self._send_json(401, {"error": "Authentication required"})
+                return
+            if user["role"] == "admin":
+                rows = _sessions.list_active()
+            else:
+                rows = _sessions.list_active(username=user["username"])
+            self._send_json(200, {"sessions": rows})
         else:
             self._send_error(404, "Not found")
 
@@ -1762,6 +1773,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith(("/chat_audio/", "/chat_audio_stream/")):
             if not require_perm(self, "chat.send"):
                 return
+            self._dispatch_get()
+            return
+
+        # /api/sessions — any authenticated user can list/see sessions
+        if self.path == "/api/sessions":
+            if not require_perm(self, "webui.view"): return
             self._dispatch_get()
             return
 
@@ -1968,6 +1985,35 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(404, "Not found")
 
     def do_DELETE(self):
+        # /api/sessions/<id> — admin can revoke any, owner can revoke own.
+        # Handled BEFORE the admin gate.
+        if self.path.startswith("/api/sessions/"):
+            from glados.auth import sessions as _sessions
+            from glados.auth import db as _auth_db
+            if not require_perm(self, "webui.view"): return
+            user = _resolve_user_for_request(self)
+            if user is None:
+                self._send_json(401, {"error": "Authentication required"})
+                return
+            session_id = self.path[len("/api/sessions/"):]
+            con = _auth_db.connect()
+            try:
+                row = con.execute(
+                    "SELECT * FROM auth_sessions WHERE session_id=?",
+                    (session_id,),
+                ).fetchone()
+            finally:
+                con.close()
+            if not row:
+                self._send_json(404, {"ok": False, "error": "Session not found"})
+                return
+            if user["role"] != "admin" and row["username"] != user["username"]:
+                self._send_json(403, {"ok": False, "error": "Forbidden"})
+                return
+            _sessions.revoke(session_id)
+            self._send_json(200, {"ok": True})
+            return
+
         if not require_perm(self, "admin"):
             return
         if self.path.startswith("/api/files/"):
