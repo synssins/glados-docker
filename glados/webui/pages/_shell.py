@@ -24,7 +24,8 @@ SHELL_TOP = r"""<!DOCTYPE html>
   <div class="sidebar-brand">
     <span class="engine-status-dot" id="engineStatusDot" title="Engine status"></span>
     <span>GLaDOS</span>
-    <span>Control</span>
+    <span class="brand-sep">·</span>
+    <span class="brand-dim">CONTROL</span>
   </div>
   <div class="nav-items">
     <a class="nav-item" data-nav-key="chat" onclick="navigateTo('chat')" data-requires-auth="true" style="display:none;">

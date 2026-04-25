@@ -110,17 +110,19 @@ body {
 }
 .sidebar-brand {
   padding: 1.25rem 1rem;
-  font-family: var(--font-display);
-  font-size: 1.15rem;
-  font-weight: 400;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
   color: var(--orange);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
 .sidebar-brand span { color: var(--text-dim); font-weight: 400; font-size: 0.75rem; letter-spacing: 0.02em; }
+.sidebar-brand .brand-sep { color: var(--fg-muted); padding: 0 2px; }
+.sidebar-brand .brand-dim { color: var(--fg-tertiary); font-weight: 500; }
 /* Engine status dot in the brand header. Polled by pollEngineStatus(). */
 .engine-status-dot {
   width: 10px; height: 10px; border-radius: 50%;
