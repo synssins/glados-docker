@@ -21,6 +21,7 @@ HTML = r"""
 <!-- TAB 3: System Control — Phase 6.5.3 page-tabs conversion          -->
 <!-- ════════════════════════════════════════════════════════════════ -->
 <div id="tab-config-system" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="controlAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -272,6 +273,7 @@ HTML = r"""
     </div>
 
   </div>
+</div>
 </div>
 </div>
 

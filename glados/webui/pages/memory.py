@@ -12,6 +12,7 @@ HTML = r"""
 <!-- CONFIGURATION > MEMORY (Phase 5)                                   -->
 <!-- ================================================================ -->
 <div id="tab-config-memory" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="memoryAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -74,6 +75,7 @@ HTML = r"""
     <div class="mode-desc" style="margin-top:4px;">Facts auto-extracted but not yet approved for RAG.</div>
     <div id="memPendingList" style="margin-top:10px;">Loading...</div>
   </div>
+</div>
 </div>
 </div>
 """

@@ -9,6 +9,7 @@ HTML = r"""
 <!-- CONFIGURATION > USERS (Task 7b)                                  -->
 <!-- ================================================================ -->
 <div id="tab-config-users" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="usersAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -44,6 +45,7 @@ HTML = r"""
       </table>
     </div>
   </div>
+</div>
 </div>
 </div>
 

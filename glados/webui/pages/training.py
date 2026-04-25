@@ -10,6 +10,7 @@ HTML = r"""
 <!-- TAB: TRAINING MONITOR                                          -->
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 <div id="tab-training" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="trainingAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -60,6 +61,7 @@ HTML = r"""
     <pre id="trainingLog" class="train-log">Loading...</pre>
   </div>
 
+</div>
 </div>
 </div>
 """

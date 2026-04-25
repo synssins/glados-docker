@@ -263,13 +263,14 @@ body {
    Phase 6.0 (2026-04-22): widened from 900px to 1200px so content
    breathes on desktop monitors, and padding tightened. Cards and
    inter-card gaps also reduced below — the operator flagged the
-   old density as "obnoxious, spaced far apart." */
+   old density as "obnoxious, spaced far apart."
+   UI-polish Task 1: max-width removed so .page-shell controls width. */
 .main-content {
   margin-left: var(--sidebar-w);
   flex: 1;
   min-height: 100vh;
   padding: var(--sp-4);
-  max-width: 1200px;
+  max-width: none;
 }
 
 /* ── Tabs (sidebar-level, not page-level) ───────────────────── */
@@ -279,6 +280,21 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
+}
+
+/* ── Page shell ────────────────────────────────────────────────
+   UI-polish Task 1: single geometry wrapper rendered inside every
+   .tab-content block. Constrains max-width, centres on wide
+   viewports, and gives every page a consistent grid rhythm.
+   Replaces the ad-hoc .container max-width that used to live on
+   .main-content. */
+.page-shell {
+  max-width: var(--content-max, 1440px);
+  margin: 0 auto;
+  padding: var(--sp-5);
+  display: grid;
+  gap: var(--sp-4);
+  box-sizing: border-box;
 }
 
 /* ── Cards ─────────────────────────────────────────────────────
@@ -1066,7 +1082,6 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 
 @media (min-width: 1601px) {
   .main-content {
-    max-width: var(--content-max);
     margin-left: var(--sidebar-w);
     margin-right: auto;
   }
@@ -1081,6 +1096,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   .service-grid { grid-template-columns: 1fr 1fr; }
   .health-grid { grid-template-columns: 1fr 1fr; }
   .train-status-row { grid-template-columns: 1fr 1fr; }
+  .page-shell { padding: var(--sp-4); }
 }
 
 @media (max-width: 640px) {
@@ -1092,6 +1108,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
     padding: var(--sp-4);
     max-width: 100%;
   }
+  .page-shell { padding: var(--sp-3); }
   .service-grid,
   .health-grid,
   .weather-grid { grid-template-columns: 1fr; }

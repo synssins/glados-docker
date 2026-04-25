@@ -8,6 +8,7 @@ share the audio preview and Save-to-category flow at the bottom.
 """
 
 HTML = r"""<div id="tab-tts" class="tab-content">
+<div class="page-shell">
 <div class="container">
 
   <!-- ═════ Mode toggle ═══════════════════════════════════════════ -->
@@ -119,6 +120,7 @@ HTML = r"""<div id="tab-tts" class="tab-content">
     <div class="section-title">Generated Files</div>
     <div id="fileList"><div class="empty-msg">No files yet.</div></div>
   </div>
+</div>
 </div>
 </div>
 """

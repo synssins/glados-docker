@@ -11,6 +11,7 @@ HTML = r"""
 <!-- CONFIGURATION > LOGS (Phase 6 follow-up)                           -->
 <!-- ================================================================ -->
 <div id="tab-config-logs" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="logsAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -58,6 +59,7 @@ HTML = r"""
       <pre id="logsBody" class="logs-body">Select a source and click Refresh.</pre>
     </div>
   </div>
+</div>
 </div>
 </div>
 """
