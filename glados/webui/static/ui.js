@@ -4523,9 +4523,6 @@ function fmtDate(iso) {
 
 const textInput  = document.getElementById('textInput');
 const charCount  = document.getElementById('charCount');
-const voiceSel   = document.getElementById('voiceSelect');
-const formatSel  = document.getElementById('formatSelect');
-const attitudeSel= document.getElementById('attitudeSelect');
 const genBtn     = document.getElementById('generateBtn');
 const ttsStatus  = document.getElementById('ttsStatus');
 const playerCard = document.getElementById('playerCard');
@@ -4536,53 +4533,20 @@ const fileListEl = document.getElementById('fileList');
 let _attitudes = [];
 
 async function loadVoices() {
-  try {
-    const resp = await fetch('/api/voices');
-    const data = await resp.json();
-    const voices = data.voices || ['glados'];
-    voiceSel.innerHTML = '';
-    for (const v of voices) {
-      const opt = document.createElement('option');
-      opt.value = v;
-      const label = v.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-      opt.textContent = 'Voice: ' + label;
-      voiceSel.appendChild(opt);
-    }
-  } catch (e) { console.warn('Failed to load voices:', e); }
+  // Voice locked to GLaDOS — dropdown removed. No-op kept for safety.
+  if (!document.getElementById('voiceSelect')) return;
 }
 loadVoices();
 
-voiceSel.addEventListener('change', () => {
-  const isGlados = voiceSel.value === 'glados';
-  attitudeSel.disabled = !isGlados;
-  if (!isGlados) attitudeSel.value = 'default';
-});
-
 async function loadAttitudes() {
-  try {
-    const resp = await fetch('/api/attitudes');
-    const data = await resp.json();
-    _attitudes = data.attitudes || [];
-    for (const a of _attitudes) {
-      const opt = document.createElement('option');
-      opt.value = a.tag;
-      opt.textContent = 'Attitude: ' + (a.label || a.tag);
-      attitudeSel.appendChild(opt);
-    }
-  } catch (e) { console.warn('Failed to load attitudes:', e); }
+  // Attitude removed from TTS Generator. No-op kept for safety.
+  if (!document.getElementById('attitudeSelect')) return;
 }
 loadAttitudes();
 
 function getSelectedTtsParams() {
-  const val = attitudeSel.value;
-  if (val === 'default') return {};
-  if (val === 'random') {
-    if (_attitudes.length === 0) return {};
-    const pick = _attitudes[Math.floor(Math.random() * _attitudes.length)];
-    return pick.tts || {};
-  }
-  const found = _attitudes.find(a => a.tag === val);
-  return found ? (found.tts || {}) : {};
+  // Attitude dropdown removed; return empty params (engine defaults).
+  return {};
 }
 
 textInput.addEventListener('input', () => { charCount.textContent = textInput.value.length; });
@@ -4596,8 +4560,7 @@ async function ttsGenerate() {
   genBtn.disabled = true;
   ttsStatus.innerHTML = '<span class="spinner"></span> Generating...';
   try {
-    const ttsParams = getSelectedTtsParams();
-    const payload = { text, voice: voiceSel.value, format: formatSel.value, ...ttsParams };
+    const payload = { text, voice: 'glados', format: 'mp3' };
     const resp = await fetch('/api/generate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -4609,10 +4572,8 @@ async function ttsGenerate() {
     playerLabel.textContent = data.filename;
     playerCard.classList.add('visible');
     audioPlayer.play().catch(() => {});
-    // Phase 5.9.2: expose the Save-to-category row once we have audio.
     _ttsShowSaveRow(data.filename);
-    const attLabel = attitudeSel.options[attitudeSel.selectedIndex].textContent;
-    ttsStatus.innerHTML = '<span style="color:var(--green)">Done! (' + escHtml(attLabel) + ')</span>';
+    ttsStatus.innerHTML = '<span style="color:var(--green)">Done!</span>';
     setTimeout(() => { ttsStatus.innerHTML = ''; }, 3000);
   } catch (e) {
     ttsStatus.innerHTML = '<span style="color:var(--red)">' + escHtml(e.message) + '</span>';
@@ -4638,27 +4599,15 @@ function _ttsSwitchMode(mode) {
     if (scriptCard) scriptCard.style.display = '';
     if (improvCard) improvCard.style.display = 'none';
   }
-  // Visual state on the radio cards
-  for (const el of document.querySelectorAll('.tts-mode-option')) {
-    el.classList.toggle('active', el.getAttribute('data-mode') === mode);
+  // Visual state on the segmented pill
+  for (const el of document.querySelectorAll('.tts-seg-cell')) {
+    el.classList.toggle('on', el.getAttribute('data-mode') === mode);
   }
-  // Mirror voice/format/attitude options from Script into Improv on first switch
-  _ttsSyncImprovSelects();
+  // Update telemetry strip mode label
+  const modeLabel = document.getElementById('ttsModeLabel');
+  if (modeLabel) modeLabel.textContent = mode.toUpperCase();
 }
 
-function _ttsSyncImprovSelects() {
-  const copy = (fromId, toId) => {
-    const a = document.getElementById(fromId);
-    const b = document.getElementById(toId);
-    if (!a || !b || b.options.length > 2) return;  // already populated
-    b.innerHTML = '';
-    for (const opt of a.options) b.appendChild(opt.cloneNode(true));
-    b.value = a.value;
-  };
-  copy('voiceSelect', 'improvVoiceSelect');
-  copy('formatSelect', 'improvFormatSelect');
-  copy('attitudeSelect', 'improvAttitudeSelect');
-}
 
 async function _ttsImprovDraft() {
   const instructionEl = document.getElementById('improvInstruction');
@@ -4698,9 +4647,6 @@ async function _ttsImprovDraft() {
 
 async function _ttsImprovGenerate() {
   const textEl = document.getElementById('improvDraftedText');
-  const voiceSel = document.getElementById('improvVoiceSelect');
-  const formatSel = document.getElementById('improvFormatSelect');
-  const attitudeSel = document.getElementById('improvAttitudeSelect');
   const statusEl = document.getElementById('improvGenStatus');
   const btn = document.getElementById('improvGenerateBtn');
   const text = textEl ? textEl.value.trim() : '';
@@ -4711,24 +4657,7 @@ async function _ttsImprovGenerate() {
   if (btn) btn.disabled = true;
   if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Generating...';
   try {
-    // Reuse the same attitude→tts_params logic as Script mode.
-    let ttsParams = {};
-    const val = attitudeSel ? attitudeSel.value : 'default';
-    if (val !== 'default') {
-      if (val === 'random' && _attitudes.length) {
-        const pick = _attitudes[Math.floor(Math.random() * _attitudes.length)];
-        ttsParams = pick.tts || {};
-      } else {
-        const found = _attitudes.find(a => a.tag === val);
-        if (found) ttsParams = found.tts || {};
-      }
-    }
-    const payload = {
-      text,
-      voice: voiceSel ? voiceSel.value : 'glados',
-      format: formatSel ? formatSel.value : 'wav',
-      ...ttsParams,
-    };
+    const payload = { text, voice: 'glados', format: 'mp3' };
     const r = await fetch('/api/generate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -4833,6 +4762,10 @@ async function _ttsSaveToCategory() {
   }
 }
 
+const _icoPlay = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3 L13 8 L5 13 Z"/></svg>';
+const _icoDl   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2 L8 11 M4 7 L8 11 L12 7 M3 14 L13 14"/></svg>';
+const _icoDel  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+
 async function refreshFiles() {
   try {
     const resp = await fetch('/api/files');
@@ -4848,9 +4781,9 @@ async function refreshFiles() {
         + '<td class="file-size">' + fmtSize(f.size) + '</td>'
         + '<td class="file-date">' + fmtDate(f.date) + '</td>'
         + '<td class="file-actions">'
-          + '<button class="btn-small" onclick="playFile(\'' + escAttr(f.url) + '\',\'' + escAttr(f.name) + '\')">Play</button>'
-          + '<a class="dl-link" href="' + escAttr(f.url) + '" download="' + escAttr(f.name) + '">Download</a>'
-          + '<button class="btn btn-danger" onclick="deleteFile(\'' + escAttr(f.name) + '\')">Delete</button>'
+          + '<button class="ico-btn" title="Play" onclick="playFile(\'' + escAttr(f.url) + '\',\'' + escAttr(f.name) + '\')">' + _icoPlay + '</button>'
+          + '<a class="ico-btn" title="Download" href="' + escAttr(f.url) + '" download="' + escAttr(f.name) + '">' + _icoDl + '</a>'
+          + '<button class="ico-btn danger" title="Delete" onclick="deleteFile(\'' + escAttr(f.name) + '\')">' + _icoDel + '</button>'
         + '</td></tr>';
     }
     html += '</table>';

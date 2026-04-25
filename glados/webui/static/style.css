@@ -1522,6 +1522,60 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   .tts-mode-toggle { grid-template-columns: 1fr; }
 }
 
+/* ── Segmented mode pill (TTS Generator) ─────────────────────── */
+.tts-seg {
+  display: inline-flex;
+  border: 1px solid var(--border-default);
+  border-radius: 2px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+.tts-seg-cell {
+  padding: var(--sp-1) var(--sp-3);
+  color: var(--fg-tertiary);
+  border-right: 1px solid var(--border-subtle);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.tts-seg-cell:last-child { border-right: none; }
+.tts-seg-cell.on { color: var(--orange); background: rgba(244,166,35,0.06); }
+
+/* ── Icon action buttons (file list rows) ────────────────────── */
+.ico-btn {
+  width: 22px; height: 22px;
+  border: 1px solid var(--border-default);
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-secondary);
+}
+.ico-btn:hover {
+  color: var(--fg-primary);
+  border-color: var(--border-strong);
+}
+.ico-btn.danger:hover {
+  color: var(--red);
+  border-color: rgba(224,85,85,0.40);
+}
+.ico-btn svg { width: 12px; height: 12px; }
+
+/* ── Telemetry strip separators and status dots ──────────────── */
+.telemetry-strip .t-sep { color: var(--fg-muted); padding: 0 6px; }
+.telemetry-strip .t-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  vertical-align: middle;
+}
+.telemetry-strip .t-dot-ok { background: var(--green); }
+.telemetry-strip .t-dot-degraded { background: var(--orange); }
+.telemetry-strip .t-dot-down { background: var(--red); }
+
 /* Save-to-category row on the TTS preview player. Appears after
    audio is generated; lets operator drop the recording into a
    sound-library category. */

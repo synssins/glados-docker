@@ -1019,7 +1019,41 @@ def _ai_filename(text: str, timeout: float = 3.0) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers â€” HA REST API
+# Helpers — Pronunciation converter (TTS Generator path)
+# ---------------------------------------------------------------------------
+
+def _get_pronunciation_converter():
+    """Return the SpokenTextConverter instance used by the engine path.
+
+    Returns None if conversion is unavailable (e.g., import error during
+    startup). Errors are swallowed to keep TTS Generator working even if
+    the pronunciation layer is misconfigured.
+    """
+    try:
+        from glados.api.tts import _get_converter as _engine_get_converter
+        return _engine_get_converter()
+    except Exception:
+        return None
+
+
+def _apply_pronunciation_to_text(text: str) -> str:
+    """Apply the engine's pronunciation overrides to text headed for TTS.
+
+    Used by /api/generate so that TTS Generator output matches engine speech
+    for the same input. See ``glados/api/tts.py:generate_speech`` for the
+    primary call site.
+    """
+    converter = _get_pronunciation_converter()
+    if converter is None:
+        return text
+    try:
+        return converter.text_to_spoken(text)
+    except Exception:
+        return text
+
+
+# ---------------------------------------------------------------------------
+# Helpers — HA REST API
 # ---------------------------------------------------------------------------
 
 def _ha_get(endpoint: str, timeout: float = 5.0) -> dict | str | None:
@@ -2212,6 +2246,9 @@ class Handler(BaseHTTPRequestHandler):
         if fmt not in CONTENT_TYPES:
             self._send_json(400, {"error": f"Invalid format: {fmt}"})
             return
+
+        # Apply pronunciation overrides (same converter the engine uses)
+        text = _apply_pronunciation_to_text(text)
 
         # Build TTS request with voice and optional attitude TTS params
         voice = body.get("voice", "glados")
