@@ -31,7 +31,7 @@
     {
       "id": 4,
       "subject": "Task 4: Account cluster rebuild",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1],
       "description": "**Goal:** Replace boxed Account block with plain sidebar-row + click-to-open dropdown (Change Password / Sessions / Sign out).\n\n**Files:**\n- Modify: glados/webui/pages/_shell.py:56-73\n- Modify: glados/webui/static/style.css:180-227\n- Modify: glados/webui/static/ui.js (updateAuthUI, toggleAccountMenu)\n\n**Acceptance Criteria:**\n- No #sidebarAccount box wrapper; row matches .nav-item affordance\n- No purple emoji icon (&#128100; removed)\n- Click toggles .account-menu upward with 3 items\n- Sign out moved into dropdown\n- Outside-click closes menu\n- Sign in (unauth) is single sidebar-row, not button\n\n**Verify:** Visual verification via preview MCP\n\n```json:metadata\n{\"files\": [\"glados/webui/pages/_shell.py\", \"glados/webui/static/style.css\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"# manual visual via preview MCP\", \"acceptanceCriteria\": [\"box wrapper removed\", \"emoji icon removed\", \"dropdown opens upward with 3 items\", \"sign out in dropdown\", \"outside-click closes\", \"unauth shows sidebar-row sign-in\"]}\n```"
     },
