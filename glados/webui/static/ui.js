@@ -275,7 +275,6 @@ const FIELD_META = {
 const SECTION_META = {
   // Phase 6 page names (operators see these titles in the sidebar).
   integrations:     { title: 'Integrations', desc: 'Home Assistant, MQTT, and media-stack integrations (MQTT + *arr/Plex arrive in later phases)' },
-  'llm-services':   { title: 'LLM & Services', desc: 'Ollama, TTS (speaches), STT, vision — endpoint URLs, health, and model options' },
   'audio-speakers': { title: 'Audio & Speakers', desc: 'HA media players and speech synthesis parameters' },
   personality:      { title: 'Personality', desc: 'Attitudes, TTS defaults, HEXACO traits, and emotion model' },
   memory:           { title: 'Memory', desc: 'ChromaDB retention, passive-fact defaults, and the review queue' },
@@ -342,10 +341,10 @@ function cfgSwitchSection(name, btn) {
 // cfgCollectForm / cfgSaveSection keep working unchanged.
 const _CFG_BACKING = {
   'integrations':   'global',
-  'llm-services':   'services',
   // 'audio-speakers' has no single backing — rendered by a custom
   // path that calls cfgBuildForm twice (speakers + audio) with
   // per-subsection save buttons.
+  // 'llm-services' removed: LLM is now under System → Services tab.
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -454,21 +453,12 @@ function cfgRenderSection(section) {
 // the top tab bar. Each panel hosts whatever was previously on the
 // long scroll. Top-right Save button saves the active tab's section.
 function _cfgRenderIntegrations() {
-  // Phase 6.2 (2026-04-22): LLM tab added — Ollama endpoints +
-  // Model Options + LLM Timeouts, moved from the deleted LLM &
-  // Services page. Disambiguation / Candidate Retrieval stay for
-  // now; they move off this page in a follow-up commit.
+  // LLM moved to System → Services tab (Phase 2 Chunk 2).
   const globalData = _cfgData.global || {};
-  const servicesData = _cfgData.services || {};
   const meta = SECTION_META['integrations'] || {};
 
-  // Phase 6.3 (2026-04-22): Disambiguation + Candidate retrieval
-  // moved to Personality > Behavior dials (advanced). They're
-  // tier-2 tuning knobs, not 'external systems' — Integrations
-  // now only holds things GLaDOS talks to.
   const TABS = [
     { id: 'ha',      label: 'Home Assistant' },
-    { id: 'llm',     label: 'LLM' },
     { id: 'weather', label: 'Weather' },
     { id: 'mqtt',    label: 'MQTT' },
   ];
@@ -505,21 +495,6 @@ function _cfgRenderIntegrations() {
   html +=   '<div class="card">' + cfgBuildForm(haSubset, 'global', '') + '</div>';
   html += '</div>';
 
-  // ── LLM panel ───────────────────────────────────────────────
-  // Ollama endpoints (scope='llm') + Model Options + LLM Timeouts.
-  html += '<div class="page-tab-panel' + (activeTabId === 'llm' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="llm">';
-  html +=   '<div class="card">';
-  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-        +      'Ollama endpoints, models, and LLM runtime knobs. URL + Model discovery buttons '
-        +      'query the upstream; edits save to <code>services.yaml</code> (URLs/models), '
-        +      '<code>personality.yaml</code> (model options), and <code>global.yaml</code> '
-        +      '(timeouts).'
-        +    '</div>';
-  html +=     cfgRenderServices(servicesData, 'llm');
-  html +=     _cfgRenderLLMExtrasOnly();
-  html +=   '</div>';
-  html += '</div>';
-
   // ── Weather panel (Phase 6.4) ──────────────────────────────
   html += '<div class="page-tab-panel' + (activeTabId === 'weather' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="weather">';
   html +=   '<div class="card" id="cfg-weather-card">';
@@ -548,12 +523,13 @@ function _cfgRenderIntegrations() {
 
   setTimeout(_cfgLoadMqtt, 0);
   setTimeout(_cfgLoadWeather, 0);
-  setTimeout(() => cfgPingServices(servicesData), 100);
 }
 
-// Model Options + LLM Timeouts cards — extracted from the original
-// _cfgRenderLLMServicesExtras so the LLM tab can include them inline
-// without the surrounding service grid.
+// Model Options + LLM Timeouts cards — kept for standalone use by
+// cfgSaveModelOptions / cfgSaveLLMTimeouts (called from System → Services
+// Advanced collapsible). The function itself is no longer called to render
+// HTML but the save functions it backed still reference the same field IDs
+// which are now rendered by loadSystemServices().
 function _cfgRenderLLMExtrasOnly() {
   const mo = (_cfgData.personality || {}).model_options || {};
   const t = ((_cfgData.global || {}).tuning) || {};
@@ -591,69 +567,15 @@ function _cfgRenderLLMExtrasOnly() {
   return html;
 }
 
-// Save dispatcher for Integrations page. Page-save button click
-// routes to the active tab's save handler. Covers LLM (compound:
-// services subset + model_options + timeouts) in addition to the
-// original HA/MQTT/Disamb cases.
+// Dispatch the page Save button to the active Integrations tab's save handler.
+// LLM moved to System → Services (Phase 2 Chunk 2).
 function _cfgSaveCurrentIntegrationsTab() {
   const active = document.querySelector('[data-page-tab-group="integrations"].active');
   const id = active ? active.getAttribute('data-tab') : 'ha';
   switch (id) {
     case 'ha':      return cfgSaveSection('global');
-    case 'llm':     return _cfgSaveIntegrationsLLM();
     case 'weather': return _cfgSaveWeather();
     case 'mqtt':    return _cfgSaveMqtt();
-    default: return;
-  }
-}
-
-// Compound save for Integrations → LLM tab. Collects Ollama URL/model
-// changes, merges into the current services config (so TTS/STT/Vision
-// on the System page aren't wiped), PUTs services.yaml, then cascades
-// to cfgSaveModelOptions + cfgSaveLLMTimeouts. Each sub-save shows
-// its own inline status; the compound surface is one click for the
-// operator.
-async function _cfgSaveIntegrationsLLM() {
-  // 1. Collect Ollama fields currently in DOM.
-  const partial = cfgCollectForm('services');
-  const merged = Object.assign({}, _cfgData.services || {}, partial);
-  try {
-    const r = await fetch('/api/config/services', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(merged),
-    });
-    const resp = await r.json();
-    if (!r.ok) {
-      showToast('Ollama save failed: ' + (resp.error || r.status), 'error');
-    } else {
-      _cfgData.services = merged;
-    }
-  } catch (e) {
-    showToast('Ollama save error: ' + e.message, 'error');
-  }
-  // 2. Model Options (personality.model_options).
-  if (document.getElementById('cfg-personality-model_options-temperature')) {
-    await cfgSaveModelOptions();
-  }
-  // 3. LLM Timeouts (global.tuning.llm_*).
-  if (document.getElementById('cfg-llm-connect-timeout')) {
-    await cfgSaveLLMTimeouts();
-  }
-  showToast('LLM settings saved.', 'success');
-}
-
-
-
-// Dispatch the page Save button to the active tab's save handler.
-function _cfgSaveCurrentIntegrationsTab() {
-  const active = document.querySelector('[data-page-tab-group="integrations"].active');
-  const id = active ? active.getAttribute('data-tab') : 'ha';
-  switch (id) {
-    case 'ha':      return cfgSaveSection('global');
-    case 'mqtt':    return _cfgSaveMqtt();
-    case 'disamb':  return (typeof _disambSave === 'function') ? _disambSave() : null;
-    case 'candret': return;  // read-only / trigger-only panel
     default: return;
   }
 }
@@ -2302,43 +2224,258 @@ function _svcDiscoverKind(key) {
 const SERVICES_HIDDEN = new Set(['gladys_api']);
 
 
-// Phase 6.2 (2026-04-22) — System page Services zone loader + save.
-// The Services zone lives inside pages/system.py; we hydrate it on
-// config.system activation with the non-LLM services (scope='system').
+// Phase 2 Chunk 2 — System → Services tab: port-grouped status panel + LLM section.
+// Replaces the old URL-input grid for in-container services.
 async function loadSystemServices() {
   const body = document.getElementById('system-services-body');
   if (!body) return;
-  // Make sure _cfgData.services is populated (config.system doesn't
-  // auto-call cfgLoadAll; this is the System-page entry point).
   if (!_cfgData.services) {
     try { await cfgLoadAll(); } catch (e) { /* continue with empty */ }
   }
-  const data = _cfgData.services || {};
-  body.innerHTML = cfgRenderServices(data, 'system');
-  setTimeout(() => cfgPingServices(data), 100);
+  const svc = _cfgData.services || {};
+  const mo = (_cfgData.personality || {}).model_options || {};
+  const t = ((_cfgData.global || {}).tuning) || {};
+
+  // Ollama interactive is the primary LLM endpoint shown.
+  const ollama = svc.ollama_interactive || {};
+  const vision = svc.vision || {};
+  const visionConfigured = !!(vision.url || '').trim();
+
+  let html = '';
+
+  // ── Card 1: Service Endpoints (port-grouped status) ─────────
+  html += '<div class="card">';
+  html +=   '<div class="section-title">Service Endpoints</div>';
+  html +=   '<div class="mode-desc" style="margin-bottom:14px;">'
+    +         'In-container services share port 8015. Vision is optional and external.'
+    +       '</div>';
+
+  // :8015 row — TTS, STT, API Wrapper (in-container)
+  html +=   '<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;">';
+  html +=     '<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--fg-primary);min-width:50px;">:8015</span>';
+  html +=     '<span class="svc-health-dot" id="svc-dot-tts"></span>';
+  html +=     '<span style="font-size:0.85rem;margin-right:14px;">TTS</span>';
+  html +=     '<span class="svc-health-dot" id="svc-dot-stt"></span>';
+  html +=     '<span style="font-size:0.85rem;margin-right:14px;">STT</span>';
+  html +=     '<span class="svc-health-dot" id="svc-dot-api_wrapper"></span>';
+  html +=     '<span style="font-size:0.85rem;">API Wrapper</span>';
+  html +=   '</div>';
+  html +=   '<div class="mode-desc" style="margin-bottom:14px;padding-left:60px;">'
+    +         'In-container — no URL configuration. These start and stop with GLaDOS.'
+    +       '</div>';
+
+  // :vision row — Vision (external, optional)
+  const visionDotCls = 'svc-health-dot' + (visionConfigured ? '' : '');
+  html +=   '<div style="display:flex;gap:10px;align-items:center;margin-bottom:4px;">';
+  html +=     '<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--fg-primary);min-width:50px;">vision</span>';
+  if (visionConfigured) {
+    html +=   '<span class="svc-health-dot" id="svc-dot-vision"></span>';
+    html +=   '<span style="font-size:0.85rem;">Vision</span>';
+  } else {
+    html +=   '<span class="svc-health-dot" id="svc-dot-vision"></span>';
+    html +=   '<span style="font-size:0.85rem;font-style:italic;color:var(--fg-muted);">Vision &mdash; inactive (not configured)</span>';
+  }
+  html +=   '</div>';
+  html +=   '<div class="mode-desc" style="padding-left:60px;">'
+    +         'External vision service. Configure via <code>VISION_URL</code> env var. '
+    +         'Unconfigured or unreachable: vision feature unavailable, other functions unaffected.'
+    +       '</div>';
+
+  html += '</div>'; // end Card 1
+
+  // ── Card 2: LLM (Ollama) ────────────────────────────────────
+  html += '<div class="card" style="margin-top:var(--sp-3);">';
+  html +=   '<div class="section-title">LLM (Ollama)</div>';
+
+  // URL field
+  html +=   '<div class="cfg-field">';
+  html +=     '<label class="cfg-field-label">URL</label>';
+  html +=     '<div class="svc-url-row">';
+  html +=       '<input id="system-llm-url" type="text" value="' + escAttr(ollama.url || '') + '"'
+    +           ' onblur="_systemLlmDiscover()">';
+  html +=       '<button type="button" class="svc-discover-btn" onclick="_systemLlmDiscover()">&#x21bb; Discover</button>';
+  html +=       '<span class="svc-discover-status" id="system-llm-discover-status"></span>';
+  html +=     '</div>';
+  html +=   '</div>';
+
+  // Model dropdown
+  html +=   '<div class="cfg-field">';
+  html +=     '<label class="cfg-field-label">Model</label>';
+  html +=     '<select id="system-llm-model" class="svc-dropdown">';
+  html +=       '<option value="' + escAttr(ollama.model || '') + '" selected>'
+    +           escHtml(ollama.model || '(enter URL then click Discover)') + '</option>';
+  html +=     '</select>';
+  html +=   '</div>';
+
+  // Status line
+  html +=   '<div class="cfg-field">';
+  html +=     '<label class="cfg-field-label">Status</label>';
+  html +=     '<span id="system-llm-status" style="font-size:0.85rem;color:var(--fg-muted);">—</span>';
+  html +=   '</div>';
+
+  // Advanced collapsible
+  html +=   '<div style="margin-top:12px;">';
+  html +=     '<button type="button" class="cfg-save-btn" style="background:none;border:none;padding:0;'
+    +         'color:var(--fg-primary);font-size:0.85rem;cursor:pointer;display:flex;align-items:center;gap:6px;"'
+    +         ' onclick="_systemLlmToggleAdvanced(this)">'
+    +         '<span id="system-llm-adv-caret" style="font-size:0.7rem;">&#9656;</span>'
+    +         'Advanced (Model Options &amp; Timeouts)'
+    +         '</button>';
+  html +=     '<div id="system-llm-advanced" style="display:none;margin-top:10px;">';
+
+  // Model Options
+  html +=       '<div class="cfg-subsection-title">Model Options</div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Temperature</label>'
+    +           '<div class="cfg-field-desc">0.0 is deterministic, 1.0+ is creative</div>'
+    +           '<input id="cfg-personality-model_options-temperature" data-path="model_options.temperature" data-type="number" type="number" step="any" value="' + escAttr(String(mo.temperature ?? 0.7)) + '"></div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Top P</label>'
+    +           '<div class="cfg-field-desc">Nucleus sampling threshold (0.0 - 1.0)</div>'
+    +           '<input id="cfg-personality-model_options-top_p" data-path="model_options.top_p" data-type="number" type="number" step="any" value="' + escAttr(String(mo.top_p ?? 0.9)) + '"></div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Context Window (num_ctx)</label>'
+    +           '<div class="cfg-field-desc">Tokens of context the model sees per turn</div>'
+    +           '<input id="cfg-personality-model_options-num_ctx" data-path="model_options.num_ctx" data-type="number" type="number" value="' + escAttr(String(mo.num_ctx ?? 16384)) + '"></div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Repeat Penalty</label>'
+    +           '<div class="cfg-field-desc">Higher values reduce parroting (typical 1.0 - 1.3)</div>'
+    +           '<input id="cfg-personality-model_options-repeat_penalty" data-path="model_options.repeat_penalty" data-type="number" type="number" step="any" value="' + escAttr(String(mo.repeat_penalty ?? 1.1)) + '"></div>';
+
+  // LLM Timeouts
+  html +=       '<div class="cfg-subsection-title" style="margin-top:12px;">LLM Timeouts</div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Connect Timeout (s)</label>'
+    +           '<div class="cfg-field-desc">Seconds to wait for LLM connection</div>'
+    +           '<input id="cfg-llm-connect-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_connect_timeout_s ?? 10)) + '"></div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Read Timeout (s)</label>'
+    +           '<div class="cfg-field-desc">Max seconds to wait for LLM response</div>'
+    +           '<input id="cfg-llm-read-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_read_timeout_s ?? 180)) + '"></div>';
+
+  html +=     '</div>'; // end #system-llm-advanced
+  html +=   '</div>';   // end collapsible wrapper
+
+  // Save button
+  html +=   '<div class="cfg-save-row" style="margin-top:14px;">';
+  html +=     '<button class="btn btn-primary" onclick="_cfgSaveSystemServices()">Save Services &amp; LLM</button>';
+  html +=     '<span id="cfg-save-result-system-services" class="cfg-result"></span>';
+  html +=   '</div>';
+
+  html += '</div>'; // end Card 2
+
+  body.innerHTML = html;
+
+  // Ping in-container services via health aggregate.
+  _systemServicesPingStatus(svc);
+}
+
+function _systemLlmToggleAdvanced(btn) {
+  const adv = document.getElementById('system-llm-advanced');
+  const caret = document.getElementById('system-llm-adv-caret');
+  if (!adv) return;
+  const open = adv.style.display !== 'none';
+  adv.style.display = open ? 'none' : 'block';
+  if (caret) caret.innerHTML = open ? '&#9656;' : '&#9662;';
+}
+
+async function _systemLlmDiscover() {
+  const urlInput = document.getElementById('system-llm-url');
+  const status = document.getElementById('system-llm-discover-status');
+  const llmStatus = document.getElementById('system-llm-status');
+  if (!urlInput) return;
+  const url = (urlInput.value || '').trim().replace(/\/$/, '');
+  if (!url) { if (status) status.textContent = ''; return; }
+  if (status) { status.className = 'svc-discover-status'; status.textContent = 'discovering\u2026'; }
+  try {
+    const r = await fetch('/api/discover/ollama?url=' + encodeURIComponent(url));
+    const data = await r.json();
+    if (!r.ok) {
+      if (status) { status.className = 'svc-discover-status err'; status.textContent = data.error || 'failed'; }
+      if (llmStatus) llmStatus.textContent = 'Unreachable';
+      return;
+    }
+    const models = (data.models || []).map(m => m.name);
+    _svcPopulateDropdown('system-llm-model', models);
+    if (status) { status.className = 'svc-discover-status ok'; status.textContent = data.count + ' models'; }
+    if (llmStatus) llmStatus.innerHTML = '<span style="color:var(--green);">&#9679;</span> Connected &middot; ' + data.count + ' model(s)';
+  } catch(e) {
+    if (status) { status.className = 'svc-discover-status err'; status.textContent = 'error'; }
+    if (llmStatus) llmStatus.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function _systemServicesPingStatus(svcData) {
+  // Ping in-container services via /api/health/aggregate.
+  try {
+    const r = await fetch('/api/health/aggregate', { credentials: 'same-origin' });
+    const data = await r.json();
+    const byName = {};
+    (data.services || []).forEach(s => { byName[s.name.toLowerCase()] = s.status; });
+    const map = { tts: 'tts', stt: 'stt', api_wrapper: 'api', vision: 'vision' };
+    for (const [key, aggName] of Object.entries(map)) {
+      const dot = document.getElementById('svc-dot-' + key);
+      if (!dot) continue;
+      if (key === 'vision') {
+        const vision = svcData.vision || {};
+        const configured = !!(vision.url || '').trim();
+        if (!configured) {
+          dot.className = 'svc-health-dot';  // grey = inactive
+          dot.title = 'Not configured';
+        } else {
+          const st = byName[aggName] || byName['vision'];
+          dot.className = 'svc-health-dot ' + (st === 'ok' ? 'ok' : 'err');
+        }
+      } else {
+        const st = byName[aggName];
+        if (st) dot.className = 'svc-health-dot ' + (st === 'ok' ? 'ok' : 'err');
+      }
+    }
+  } catch(e) { /* leave dots grey */ }
 }
 
 async function _cfgSaveSystemServices() {
   const resultEl = document.getElementById('cfg-save-result-system-services');
-  if (resultEl) { resultEl.textContent = 'Saving…'; resultEl.className = 'cfg-result'; }
-  const partial = cfgCollectForm('services');
-  const merged = Object.assign({}, _cfgData.services || {}, partial);
-  try {
-    const r = await fetch('/api/config/services', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(merged),
-    });
-    const resp = await r.json();
-    if (!r.ok) {
-      if (resultEl) { resultEl.textContent = resp.error || ('Error ' + r.status); resultEl.className = 'cfg-result err'; }
+  if (resultEl) { resultEl.textContent = 'Saving\u2026'; resultEl.className = 'cfg-result'; }
+
+  // 1. Save Ollama URL + model into services (preserve non-LLM keys).
+  const urlInput = document.getElementById('system-llm-url');
+  const modelSel = document.getElementById('system-llm-model');
+  if (urlInput || modelSel) {
+    const partial = Object.assign({}, _cfgData.services || {});
+    if (!partial.ollama_interactive) partial.ollama_interactive = {};
+    if (!partial.ollama_autonomy)    partial.ollama_autonomy = {};
+    if (urlInput) {
+      partial.ollama_interactive.url = urlInput.value.trim();
+      partial.ollama_autonomy.url    = urlInput.value.trim();
+    }
+    if (modelSel && modelSel.value) {
+      partial.ollama_interactive.model = modelSel.value;
+      partial.ollama_autonomy.model    = modelSel.value;
+    }
+    try {
+      const r = await fetch('/api/config/services', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(partial),
+      });
+      const resp = await r.json();
+      if (!r.ok) {
+        if (resultEl) { resultEl.textContent = resp.error || ('Error ' + r.status); resultEl.className = 'cfg-result err'; }
+        return;
+      }
+      _cfgData.services = partial;
+    } catch (e) {
+      if (resultEl) { resultEl.textContent = String(e); resultEl.className = 'cfg-result err'; }
       return;
     }
-    _cfgData.services = merged;
-    if (resultEl) { resultEl.textContent = 'Saved'; resultEl.className = 'cfg-result cfg-result-ok'; }
-  } catch (e) {
-    if (resultEl) { resultEl.textContent = String(e); resultEl.className = 'cfg-result err'; }
   }
+
+  // 2. Model Options — only if the advanced section was rendered.
+  if (document.getElementById('cfg-personality-model_options-temperature')) {
+    await cfgSaveModelOptions();
+  }
+
+  // 3. LLM Timeouts.
+  if (document.getElementById('cfg-llm-connect-timeout')) {
+    await cfgSaveLLMTimeouts();
+  }
+
+  if (resultEl) { resultEl.textContent = 'Saved'; resultEl.className = 'cfg-result cfg-result-ok'; }
 }
 
 function cfgRenderServices(data, scope) {
@@ -4342,12 +4479,14 @@ function _panelIdFor(key) {
 function _migrateLegacyKey(k) {
   if (k === 'control') return 'config.system';
   if (k === 'config')  return 'config.integrations';
-  if (k === 'config.global')    return 'config.integrations';
-  if (k === 'config.services')  return 'config.llm-services';
-  if (k === 'config.speakers')  return 'config.audio-speakers';
-  if (k === 'config.audio')     return 'config.audio-speakers';
-  if (k === 'config.ssl')       return 'config.system';
-  if (k === 'config.users')     return 'config.system';
+  if (k === 'config.global')      return 'config.integrations';
+  // legacy: config.services and config.llm-services both go to System → Services
+  if (k === 'config.services')    return 'config.system';
+  if (k === 'config.llm-services') return 'config.system';
+  if (k === 'config.speakers')    return 'config.audio-speakers';
+  if (k === 'config.audio')       return 'config.audio-speakers';
+  if (k === 'config.ssl')         return 'config.system';
+  if (k === 'config.users')       return 'config.system';
   return k;
 }
 
@@ -4367,8 +4506,9 @@ let _activeNavKey = 'chat';
 
 function navigateTo(key) {
   // Capture legacy sub-tab intent before migration collapses the key.
-  var _sslRedirect   = (key === 'config.ssl');
-  var _usersRedirect = (key === 'config.users');
+  var _sslRedirect      = (key === 'config.ssl');
+  var _usersRedirect    = (key === 'config.users');
+  var _servicesRedirect = (key === 'config.llm-services' || key === 'config.services');
   key = _migrateLegacyKey(key);
   // Leaving Logs? Tear down the 10 s polling timer so we don't keep
   // hitting /api/logs/tail when the operator's on another page.
@@ -4412,8 +4552,9 @@ function navigateTo(key) {
     loadSystemServices();
     startRobotAutoRefresh();
     if (typeof loadSystemConfigCards === 'function') loadSystemConfigCards();
-    if (_sslRedirect)   { showPageTab('system', 'ssl');   _loadSslIntoSystemTab(); }
-    if (_usersRedirect) { showPageTab('system', 'users'); _loadUsersIntoSystemTab(); }
+    if (_sslRedirect)      { showPageTab('system', 'ssl');      _loadSslIntoSystemTab(); }
+    if (_usersRedirect)    { showPageTab('system', 'users');    _loadUsersIntoSystemTab(); }
+    if (_servicesRedirect) { showPageTab('system', 'services'); }
   } else if (key === 'config.memory') {
     // Memory page UI arrives in Phase 5 Commit 3; placeholder for now.
     if (typeof memoryLoadAll === 'function') memoryLoadAll();

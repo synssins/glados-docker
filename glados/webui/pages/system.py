@@ -146,19 +146,7 @@ HTML = r"""
 
     <!-- ════════════════ Services tab ════════════════ -->
     <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="services">
-      <div class="card">
-        <div class="section-title">Service endpoints</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
-          Non-LLM backends GLaDOS calls: TTS (Speaches), STT (Faster-Whisper),
-          Vision, and the local api-wrapper. URL + health + discovery per service.
-          LLM / Ollama config lives under <em>Integrations &rsquo;LLM&rsquo;</em>.
-        </div>
-        <div id="system-services-body">Loading services&hellip;</div>
-        <div class="cfg-save-row">
-          <button class="cfg-save-btn" onclick="_cfgSaveSystemServices()">Save Services</button>
-          <span id="cfg-save-result-system-services" class="cfg-result"></span>
-        </div>
-      </div>
+      <div id="system-services-body">Loading services&hellip;</div>
     </div>
 
     <!-- ════════════════ Hardware tab ════════════════ -->

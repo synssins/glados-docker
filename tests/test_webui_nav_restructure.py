@@ -71,7 +71,10 @@ def test_removed_nav_entries_no_longer_rendered_in_sidebar(source: str, removed_
     ("control", "config.system"),
     ("config", "config.integrations"),
     ("config.global", "config.integrations"),
-    ("config.services", "config.llm-services"),
+    # Phase 2 Chunk 2: config.services and config.llm-services both redirect
+    # to config.system (Services tab). Old target config.llm-services is gone.
+    ("config.services", "config.system"),
+    ("config.llm-services", "config.system"),
     ("config.speakers", "config.audio-speakers"),
     ("config.audio", "config.audio-speakers"),
     # Phase 2 Chunk 1A: SSL and Users are now System sub-tabs.
@@ -97,11 +100,13 @@ def test_virtual_backing_map_routes_integrations_to_global(source: str) -> None:
     ), "Integrations virtual page must route to the 'global' backing section"
 
 
-def test_virtual_backing_map_routes_llm_services_to_services(source: str) -> None:
-    assert re.search(
+def test_virtual_backing_map_no_longer_has_llm_services(source: str) -> None:
+    # Phase 2 Chunk 2: LLM moved to System → Services tab. The llm-services
+    # virtual page and its _CFG_BACKING entry are both removed.
+    assert not re.search(
         r"_CFG_BACKING\s*=\s*\{[^}]*'llm-services'\s*:\s*'services'",
         source, re.DOTALL,
-    ), "LLM & Services virtual page must route to the 'services' backing section"
+    ), "llm-services should no longer be in _CFG_BACKING (LLM moved to System→Services)"
 
 
 def test_audio_speakers_has_custom_renderer(source: str) -> None:

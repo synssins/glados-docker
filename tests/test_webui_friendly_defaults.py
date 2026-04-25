@@ -127,19 +127,23 @@ def test_integrations_no_longer_has_media_stack_placeholder(source: str) -> None
     ), "Media Stack placeholder should have been removed in Phase 6.0"
 
 
-# ── LLM & Services: Model Options + LLM Timeouts cards ─────────────────
+# ── LLM & Services: Model Options + LLM Timeouts (now in System → Services) ───
 
 
 def test_llm_services_has_model_options_card(source: str) -> None:
-    assert "_cfgRenderLLMServicesExtras" in source
+    # Phase 2 Chunk 2: Model Options moved into loadSystemServices() as an
+    # Advanced collapsible on the System → Services tab. The old
+    # _cfgRenderLLMServicesExtras function is gone; loadSystemServices renders
+    # the same fields inline.
+    assert "loadSystemServices" in source, "loadSystemServices must exist"
     assert re.search(
         r"cfg-subsection-title[^>]*>\s*Model Options",
         source,
-    ), "LLM & Services must render a Model Options subsection"
+    ), "System Services tab must render a Model Options subsection"
     # Four fields: temperature, top_p, num_ctx, repeat_penalty
     for field in ("temperature", "top_p", "num_ctx", "repeat_penalty"):
         assert f"model_options.{field}" in source, (
-            f"Model Options card missing input for {field!r}"
+            f"Model Options section missing input for {field!r}"
         )
 
 
