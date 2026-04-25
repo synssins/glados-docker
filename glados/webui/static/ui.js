@@ -97,36 +97,35 @@ function showToast(msg, type) {
   }, 4000);
 }
 
-// Phase 5: engine status in sidebar header. Polls /api/status every 30 s
-// when the page is visible; skips polling when tab is hidden so we don't
+// Phase 5: engine status in sidebar header. Polls /api/health/aggregate every
+// 30 s when the page is visible; skips polling when tab is hidden so we don't
 // wake the container unnecessarily.
 let _engineStatusTimer = null;
 async function pollEngineStatus() {
   const dot = document.getElementById('engineStatusDot');
   if (!dot) return;
+  // Hide on /setup
+  if (window.location.pathname.startsWith('/setup')) {
+    dot.style.display = 'none';
+    return;
+  }
   try {
-    const r = await fetch('/api/status', { signal: AbortSignal.timeout(5000) });
-    if (r.ok) {
-      const data = await r.json();
-      // /api/status returns {"running": bool, ...}; map to dot state.
-      if (data && data.running) {
-        dot.className = 'engine-status-dot running';
-        dot.title = 'Engine running';
-      } else {
-        dot.className = 'engine-status-dot stopping';
-        dot.title = 'Engine not running';
-      }
-    } else if (r.status === 401 || r.status === 403) {
-      // Unauthenticated — the endpoint is protected; keep the dot neutral.
-      dot.className = 'engine-status-dot';
-      dot.title = 'Sign in to see engine status';
+    const r = await fetch('/api/health/aggregate', { credentials: 'same-origin' });
+    const data = await r.json();
+    dot.classList.remove('running', 'degraded', 'stopping', 'unauth');
+    const cls = ({
+      ok: 'running', degraded: 'degraded', down: 'stopping', unauth: 'unauth',
+    })[data.overall] || 'unauth';
+    dot.classList.add(cls);
+    if (data.services) {
+      dot.title = data.services.map(s => `${s.name}: ${s.status}`).join('\n');
     } else {
-      dot.className = 'engine-status-dot stopping';
-      dot.title = 'HTTP ' + r.status;
+      dot.title = 'Sign in to see service health';
     }
-  } catch(e) {
-    dot.className = 'engine-status-dot stopping';
-    dot.title = 'Unreachable';
+  } catch (e) {
+    dot.classList.remove('running', 'degraded', 'stopping');
+    dot.classList.add('unauth');
+    dot.title = 'Service status unknown';
   }
 }
 function startEngineStatusPoll() {

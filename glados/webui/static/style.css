@@ -126,13 +126,16 @@ body {
 /* Engine status dot in the brand header. Polled by pollEngineStatus(). */
 .engine-status-dot {
   width: 10px; height: 10px; border-radius: 50%;
-  background: var(--text-dim);
-  flex-shrink: 0;
+  background: var(--fg-muted);
+  display: inline-block;
+  flex: 0 0 10px;
   transition: background 0.2s;
 }
 .engine-status-dot.running { background: var(--green); }
-.engine-status-dot.starting { background: var(--orange); }
+.engine-status-dot.degraded { background: var(--orange); }
+.engine-status-dot.starting { background: var(--orange); } /* legacy synonym */
 .engine-status-dot.stopping { background: var(--red); }
+.engine-status-dot.unauth { background: var(--fg-muted); }
 .nav-items { flex: 1; padding: 0.5rem 0; }
 .nav-item {
   display: flex;

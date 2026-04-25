@@ -487,7 +487,7 @@ _service_limiter = TokenBucket(
 
 # Public paths -- no session cookie required.
 # Matches AUTH_DESIGN.md SS3.4. /api/chat and /chat_audio/* require chat.send.
-_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status"})
+_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status", "/api/health/aggregate"})
 
 _PUBLIC_PREFIXES = (
     # STT + TTS service endpoints (operator decision 2026-04-24)
@@ -685,6 +685,39 @@ def _resolve_user_for_request(handler) -> dict | None:
         "session_id": row["session_id"],
     }
     return handler._resolved_user
+
+
+def _build_health_aggregate(
+    authenticated: bool,
+    probes: "list[tuple[str, bool | str]] | None",
+) -> dict:
+    """Aggregate per-service probe results into the status-dot payload.
+
+    probes: list of (service_name, status) where status is True (ok),
+            False (down), or the literal string "degraded".
+    """
+    if not authenticated or probes is None:
+        return {"overall": "unauth"}
+    services = []
+    any_down = False
+    any_degraded = False
+    for name, status in probes:
+        if status is True:
+            s = "ok"
+        elif status == "degraded":
+            s = "degraded"
+            any_degraded = True
+        else:
+            s = "down"
+            any_down = True
+        services.append({"name": name, "status": s})
+    if any_down:
+        overall = "down"
+    elif any_degraded:
+        overall = "degraded"
+    else:
+        overall = "ok"
+    return {"overall": overall, "services": services}
 
 
 def require_perm(handler, perm: str) -> bool:
@@ -1654,6 +1687,8 @@ class Handler(BaseHTTPRequestHandler):
             self._get_voices()
         elif p == "/api/auth/status":
             self._get_auth_status()
+        elif p == "/api/health/aggregate":
+            self._get_health_aggregate()
         # --- Protected routes below ---
         elif p == "/api/modes":
             self._get_modes()
@@ -3025,6 +3060,77 @@ class Handler(BaseHTTPRequestHandler):
         status["running"] = bool(status.get("glados_api"))
 
         self._send_json(200, status)
+
+    def _get_health_aggregate(self):
+        """GET /api/health/aggregate -- sidebar status-dot feed.
+
+        Unauthenticated callers get {"overall": "unauth"} only.
+        Authenticated callers get the full payload with per-service detail.
+        Reuses the same probes as _get_status(); no new HTTP calls.
+        """
+        from glados.auth import bypass as _bypass
+
+        if _bypass.active():
+            authenticated = True
+        else:
+            from glados.core.config_store import cfg as _cfg_live
+            if not _cfg_live.auth.enabled:
+                authenticated = True
+            else:
+                authenticated = _resolve_user_for_request(self) is not None
+
+        if not authenticated:
+            self._send_json(200, _build_health_aggregate(authenticated=False, probes=None))
+            return
+
+        # Probe each service using the same logic as _get_status().
+        probes = []
+
+        # GLaDOS API
+        try:
+            req = urllib.request.Request(f"{_svc_api_wrapper()}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("API", resp.status < 400))
+        except Exception:
+            probes.append(("API", False))
+
+        # TTS (speaches -- no /health, use /v1/voices)
+        try:
+            tts_base = _svc_tts_base().rsplit("/v1/", 1)[0].rstrip("/")
+            req = urllib.request.Request(f"{tts_base}/v1/voices")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("TTS", resp.status < 400))
+        except Exception:
+            probes.append(("TTS", False))
+
+        # STT (speaches STT side)
+        try:
+            req = urllib.request.Request(f"{_svc_stt()}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("STT", resp.status < 400))
+        except Exception:
+            probes.append(("STT", False))
+
+        # Home Assistant
+        try:
+            req = urllib.request.Request(
+                f"{HA_URL}/api/",
+                headers={"Authorization": f"Bearer {HA_TOKEN}"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("HA", resp.status < 400))
+        except Exception:
+            probes.append(("HA", False))
+
+        # ChromaDB (embedded -- check directory writability same as _get_status)
+        try:
+            from pathlib import Path as _P
+            ch_path = _P(getattr(_cfg.memory, "chromadb_path", "/app/data/chromadb"))
+            probes.append(("ChromaDB", ch_path.exists() and os.access(ch_path, os.W_OK)))
+        except Exception:
+            probes.append(("ChromaDB", False))
+
+        self._send_json(200, _build_health_aggregate(authenticated=True, probes=probes))
 
     # â”€â”€ Attitudes endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
