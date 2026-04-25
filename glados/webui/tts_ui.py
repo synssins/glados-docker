@@ -1545,6 +1545,60 @@ class Handler(BaseHTTPRequestHandler):
             "role": user["role"] if user else None,
         })
 
+    def _change_password(self):
+        """POST /api/auth/change-password — user changes their own password.
+
+        Verifies the current password against the stored hash, validates the
+        new password against policy, then writes the new hash to global.yaml.
+        Does NOT revoke other sessions (operator decision 2026-04-24).
+        """
+        from glados.auth import hashing as _hashing
+        from glados.webui.permissions import password_meets_policy
+        from glados.webui.pages import users as _users_page
+        from glados.core.config_store import cfg as _cfg_live
+
+        user = _resolve_user_for_request(self)
+        if user is None:
+            self._send_json(401, {"ok": False, "error": "Authentication required"})
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except json.JSONDecodeError:
+            self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+            return
+
+        current = body.get("current") or ""
+        new_pw = body.get("new") or ""
+
+        yaml_user = next(
+            (u for u in _cfg_live.auth.users if u.username == user["username"]),
+            None,
+        )
+        if yaml_user is None:
+            self._send_json(401, {"ok": False, "error": "Authentication required"})
+            return
+
+        valid, _ = _hashing.verify_password(current, yaml_user.password_hash)
+        if not valid:
+            self._send_json(401, {"ok": False, "error": "Current password is incorrect"})
+            return
+
+        ok, msg = password_meets_policy(new_pw)
+        if not ok:
+            self._send_json(400, {"ok": False, "error": msg})
+            return
+
+        ok, err = _users_page.reset_password(user["username"], new_pw)
+        if not ok:
+            self._send_json(400, {"ok": False, "error": err})
+            return
+
+        # Operator decision 2026-04-24: no other-session revocation here.
+        _cfg_live.reload()
+        self._send_json(200, {"ok": True})
+
     def _dispatch_get(self):
         """Route GET requests to handlers (after auth check if needed)."""
         p = self.path
@@ -1723,6 +1777,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/setup" or self.path.startswith("/setup/"):
             self._dispatch_setup()
+            return
+
+        # /api/auth/change-password requires auth — intercept before public-route check
+        # (/api/auth/ prefix is otherwise public for the login endpoint)
+        if self.path == "/api/auth/change-password":
+            if not require_perm(self, "webui.view"): return
+            self._change_password()
             return
 
         if _is_public_route(self.path):
