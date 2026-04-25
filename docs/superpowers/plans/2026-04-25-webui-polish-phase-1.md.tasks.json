@@ -17,7 +17,7 @@
     {
       "id": 2,
       "subject": "Task 2: Brand mark font fix",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1],
       "description": "**Goal:** Sidebar 'GLaDOS · CONTROL' switches from Major Mono Display to JetBrains Mono.\n\n**Files:**\n- Modify: glados/webui/static/style.css:111-123\n- Modify: glados/webui/pages/_shell.py:24-28\n\n**Acceptance Criteria:**\n- .sidebar-brand uses var(--font-mono)\n- letter-spacing 0.06em, font-weight 700, size 0.85rem\n- Markup reads 'GLaDOS · CONTROL' with brand-sep + brand-dim spans\n- Major Mono Display only on page H1 rules\n\n**Verify:** grep -n 'var(--font-display)' glados/webui/static/style.css → only H1 rules remain\n\n```json:metadata\n{\"files\": [\"glados/webui/static/style.css\", \"glados/webui/pages/_shell.py\"], \"verifyCommand\": \"grep -n 'var(--font-display)' glados/webui/static/style.css\", \"acceptanceCriteria\": [\".sidebar-brand uses --font-mono\", \"correct letter-spacing and weight\", \"markup updated with brand-sep/brand-dim\", \"Major Mono Display reserved for page H1\"]}\n```"
     },
