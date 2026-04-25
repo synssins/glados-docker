@@ -24,7 +24,7 @@
     {
       "id": 3,
       "subject": "Task 3: Status dot live aggregate",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1],
       "description": "**Goal:** Top-left status dot reflects /health aggregate when authed, grey when unauth, hidden on /setup. Tooltip enumerates per-service health.\n\n**Files:**\n- Create: tests/test_health_aggregate.py\n- Modify: glados/webui/tts_ui.py (add /api/health/aggregate)\n- Modify: glados/webui/static/ui.js (updateEngineStatus)\n- Modify: glados/webui/static/style.css:125-133 (add .degraded, .unauth)\n\n**Acceptance Criteria:**\n- GET /api/health/aggregate returns {overall, services} structure\n- Auth required for per-service detail; unauth gets {overall: 'unauth'}\n- Dot CSS classes: running/degraded/stopping/unauth\n- Hidden on /setup\n- Polls every 30s when authed\n- Tooltip lists services\n\n**Verify:** pytest tests/test_health_aggregate.py -v\n\n```json:metadata\n{\"files\": [\"tests/test_health_aggregate.py\", \"glados/webui/tts_ui.py\", \"glados/webui/static/ui.js\", \"glados/webui/static/style.css\"], \"verifyCommand\": \"pytest tests/test_health_aggregate.py -v\", \"acceptanceCriteria\": [\"endpoint returns correct shape\", \"unauth returns overall:unauth only\", \"dot reflects worst-of state\", \"tooltip enumerates services\", \"hidden on /setup\"]}\n```"
     },
