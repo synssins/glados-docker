@@ -38,7 +38,7 @@
     {
       "id": 5,
       "subject": "Task 5: Login page rebuild",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [2],
       "description": "**Goal:** Replace bootstrap-styled login with bare-canvas + telemetry-strip variant (operator approved B).\n\n**Files:**\n- Modify: glados/webui/tts_ui.py (LOGIN_HTML at ~line 752, add /api/health/public)\n- Modify: glados/webui/static/style.css (.login-* classes)\n\n**Acceptance Criteria:**\n- Renders on --bg-dark canvas, no card\n- Brand mark JetBrains Mono\n- Telemetry strip with /health/public probe\n- Inputs use --bg-input + --border-default\n- Custom mono stay-signed-in checkbox\n- Submit button outline orange (warning-light)\n- Error block uses --red, mono caps\n\n**Verify:** Visual match to mockup B at /login\n\n```json:metadata\n{\"files\": [\"glados/webui/tts_ui.py\", \"glados/webui/static/style.css\"], \"verifyCommand\": \"pytest tests/ -k login -q\", \"acceptanceCriteria\": [\"bare canvas no card\", \"telemetry strip on login\", \"design-system inputs\", \"outline orange button\", \"red mono error block\"]}\n```"
     },
