@@ -1559,11 +1559,11 @@ function _cfgRenderTestHarnessForm() {
   host.innerHTML =
     '<div class="cfg-field">'
     + '<label class="cfg-label" for="th-patterns">Noise entity patterns'
-    + ' <span style="color:var(--text-dim);font-weight:normal;">'
+    + ' <span style="color:var(--fg-secondary);font-weight:normal;">'
     + '(fnmatch globs, one per line — e.g. <code>switch.hvac_unit_*_display</code>)'
     + '</span></label>'
     + '<textarea id="th-patterns" rows="8" style="width:100%;background:var(--bg-input);'
-    + 'color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;'
+    + 'color:var(--fg-primary);border:1px solid var(--border-default);border-radius:4px;padding:8px;'
     + 'font-family:monospace;font-size:0.82rem;">'
     + escHtml(patterns) + '</textarea>'
     + '</div>'
@@ -1930,7 +1930,7 @@ function _chimesPopulate(data) {
     ? files.map(f =>
         '<tr>'
         + '<td style="padding:4px 8px;font-family:monospace;">' + escHtml(f.name) + '</td>'
-        + '<td style="padding:4px 8px;color:var(--text-dim);text-align:right;">'
+        + '<td style="padding:4px 8px;color:var(--fg-secondary);text-align:right;">'
         +   _chimesFmtBytes(f.bytes)
         + '</td>'
         + '<td style="padding:4px 8px;">'
@@ -1939,7 +1939,7 @@ function _chimesPopulate(data) {
         + '</td>'
         + '</tr>'
       ).join('')
-    : '<tr><td colspan="3" style="padding:8px;color:var(--text-dim);font-style:italic;">No chime files. Upload one below.</td></tr>';
+    : '<tr><td colspan="3" style="padding:8px;color:var(--fg-secondary);font-style:italic;">No chime files. Upload one below.</td></tr>';
   let html = '';
   html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;margin-bottom:12px;">';
   html += '<thead><tr style="background:var(--bg-input);">'
@@ -1951,8 +1951,8 @@ function _chimesPopulate(data) {
   html += '</table>';
   html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
     +   '<input type="file" id="cfg-chimes-upload" accept=".wav,.mp3,audio/wav,audio/mpeg" '
-    +     'style="flex:1;min-width:220px;background:var(--bg-input);color:var(--text);'
-    +     'border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:0.82rem;">'
+    +     'style="flex:1;min-width:220px;background:var(--bg-input);color:var(--fg-primary);'
+    +     'border:1px solid var(--border-default);border-radius:4px;padding:5px 8px;font-size:0.82rem;">'
     +   '<button class="btn-small" onclick="_chimesUpload()" style="font-size:0.78rem;padding:5px 14px;">Upload</button>'
     +   '<audio id="cfg-chimes-player" controls style="flex:2;min-width:240px;"></audio>'
     + '</div>';
@@ -2058,15 +2058,15 @@ function _pronunciationPopulate(data) {
   const words = data.word_expansions || {};
   const symText = Object.entries(sym).map(a => a[0] + ' = ' + a[1]).join('\n');
   const wordText = Object.entries(words).map(a => a[0] + ' = ' + a[1]).join('\n');
-  const ta = 'background:var(--bg-input);color:var(--text);border:1px solid var(--border);'
+  const ta = 'background:var(--bg-input);color:var(--fg-primary);border:1px solid var(--border-default);'
     + 'border-radius:4px;padding:8px;width:100%;font-family:monospace;font-size:0.82rem;';
   let html = '';
   html += '<div class="cfg-field">'
-    + '<label class="cfg-label">Word expansions <span style="color:var(--text-dim);font-weight:normal;">(whole-word, case-insensitive)</span></label>'
+    + '<label class="cfg-label">Word expansions <span style="color:var(--fg-secondary);font-weight:normal;">(whole-word, case-insensitive)</span></label>'
     + '<textarea id="cfg-pr-words" rows="6" style="' + ta + '">' + escHtml(wordText) + '</textarea>'
     + '</div>';
   html += '<div class="cfg-field" style="margin-top:10px;">'
-    + '<label class="cfg-label">Symbol expansions <span style="color:var(--text-dim);font-weight:normal;">(literal replace, e.g. <code>%</code>, <code>&amp;</code>)</span></label>'
+    + '<label class="cfg-label">Symbol expansions <span style="color:var(--fg-secondary);font-weight:normal;">(literal replace, e.g. <code>%</code>, <code>&amp;</code>)</span></label>'
     + '<textarea id="cfg-pr-symbols" rows="3" style="' + ta + '">' + escHtml(symText) + '</textarea>'
     + '</div>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
@@ -2747,7 +2747,7 @@ function cfgRenderPersonality(data) {
         + '</tr>';
     }
     html += '</table>';
-    html += '<div style="font-size:0.73rem;color:var(--text-muted);margin-top:6px;">Edit attitudes via Raw YAML tab</div>';
+    html += '<div style="font-size:0.73rem;color:var(--fg-tertiary);margin-top:6px;">Edit attitudes via Raw YAML tab</div>';
     html += '</div>';
   }
 
@@ -4125,7 +4125,7 @@ async function memLoadFacts() {
 function _memRenderFacts(rows) {
   const el = document.getElementById('memFactsList');
   if (rows.length === 0) {
-    el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No facts yet. Click + Add to record one.</div>';
+    el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">No facts yet. Click + Add to record one.</div>';
     return;
   }
   let html = '';
@@ -4237,7 +4237,7 @@ async function memLoadRecent() {
 function _memRenderRecent(rows) {
   const el = document.getElementById('memRecentList');
   if (rows.length === 0) {
-    el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No recent activity.</div>';
+    el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">No recent activity.</div>';
     return;
   }
   let html = '';
@@ -4309,7 +4309,7 @@ async function memLoadPending() {
     const el = document.getElementById('memPendingList');
     const rows = data.rows || [];
     if (rows.length === 0) {
-      el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing pending.</div>';
+      el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">Nothing pending.</div>';
       return;
     }
     let html = '';
@@ -5356,7 +5356,7 @@ async function loadVerbositySliders() {
         + '<span style="font-size:0.85rem;min-width:36px;text-align:right;">' + pct + '%</span>'
         + '</div></div>';
     }
-    container.innerHTML = html || '<div style="color:var(--text-dim);">No announcement scenarios found.</div>';
+    container.innerHTML = html || '<div style="color:var(--fg-secondary);">No announcement scenarios found.</div>';
     container.style.opacity = '1';
   } catch (e) {
     container.innerHTML = '<div style="color:var(--error);">Failed to load announcement settings.</div>';
@@ -5514,7 +5514,7 @@ async function loadStartupSpeakers() {
     const data = await resp.json();
     const speakers = data.speakers || [];
     if (!speakers.length) {
-      container.innerHTML = '<div style="color:var(--text-dim);">No speakers found in speakers.yaml.</div>';
+      container.innerHTML = '<div style="color:var(--fg-secondary);">No speakers found in speakers.yaml.</div>';
       container.style.opacity = '1';
       return;
     }
@@ -5714,7 +5714,7 @@ async function loadWeather() {
     const resp = await fetch('/api/weather');
     const data = await resp.json();
     if (data.error) {
-      panel.innerHTML = '<div style="color:var(--text-dim)">' + escHtml(data.error) + '</div>';
+      panel.innerHTML = '<div style="color:var(--fg-secondary)">' + escHtml(data.error) + '</div>';
       return;
     }
     const c = data.current || {};
@@ -5751,12 +5751,12 @@ async function loadGPU() {
     const resp = await fetch('/api/gpu');
     const data = await resp.json();
     if (data.error) {
-      panel.innerHTML = '<div style="color:var(--text-dim)">' + escHtml(data.error) + '</div>';
+      panel.innerHTML = '<div style="color:var(--fg-secondary)">' + escHtml(data.error) + '</div>';
       return;
     }
     const gpus = data.gpus || [];
     if (!gpus.length) {
-      panel.innerHTML = '<div style="color:var(--text-dim)">No GPUs detected</div>';
+      panel.innerHTML = '<div style="color:var(--fg-secondary)">No GPUs detected</div>';
       return;
     }
     let html = '';
@@ -5889,7 +5889,7 @@ async function loadAudioStats() {
     for (const [key, stats] of Object.entries(data)) {
       html += '<div style="background:var(--bg-input);padding:10px;border-radius:6px;">'
         + '<div style="font-weight:500;margin-bottom:4px;">' + escHtml(labels[key] || key) + '</div>'
-        + '<div style="font-size:0.78rem;color:var(--text-dim);">' + stats.count + ' files (' + fmtSize(stats.size_bytes) + ')</div>'
+        + '<div style="font-size:0.78rem;color:var(--fg-secondary);">' + stats.count + ' files (' + fmtSize(stats.size_bytes) + ')</div>'
         + '<button class="btn-small" style="margin-top:6px;font-size:0.72rem;padding:3px 8px;" onclick="clearAudioDir(\'' + key + '\')">Clear</button>'
         + '</div>';
     }
@@ -5941,7 +5941,7 @@ async function loadRobots() {
     const nodes = data.nodes || {};
     const nodeIds = Object.keys(nodes);
     if (nodeIds.length === 0) {
-      list.innerHTML = '<div style="color:var(--text-dim);">No nodes configured. Add one below.</div>';
+      list.innerHTML = '<div style="color:var(--fg-secondary);">No nodes configured. Add one below.</div>';
     } else {
       let html = '<div class="health-grid">';
       for (const [nid, n] of Object.entries(nodes)) {
@@ -5970,7 +5970,7 @@ async function loadRobots() {
       for (const [bid, b] of Object.entries(bots)) {
         const bLabel = b.name || bid;
         bhtml += '<div style="background:var(--bg-input);padding:8px 10px;border-radius:4px;margin-bottom:4px;">'
-          + '<strong>' + escHtml(bLabel) + '</strong> <span style="color:var(--text-dim);">(' + escHtml(b.profile) + ')</span>';
+          + '<strong>' + escHtml(bLabel) + '</strong> <span style="color:var(--fg-secondary);">(' + escHtml(b.profile) + ')</span>';
         for (const [role, rn] of Object.entries(b.nodes || {})) {
           const rdot = rn.reachable ? '&#9679;' : '&#9675;';
           bhtml += ' <span style="margin-left:8px;">' + rdot + ' ' + escHtml(role) + ': ' + escHtml(rn.node_id) + '</span>';
