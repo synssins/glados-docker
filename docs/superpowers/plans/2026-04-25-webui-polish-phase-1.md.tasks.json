@@ -52,7 +52,7 @@
     {
       "id": 7,
       "subject": "Task 7: TTS Generator redesign (Variant A)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1, 6],
       "description": "**Goal:** Apply operator-approved Variant A: stroke icons, segmented mode pill, persona/format/attitude dropdowns removed, pronunciation overrides applied, telemetry strip.\n\n**Files:**\n- Modify: glados/webui/pages/tts_generator.py (full HTML rewrite)\n- Modify: glados/webui/static/style.css (.tts-seg, .telemetry-strip, .ico-btn)\n- Modify: glados/webui/static/ui.js (renderTTSFileList, ttsGenerate, _ttsSwitchMode)\n- Modify: glados/api/server.py (/api/generate applies pronunciation)\n- Create: tests/test_tts_generator_pronunciation.py\n\n**Acceptance Criteria:**\n- No voiceSelect/formatSelect/attitudeSelect in HTML\n- Mode toggle uses .tts-seg segmented pill\n- Telemetry strip with MODE/PERSONA/FORMAT/PIPER\n- File rows 28-32px tall, 22px icon buttons, no permanent red\n- /api/generate applies pronunciation overrides\n- Visual matches mockup\n\n**Verify:** pytest tests/test_tts_generator_pronunciation.py -v && grep -nE 'id=\"(voiceSelect|formatSelect|attitudeSelect)\"' glados/webui/pages/tts_generator.py\n\n```json:metadata\n{\"files\": [\"tests/test_tts_generator_pronunciation.py\", \"glados/api/server.py\", \"glados/webui/pages/tts_generator.py\", \"glados/webui/static/style.css\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"pytest tests/test_tts_generator_pronunciation.py -v\", \"acceptanceCriteria\": [\"dropdowns removed\", \"segmented mode pill\", \"telemetry strip on page\", \"icon buttons in file rows\", \"pronunciation overrides applied\", \"matches Variant A mockup\"]}\n```"
     }
