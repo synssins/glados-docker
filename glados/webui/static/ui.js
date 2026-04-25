@@ -4361,7 +4361,8 @@ function _memFactCard(r) {
   const age = _memFmtAge(m.written_at);
   const doc = escHtml(r.document || '');
   const id = escAttr(r.id || '');
-  return '<div class="mem-fact" data-id="' + id + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
+  const imp = Number(m.importance || 0).toFixed(2);
+  return '<div class="mem-fact" data-id="' + id + '" data-importance="' + imp + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
     + '<div style="min-width:0;flex:1;">'
     +   '<div class="mem-fact-text">' + doc + '</div>'
     +   '<div class="mem-fact-meta">source=' + escHtml(source)
@@ -4385,22 +4386,89 @@ function _memFmtAge(ts) {
   return Math.floor(d / 86400) + 'd';
 }
 
-async function memEdit(id) {
+// Bucket a numeric importance value to its 5-point segment value, using the
+// same thresholds as _memImportanceLabel so the pre-selected segment matches
+// the label rendered in the row meta.
+function _memImportanceToSeg(v) {
+  const x = Number(v) || 0;
+  if (x <= 0.30) return 0.20;
+  if (x <= 0.50) return 0.40;
+  if (x <= 0.70) return 0.60;
+  if (x <= 0.90) return 0.80;
+  return 1.00;
+}
+
+function memEdit(id) {
   const row = document.querySelector('.mem-fact[data-id="' + id + '"], .mem-recent[data-id="' + id + '"], .mem-pending[data-id="' + id + '"]');
-  const currentText = row ? (row.querySelector('.mem-fact-text, strong') || {}).textContent || '' : '';
-  const newText = prompt('Edit fact:', currentText);
-  if (newText == null || newText.trim() === '' || newText.trim() === currentText.trim()) return;
+  if (!row) return;
+  const existing = row.parentNode.querySelector('.mem-edit-panel[data-edit-for="' + id + '"]');
+  if (existing) {
+    const ta = existing.querySelector('textarea');
+    if (ta) ta.focus();
+    return;
+  }
+  const currentText = (row.querySelector('.mem-fact-text, strong') || {}).textContent || '';
+  const currentImp = parseFloat(row.dataset.importance || '0.60');
+  const seg = _memImportanceToSeg(currentImp);
+  const idAttr = escAttr(id);
+  const segId = 'memEditSeg-' + idAttr;
+  const opts = [
+    [0.20, 'Background'],
+    [0.40, 'Useful'],
+    [0.60, 'Important'],
+    [0.80, 'Critical'],
+    [1.00, 'Extreme'],
+  ];
+  const cells = opts.map(o => {
+    const v = o[0], label = o[1];
+    const on = (Math.abs(v - seg) < 1e-6) ? ' on' : '';
+    return '<div class="tts-seg-cell' + on + '" data-value="' + v.toFixed(2) + '"'
+      + ' onclick="memSegSelect(this,\'' + segId + '\')">' + label + '</div>';
+  }).join('');
+  const html = '<div class="mem-edit-panel" data-edit-for="' + idAttr + '" style="margin-top:4px;padding:10px;background:var(--bg-input);border:1px solid var(--border-default);border-radius:var(--r-input);">'
+    + '<textarea class="mem-edit-text" style="width:100%;min-height:60px;">' + escHtml(currentText) + '</textarea>'
+    + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+    +   '<span style="font-size:0.82rem;color:var(--text-dim);">Importance:</span>'
+    +   '<div class="tts-seg" id="' + segId + '">' + cells + '</div>'
+    +   '<button class="btn-small" onclick="memEditSave(\'' + idAttr + '\')">Save</button>'
+    +   '<button class="btn-small" onclick="memEditCancel(\'' + idAttr + '\')" style="background:#555;">Cancel</button>'
+    + '</div>'
+    + '</div>';
+  row.insertAdjacentHTML('afterend', html);
+  const panel = row.parentNode.querySelector('.mem-edit-panel[data-edit-for="' + idAttr + '"]');
+  const ta = panel ? panel.querySelector('textarea') : null;
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+
+async function memEditSave(id) {
+  const panel = document.querySelector('.mem-edit-panel[data-edit-for="' + id + '"]');
+  if (!panel) return;
+  const ta = panel.querySelector('textarea');
+  const newText = (ta ? ta.value : '').trim();
+  if (!newText) { showToast('Text required', 'error'); return; }
+  const onCell = panel.querySelector('.tts-seg-cell.on');
+  const importance = onCell ? parseFloat(onCell.dataset.value) : 0.60;
   try {
-    await fetch('/api/memory/' + encodeURIComponent(id) + '/edit', {
+    const r = await fetch('/api/memory/' + encodeURIComponent(id) + '/edit', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({document: newText.trim()}),
+      body: JSON.stringify({document: newText, importance: importance}),
     });
+    const data = await r.json();
+    if (!data.updated) {
+      showToast('Edit failed: ' + (data.error || 'unknown'), 'error');
+      return;
+    }
     memLoadFacts(); memLoadRecent(); memLoadPending();
     showToast('Edited', 'success');
   } catch(e) {
     showToast('Edit failed: ' + e.message, 'error');
   }
+}
+
+function memEditCancel(id) {
+  const panel = document.querySelector('.mem-edit-panel[data-edit-for="' + id + '"]');
+  if (panel) panel.remove();
 }
 
 async function memDelete(id) {
@@ -4480,11 +4548,12 @@ function _memRecentItem(r) {
   const canUpdate = isReinforcement && lastText && lastText !== (r.document || '');
   const impLabel = _memImportanceLabel(m.importance);
   const origLabel = _memImportanceLabel(m.original_importance);
+  const imp = Number(m.importance || 0).toFixed(2);
   let statusLabel = isReinforcement
     ? '<span class="mem-bump">reinforced</span> ' + origLabel + ' &rarr; ' + impLabel + ', mentions=' + mentions
     : 'new  importance=' + impLabel;
   const status = (m.review_status === 'pending') ? '  <span style="color:var(--orange);">pending</span>' : '';
-  let html = '<div class="mem-recent" data-id="' + id + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
+  let html = '<div class="mem-recent" data-id="' + id + '" data-importance="' + imp + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
     + '<div style="min-width:0;flex:1;">'
     +   '<div class="mem-fact-text">' + doc + '</div>'
     +   '<div class="mem-fact-meta">' + statusLabel + status + '  &bull;  ' + age + ' ago</div>';
@@ -4550,7 +4619,7 @@ function _memPendingCard(r) {
   const id = escAttr(r.id || '');
   const importance = Number(m.importance || 0).toFixed(2);
   const age = _memFmtAge(m.written_at);
-  return '<div class="mem-pending" data-id="' + id + '">'
+  return '<div class="mem-pending" data-id="' + id + '" data-importance="' + importance + '">'
     + '<div><strong>' + doc + '</strong></div>'
     + '<div class="mem-fact-meta">source=passive  importance=' + importance + '  age=' + age + '</div>'
     + '<div class="mem-fact-actions" style="display:flex;align-items:center;gap:6px;">'
