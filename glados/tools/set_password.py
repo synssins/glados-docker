@@ -4,8 +4,12 @@ Usage:
     python -m glados.tools.set_password
     python -m glados.tools.set_password --password <password>
 
-Hashes the password with bcrypt and writes it to configs/global.yaml.
-Also auto-generates a session_secret if one isn't set.
+Hashes the password with argon2id and writes it to configs/global.yaml
+using the new auth.users[] schema. Also auto-generates a session_secret
+if one isn't set.
+
+DEPRECATED: use the WebUI /setup wizard, Configuration → Users, or
+GLADOS_AUTH_BYPASS=1 instead. This tool will be removed in a future release.
 """
 
 from __future__ import annotations
@@ -14,9 +18,9 @@ import getpass
 import os
 import secrets
 import sys
+import warnings
 from pathlib import Path
 
-import bcrypt
 import yaml
 
 
@@ -39,7 +43,10 @@ def _config_path() -> Path:
 
 
 def set_password(password: str) -> None:
-    """Hash password and write to global.yaml."""
+    """Hash password and write to global.yaml using the users[] schema."""
+    from argon2 import PasswordHasher
+    ph = PasswordHasher()
+
     config_path = _config_path()
     if not config_path.exists():
         print(f"ERROR: Config file not found: {config_path}")
@@ -49,14 +56,34 @@ def set_password(password: str) -> None:
         config = yaml.safe_load(f) or {}
 
     auth = config.setdefault("auth", {})
-    pw_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
-    auth["password_hash"] = pw_hash
     auth.setdefault("enabled", True)
     auth["enabled"] = True
 
     if not auth.get("session_secret"):
         auth["session_secret"] = secrets.token_hex(32)
         print("  Generated new session_secret.")
+
+    pw_hash = ph.hash(password)
+
+    # Write into users[] list. Update existing admin entry if present,
+    # otherwise create one.
+    users = auth.setdefault("users", [])
+    for u in users:
+        if u.get("username") == "admin":
+            u["password_hash"] = pw_hash
+            u["hash_algorithm"] = "argon2id"
+            break
+    else:
+        users.append({
+            "username": "admin",
+            "role": "admin",
+            "password_hash": pw_hash,
+            "hash_algorithm": "argon2id",
+            "disabled": False,
+        })
+
+    # Remove legacy top-level password_hash if present.
+    auth.pop("password_hash", None)
 
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
@@ -66,6 +93,21 @@ def set_password(password: str) -> None:
 
 
 def main() -> None:
+    warnings.warn(
+        "glados.tools.set_password is deprecated. Use the WebUI wizard "
+        "(/setup) to bootstrap an admin, the WebUI Configuration → Users "
+        "page to manage users, or set GLADOS_AUTH_BYPASS=1 in compose for "
+        "recovery. This tool will be removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    # Also log to loguru so the warning is visible even when stderr is captured.
+    from loguru import logger
+    logger.warning(
+        "set_password is deprecated; see docs/AUTH_DESIGN.md §10.2 for "
+        "supported password-management flows."
+    )
+
     import argparse
     parser = argparse.ArgumentParser(description="Set GLaDOS WebUI password")
     parser.add_argument("--password", type=str, help="Password (prompted if omitted)")

@@ -11,12 +11,9 @@ Usage (container):
 """
 
 import atexit
-import hashlib
-import hmac
 import json
 import os
 import re
-import secrets
 import signal
 import ssl
 import struct
@@ -536,61 +533,6 @@ def _service_rate_limit_check(handler) -> bool:
     return False
 
 
-def _sign_session(payload: str) -> str:
-    """Create an HMAC-signed session token."""
-    sig = hmac.new(
-        _cfg.auth.session_secret.encode(), payload.encode(), hashlib.sha256
-    ).hexdigest()
-    return f"{payload}.{sig}"
-
-
-def _verify_session(token: str) -> dict | None:
-    """Verify and decode a session token. Returns payload dict or None."""
-    if not token or "." not in token:
-        return None
-    parts = token.rsplit(".", 1)
-    if len(parts) != 2:
-        return None
-    payload_str, sig = parts
-    expected = hmac.new(
-        _cfg.auth.session_secret.encode(), payload_str.encode(), hashlib.sha256
-    ).hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        return None
-    try:
-        payload = json.loads(payload_str)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    # Expiry check. Operator-requested behavior (2026-04-20): once
-    # logged in, sessions never time out — the admin browser stays
-    # authenticated until the operator explicitly logs out or the
-    # session_secret rotates. Legacy tokens with a real `exp` still
-    # expire at that timestamp; new tokens carry exp=0 as the
-    # "never expires" sentinel.
-    exp = payload.get("exp", 0)
-    if exp and exp < time.time():
-        return None
-    return payload
-
-
-def _create_session(remember: bool = False) -> str:
-    """Create a signed session token.
-
-    Operator-requested (2026-04-20): sessions never expire. Both
-    the "remember me" long session and the short session now carry
-    exp=0 (sentinel: never expires). The `remember` argument is
-    retained for backwards-compatible call sites but no longer
-    changes behavior; the cookie Max-Age uses the long window so
-    the browser keeps it across restarts."""
-    payload = json.dumps({
-        "sub": "admin",
-        "iat": int(time.time()),
-        "exp": 0,  # 0 = never expires (sentinel honored by _verify_session)
-        "jti": secrets.token_hex(8),
-    })
-    return _sign_session(payload)
-
-
 def _check_rate_limit(ip: str) -> bool:
     """Return True if the IP is rate-limited."""
     with _login_fails_lock:
@@ -633,32 +575,23 @@ def _merge_write_user_hash(username: str, new_hash: str, algorithm: str) -> None
         yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
 
 
-def _get_session_cookie(handler: BaseHTTPRequestHandler) -> dict | None:
-    """Extract and verify the session cookie from the request."""
-    cookie_header = handler.headers.get("Cookie", "")
-    if not cookie_header:
-        return None
-    # Manual parsing â€” SimpleCookie chokes on JSON-like values
-    for part in cookie_header.split(";"):
-        part = part.strip()
-        if part.startswith("glados_session="):
-            value = part[len("glados_session="):]
-            return _verify_session(value)
-    return None
-
-
 def _is_authenticated(handler: BaseHTTPRequestHandler) -> bool:
     """Check if the request is authenticated.
 
     Fail-closed when no users are configured. The login form remains
-    reachable so the operator can still complete the first-run wizard
-    or run set_password (deprecated path).
+    reachable so the operator can still complete the first-run wizard.
+    Uses the itsdangerous-backed session verification path.
     """
     if not _cfg.auth.enabled:
         return True
     if not _cfg.auth.users:
         return False
-    return _get_session_cookie(handler) is not None
+    token = _extract_session_cookie(handler)
+    if not token:
+        return False
+    from glados.auth import sessions as _sessions
+    valid, _ = _sessions.verify(token)
+    return valid
 
 
 def _auth_password_configured() -> bool:
@@ -2338,13 +2271,13 @@ class Handler(BaseHTTPRequestHandler):
 
         # Record the utterance entering the system; api_wrapper will
         # see X-GLaDOS-Origin and attribute tool calls downstream.
-        _sess = _get_session_cookie(self)
+        _user = _resolve_user_for_request(self)
         audit(AuditEvent(
             ts=time.time(),
             origin=Origin.WEBUI_CHAT,
             kind="utterance",
             utterance=message,
-            principal=(_sess.get("sub") if _sess else None),
+            principal=(_user.get("username") if _user else None),
         ))
 
         # Build messages for GLaDOS API
@@ -2443,13 +2376,13 @@ class Handler(BaseHTTPRequestHandler):
 
         # Record the utterance entering the system; X-GLaDOS-Origin lets
         # api_wrapper attribute downstream tool calls to the same origin.
-        _sess = _get_session_cookie(self)
+        _user = _resolve_user_for_request(self)
         audit(AuditEvent(
             ts=time.time(),
             origin=Origin.WEBUI_CHAT,
             kind="utterance",
             utterance=message,
-            principal=(_sess.get("sub") if _sess else None),
+            principal=(_user.get("username") if _user else None),
             extra={"streaming": True},
         ))
 

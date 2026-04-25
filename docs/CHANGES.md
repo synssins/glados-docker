@@ -2943,3 +2943,71 @@ Change 21). `pytest -q` runs in ~42 s.
   during probe testing.
 
 ---
+
+## Change 23 — WebUI auth rebuild (2026-04-24 → ...)
+
+Replaces the single-password bcrypt + HMAC-signed cookie with a
+multi-user Argon2id + itsdangerous + SQLite-session scheme. Full
+architecture in `docs/AUTH_DESIGN.md`; per-task implementation
+breakdown in `docs/AUTH_PLAN.md`.
+
+### Shipping
+- New `auth.users[]` list in `configs/global.yaml`. Legacy single-
+  password deployments migrate transparently on first successful
+  login.
+- Two roles: `admin` (full access) and `chat` (chat tab only).
+- First-run wizard at `/setup` with pluggable step framework — Phase
+  1 ships one step (Set Admin Password). First user role is hard-
+  coded to `admin`.
+- TTS + STT endpoints unauthenticated; chat requires login;
+  configuration is admin-only. Standalone `/tts` page extracted for
+  unauth speech-service access.
+- `GLADOS_AUTH_BYPASS=1` compose env var for recovery — disables auth
+  for the run with a non-dismissable bright-red banner on every page.
+- Per-IP token-bucket rate limiter on public TTS/STT routes
+  (default 10 requests / 60s).
+- Active Sessions card and Change Password card on the System tab.
+- Configuration → Users admin page for full user management.
+
+### Internal fixes
+- Removed module-level `_AUTH_*` globals in `tts_ui.py`. Auth config
+  is read live from `_cfg.auth.*` on every request — fixes the
+  long-standing live-reload gap noted in `AUTH_DESIGN.md` §2.7.
+- `_is_authenticated` and `_auth_password_configured` now key off
+  `cfg.auth.users` rather than the deprecated top-level
+  `password_hash` field.
+- Migration synthesizer at config load: legacy single-password YAML
+  is converted to `users[]` shape in memory before pydantic
+  validation. The disk YAML is updated on first successful login
+  (rehash to argon2id + write back).
+- Removed legacy HMAC cookie functions (`_sign_session`,
+  `_verify_session`, `_create_session`) from `tts_ui.py`. All
+  session verification now goes through `glados.auth.sessions`
+  (itsdangerous + SQLite). Audit attribution uses `_resolve_user_for_request`
+  instead of the old HMAC cookie parse.
+
+### Deprecated
+- `glados.tools.set_password` — emits a `DeprecationWarning`. Use
+  `/setup`, Configuration → Users, or `GLADOS_AUTH_BYPASS=1` instead.
+
+### New dependencies
+- `argon2-cffi>=25.1.0` — Argon2id password hashing
+- `itsdangerous>=2.2.0` — signed session cookies (same library Flask
+  uses internally)
+
+### Files added
+- `glados/auth/{__init__,hashing,db,sessions,user_state,bypass,rate_limit}.py`
+- `glados/webui/permissions.py`
+- `glados/webui/setup/{wizard,shell}.py`
+- `glados/webui/setup/steps/admin_password.py`
+- `glados/webui/pages/{users,users_page,tts_standalone}.py`
+- `glados/core/duration.py`
+- `tests/test_*.py` (~25 new test files; +250 new tests; suite at 1350 passing)
+
+### Rollback
+The `auth-rebuild` branch can be reverted via standard git revert. A
+snapshot of `configs/global.yaml` taken before deployment lets you
+restore the legacy single-password fields if needed. See
+`docs/AUTH_DESIGN.md` §11.
+
+---
