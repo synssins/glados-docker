@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from loguru import logger
@@ -182,11 +182,54 @@ class SSLGlobal(BaseModel):
     acme_api_token: str = _env("DNS_API_TOKEN", "")
 
 
+class RateLimitsConfig(BaseModel):
+    login_window_seconds: int = 60
+    login_max_attempts: int = 5
+    service_window_seconds: int = 60
+    service_max_requests: int = 10
+
+
+class UserConfig(BaseModel):
+    username: str
+    display_name: str = ""
+    role: Literal["admin", "chat"] = "chat"
+    password_hash: str = ""
+    hash_algorithm: Literal["argon2id", "bcrypt-legacy"] = "argon2id"
+    disabled: bool = False
+    created_at: int = 0
+
+    @model_validator(mode="after")
+    def _fill_display_name(self) -> "UserConfig":
+        if not self.display_name:
+            self.display_name = self.username
+        return self
+
+
 class AuthGlobal(BaseModel):
     enabled: bool = True
-    password_hash: str = ""
     session_secret: str = ""
-    session_timeout_hours: int = 24
+    session_timeout: str = "30d"
+    session_idle_timeout: str = "0"
+    rate_limits: RateLimitsConfig = Field(default_factory=RateLimitsConfig)
+    bootstrap_allowed: bool = True
+    users: list[UserConfig] = Field(default_factory=list)
+
+    # DEPRECATED — retained for one release cycle to accept legacy YAML.
+    # Migration synthesizer (Task 3) converts these into `users[]` on load.
+    password_hash: str = Field(default="", deprecated=True)
+    hash_algorithm: Literal["argon2id", "bcrypt-legacy"] = Field(
+        default="argon2id", deprecated=True,
+    )
+    session_timeout_hours: int = Field(default=0, deprecated=True)
+
+    @model_validator(mode="after")
+    def _warn_deprecated(self) -> "AuthGlobal":
+        _warn_deprecated_yaml(self, {
+            "password_hash": "migrated to users[].password_hash (Task 3 migration synthesizer)",
+            "hash_algorithm": "migrated to users[].hash_algorithm (Task 3 migration synthesizer)",
+            "session_timeout_hours": "replaced by session_timeout (e.g. '24h')",
+        })
+        return self
 
 
 class AuditGlobal(BaseModel):
@@ -825,6 +868,54 @@ class MQTTConfig(BaseModel):
     reconnect_delay_s: int = 5
 
 
+def _synthesize_legacy_admin(raw: dict) -> dict:
+    """Convert legacy single-password-hash YAML into the new multi-user
+    shape before pydantic validation. Idempotent on already-new YAML.
+
+    Rules:
+    - If raw.users is already set, pass-through unchanged.
+    - Else if raw.password_hash is non-empty, synthesize users=[{admin}]
+      with hash_algorithm=bcrypt-legacy and bootstrap_allowed=false.
+    - Else leave users=[] and bootstrap_allowed=true (fresh install).
+    - Convert session_timeout_hours → session_timeout string.
+
+    See docs/AUTH_DESIGN.md §10.1.
+    """
+    import copy as _copy, time as _time
+    out = _copy.deepcopy(raw)
+
+    # session_timeout_hours → session_timeout
+    hrs = out.get("session_timeout_hours", 0)
+    if hrs and "session_timeout" not in out:
+        out["session_timeout"] = f"{hrs}h"
+
+    existing_users = out.get("users")
+    if existing_users:
+        out.setdefault("bootstrap_allowed", False)
+        return out
+
+    legacy_hash = out.get("password_hash", "")
+    if legacy_hash:
+        # No historical creation date is available for the legacy
+        # single-password deployment; stamp the migration moment as
+        # a sentinel rather than leaving it 0.
+        out["users"] = [{
+            "username": "admin",
+            "display_name": "admin",
+            "role": "admin",
+            "password_hash": legacy_hash,
+            "hash_algorithm": out.get("hash_algorithm", "bcrypt-legacy"),
+            "disabled": False,
+            "created_at": int(_time.time()),
+        }]
+        out["bootstrap_allowed"] = False
+    else:
+        out["users"] = []
+        out.setdefault("bootstrap_allowed", True)
+
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Unified config store
 # ---------------------------------------------------------------------------
@@ -909,6 +1000,10 @@ class GladosConfigStore:
             logger.debug("Config not found, using defaults: {}", path)
             return model_cls()
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        # AuthGlobal ships through a migration synthesizer so legacy
+        # single-password YAML deployments come up with a users[] list.
+        if "auth" in raw and model_cls is GlobalConfig:
+            raw["auth"] = _synthesize_legacy_admin(raw.get("auth") or {})
         return model_cls.model_validate(raw)
 
     def _ensure_loaded(self) -> None:

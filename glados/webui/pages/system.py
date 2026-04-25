@@ -54,6 +54,8 @@ HTML = r"""
             onclick="showPageTab('system','hardware')">Hardware</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="maintenance"
             onclick="showPageTab('system','maintenance')">Maintenance</button>
+    <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="account"
+            onclick="showPageTab('system','account');_loadSessions()">Account</button>
   </nav>
 
   <div class="page-tab-panels">
@@ -234,7 +236,133 @@ HTML = r"""
       </div>
     </div>
 
+    <!-- ════════════════ Account tab ════════════════ -->
+    <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="account">
+
+      <div class="card">
+        <div class="section-title">Change Password</div>
+        <div class="mode-desc" style="margin-bottom:10px;">
+          Update your own password. You must supply your current password to confirm.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;max-width:360px;">
+          <input type="password" id="cpwCurrent" placeholder="Current password"
+                 style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-size:0.85rem;">
+          <input type="password" id="cpwNew" placeholder="New password (8+ characters)"
+                 style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-size:0.85rem;">
+          <input type="password" id="cpwConfirm" placeholder="Confirm new password"
+                 style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-size:0.85rem;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <button class="btn-small" onclick="_submitChangePassword()"
+                    style="padding:6px 16px;font-size:0.85rem;">Change Password</button>
+            <span id="cpwResult" style="font-size:0.82rem;"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:var(--sp-3);">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div class="section-title" style="margin-bottom:0;">Active Sessions</div>
+          <button class="btn-small" onclick="_loadSessions()"
+                  style="font-size:0.78rem;padding:4px 12px;">Refresh</button>
+        </div>
+        <div id="sessionsTable" style="margin-top:10px;font-size:0.85rem;color:var(--text-dim);">
+          Loading&hellip;
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 </div>
+
+<script>
+(function () {
+  function _escSession(s) {
+    var d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  function _cpwResult(msg, ok) {
+    var el = document.getElementById('cpwResult');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = ok ? 'var(--success, #2ecc71)' : 'var(--danger, #e74c3c)';
+  }
+
+  window._submitChangePassword = function () {
+    var cur = (document.getElementById('cpwCurrent') || {}).value || '';
+    var nw  = (document.getElementById('cpwNew')     || {}).value || '';
+    var cfm = (document.getElementById('cpwConfirm') || {}).value || '';
+    if (!cur || !nw || !cfm) { _cpwResult('All fields are required.', false); return; }
+    if (nw !== cfm)          { _cpwResult('New passwords do not match.', false); return; }
+    fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({'current': cur, 'new': nw}),
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) {
+        _cpwResult('Password updated.', true);
+        document.getElementById('cpwCurrent').value = '';
+        document.getElementById('cpwNew').value = '';
+        document.getElementById('cpwConfirm').value = '';
+      } else {
+        _cpwResult(d.error || 'Failed.', false);
+      }
+    }).catch(function () { _cpwResult('Request failed.', false); });
+  };
+
+  window._loadSessions = function () {
+    var el = document.getElementById('sessionsTable');
+    if (!el) return;
+    el.textContent = 'Loading\u2026';
+    fetch('/api/sessions').then(function (r) { return r.json(); }).then(function (d) {
+      var rows = d.sessions || [];
+      if (!rows.length) { el.textContent = 'No active sessions.'; return; }
+      var html = '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">'
+        + '<thead><tr style="color:var(--text-dim);text-align:left;">'
+        + '<th style="padding:4px 8px;">User</th>'
+        + '<th style="padding:4px 8px;">Created</th>'
+        + '<th style="padding:4px 8px;">Last used</th>'
+        + '<th style="padding:4px 8px;">IP</th>'
+        + '<th style="padding:4px 8px;"></th>'
+        + '</tr></thead><tbody>';
+      rows.forEach(function (s) {
+        var created  = s.created_at  ? new Date(s.created_at  * 1000).toLocaleString() : '—';
+        var lastUsed = s.last_used_at ? new Date(s.last_used_at * 1000).toLocaleString() : '—';
+        html += '<tr style="border-top:1px solid var(--border);">'
+          + '<td style="padding:5px 8px;">' + _escSession(s.username) + '</td>'
+          + '<td style="padding:5px 8px;">' + created + '</td>'
+          + '<td style="padding:5px 8px;">' + lastUsed + '</td>'
+          + '<td style="padding:5px 8px;">' + _escSession(s.remote_addr || '—') + '</td>'
+          + '<td style="padding:5px 8px;">'
+          + '<button class="btn-small" style="font-size:0.75rem;padding:3px 10px;background:#c0392b;" '
+          + 'data-revoke-sid="' + _escSession(s.session_id) + '">Revoke</button>'
+          + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      el.innerHTML = html;
+      el.querySelectorAll('[data-revoke-sid]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          _revokeSession(b.getAttribute('data-revoke-sid'));
+        });
+      });
+    }).catch(function () { el.textContent = 'Failed to load sessions.'; });
+  };
+
+  window._revokeSession = async function (sid) {
+    if (!confirm('Revoke this session?')) return;
+    const r = await fetch('/api/sessions/' + encodeURIComponent(sid), {method: 'DELETE'});
+    if (r.status === 401) {
+      window.location = '/login';
+      return;
+    }
+    if (!r.ok) {
+      alert('Revoke failed: ' + r.status);
+      return;
+    }
+    _loadSessions();
+  };
+})();
+</script>
 """

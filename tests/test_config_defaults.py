@@ -16,6 +16,7 @@ from loguru import logger
 
 from glados.core.config_store import (
     AuditGlobal,
+    AuthGlobal,
     GlobalConfig,
     HomeAssistantGlobal,
     MemoryConfig,
@@ -382,3 +383,77 @@ def test_partial_global_save_preserves_auth_block(tmp_path) -> None:
     )
     assert reloaded["auth"]["password_hash"] == "$2b$12$fake.hash.preserved"
     assert reloaded["auth"]["session_secret"] == "preserved-secret-xyz"
+
+
+# ── Auth schema (added 2026-04-24 for multi-user rebuild) ──────────
+
+def test_auth_global_new_shape_defaults():
+    from glados.core.config_store import AuthGlobal
+    a = AuthGlobal()
+    assert a.enabled is True
+    assert a.session_secret == ""
+    assert a.session_timeout == "30d"
+    assert a.session_idle_timeout == "0"
+    assert a.bootstrap_allowed is True
+    assert a.users == []
+    assert a.rate_limits.login_max_attempts == 5
+    assert a.rate_limits.service_max_requests == 10
+
+
+def test_auth_global_legacy_fields_still_parse():
+    from glados.core.config_store import AuthGlobal
+    a = AuthGlobal.model_validate({
+        "enabled": True,
+        "password_hash": "$2b$12$legacyhash",
+        "session_secret": "abc123",
+        "session_timeout_hours": 24,
+    })
+    assert a.password_hash == "$2b$12$legacyhash"
+    assert a.session_timeout_hours == 24
+    assert a.users == []
+
+
+def test_auth_user_config_defaults():
+    from glados.core.config_store import UserConfig
+    u = UserConfig(username="alice", password_hash="$argon2id$...")
+    assert u.role == "chat"
+    assert u.hash_algorithm == "argon2id"
+    assert u.disabled is False
+    assert u.display_name == "alice"
+
+
+def test_auth_user_config_rejects_unknown_role():
+    import pydantic
+    from glados.core.config_store import UserConfig
+    with pytest.raises(pydantic.ValidationError):
+        UserConfig(username="x", password_hash="h", role="superuser")
+
+
+def test_auth_global_deprecated_fields_emit_warnings() -> None:
+    """Legacy YAML with password_hash / hash_algorithm / session_timeout_hours
+    must emit a loguru WARNING — same pattern every other model with
+    deprecated fields uses (NetworkGlobal, AuditGlobal, etc.)."""
+    with _capture_warnings() as msgs:
+        AuthGlobal.model_validate({
+            "password_hash": "$2b$12$legacyhash",
+            "hash_algorithm": "argon2id",
+            "session_timeout_hours": 24,
+        })
+    joined = "\n".join(msgs)
+    assert "password_hash" in joined, (
+        f"Expected deprecation warning for password_hash; got: {joined!r}"
+    )
+    assert "session_timeout_hours" in joined, (
+        f"Expected deprecation warning for session_timeout_hours; got: {joined!r}"
+    )
+    assert "deprecated" in joined.lower(), (
+        f"Expected 'deprecated' in warning text; got: {joined!r}"
+    )
+
+
+def test_auth_global_no_warning_on_default_construction() -> None:
+    """Instantiating AuthGlobal with no YAML must be silent — fresh
+    installs shouldn't see deprecation noise for the legacy fields."""
+    with _capture_warnings() as msgs:
+        AuthGlobal()
+    assert msgs == [], f"Expected no warnings on default construction, got: {msgs!r}"

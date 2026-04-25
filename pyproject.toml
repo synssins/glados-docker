@@ -40,7 +40,9 @@ dependencies = [
     # MCP tool integration
     "mcp>=1.25.0",
     # Auth
-    "bcrypt>=4.0.0",
+    "argon2-cffi>=25.1.0",       # Argon2id password hashing (new default)
+    "itsdangerous>=2.2.0",       # signed session cookies
+    "bcrypt>=4.0.0",             # legacy hash verification during migration; slated for removal
     # Misc
     "rich>=14.0.0",
     "threadpoolctl>=3.0.0",

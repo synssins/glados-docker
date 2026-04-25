@@ -4314,6 +4314,7 @@ function _panelIdFor(key) {
   if (key === 'config.system') return 'tab-config-system';
   if (key === 'config.memory') return 'tab-config-memory';
   if (key === 'config.logs')   return 'tab-config-logs';
+  if (key === 'config.users')  return 'tab-config-users';
   if (key && key.indexOf('config.') === 0) return 'tab-config';
   return 'tab-' + key;
 }
@@ -4398,6 +4399,8 @@ function navigateTo(key) {
     if (typeof memoryLoadAll === 'function') memoryLoadAll();
   } else if (key === 'config.logs') {
     if (typeof logsOnTabActivate === 'function') logsOnTabActivate();
+  } else if (key === 'config.users') {
+    if (typeof usersLoadAll === 'function') usersLoadAll();
   } else if (key.indexOf('config.') === 0) {
     const section = key.substring('config.'.length);
     _cfgCurrentSection = section;

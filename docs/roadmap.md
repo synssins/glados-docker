@@ -807,3 +807,17 @@ Any new non-standards-compliant issues found during work should be
 added to this list. Current scan helpers:
 - BOM scan: `python -c "from pathlib import Path; [print(p) for p in Path('glados').rglob('*.py') if Path(p).read_bytes().startswith(b'\xef\xbb\xbf')]"`
 - Mojibake scan: same pattern looking for `b'\xc3\xa2\xe2\x82\xac'` (UTF-8 of `â€`).
+- **Rate-limiter capacity captured at module load.** `_service_limiter`
+  in `glados/webui/tts_ui.py` reads `cfg.auth.rate_limits.service_max_requests`
+  and `service_window_seconds` once at import. Operator changes to
+  these values via the WebUI YAML save don't propagate without a
+  container restart. Same class as the Task 1 live-reload bug; the
+  fix is to read these inside `_service_rate_limit_check` per-call
+  and rebuild the bucket if the values change. Surfaced during Task
+  10 review.
+- **Audit-event tagging for `GLADOS_AUTH_BYPASS` not wired.**
+  `glados.auth.bypass.audit_tag()` is implemented and exposed but
+  never called by the audit-event sites. Phase 2 follow-up: thread
+  `bypass.audit_tag()` into the existing `audit.py` callers so audit
+  rows during a bypass run are unambiguously attributed. Surfaced
+  during Task 9 implementation.

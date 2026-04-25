@@ -31,13 +31,25 @@ home_assistant:
   # url: "http://10.0.0.20:8123"
   # ws_url: "ws://10.0.0.20:8123/api/websocket"
 
-# ---------------------------------------------------------------------------
-# WebUI authentication — set the password via:
-#   docker exec glados python -m glados.tools.set_password
-# ---------------------------------------------------------------------------
+# ─── WebUI Authentication ──────────────────────────────────────────
+# Users live here as a list. The first user is created by the /setup
+# wizard on a fresh install; additional users are added via the
+# Configuration → Users page in the WebUI.
 auth:
   enabled: true
-  session_timeout_hours: 24
+  session_timeout: "30d"          # or "never", "<n>m|h|d|w", or seconds
+  session_idle_timeout: "0"       # "0" disabled, else duration string
+  rate_limits:
+    login_window_seconds: 60
+    login_max_attempts: 5
+    service_window_seconds: 60
+    service_max_requests: 10
+  bootstrap_allowed: true         # flips false after first /setup completes
+  users: []                       # populated by /setup wizard
+  # session_secret is auto-generated on first /setup; do not set manually.
+  # Legacy single-password deployments (password_hash at this level) are
+  # auto-migrated into users[] on first successful login. See
+  # docs/AUTH_DESIGN.md §10.
 
 # ---------------------------------------------------------------------------
 # Service-specific tunables (URLs intentionally omitted — see defaults

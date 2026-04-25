@@ -11,12 +11,9 @@ Usage (container):
 """
 
 import atexit
-import hashlib
-import hmac
 import json
 import os
 import re
-import secrets
 import signal
 import ssl
 import struct
@@ -41,6 +38,13 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 from glados.core.config_store import cfg as _cfg
 from glados.observability import AuditEvent, Origin, audit
+
+# Wizard registry — Phase 1 ships one step.
+from glados.webui.setup.steps.admin_password import SetAdminPasswordStep
+from glados.webui.setup import wizard as _wizard
+from glados.webui.setup.shell import render_shell as _render_shell
+
+_WIZARD_STEPS = (SetAdminPasswordStep(),)
 
 # Service URLs and models are read live via these helpers so that a
 # config save (LLM & Services page, etc.) takes effect without any
@@ -115,6 +119,27 @@ def reload_tls_certs() -> tuple[bool, str]:
         return False, f"load_cert_chain failed: {exc}"
 
 SPEAKER_BLACKLIST = set(_cfg.speakers.blacklist)
+
+
+def _inject_bypass_banner(html_body: bytes) -> bytes:
+    """When auth bypass is active, inject the warning banner immediately
+    after <body>. If the response has no <body> tag, prepend the banner.
+
+    Returns the body unchanged when bypass is inactive (the bypass
+    module's banner_html() returns ''). Idempotent.
+    """
+    from glados.auth import bypass as _bypass
+    if not _bypass.active():
+        return html_body
+    banner = _bypass.banner_html().encode("utf-8")
+    body_open = html_body.find(b"<body")
+    if body_open < 0:
+        return banner + html_body
+    close = html_body.find(b">", body_open)
+    if close < 0:
+        return banner + html_body
+    return html_body[:close + 1] + banner + html_body[close + 1:]
+
 
 # Container service management -- services are Docker containers, not NSSM services.
 SERVICE_MAP = {
@@ -441,15 +466,10 @@ CHAT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 import bcrypt as _bcrypt
 
-# Auth config (reloaded on each check to pick up changes)
-_AUTH_ENABLED = _cfg.auth.enabled
-_AUTH_PASSWORD_HASH = _cfg.auth.password_hash
-_AUTH_SESSION_SECRET = _cfg.auth.session_secret
-_AUTH_SESSION_TIMEOUT_H = _cfg.auth.session_timeout_hours
-
-# Session durations
-_SESSION_SHORT_S = _AUTH_SESSION_TIMEOUT_H * 3600       # normal session (24h default)
-_SESSION_LONG_S = 30 * 24 * 3600                        # "stay logged in" (30 days)
+# Auth config is read live from _cfg on every check. NO module-level
+# aliases — earlier code captured _cfg.auth.* at import which silently
+# broke live-reload. See docs/AUTH_DESIGN.md §2.7.
+_SESSION_LONG_S = 30 * 24 * 3600                        # "stay logged in" cookie Max-Age (30 days)
 
 # Rate limiting: {ip: (fail_count, last_fail_time)}
 _login_fails: dict[str, tuple[int, float]] = {}
@@ -457,15 +477,24 @@ _login_fails_lock = threading.Lock()
 _RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW_S = 60
 
-# Public paths that don't require auth
-_PUBLIC_PATHS = frozenset({"/login", "/health"})
+# Service-endpoint rate limiter (Task 10) — per-IP token bucket for public
+# TTS/STT routes. Capacity + window come from cfg.auth.rate_limits.
+from glados.auth.rate_limit import TokenBucket  # noqa: E402
+_service_limiter = TokenBucket(
+    capacity=_cfg.auth.rate_limits.service_max_requests,
+    window_seconds=_cfg.auth.rate_limits.service_window_seconds,
+)
 
-# Public route prefixes â€” TTS/Chat accessible without auth
+# Public paths -- no session cookie required.
+# Matches AUTH_DESIGN.md SS3.4. /api/chat and /chat_audio/* require chat.send.
+_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status"})
+
 _PUBLIC_PREFIXES = (
-    "/api/generate", "/api/chat", "/api/stt",
-    "/api/files", "/api/attitudes", "/api/speakers", "/api/voices",
-    "/files/", "/chat_audio/", "/chat_audio_stream/",
-    "/api/auth/",
+    # STT + TTS service endpoints (operator decision 2026-04-24)
+    "/api/stt",
+    "/api/generate", "/api/voices", "/api/speakers",
+    "/api/attitudes", "/api/files", "/files/",
+    # Infrastructure
     "/static/",
 )
 
@@ -477,59 +506,31 @@ def _is_public_route(path: str) -> bool:
     return any(path.startswith(p) for p in _PUBLIC_PREFIXES)
 
 
-def _sign_session(payload: str) -> str:
-    """Create an HMAC-signed session token."""
-    sig = hmac.new(
-        _AUTH_SESSION_SECRET.encode(), payload.encode(), hashlib.sha256
-    ).hexdigest()
-    return f"{payload}.{sig}"
+# Service routes that consume TTS/STT compute — rate-limited per-IP.
+# /static/ and /login /logout /health /tts /api/auth/* are intentionally excluded.
+_RATE_LIMITED_PUBLIC_PATHS = (
+    "/api/stt", "/api/generate", "/api/voices", "/api/speakers",
+    "/api/attitudes", "/api/files", "/files/",
+)
 
 
-def _verify_session(token: str) -> dict | None:
-    """Verify and decode a session token. Returns payload dict or None."""
-    if not token or "." not in token:
-        return None
-    parts = token.rsplit(".", 1)
-    if len(parts) != 2:
-        return None
-    payload_str, sig = parts
-    expected = hmac.new(
-        _AUTH_SESSION_SECRET.encode(), payload_str.encode(), hashlib.sha256
-    ).hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        return None
-    try:
-        payload = json.loads(payload_str)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    # Expiry check. Operator-requested behavior (2026-04-20): once
-    # logged in, sessions never time out — the admin browser stays
-    # authenticated until the operator explicitly logs out or the
-    # session_secret rotates. Legacy tokens with a real `exp` still
-    # expire at that timestamp; new tokens carry exp=0 as the
-    # "never expires" sentinel.
-    exp = payload.get("exp", 0)
-    if exp and exp < time.time():
-        return None
-    return payload
+def _service_rate_limit_check(handler) -> bool:
+    """Return True if the request is allowed; False if 429 was sent.
 
-
-def _create_session(remember: bool = False) -> str:
-    """Create a signed session token.
-
-    Operator-requested (2026-04-20): sessions never expire. Both
-    the "remember me" long session and the short session now carry
-    exp=0 (sentinel: never expires). The `remember` argument is
-    retained for backwards-compatible call sites but no longer
-    changes behavior; the cookie Max-Age uses the long window so
-    the browser keeps it across restarts."""
-    payload = json.dumps({
-        "sub": "admin",
-        "iat": int(time.time()),
-        "exp": 0,  # 0 = never expires (sentinel honored by _verify_session)
-        "jti": secrets.token_hex(8),
-    })
-    return _sign_session(payload)
+    Keyed by remote_addr. Used on the public TTS/STT service routes
+    (which are unauthenticated, see AUTH_DESIGN.md §3.4 + §8.2).
+    """
+    ip = handler.client_address[0] if handler.client_address else "unknown"
+    if _service_limiter.allow(ip):
+        return True
+    handler.send_response(429)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Retry-After", "60")
+    body = b'{"error": "Rate limit exceeded", "retry_after": 60}'
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+    return False
 
 
 def _check_rate_limit(ip: str) -> bool:
@@ -557,46 +558,146 @@ def _clear_fails(ip: str) -> None:
         _login_fails.pop(ip, None)
 
 
-def _get_session_cookie(handler: BaseHTTPRequestHandler) -> dict | None:
-    """Extract and verify the session cookie from the request."""
-    cookie_header = handler.headers.get("Cookie", "")
-    if not cookie_header:
-        return None
-    # Manual parsing â€” SimpleCookie chokes on JSON-like values
-    for part in cookie_header.split(";"):
-        part = part.strip()
-        if part.startswith("glados_session="):
-            value = part[len("glados_session="):]
-            return _verify_session(value)
-    return None
+def _merge_write_user_hash(username: str, new_hash: str, algorithm: str) -> None:
+    """Update a single user's password_hash + hash_algorithm in global.yaml
+    via merge-write — leaves every other field untouched."""
+    config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
+    path = Path(config_dir) / "global.yaml"
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    users = raw.setdefault("auth", {}).setdefault("users", [])
+    for u in users:
+        if u.get("username") == username:
+            u["password_hash"] = new_hash
+            u["hash_algorithm"] = algorithm
+            break
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
 
 
 def _is_authenticated(handler: BaseHTTPRequestHandler) -> bool:
     """Check if the request is authenticated.
 
-    Prior behavior treated "auth enabled but no password hash set"
-    as auto-authenticated — intended as a bootstrap convenience
-    but functionally an open door: if the hash was wiped or never
-    initialised, every request passed. Now fail-closed: when auth
-    is enabled and no hash exists, deny and let the operator run
-    `docker exec -it glados python -m glados.tools.set_password`
-    to configure one. Auth can still be fully disabled via
-    `auth.enabled=false` in global.yaml for development.
+    Fail-closed when no users are configured. The login form remains
+    reachable so the operator can still complete the first-run wizard.
+    Uses the itsdangerous-backed session verification path.
     """
-    if not _AUTH_ENABLED:
+    if not _cfg.auth.enabled:
         return True
-    if not _AUTH_PASSWORD_HASH:
-        # No password configured; refuse. The login page surfaces
-        # the setup instruction so the admin isn't stranded.
+    if not _cfg.auth.users:
         return False
-    return _get_session_cookie(handler) is not None
+    token = _extract_session_cookie(handler)
+    if not token:
+        return False
+    from glados.auth import sessions as _sessions
+    valid, _ = _sessions.verify(token)
+    return valid
 
 
 def _auth_password_configured() -> bool:
-    """True when a password hash is set. Login page uses this to
-    show a setup hint instead of the normal form when the admin
-    hasn't run set_password yet."""
-    return bool(_AUTH_PASSWORD_HASH)
+    """True when at least one user is configured. Login page uses this
+    to show the setup hint instead of the form on a fresh install."""
+    return bool(_cfg.auth.users)
+
+
+# Permission check (Task 4)
+
+_UNSET = object()  # sentinel for _resolved_user cache miss vs explicit None
+
+
+def _extract_session_cookie(handler) -> str:
+    """Pull the glados_session value from the Cookie header, '' if absent."""
+    cookie_header = handler.headers.get("Cookie", "")
+    if not cookie_header:
+        return ""
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith("glados_session="):
+            return part[len("glados_session="):]
+    return ""
+
+
+def _resolve_user_for_request(handler) -> dict | None:
+    """Return {'username', 'role', 'session_id'} or None.
+
+    Caches on the handler so repeat checks within one request don't
+    re-query auth.db.
+    """
+    cached = getattr(handler, "_resolved_user", _UNSET)
+    if cached is not _UNSET:
+        return cached
+
+    from glados.auth import sessions as _sessions
+    from glados.core.config_store import cfg as _cfg_live
+
+    token = _extract_session_cookie(handler)
+    if not token:
+        handler._resolved_user = None
+        return None
+
+    valid, row = _sessions.verify(token)
+    if not valid or not row:
+        handler._resolved_user = None
+        return None
+
+    user = next(
+        (u for u in _cfg_live.auth.users
+         if u.username == row["username"] and not u.disabled),
+        None,
+    )
+    if user is None:
+        handler._resolved_user = None
+        return None
+
+    handler._resolved_user = {
+        "username": user.username,
+        "role": user.role,
+        "session_id": row["session_id"],
+    }
+    return handler._resolved_user
+
+
+def require_perm(handler, perm: str) -> bool:
+    """Enforce `perm` on `handler`. Returns True if allowed.
+
+    On denial, writes 401 (no session) or 403 (session but missing
+    perm) and returns False. Handlers short-circuit on False, same
+    calling convention as the legacy auth check.
+    """
+    from glados.webui.permissions import user_has_perm
+    from glados.core.config_store import cfg as _cfg_live
+    from glados.auth import bypass as _bypass
+
+    if _bypass.active():
+        return True
+
+    if not _cfg_live.auth.enabled:
+        return True
+
+    user = _resolve_user_for_request(handler)
+    if user is None:
+        if handler.path.startswith("/api/"):
+            handler._send_json(401, {"error": "Authentication required"})
+        else:
+            handler.send_response(302)
+            handler.send_header("Location", "/login")
+            handler.end_headers()
+        return False
+
+    if not user_has_perm(user["role"], perm):
+        if handler.path.startswith("/api/"):
+            handler._send_json(403, {
+                "error": "Forbidden",
+                "required_permission": perm,
+            })
+        else:
+            handler.send_response(403)
+            handler.send_header("Content-Type", "text/html")
+            handler.end_headers()
+            handler.wfile.write(b"<h1>403 Forbidden</h1>")
+        return False
+
+    return True
 
 
 # â”€â”€ Login page HTML â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -645,6 +746,7 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
     color: #aaa;
     margin-bottom: 6px;
   }
+  .field input[type="text"],
   .field input[type="password"] {
     width: 100%;
     padding: 10px 12px;
@@ -656,6 +758,7 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
     outline: none;
     transition: border-color 0.2s;
   }
+  .field input[type="text"]:focus,
   .field input[type="password"]:focus { border-color: #ff6600; }
   .remember {
     display: flex;
@@ -698,8 +801,12 @@ LOGIN_PAGE = r"""<!DOCTYPE html>
   <div class="error" id="error"></div>
   <form id="loginForm" method="POST" action="/login">
     <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autofocus required>
+    </div>
+    <div class="field">
       <label for="password">Password</label>
-      <input type="password" id="password" name="password" autofocus required>
+      <input type="password" id="password" name="password" required>
     </div>
     <div class="remember">
       <input type="checkbox" id="remember" name="remember" value="1">
@@ -721,6 +828,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
       method: 'POST',
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
       body: new URLSearchParams({
+        username: document.getElementById('username').value,
         password: document.getElementById('password').value,
         remember: document.getElementById('remember').checked ? '1' : '0'
       })
@@ -1191,19 +1299,6 @@ class Handler(BaseHTTPRequestHandler):
 
     # â”€â”€ Auth helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    def _require_auth(self) -> bool:
-        """Check auth; if not authenticated, redirect to login. Returns True if OK."""
-        if _is_authenticated(self):
-            return True
-        # API calls get 401 JSON; browser requests get redirect
-        if self.path.startswith("/api/"):
-            self._send_json(401, {"error": "Authentication required"})
-        else:
-            self.send_response(302)
-            self.send_header("Location", "/login")
-            self.end_headers()
-        return False
-
     def _serve_login(self):
         """Serve the login page HTML. When no password is configured
         (fresh deploy or wiped hash), inject a setup instruction so
@@ -1226,7 +1321,7 @@ class Handler(BaseHTTPRequestHandler):
             # sits above the password input. LOGIN_PAGE contains
             # exactly one <form> tag.
             html = html.replace("<form", banner + "<form", 1)
-        body = html.encode()
+        body = _inject_bypass_banner(html.encode())
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1234,56 +1329,68 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle_login(self):
-        """Process POST /login â€” validate password, set session cookie."""
-        client_ip = self.client_address[0]
+        """POST /login -- validate username + password, set session cookie."""
+        from glados.auth import hashing as _hashing, sessions as _sessions
+        from glados.auth import user_state as _user_state
+        from glados.core.config_store import cfg as _cfg_live
 
-        # Rate limit check
-        if _check_rate_limit(client_ip):
-            self._send_json(429, {"ok": False, "error": "Too many attempts. Try again in 60 seconds."})
-            return
-
-        # Read form body
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length).decode("utf-8") if length else ""
+        # Parse form
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
         params = urllib.parse.parse_qs(body)
+        username = (params.get("username", [""])[0] or "").strip()
         password = params.get("password", [""])[0]
-        remember = params.get("remember", ["0"])[0] == "1"
 
-        # Validate
-        if not _AUTH_PASSWORD_HASH or not password:
-            _record_fail(client_ip)
-            self._send_json(401, {"ok": False, "error": "Invalid password"})
+        # Rate limit (existing helpers from this module)
+        ip = self.client_address[0] if self.client_address else "?"
+        if _check_rate_limit(ip):
+            self._send_json(429, {"ok": False, "error": "Too many failed attempts. Try again later."})
             return
 
-        try:
-            valid = _bcrypt.checkpw(password.encode("utf-8"), _AUTH_PASSWORD_HASH.encode("ascii"))
-        except Exception:
-            valid = False
+        # Look up user (exact case-sensitive match, must not be disabled)
+        user = next(
+            (u for u in _cfg_live.auth.users
+             if u.username == username and not u.disabled),
+            None,
+        )
+        if not user:
+            _record_fail(ip)
+            if username:
+                _user_state.record_failure(username)
+            self._send_json(401, {"ok": False, "error": "Invalid credentials"})
+            return
 
+        # Verify password
+        valid, rehash_needed = _hashing.verify_password(password, user.password_hash)
         if not valid:
-            _record_fail(client_ip)
-            self._send_json(401, {"ok": False, "error": "Invalid password"})
+            _record_fail(ip)
+            _user_state.record_failure(username)
+            self._send_json(401, {"ok": False, "error": "Invalid credentials"})
             return
 
-        # Success — create session
-        _clear_fails(client_ip)
-        token = _create_session(remember=remember)
-        # Operator-requested 2026-04-20: sessions never expire. Use
-        # the long cookie Max-Age unconditionally so the browser
-        # keeps the cookie across restarts; the signed token itself
-        # carries exp=0 so the server never treats it as expired.
-        max_age = _SESSION_LONG_S
+        _clear_fails(ip)
+        _user_state.record_success(username, ip)
+
+        # Rehash bcrypt-legacy on first successful login
+        if rehash_needed:
+            new_hash = _hashing.hash_password(password)
+            _merge_write_user_hash(username, new_hash, "argon2id")
+            _cfg_live.reload()
+
+        # Create session
+        ua = (self.headers.get("User-Agent") or "")[:500]
+        token = _sessions.create(
+            username=username, role=user.role,
+            remote_addr=ip, user_agent=ua,
+        )
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         cookie_parts = [
             f"glados_session={token}",
-            f"Max-Age={max_age}",
-            "Path=/",
-            "HttpOnly",
-            "SameSite=Strict",
+            f"Max-Age={_SESSION_LONG_S}",
+            "Path=/", "HttpOnly", "SameSite=Strict",
         ]
-        # Add Secure flag when running HTTPS
         if SSL_CERT and SSL_CERT.exists():
             cookie_parts.append("Secure")
         self.send_header("Set-Cookie", "; ".join(cookie_parts))
@@ -1308,11 +1415,189 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Set-Cookie", "; ".join(cookie_parts))
         self.end_headers()
 
+
+    # ── First-run wizard ──────────────────────────────────────────────────────────────
+
+    def _dispatch_setup(self):
+        """Routes for the first-run wizard. See AUTH_DESIGN.md §5.1."""
+        from glados.core.config_store import cfg as _cfg_live
+
+        if not _cfg_live.auth.bootstrap_allowed:
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.end_headers()
+            return
+
+        # GET /setup → redirect to first required step
+        if self.path.rstrip("/") == "/setup" and self.command == "GET":
+            nxt = _wizard.resolve_next_step(_WIZARD_STEPS, _cfg_live)
+            if nxt is None:
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+            self.send_response(302)
+            self.send_header("Location", f"/setup/{nxt.name}")
+            self.end_headers()
+            return
+
+        # /setup/<step_name>
+        if self.path.startswith("/setup/"):
+            step_name = self.path[len("/setup/"):].strip("/").split("?", 1)[0]
+            step = next((s for s in _WIZARD_STEPS if s.name == step_name), None)
+            if step is None or not step.is_required(_cfg_live):
+                self.send_response(302)
+                self.send_header("Location", "/setup")
+                self.end_headers()
+                return
+
+            if self.command == "GET":
+                Handler._render_wizard_step(self, step, error="", sticky_form=None)
+                return
+
+            if self.command == "POST":
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length).decode("utf-8") if length else ""
+                form = {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
+                result = step.process(self, form)
+                if result == _wizard.StepResult.ERROR:
+                    err = getattr(self, "_wizard_error", "Invalid input.")
+                    sticky = getattr(self, "_wizard_form", None)
+                    Handler._render_wizard_step(self, step, error=err, sticky_form=sticky)
+                    return
+
+                _cfg_live.reload()
+                nxt = _wizard.resolve_next_step(_WIZARD_STEPS, _cfg_live)
+                if nxt is None:
+                    Handler._complete_wizard_session(self, form.get("username", "").strip())
+                    return
+                self.send_response(302)
+                self.send_header("Location", f"/setup/{nxt.name}")
+                self.end_headers()
+                return
+
+        Handler._send_error(self, 404, "Not Found")
+
+    def _render_wizard_step(self, step, error: str, sticky_form: dict | None):
+        content = step.render(self, error=error, sticky_form=sticky_form)
+        html_doc = _render_shell(
+            title=step.title, step_num=1, total_steps=len(_WIZARD_STEPS),
+            content=content,
+        )
+        body = _inject_bypass_banner(html_doc.encode("utf-8"))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _complete_wizard_session(self, username: str):
+        """After the final wizard step, issue a session cookie and 302 to /."""
+        from glados.auth import sessions as _sessions
+        from glados.core.config_store import cfg as _cfg_live
+
+        user = next(
+            (u for u in _cfg_live.auth.users if u.username == username),
+            None,
+        )
+        if user is None:
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.end_headers()
+            return
+
+        ua = self.headers.get("User-Agent", "")[:500]
+        ip = self.client_address[0] if self.client_address else ""
+        token = _sessions.create(
+            username=username, role=user.role,
+            remote_addr=ip, user_agent=ua,
+        )
+
+        self.send_response(302)
+        self.send_header("Location", "/")
+        cookie_parts = [
+            f"glados_session={token}", f"Max-Age={_SESSION_LONG_S}",
+            "Path=/", "HttpOnly", "SameSite=Strict",
+        ]
+        if SSL_CERT and SSL_CERT.exists():
+            cookie_parts.append("Secure")
+        self.send_header("Set-Cookie", "; ".join(cookie_parts))
+        self.end_headers()
+
     # â”€â”€ Routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _get_auth_status(self):
-        """Return authentication status for frontend gating."""
-        self._send_json(200, {"authenticated": _is_authenticated(self)})
+        """Return authentication status and role for frontend gating."""
+        from glados.auth import bypass as _bypass
+        if _bypass.active():
+            self._send_json(200, {
+                "authenticated": True,
+                "bypass": True,
+                "user": {"username": "bypass", "role": "admin"},
+                "role": "admin",
+            })
+            return
+        user = _resolve_user_for_request(self)
+        self._send_json(200, {
+            "authenticated": user is not None,
+            "bypass": False,
+            "user": user,
+            "role": user["role"] if user else None,
+        })
+
+    def _change_password(self):
+        """POST /api/auth/change-password — user changes their own password.
+
+        Verifies the current password against the stored hash, validates the
+        new password against policy, then writes the new hash to global.yaml.
+        Does NOT revoke other sessions (operator decision 2026-04-24).
+        """
+        from glados.auth import hashing as _hashing
+        from glados.webui.permissions import password_meets_policy
+        from glados.webui.pages import users as _users_page
+        from glados.core.config_store import cfg as _cfg_live
+
+        user = _resolve_user_for_request(self)
+        if user is None:
+            self._send_json(401, {"ok": False, "error": "Authentication required"})
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except json.JSONDecodeError:
+            self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+            return
+
+        current = body.get("current") or ""
+        new_pw = body.get("new") or ""
+
+        yaml_user = next(
+            (u for u in _cfg_live.auth.users if u.username == user["username"]),
+            None,
+        )
+        if yaml_user is None:
+            self._send_json(401, {"ok": False, "error": "Authentication required"})
+            return
+
+        valid, _ = _hashing.verify_password(current, yaml_user.password_hash)
+        if not valid:
+            self._send_json(401, {"ok": False, "error": "Current password is incorrect"})
+            return
+
+        ok, msg = password_meets_policy(new_pw)
+        if not ok:
+            self._send_json(400, {"ok": False, "error": msg})
+            return
+
+        ok, err = _users_page.reset_password(user["username"], new_pw)
+        if not ok:
+            self._send_json(400, {"ok": False, "error": err})
+            return
+
+        # Operator decision 2026-04-24: no other-session revocation here.
+        _cfg_live.reload()
+        self._send_json(200, {"ok": True})
 
     def _dispatch_get(self):
         """Route GET requests to handlers (after auth check if needed)."""
@@ -1406,6 +1691,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._get_training_log()
             else:
                 self._send_error(404, "Not found")
+        elif p == "/api/users":
+            if not require_perm(self, "admin"): return
+            from glados.webui.pages import users as _users_page
+            self._send_json(200, {"users": _users_page.list_users()})
+        elif p == "/api/sessions":
+            from glados.auth import sessions as _sessions
+            user = _resolve_user_for_request(self)
+            if user is None:
+                self._send_json(401, {"error": "Authentication required"})
+                return
+            if user["role"] == "admin":
+                rows = _sessions.list_active()
+            else:
+                rows = _sessions.list_active(username=user["username"])
+            self._send_json(200, {"sessions": rows})
         else:
             self._send_error(404, "Not found")
 
@@ -1421,14 +1721,33 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(302)
                 self.send_header("Location", "/")
                 self.end_headers()
-            else:
-                self._serve_login()
+                return
+            from glados.core.config_store import cfg as _cfg_live
+            if not _cfg_live.auth.users and _cfg_live.auth.bootstrap_allowed:
+                self.send_response(302)
+                self.send_header("Location", "/setup")
+                self.end_headers()
+                return
+            self._serve_login()
+            return
+
+        if self.path == "/setup" or self.path.startswith("/setup/"):
+            self._dispatch_setup()
             return
         if self.path == "/logout":
             self._handle_logout()
             return
         if self.path == "/health":
             self._send_json(200, {"status": "ok"})
+            return
+        if self.path == "/tts":
+            from glados.webui.pages.tts_standalone import TTS_STANDALONE_HTML
+            body = _inject_bypass_banner(TTS_STANDALONE_HTML.encode("utf-8"))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         # Security fix (2026-04-20) — the menu rebuild made `/` serve
@@ -1439,19 +1758,35 @@ class Handler(BaseHTTPRequestHandler):
         # login page redirects here after a successful POST so the
         # session cookie is already set for real admin users.
         if self.path in ("/", "/index.html"):
-            if not self._require_auth():
+            if not require_perm(self, "webui.view"):
                 return
             self._dispatch_get()
             return
 
-        # API endpoints explicitly allow-listed as public (chat
-        # streaming, TTS generator, audio file fetches, health).
+        # API endpoints explicitly allow-listed as public (TTS service,
+        # STT service, audio file fetches, health).
         # Everything else requires auth.
         if _is_public_route(self.path):
+            if any(self.path == p or self.path.startswith(p)
+                   for p in _RATE_LIMITED_PUBLIC_PATHS):
+                if not _service_rate_limit_check(self):
+                    return
             self._dispatch_get()
             return
 
-        if not self._require_auth():
+        if self.path.startswith(("/chat_audio/", "/chat_audio_stream/")):
+            if not require_perm(self, "chat.send"):
+                return
+            self._dispatch_get()
+            return
+
+        # /api/sessions — any authenticated user can list/see sessions
+        if self.path == "/api/sessions":
+            if not require_perm(self, "webui.view"): return
+            self._dispatch_get()
+            return
+
+        if not require_perm(self, "admin"):
             return
         self._dispatch_get()
 
@@ -1461,13 +1796,31 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_login()
             return
 
-        # TTS/Chat POST routes are public
+        if self.path == "/setup" or self.path.startswith("/setup/"):
+            self._dispatch_setup()
+            return
+
         if _is_public_route(self.path):
+            if any(self.path == p or self.path.startswith(p)
+                   for p in _RATE_LIMITED_PUBLIC_PATHS):
+                if not _service_rate_limit_check(self):
+                    return
             self._dispatch_post()
             return
 
-        # Protected routes â€” require auth
-        if not self._require_auth():
+        if self.path in ("/api/chat", "/api/chat/stream"):
+            if not require_perm(self, "chat.send"):
+                return
+            self._dispatch_post()
+            return
+
+        if self.path == "/api/auth/change-password":
+            if not require_perm(self, "webui.view"):
+                return
+            self._dispatch_post()
+            return
+
+        if not require_perm(self, "admin"):
             return
         self._dispatch_post()
 
@@ -1497,7 +1850,6 @@ class Handler(BaseHTTPRequestHandler):
             self._post_tts_draft()
         elif p == "/api/tts/save-to-category":
             self._post_tts_save_to_category()
-        # --- Protected routes below ---
         elif p == "/api/modes":
             self._set_modes()
         elif p == "/api/restart":
@@ -1544,16 +1896,62 @@ class Handler(BaseHTTPRequestHandler):
             self._robots_identify_node()
         elif p == "/api/robots/emergency-stop":
             self._robots_emergency_stop()
+        elif p == "/api/auth/change-password":
+            self._change_password()
         # --- Training monitor ---
         elif p == "/api/training/snapshot":
             self._training_snapshot()
         elif p == "/api/training/stop":
             self._training_stop()
+        # POST /api/users — create
+        elif p == "/api/users":
+            if not require_perm(self, "admin"): return
+            from glados.webui.pages import users as _users_page
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+                return
+            ok, err = _users_page.create_user(
+                username=(body.get("username") or "").strip(),
+                display_name=(body.get("display_name") or "").strip(),
+                role=body.get("role", "chat"),
+                password=body.get("password") or "",
+            )
+            if not ok:
+                code = 409 if "already exists" in err else 400
+                self._send_json(code, {"ok": False, "error": err})
+                return
+            from glados.core.config_store import cfg as _cfg_live
+            _cfg_live.reload()
+            self._send_json(201, {"ok": True})
+        # POST /api/users/<u>/password — admin resets a user's password
+        elif p.startswith("/api/users/") and p.endswith("/password"):
+            if not require_perm(self, "admin"): return
+            from glados.webui.pages import users as _users_page
+            from glados.auth import sessions as _sessions
+            username = p[len("/api/users/"):-len("/password")]
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+                return
+            ok, err = _users_page.reset_password(username, body.get("new_password") or "")
+            if not ok:
+                code = 404 if "not found" in err else 400
+                self._send_json(code, {"ok": False, "error": err})
+                return
+            _sessions.revoke_all_for_user(username)
+            from glados.core.config_store import cfg as _cfg_live
+            _cfg_live.reload()
+            self._send_json(200, {"ok": True})
         else:
             self._send_error(404, "Not found")
 
     def do_PUT(self):
-        if not self._require_auth():
+        if not require_perm(self, "admin"):
             return
         if self.path.startswith("/api/config/"):
             section = self.path.split("/api/config/", 1)[1]
@@ -1569,11 +1967,63 @@ class Handler(BaseHTTPRequestHandler):
             self._put_chime()
         elif self.path == "/api/canon":
             self._put_canon()
+        # PUT /api/users/<u> — update role / display_name / disabled
+        elif self.path.startswith("/api/users/") and not self.path.endswith("/password"):
+            from glados.webui.pages import users as _users_page
+            username = self.path[len("/api/users/"):]
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"ok": False, "error": "Invalid JSON"})
+                return
+            ok, err = _users_page.update_user(
+                username,
+                role=body.get("role"),
+                display_name=body.get("display_name"),
+                disabled=body.get("disabled"),
+            )
+            if not ok:
+                code = 404 if "not found" in err else 400
+                self._send_json(code, {"ok": False, "error": err})
+                return
+            from glados.core.config_store import cfg as _cfg_live
+            _cfg_live.reload()
+            self._send_json(200, {"ok": True})
         else:
             self._send_error(404, "Not found")
 
     def do_DELETE(self):
-        if not self._require_auth():
+        # /api/sessions/<id> — admin can revoke any, owner can revoke own.
+        # Handled BEFORE the admin gate.
+        if self.path.startswith("/api/sessions/"):
+            from glados.auth import sessions as _sessions
+            from glados.auth import db as _auth_db
+            if not require_perm(self, "webui.view"): return
+            user = _resolve_user_for_request(self)
+            if user is None:
+                self._send_json(401, {"error": "Authentication required"})
+                return
+            session_id = self.path[len("/api/sessions/"):]
+            con = _auth_db.connect()
+            try:
+                row = con.execute(
+                    "SELECT * FROM auth_sessions WHERE session_id=?",
+                    (session_id,),
+                ).fetchone()
+            finally:
+                con.close()
+            if not row:
+                self._send_json(404, {"ok": False, "error": "Session not found"})
+                return
+            if user["role"] != "admin" and row["username"] != user["username"]:
+                self._send_json(403, {"ok": False, "error": "Forbidden"})
+                return
+            _sessions.revoke(session_id)
+            self._send_json(200, {"ok": True})
+            return
+
+        if not require_perm(self, "admin"):
             return
         if self.path.startswith("/api/files/"):
             self._delete_file()
@@ -1585,6 +2035,17 @@ class Handler(BaseHTTPRequestHandler):
             self._delete_chime()
         elif self.path == "/api/canon" or self.path.startswith("/api/canon?"):
             self._delete_canon()
+        elif self.path.startswith("/api/users/"):
+            from glados.webui.pages import users as _users_page
+            username = self.path[len("/api/users/"):]
+            ok, err = _users_page.delete_user(username)
+            if not ok:
+                code = 404 if "not found" in err else 400
+                self._send_json(code, {"ok": False, "error": err})
+                return
+            from glados.core.config_store import cfg as _cfg_live
+            _cfg_live.reload()
+            self._send_json(200, {"ok": True})
         else:
             self._send_error(404, "Not found")
 
@@ -1810,13 +2271,13 @@ class Handler(BaseHTTPRequestHandler):
 
         # Record the utterance entering the system; api_wrapper will
         # see X-GLaDOS-Origin and attribute tool calls downstream.
-        _sess = _get_session_cookie(self)
+        _user = _resolve_user_for_request(self)
         audit(AuditEvent(
             ts=time.time(),
             origin=Origin.WEBUI_CHAT,
             kind="utterance",
             utterance=message,
-            principal=(_sess.get("sub") if _sess else None),
+            principal=(_user.get("username") if _user else None),
         ))
 
         # Build messages for GLaDOS API
@@ -1915,13 +2376,13 @@ class Handler(BaseHTTPRequestHandler):
 
         # Record the utterance entering the system; X-GLaDOS-Origin lets
         # api_wrapper attribute downstream tool calls to the same origin.
-        _sess = _get_session_cookie(self)
+        _user = _resolve_user_for_request(self)
         audit(AuditEvent(
             ts=time.time(),
             origin=Origin.WEBUI_CHAT,
             kind="utterance",
             utterance=message,
-            principal=(_sess.get("sub") if _sess else None),
+            principal=(_user.get("username") if _user else None),
             extra={"streaming": True},
         ))
 
@@ -3308,10 +3769,12 @@ class Handler(BaseHTTPRequestHandler):
     # â”€â”€ File serving â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _serve_ui(self):
+        body = _inject_bypass_banner(HTML_PAGE.encode())
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(HTML_PAGE.encode())
+        self.wfile.write(body)
 
     _STATIC_MIMES = {
         ".css": "text/css; charset=utf-8",
@@ -5072,6 +5535,7 @@ from glados.webui.pages import (
     system,
     training,
     tts_generator,
+    users_page,
 )
 
 HTML_PAGE = (
@@ -5083,6 +5547,7 @@ HTML_PAGE = (
     + memory.HTML
     + training.HTML
     + logs.HTML
+    + users_page.HTML
     + _shell.SHELL_BOTTOM
 )
 
