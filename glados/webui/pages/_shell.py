@@ -55,21 +55,26 @@ SHELL_TOP = r"""<!DOCTYPE html>
     <!-- Training removed: piper_train is a host-native tool, not available in container -->
   </div>
   <div class="sidebar-footer">
-    <!-- Account block — populated by updateAuthUI() in ui.js -->
-    <div id="sidebarAccount" class="sidebar-account" style="display:none;">
-      <div class="sidebar-account-user">
-        <span class="sidebar-account-icon">&#128100;</span>
-        <span id="sidebarUsername" class="sidebar-account-name"></span>
-        <span id="sidebarRole" class="sidebar-account-role"></span>
+    <!-- Auth state: account row (renders when signed in) -->
+    <div id="sidebarAccount" class="sidebar-account-row" style="display:none;">
+      <a class="nav-item account-trigger" href="#" onclick="toggleAccountMenu(event); return false;">
+        <span class="account-name">
+          <span id="sidebarUsername"></span>
+          <span class="account-sep">·</span>
+          <span id="sidebarRole" class="account-role"></span>
+        </span>
+        <span class="account-chev">&#9652;</span>
+      </a>
+      <div class="account-menu" id="accountMenu" hidden>
+        <a class="account-menu-item" href="#" onclick="navigateTo('config.system');showPageTab('system','account');closeAccountMenu();return false;">Change Password</a>
+        <a class="account-menu-item" href="#" onclick="navigateTo('config.system');showPageTab('system','account');closeAccountMenu();return false;">Sessions</a>
+        <a class="account-menu-item account-menu-danger" href="/logout">Sign out</a>
       </div>
-      <a href="#" onclick="navigateTo('config.system');showPageTab('system','account');return false;" class="sidebar-account-link">Change Password</a>
     </div>
-    <div id="sidebarSignIn" class="sidebar-signin">
-      <a href="/login" class="sidebar-signin-btn">Sign in</a>
-    </div>
-    <a id="sidebarLogout" href="/logout" class="sidebar-logout" style="display:none;">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-      Sign out
+    <!-- Auth state: sign-in row (renders when signed out) -->
+    <a id="sidebarSignIn" class="nav-item" href="/login">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      Sign in
     </a>
   </div>
 </nav>

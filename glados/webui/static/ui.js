@@ -60,7 +60,6 @@ function updateAuthUI() {
   // Bottom-left account block
   const accountBlock = document.getElementById('sidebarAccount');
   const signInBlock = document.getElementById('sidebarSignIn');
-  const logoutLink = document.getElementById('sidebarLogout');
 
   if (_isAuthenticated) {
     if (accountBlock) {
@@ -71,12 +70,33 @@ function updateAuthUI() {
       if (roleEl) roleEl.textContent = _currentRole ? '(' + _currentRole + ')' : '';
     }
     if (signInBlock) signInBlock.style.display = 'none';
-    if (logoutLink) logoutLink.style.display = 'flex';
   } else {
     if (accountBlock) accountBlock.style.display = 'none';
-    if (signInBlock) signInBlock.style.display = 'block';
-    if (logoutLink) logoutLink.style.display = 'none';
+    if (signInBlock) signInBlock.style.display = '';
   }
+}
+
+// Account dropdown helpers
+function toggleAccountMenu(ev) {
+  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+  const m = document.getElementById('accountMenu');
+  if (!m) return;
+  if (m.hasAttribute('hidden')) {
+    m.removeAttribute('hidden');
+    setTimeout(() => document.addEventListener('click', closeAccountMenuOnOutside), 0);
+  } else {
+    closeAccountMenu();
+  }
+}
+function closeAccountMenu() {
+  const m = document.getElementById('accountMenu');
+  if (m) m.setAttribute('hidden', '');
+  document.removeEventListener('click', closeAccountMenuOnOutside);
+}
+function closeAccountMenuOnOutside(ev) {
+  const m = document.getElementById('accountMenu');
+  const t = document.querySelector('.account-trigger');
+  if (m && !m.contains(ev.target) && t && !t.contains(ev.target)) closeAccountMenu();
 }
 
 // Stackable toast system (Phase 5). Multiple toasts can be on screen
