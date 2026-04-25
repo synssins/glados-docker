@@ -4412,6 +4412,8 @@ class Handler(BaseHTTPRequestHandler):
             _cfg.update_section(section, data)
             if section == "services":
                 self._sync_glados_config_urls(data)
+            if section == "speakers":
+                self._sync_maintenance_speaker_to_ha(data)
             if section == "personality" and _preprompt_to_sync is not None:
                 self._write_personality_preprompt_to_engine(_preprompt_to_sync)
             applied = _apply_config_live(section)
@@ -4513,6 +4515,38 @@ class Handler(BaseHTTPRequestHandler):
 
     def _glados_config_path(self) -> "Path":
         return Path(os.environ.get("GLADOS_CONFIG", "/app/configs/glados_config.yaml"))
+
+    def _sync_maintenance_speaker_to_ha(self, speakers_payload: dict) -> None:
+        """Mirror the saved maintenance speaker default into HA.
+
+        When the operator saves a default speaker on the Audio & Speakers
+        config page, push that entity ID to HA's
+        ``input_text.glados_maintenance_speaker`` so the runtime engine
+        (which reads that HA entity via ha_sensor_watcher) immediately
+        reflects the new selection.
+
+        Without this sync, ``speakers.yaml:default`` is written but the
+        engine keeps routing audio to whatever HA last stored, which may
+        be a stale value from a previous maintenance session.
+        """
+        default_speaker = (speakers_payload.get("default") or "").strip()
+        if not default_speaker:
+            return
+        entity_id = _cfg.mode_entities.maintenance_speaker
+        ok = _ha_post("/api/services/input_text/set_value", {
+            "entity_id": entity_id,
+            "value": default_speaker,
+        })
+        if ok:
+            logger.info(
+                "speakers save: synced maintenance speaker → {} (entity: {})",
+                default_speaker, entity_id,
+            )
+        else:
+            logger.warning(
+                "speakers save: failed to sync maintenance speaker to HA (entity: {})",
+                entity_id,
+            )
 
     def _read_personality_preprompt_from_engine(self) -> list[dict]:
         """Read Glados.personality_preprompt from glados_config.yaml.
