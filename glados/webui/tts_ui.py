@@ -480,6 +480,14 @@ _login_fails_lock = threading.Lock()
 _RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW_S = 60
 
+# Service-endpoint rate limiter (Task 10) — per-IP token bucket for public
+# TTS/STT routes. Capacity + window come from cfg.auth.rate_limits.
+from glados.auth.rate_limit import TokenBucket  # noqa: E402
+_service_limiter = TokenBucket(
+    capacity=_cfg.auth.rate_limits.service_max_requests,
+    window_seconds=_cfg.auth.rate_limits.service_window_seconds,
+)
+
 # Public paths -- no session cookie required.
 # Matches AUTH_DESIGN.md SS3.4. /api/chat and /chat_audio/* require chat.send.
 _PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status"})
@@ -499,6 +507,33 @@ def _is_public_route(path: str) -> bool:
     if path in _PUBLIC_PATHS:
         return True
     return any(path.startswith(p) for p in _PUBLIC_PREFIXES)
+
+
+# Service routes that consume TTS/STT compute — rate-limited per-IP.
+# /static/ and /login /logout /health /tts /api/auth/* are intentionally excluded.
+_RATE_LIMITED_PUBLIC_PATHS = (
+    "/api/stt", "/api/generate", "/api/voices", "/api/speakers",
+    "/api/attitudes", "/api/files", "/files/",
+)
+
+
+def _service_rate_limit_check(handler) -> bool:
+    """Return True if the request is allowed; False if 429 was sent.
+
+    Keyed by remote_addr. Used on the public TTS/STT service routes
+    (which are unauthenticated, see AUTH_DESIGN.md §3.4 + §8.2).
+    """
+    ip = handler.client_address[0] if handler.client_address else "unknown"
+    if _service_limiter.allow(ip):
+        return True
+    handler.send_response(429)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Retry-After", "60")
+    body = b'{"error": "Rate limit exceeded", "retry_after": 60}'
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+    return False
 
 
 def _sign_session(payload: str) -> str:
@@ -1799,6 +1834,10 @@ class Handler(BaseHTTPRequestHandler):
         # STT service, audio file fetches, health).
         # Everything else requires auth.
         if _is_public_route(self.path):
+            if any(self.path == p or self.path.startswith(p)
+                   for p in _RATE_LIMITED_PUBLIC_PATHS):
+                if not _service_rate_limit_check(self):
+                    return
             self._dispatch_get()
             return
 
@@ -1829,6 +1868,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if _is_public_route(self.path):
+            if any(self.path == p or self.path.startswith(p)
+                   for p in _RATE_LIMITED_PUBLIC_PATHS):
+                if not _service_rate_limit_check(self):
+                    return
             self._dispatch_post()
             return
 
