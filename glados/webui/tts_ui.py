@@ -4323,6 +4323,11 @@ class Handler(BaseHTTPRequestHandler):
         if "global" in data and "auth" in data["global"]:
             data["global"]["auth"].pop("password_hash", None)
             data["global"]["auth"].pop("session_secret", None)
+        # Phase 2 Chunk 3: inject personality_preprompt from glados_config.yaml
+        # so the WebUI Identity tab shows the live engine persona.
+        if "personality" in data:
+            data["personality"]["personality_preprompt"] = \
+                self._read_personality_preprompt_from_engine()
         self._send_json(200, data)
 
     def _get_config_section(self, section: str):
@@ -4332,6 +4337,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(404, f"Unknown config section: {section}")
             return
         data = full[section]
+        # Phase 2 Chunk 3: inject live personality_preprompt for the personality section.
+        if section == "personality":
+            data["personality_preprompt"] = self._read_personality_preprompt_from_engine()
         # Mask sensitive values in global section
         if section == "global":
             if "home_assistant" in data:
@@ -4395,9 +4403,17 @@ class Handler(BaseHTTPRequestHandler):
             if not data.get("password"):
                 data["password"] = _cfg.mqtt.password
         try:
+            # Phase 2 Chunk 3: extract personality_preprompt before validation
+            # so the Pydantic model doesn't reject an unknown field, then sync
+            # it to glados_config.yaml after a successful save.
+            _preprompt_to_sync: list[dict] | None = None
+            if section == "personality" and "personality_preprompt" in data:
+                _preprompt_to_sync = data.pop("personality_preprompt")
             _cfg.update_section(section, data)
             if section == "services":
                 self._sync_glados_config_urls(data)
+            if section == "personality" and _preprompt_to_sync is not None:
+                self._write_personality_preprompt_to_engine(_preprompt_to_sync)
             applied = _apply_config_live(section)
             self._send_json(200, {
                 "ok": True,
@@ -4494,6 +4510,63 @@ class Handler(BaseHTTPRequestHandler):
             )
         except OSError as exc:
             logger.warning("glados_config LLM sync: write failed: {}", exc)
+
+    def _glados_config_path(self) -> "Path":
+        return Path(os.environ.get("GLADOS_CONFIG", "/app/configs/glados_config.yaml"))
+
+    def _read_personality_preprompt_from_engine(self) -> list[dict]:
+        """Read Glados.personality_preprompt from glados_config.yaml.
+
+        Returns a list of {system|user|assistant: text} dicts, or [] if the
+        file is absent / the block is missing.
+        """
+        cfg_path = self._glados_config_path()
+        if not cfg_path.exists():
+            return []
+        try:
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("personality_preprompt read: {}", exc)
+            return []
+        glados_block = raw.get("Glados") if isinstance(raw.get("Glados"), dict) else None
+        if glados_block is None:
+            return []
+        entries = glados_block.get("personality_preprompt") or []
+        if not isinstance(entries, list):
+            return []
+        result = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                # Each entry has exactly one of: system / user / assistant
+                item = {}
+                for role in ("system", "user", "assistant"):
+                    if role in entry and entry[role] is not None:
+                        item[role] = str(entry[role])
+                if item:
+                    result.append(item)
+        return result
+
+    def _write_personality_preprompt_to_engine(self, entries: list[dict]) -> None:
+        """Write personality_preprompt list back to glados_config.yaml."""
+        cfg_path = self._glados_config_path()
+        if not cfg_path.exists():
+            logger.debug("glados_config not found at {}; skip preprompt sync", cfg_path)
+            return
+        try:
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("personality_preprompt write: read failed: {}", exc)
+            return
+        glados_block = raw.get("Glados")
+        if not isinstance(glados_block, dict):
+            logger.debug("glados_config has no Glados block; skip preprompt sync")
+            return
+        glados_block["personality_preprompt"] = entries
+        try:
+            cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+            logger.info("personality_preprompt synced to glados_config.yaml ({} entries)", len(entries))
+        except OSError as exc:
+            logger.warning("personality_preprompt write: write failed: {}", exc)
 
     def _put_config_raw(self):
         """Update a single config file from raw YAML text."""

@@ -441,7 +441,10 @@ function cfgRenderSection(section) {
     html += _cfgRenderIntegrationsExtras();
   }
 
-  document.getElementById('cfg-form-area').innerHTML = html;
+  const _frmArea = document.getElementById('cfg-form-area');
+  _frmArea.innerHTML = html;
+  // Wire custom pbar sliders for HEXACO / PAD cards (personality section).
+  if (backing === 'personality') setTimeout(function() { _pbarInit(_frmArea); }, 0);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1000,6 +1003,9 @@ async function _cfgLoadDisambiguation() {
 }
 
 function _disambPopulate(data) {
+  // Stash the raw server payload so the save handler can round-trip
+  // floor_aliases / area_aliases that no longer have UI inputs.
+  window._cfgDisambData = data;
   const body = document.getElementById('cfg-disamb-body');
   if (!body) return;
   const dedup = (data.twin_dedup === false) ? false : true;
@@ -1007,11 +1013,6 @@ function _disambPopulate(data) {
   const pairs = Array.isArray(data.opposing_token_pairs) ? data.opposing_token_pairs : [];
   const verifyMode = (typeof data.verification_mode === 'string') ? data.verification_mode : 'strict';
   const verifyTimeout = (typeof data.verification_timeout_s === 'number') ? data.verification_timeout_s : 3.0;
-  // Phase 8.5 — {spoken keyword: registry name} alias maps.
-  const floorAliases = (data.floor_aliases && typeof data.floor_aliases === 'object')
-    ? data.floor_aliases : {};
-  const areaAliases = (data.area_aliases && typeof data.area_aliases === 'object')
-    ? data.area_aliases : {};
   let html = '';
   html += '<div class="cfg-field" style="display:flex;align-items:center;gap:10px;">'
     +   '<input type="checkbox" id="cfg-disamb-twin-dedup"' + (dedup ? ' checked' : '') + ' style="width:auto;">'
@@ -1040,8 +1041,10 @@ function _disambPopulate(data) {
     + '</div>';
   html += '<div class="cfg-field-label" style="margin-top:6px;">Opposing-token pairs</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
-    +   'If an utterance contains one side of a pair and a candidate&rsquo;s entity name contains the other, '
-    +   'the candidate loses 50 rank points. Leave empty to use the shipped defaults '
+    +   'Word pairs that rarely belong in the same command. If an utterance contains one side of a pair '
+    +   'and a candidate device name contains the other side, that device becomes much less likely to be '
+    +   'chosen &mdash; so saying &ldquo;upstairs&rdquo; won&rsquo;t accidentally target a device named &ldquo;downstairs.&rdquo; '
+    +   'Leave empty to use the shipped defaults '
     +   '(<code>upstairs/downstairs</code>, <code>lower/upper</code>, <code>front/back</code>, '
     +   '<code>inside/outside</code>, <code>indoor/outdoor</code>, <code>master/guest</code>, '
     +   '<code>left/right</code>, <code>top/bottom</code>, <code>primary/secondary</code>, '
@@ -1085,26 +1088,17 @@ function _disambPopulate(data) {
     +   '<label class="cfg-field-label" for="cfg-disamb-verify-timeout" style="margin:0;min-width:140px;">Timeout (seconds)</label>'
     +   '<input type="number" id="cfg-disamb-verify-timeout" min="0.1" max="30" step="0.1" value="' + escAttr(verifyTimeout.toFixed(1)) + '" style="flex:1;min-width:120px;">'
     + '</div>';
-  // Phase 8.5 — area / floor alias editor.
-  html += '<div class="cfg-field-label" style="margin-top:18px;">Area &amp; floor aliases</div>'
+  // Phase 2 Chunk 3: floor/area alias editor removed — HA natively supports
+  // aliases per area/floor. Render a notice card pointing to HA docs instead.
+  // Existing floor_aliases / area_aliases in YAML are preserved on save (below).
+  html += '<div class="cfg-field-label" style="margin-top:18px;">Area &amp; Floor Aliases</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:8px;">'
-    +   'Map house-specific keywords the shipped defaults don&rsquo;t know to the exact <em>registry name</em> '
-    +   'of one of your HA areas or floors. Examples: <code>living floor &rarr; Main Level</code>, '
-    +   '<code>mom&rsquo;s room &rarr; Master Bedroom</code>. Keywords match case-insensitively against the utterance; '
-    +   'registry names must match exactly (including punctuation and spacing) so the inference can resolve them.'
+    +   'GLaDOS uses Home Assistant&rsquo;s built-in area and floor aliases to interpret commands like '
+    +   '&ldquo;turn off the lights upstairs.&rdquo; Set aliases per-area or per-floor in your Home Assistant '
+    +   'settings &mdash; they propagate here automatically. '
+    +   '<a href="https://www.home-assistant.io/docs/organizing/areas/" target="_blank" rel="noopener noreferrer">'
+    +   'Home Assistant alias docs &nearr;</a>'
     + '</div>';
-  html += '<div class="cfg-field-label" style="margin-top:6px;">Floor aliases</div>'
-    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
-    +   'Utterance keyword &rarr; floor-registry name (e.g. <code>main level &rarr; Main Level</code>).'
-    + '</div>'
-    + '<div id="cfg-disamb-floor-aliases" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" onclick="_disambAddFloorAlias()">+ Add floor alias</button>';
-  html += '<div class="cfg-field-label" style="margin-top:14px;">Area aliases</div>'
-    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
-    +   'Utterance keyword &rarr; area-registry name (e.g. <code>mom&rsquo;s room &rarr; Master Bedroom</code>).'
-    + '</div>'
-    + '<div id="cfg-disamb-area-aliases" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" onclick="_disambAddAreaAlias()">+ Add area alias</button>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
     + '<button class="cfg-save-btn" onclick="cfgSaveDisambiguation()">Save Disambiguation rules</button>'
     + '<span id="cfg-save-result-disamb" class="cfg-result"></span>'
@@ -1114,13 +1108,8 @@ function _disambPopulate(data) {
   pairs.forEach(p => _disambRenderPairRow(rows, p[0] || '', p[1] || ''));
   const tokensHost = document.getElementById('cfg-disamb-tokens');
   tokens.forEach(t => _disambRenderTokenRow(tokensHost, t));
-  const floorHost = document.getElementById('cfg-disamb-floor-aliases');
-  Object.keys(floorAliases).forEach(k =>
-    _disambRenderAliasRow(floorHost, 'floor', k, floorAliases[k] || ''));
-  const areaHost = document.getElementById('cfg-disamb-area-aliases');
-  Object.keys(areaAliases).forEach(k =>
-    _disambRenderAliasRow(areaHost, 'area', k, areaAliases[k] || ''));
 }
+
 
 function _disambRenderAliasRow(host, kind, keyword, target) {
   const row = document.createElement('div');
@@ -1337,19 +1326,13 @@ async function cfgSaveDisambiguation() {
   const verifyTimeoutEl = document.getElementById('cfg-disamb-verify-timeout');
   let verifyTimeout = verifyTimeoutEl ? parseFloat(verifyTimeoutEl.value) : 3.0;
   if (!isFinite(verifyTimeout) || verifyTimeout <= 0) verifyTimeout = 3.0;
-  // Phase 8.5 — collect alias rows.
-  const floorAliases = {};
-  document.querySelectorAll('#cfg-disamb-floor-aliases .cfg-disamb-alias-row').forEach(row => {
-    const k = ((row.querySelector('.cfg-disamb-alias-keyword') || {}).value || '').trim();
-    const v = ((row.querySelector('.cfg-disamb-alias-target') || {}).value || '').trim();
-    if (k && v) floorAliases[k] = v;
-  });
-  const areaAliases = {};
-  document.querySelectorAll('#cfg-disamb-area-aliases .cfg-disamb-alias-row').forEach(row => {
-    const k = ((row.querySelector('.cfg-disamb-alias-keyword') || {}).value || '').trim();
-    const v = ((row.querySelector('.cfg-disamb-alias-target') || {}).value || '').trim();
-    if (k && v) areaAliases[k] = v;
-  });
+  // Phase 2 Chunk 3: alias editor removed from UI but data preserved.
+  // Read the last-loaded server values so existing YAML aliases aren't wiped.
+  const _disambData = (window._cfgDisambData) || {};
+  const floorAliases = (_disambData.floor_aliases && typeof _disambData.floor_aliases === 'object')
+    ? _disambData.floor_aliases : {};
+  const areaAliases = (_disambData.area_aliases && typeof _disambData.area_aliases === 'object')
+    ? _disambData.area_aliases : {};
   try {
     const r = await fetch('/api/config/disambiguation', {
       method: 'PUT',
@@ -2641,6 +2624,88 @@ function _svcPopulateDropdown(id, options) {
   el.innerHTML = html;
 }
 
+/* ─── Custom pbar slider helpers (Phase 2 Chunk 3) ─────────────── *
+ * Wires click+drag on .pbar-wrap elements rendered by cfgRenderPersonality.
+ * _pbarNumChange: called from the number input onchange attribute.
+ * _pbarInit:      call after innerHTML is set to attach mousedown handlers.
+ */
+
+function _pbarSetValue(barId, numId, min, max, val) {
+  val = Math.max(min, Math.min(max, val));
+  const pct = ((val - min) / (max - min) * 100);
+  const thumb = document.getElementById(barId + '-thumb');
+  const fill  = document.getElementById(barId + '-fill');
+  const num   = document.getElementById(numId);
+  if (thumb) thumb.style.left = pct.toFixed(4) + '%';
+  if (num) num.value = (min < 0)
+    ? (val > 0 ? '+' + val.toFixed(2) : val.toFixed(2))
+    : val.toFixed(2);
+  if (fill) {
+    if (min < 0) {
+      if (val >= 0) {
+        fill.style.left  = '50%';
+        fill.style.width = (pct - 50).toFixed(4) + '%';
+      } else {
+        fill.style.left  = pct.toFixed(4) + '%';
+        fill.style.width = (50 - pct).toFixed(4) + '%';
+      }
+    } else {
+      fill.style.left  = '0';
+      fill.style.width = pct.toFixed(4) + '%';
+    }
+  }
+}
+
+function _pbarNumChange(barId, numId, min, max) {
+  const num = document.getElementById(numId);
+  if (!num) return;
+  _pbarSetValue(barId, numId, min, max, parseFloat(num.value) || 0);
+}
+
+function _pbarInit(containerEl) {
+  const wraps = containerEl ? containerEl.querySelectorAll('.pbar-wrap') : [];
+  wraps.forEach(wrap => {
+    const bar   = wrap.querySelector('.pbar');
+    const thumb = wrap.querySelector('.pbar-thumb');
+    if (!bar || !thumb) return;
+    const barId  = bar.id;
+    const numId  = barId.replace(/-bar$/, '-num');
+    const numEl  = document.getElementById(numId);
+    const min    = numEl ? parseFloat(numEl.min) : 0;
+    const max    = numEl ? parseFloat(numEl.max) : 1;
+
+    function _valFromClientX(cx) {
+      const rect = bar.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
+      return min + ratio * (max - min);
+    }
+
+    function _onMove(e) {
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      _pbarSetValue(barId, numId, min, max, _valFromClientX(cx));
+    }
+
+    function _onUp() {
+      document.removeEventListener('mousemove', _onMove);
+      document.removeEventListener('mouseup', _onUp);
+      document.removeEventListener('touchmove', _onMove);
+      document.removeEventListener('touchend', _onUp);
+    }
+
+    bar.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      _pbarSetValue(barId, numId, min, max, _valFromClientX(e.clientX));
+      document.addEventListener('mousemove', _onMove);
+      document.addEventListener('mouseup', _onUp);
+    });
+    bar.addEventListener('touchstart', function(e) {
+      _pbarSetValue(barId, numId, min, max, _valFromClientX(e.touches[0].clientX));
+      document.addEventListener('touchmove', _onMove, {passive: true});
+      document.addEventListener('touchend', _onUp);
+    }, {passive: true});
+  });
+}
+
 /* â”€â”€ Personality custom renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function cfgRenderPersonality(data) {
@@ -2686,10 +2751,13 @@ function cfgRenderPersonality(data) {
   html += '<div class="page-tab-panel' + (activeTabId === 'identity' ? ' active' : '') + '" data-page-tab-panel-group="personality" data-tab="identity">';
 
   // Preprompt entries (system/user/assistant seed messages)
-  if (data.preprompt && data.preprompt.length > 0) {
+  // Bug fix (Phase 2 Chunk 3): was reading data.preprompt (empty list in
+  // personality.yaml); actual persona lives at data.personality_preprompt.
+  const _prepromptList = Array.isArray(data.personality_preprompt) ? data.personality_preprompt : [];
+  if (_prepromptList.length > 0) {
     html += '<div class="cfg-group"><div class="cfg-group-title">Preprompt Messages</div>';
-    for (let i = 0; i < data.preprompt.length; i++) {
-      const entry = data.preprompt[i];
+    for (let i = 0; i < _prepromptList.length; i++) {
+      const entry = _prepromptList[i];
       for (const role of ['system', 'user', 'assistant']) {
         if (entry[role] != null) {
           html += '<div class="preprompt-pair">'
@@ -2709,48 +2777,66 @@ function cfgRenderPersonality(data) {
         label: 'Honesty – Humility',
         desc: 'Sincerity and fairness versus willingness to manipulate and exploit others. '
             + 'Lower is more self-serving and manipulative; higher is more transparent and fair-minded.',
+        pole_low: 'Manipulative', pole_high: 'Sincere',
       },
       emotionality: {
         label: 'Emotionality',
         desc: 'Fearfulness, anxiety, and sentimentality versus emotional detachment. '
             + 'Lower is more stoic and unflappable; higher is more anxious and sentimental.',
+        pole_low: 'Unflappable', pole_high: 'Anxious',
       },
       extraversion: {
         label: 'Extraversion',
         desc: 'Outgoing sociability and liveliness versus reserved introversion. '
             + 'Lower is more reserved and withholding; higher is more outgoing and expressive.',
+        pole_low: 'Reserved', pole_high: 'Outgoing',
       },
       agreeableness: {
         label: 'Agreeableness',
         desc: 'Patience, forgiveness, and cooperation versus combative irritability. '
             + 'Lower is more suspicious and caustic; higher is more trusting and forgiving.',
+        pole_low: 'Combative', pole_high: 'Cooperative',
       },
       conscientiousness: {
         label: 'Conscientiousness',
         desc: 'Organization, discipline, and diligence versus carelessness. '
             + 'Lower is more impulsive and sloppy; higher is more organized and deliberate.',
+        pole_low: 'Impulsive', pole_high: 'Disciplined',
       },
       openness: {
         label: 'Openness to experience',
         desc: 'Curiosity, imagination, and unconventionality versus preference for the familiar. '
             + 'Lower is more conventional and routine-bound; higher is more curious and experimental.',
+        pole_low: 'Conventional', pole_high: 'Curious',
       },
     };
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">HEXACO Personality Traits</div>';
-    html += '<div class="cfg-field-desc" style="margin-bottom:12px;">Six-factor personality model. Each trait runs 0.00 (minimum of the trait) to 1.00 (maximum), with 0.50 as balanced.</div>';
+    html += '<div class="cfg-field-desc" style="margin-bottom:12px;">Six-factor personality model. Each trait runs 0.00 (minimum) to 1.00 (maximum), with 0.50 as balanced.</div>';
     for (const [k, v] of Object.entries(data.hexaco)) {
-      const fieldId = 'cfg-personality-hexaco-' + k;
-      const meta = HEXACO_META[k] || { label: k.replace(/_/g, ' '), desc: '' };
-      const display = (v == null ? 0 : v).toFixed(2);
-      html += '<div class="trait-row">'
-        + '<div class="trait-head">'
-        +   '<label class="trait-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
-        +   '<output class="trait-value" id="' + fieldId + '-value">' + display + '</output>'
+      const numId = 'cfg-personality-hexaco-' + k + '-num';
+      const barId = 'cfg-personality-hexaco-' + k + '-bar';
+      const meta = HEXACO_META[k] || { label: k.replace(/_/g, ' '), desc: '', pole_low: '0', pole_high: '1' };
+      const val = (v == null ? 0 : v);
+      const pct = (val * 100).toFixed(4);
+      const display = val.toFixed(2);
+      html += '<div class="ptrait">'
+        + '<div class="ptrait-name">' + escHtml(meta.label) + '</div>'
+        + (meta.desc ? '<div class="ptrait-desc">' + escHtml(meta.desc) + '</div>' : '')
+        + '<div class="ptrait-slider-row">'
+        +   '<div class="pbar-wrap" id="' + barId + '-wrap">'
+        +     '<div class="pbar" id="' + barId + '">'
+        +       '<div class="pbar-fill" id="' + barId + '-fill" style="left:0;width:' + pct + '%;"></div>'
+        +       '<div class="pbar-thumb" id="' + barId + '-thumb" style="left:' + pct + '%;"></div>'
+        +     '</div>'
+        +     '<div class="pbar-poles">'
+        +       '<span>' + escHtml(meta.pole_low || '0') + '</span>'
+        +       '<span>' + escHtml(meta.pole_high || '1') + '</span>'
+        +     '</div>'
+        +   '</div>'
+        +   '<input class="pnum" id="' + numId + '" type="number" min="0" max="1" step="0.01" value="' + display + '" '
+        +     'data-path="hexaco.' + k + '" data-type="number" '
+        +     'onchange="_pbarNumChange(\'' + barId + '\',\'' + numId + '\',0,1)">'
         + '</div>'
-        + '<input id="' + fieldId + '" data-path="hexaco.' + k + '" data-type="number" type="range" '
-        +   'min="0" max="1" step="0.01" value="' + v + '" '
-        +   'oninput="document.getElementById(\'' + fieldId + '-value\').textContent = parseFloat(this.value).toFixed(2);">'
-        + (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
         + '</div>';
     }
     html += '</div>';
@@ -2762,9 +2848,9 @@ function cfgRenderPersonality(data) {
       enabled:             { label: 'Emotion engine enabled',    desc: 'Master switch. When off, GLaDOS always responds from her baseline mood without updating based on events.' },
       tick_interval_s:     { label: 'Tick interval (seconds)',   desc: 'How often the emotion engine re-evaluates mood between events. Shorter is more reactive, longer is calmer.' },
       max_events:          { label: 'Event memory',              desc: 'Number of recent interactions that influence current mood before they fade out.' },
-      baseline_pleasure:   { label: 'Baseline pleasure',         desc: 'Default pleasantness when nothing has happened. −1 is miserable, 0 is neutral, +1 is delighted.' },
-      baseline_arousal:    { label: 'Baseline arousal',          desc: 'Default alertness. −1 is sedate, 0 is calm, +1 is frantic.' },
-      baseline_dominance:  { label: 'Baseline dominance',        desc: 'Default assertiveness. −1 is submissive, 0 is neutral, +1 is commanding.' },
+      baseline_pleasure:   { label: 'Baseline pleasure',         desc: 'Default pleasantness when nothing has happened. −1 is miserable, 0 is neutral, +1 is delighted.',   pole_low: 'Displeased −1', pole_high: '+1 Pleased' },
+      baseline_arousal:    { label: 'Baseline arousal',          desc: 'Default alertness. −1 is sedate, 0 is calm, +1 is frantic.',                                        pole_low: 'Sedate −1',    pole_high: '+1 Frantic' },
+      baseline_dominance:  { label: 'Baseline dominance',        desc: 'Default assertiveness. −1 is submissive, 0 is neutral, +1 is commanding.',                          pole_low: 'Submissive −1', pole_high: '+1 Commanding' },
       mood_drift_rate:     { label: 'Mood drift rate',           desc: 'Per-tick pull from current mood back toward baseline. Higher is faster forgiveness; lower means events stick.' },
       baseline_drift_rate: { label: 'Baseline drift rate',       desc: 'Per-tick shift of baseline itself from repeated exposure. Lower is more stable personality; higher means sustained interactions reshape her.' },
     };
@@ -2773,6 +2859,8 @@ function cfgRenderPersonality(data) {
 
     function _renderEmotionField(k, v) {
       const fieldId = 'cfg-personality-emotion-' + k;
+      const numId = fieldId + '-num';
+      const barId = fieldId + '-bar';
       const meta = EMOTION_META[k] || { label: k.replace(/_/g, ' '), desc: '' };
       if (typeof v === 'boolean') {
         return ''
@@ -2786,17 +2874,32 @@ function cfgRenderPersonality(data) {
           + '</div>';
       }
       if (pad_fields.indexOf(k) >= 0) {
-        const display = (v == null ? 0 : v).toFixed(2);
+        // Range −1 to 1. Fill anchors at 50% (zero) and grows in either direction.
+        const val = (v == null ? 0 : v);
+        const pct = ((val + 1) / 2 * 100).toFixed(4);
+        const fillLeft = val >= 0 ? '50%' : pct + '%';
+        const fillWidth = (Math.abs(val) / 2 * 100).toFixed(4) + '%';
+        const signStr = val > 0 ? '+' + val.toFixed(2) : val.toFixed(2);
         return ''
-          + '<div class="trait-row">'
-          +   '<div class="trait-head">'
-          +     '<label class="trait-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
-          +     '<output class="trait-value" id="' + fieldId + '-value">' + display + '</output>'
+          + '<div class="ptrait">'
+          +   '<div class="ptrait-name">' + escHtml(meta.label) + '</div>'
+          +   (meta.desc ? '<div class="ptrait-desc">' + escHtml(meta.desc) + '</div>' : '')
+          +   '<div class="ptrait-slider-row">'
+          +     '<div class="pbar-wrap" id="' + barId + '-wrap">'
+          +       '<div class="pbar" id="' + barId + '">'
+          +         '<div class="pbar-fill" id="' + barId + '-fill" style="left:' + fillLeft + ';width:' + fillWidth + ';"></div>'
+          +         '<div class="pbar-thumb" id="' + barId + '-thumb" style="left:' + pct + '%;"></div>'
+          +         '<div class="pbar-zero" style="left:50%;"></div>'
+          +       '</div>'
+          +       '<div class="pbar-poles">'
+          +         '<span>' + escHtml(meta.pole_low || '−1') + '</span>'
+          +         '<span>' + escHtml(meta.pole_high || '+1') + '</span>'
+          +       '</div>'
+          +     '</div>'
+          +     '<input class="pnum" id="' + numId + '" type="number" min="-1" max="1" step="0.01" value="' + signStr + '" '
+          +       'data-path="emotion.' + k + '" data-type="number" '
+          +       'onchange="_pbarNumChange(\'' + barId + '\',\'' + numId + '\',-1,1)">'
           +   '</div>'
-          +   '<input id="' + fieldId + '" data-path="emotion.' + k + '" data-type="number" type="range" '
-          +     'min="-1" max="1" step="0.05" value="' + v + '" '
-          +     'oninput="document.getElementById(\'' + fieldId + '-value\').textContent = parseFloat(this.value).toFixed(2);">'
-          +   (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
           + '</div>';
       }
       return ''
@@ -3696,7 +3799,8 @@ function cfgCollectPersonality() {
     }
     obj[parts[parts.length - 1]] = val;
   });
-  // Collect preprompt textareas
+  // Collect preprompt textareas — write back to personality_preprompt (not preprompt).
+  // Bug fix Phase 2 Chunk 3: the actual persona lives at personality_preprompt.
   const prepromptEls = document.querySelectorAll('[data-preprompt]');
   if (prepromptEls.length > 0) {
     const entries = {};
@@ -3705,7 +3809,7 @@ function cfgCollectPersonality() {
       if (!entries[idx]) entries[idx] = {};
       entries[idx][role] = el.value;
     });
-    result.preprompt = Object.values(entries);
+    result.personality_preprompt = Object.values(entries);
   }
   // Preserve attitudes as-is (read-only in form view)
   if (_cfgData.personality && _cfgData.personality.attitudes) {

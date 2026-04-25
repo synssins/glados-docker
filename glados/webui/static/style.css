@@ -1348,6 +1348,95 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   border: 1px solid var(--orange-dim);
 }
 
+/* ── Personality / Emotion trait cards (Phase 2 Chunk 3) ─────────
+   Fixed-width 320px slider with pole labels and editable numeric.
+   Replaces the full-width .trait-row input[type="range"] for HEXACO
+   and PAD sliders per operator mockup approved 2026-04-25. */
+.ptrait {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-card);
+  padding: 14px 16px;
+  margin-bottom: var(--sp-3);
+}
+.ptrait-name {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--fg-primary);
+  letter-spacing: 0.04em;
+  margin-bottom: var(--sp-1);
+}
+.ptrait-desc {
+  font-size: 0.72rem;
+  color: var(--fg-secondary);
+  line-height: 1.45;
+  max-width: 540px;
+  margin-bottom: var(--sp-3);
+}
+.ptrait-slider-row {
+  display: grid;
+  grid-template-columns: 320px 64px;
+  align-items: center;
+  gap: var(--sp-4);
+}
+.pbar-wrap { position: relative; width: 320px; }
+.pbar {
+  position: relative;
+  height: 6px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.pbar-fill {
+  position: absolute;
+  top: 0; bottom: 0;
+  background: var(--orange);
+  border-radius: 3px 0 0 3px;
+}
+.pbar-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px; height: 12px;
+  background: var(--orange);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+.pbar-zero {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 1px;
+  background: var(--border-default);
+  pointer-events: none;
+}
+.pbar-poles {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 0.55rem;
+  color: var(--fg-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--font-mono);
+}
+.pnum {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-input);
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--fg-primary);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-align: center;
+  width: 64px;
+}
+/* taller preprompt textareas so persona text is comfortably editable */
+.preprompt-text {
+  min-height: 280px;
+  max-width: 800px;
+}
+
 /* ════════════════════════════════════════════════════════════════
    Phase 6.0 (2026-04-22) — page-header + page-tabs + page-save-btn
    ════════════════════════════════════════════════════════════════
