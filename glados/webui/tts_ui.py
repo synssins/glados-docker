@@ -1538,8 +1538,12 @@ class Handler(BaseHTTPRequestHandler):
     # â”€â”€ Routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _get_auth_status(self):
-        """Return authentication status for frontend gating."""
-        self._send_json(200, {"authenticated": _is_authenticated(self)})
+        """Return authentication status and role for frontend gating."""
+        user = _resolve_user_for_request(self)
+        self._send_json(200, {
+            "authenticated": _is_authenticated(self),
+            "role": user["role"] if user else None,
+        })
 
     def _dispatch_get(self):
         """Route GET requests to handlers (after auth check if needed)."""
@@ -5413,6 +5417,7 @@ from glados.webui.pages import (
     system,
     training,
     tts_generator,
+    users_page,
 )
 
 HTML_PAGE = (
@@ -5424,6 +5429,7 @@ HTML_PAGE = (
     + memory.HTML
     + training.HTML
     + logs.HTML
+    + users_page.HTML
     + _shell.SHELL_BOTTOM
 )
 
