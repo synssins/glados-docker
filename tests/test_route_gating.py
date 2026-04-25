@@ -156,10 +156,11 @@ def test_public_paths_includes_login_and_health():
 
 
 def test_public_prefixes_includes_stt_and_static():
-    from glados.webui.tts_ui import _PUBLIC_PREFIXES
+    from glados.webui.tts_ui import _PUBLIC_PREFIXES, _PUBLIC_PATHS
     assert "/api/stt" in _PUBLIC_PREFIXES
     assert "/static/" in _PUBLIC_PREFIXES
-    assert "/api/auth/" in _PUBLIC_PREFIXES
+    assert "/api/auth/" not in _PUBLIC_PREFIXES
+    assert "/api/auth/status" in _PUBLIC_PATHS
 
 
 def test_public_prefixes_excludes_chat():

@@ -277,6 +277,12 @@ HTML = r"""
 
 <script>
 (function () {
+  function _escSession(s) {
+    var d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
   function _cpwResult(msg, ok) {
     var el = document.getElementById('cpwResult');
     if (!el) return;
@@ -325,28 +331,37 @@ HTML = r"""
         var created  = s.created_at  ? new Date(s.created_at  * 1000).toLocaleString() : '—';
         var lastUsed = s.last_used_at ? new Date(s.last_used_at * 1000).toLocaleString() : '—';
         html += '<tr style="border-top:1px solid var(--border);">'
-          + '<td style="padding:5px 8px;">' + (s.username || '') + '</td>'
+          + '<td style="padding:5px 8px;">' + _escSession(s.username) + '</td>'
           + '<td style="padding:5px 8px;">' + created + '</td>'
           + '<td style="padding:5px 8px;">' + lastUsed + '</td>'
-          + '<td style="padding:5px 8px;">' + (s.remote_addr || '—') + '</td>'
+          + '<td style="padding:5px 8px;">' + _escSession(s.remote_addr || '—') + '</td>'
           + '<td style="padding:5px 8px;">'
           + '<button class="btn-small" style="font-size:0.75rem;padding:3px 10px;background:#c0392b;" '
-          + 'onclick="_revokeSession(\'' + s.session_id + '\')">Revoke</button>'
+          + 'data-revoke-sid="' + _escSession(s.session_id) + '">Revoke</button>'
           + '</td></tr>';
       });
       html += '</tbody></table>';
       el.innerHTML = html;
+      el.querySelectorAll('[data-revoke-sid]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          _revokeSession(b.getAttribute('data-revoke-sid'));
+        });
+      });
     }).catch(function () { el.textContent = 'Failed to load sessions.'; });
   };
 
-  window._revokeSession = function (sid) {
-    fetch('/api/sessions/' + sid, {method: 'DELETE'})
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d.ok) { _loadSessions(); }
-        else { alert(d.error || 'Revoke failed.'); }
-      })
-      .catch(function () { alert('Request failed.'); });
+  window._revokeSession = async function (sid) {
+    if (!confirm('Revoke this session?')) return;
+    const r = await fetch('/api/sessions/' + encodeURIComponent(sid), {method: 'DELETE'});
+    if (r.status === 401) {
+      window.location = '/login';
+      return;
+    }
+    if (!r.ok) {
+      alert('Revoke failed: ' + r.status);
+      return;
+    }
+    _loadSessions();
   };
 })();
 </script>

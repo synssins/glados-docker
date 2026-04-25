@@ -461,7 +461,7 @@ _RATE_LIMIT_WINDOW_S = 60
 
 # Public paths -- no session cookie required.
 # Matches AUTH_DESIGN.md SS3.4. /api/chat and /chat_audio/* require chat.send.
-_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts"})
+_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status"})
 
 _PUBLIC_PREFIXES = (
     # STT + TTS service endpoints (operator decision 2026-04-24)
@@ -469,7 +469,7 @@ _PUBLIC_PREFIXES = (
     "/api/generate", "/api/voices", "/api/speakers",
     "/api/attitudes", "/api/files", "/files/",
     # Infrastructure
-    "/api/auth/", "/static/",
+    "/static/",
 )
 
 
@@ -1796,19 +1796,18 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_setup()
             return
 
-        # /api/auth/change-password requires auth — intercept before public-route check
-        # (/api/auth/ prefix is otherwise public for the login endpoint)
-        if self.path == "/api/auth/change-password":
-            if not require_perm(self, "webui.view"): return
-            self._change_password()
-            return
-
         if _is_public_route(self.path):
             self._dispatch_post()
             return
 
         if self.path in ("/api/chat", "/api/chat/stream"):
             if not require_perm(self, "chat.send"):
+                return
+            self._dispatch_post()
+            return
+
+        if self.path == "/api/auth/change-password":
+            if not require_perm(self, "webui.view"):
                 return
             self._dispatch_post()
             return
@@ -1889,6 +1888,8 @@ class Handler(BaseHTTPRequestHandler):
             self._robots_identify_node()
         elif p == "/api/robots/emergency-stop":
             self._robots_emergency_stop()
+        elif p == "/api/auth/change-password":
+            self._change_password()
         # --- Training monitor ---
         elif p == "/api/training/snapshot":
             self._training_snapshot()
