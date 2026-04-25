@@ -123,6 +123,27 @@ def reload_tls_certs() -> tuple[bool, str]:
 
 SPEAKER_BLACKLIST = set(_cfg.speakers.blacklist)
 
+
+def _inject_bypass_banner(html_body: bytes) -> bytes:
+    """When auth bypass is active, inject the warning banner immediately
+    after <body>. If the response has no <body> tag, prepend the banner.
+
+    Returns the body unchanged when bypass is inactive (the bypass
+    module's banner_html() returns ''). Idempotent.
+    """
+    from glados.auth import bypass as _bypass
+    if not _bypass.active():
+        return html_body
+    banner = _bypass.banner_html().encode("utf-8")
+    body_open = html_body.find(b"<body")
+    if body_open < 0:
+        return banner + html_body
+    close = html_body.find(b">", body_open)
+    if close < 0:
+        return banner + html_body
+    return html_body[:close + 1] + banner + html_body[close + 1:]
+
+
 # Container service management -- services are Docker containers, not NSSM services.
 SERVICE_MAP = {
     "glados_api": "glados",
@@ -1332,7 +1353,7 @@ class Handler(BaseHTTPRequestHandler):
             # sits above the password input. LOGIN_PAGE contains
             # exactly one <form> tag.
             html = html.replace("<form", banner + "<form", 1)
-        body = html.encode()
+        body = _inject_bypass_banner(html.encode())
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1495,7 +1516,7 @@ class Handler(BaseHTTPRequestHandler):
             title=step.title, step_num=1, total_steps=len(_WIZARD_STEPS),
             content=content,
         )
-        body = html_doc.encode("utf-8")
+        body = _inject_bypass_banner(html_doc.encode("utf-8"))
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1539,9 +1560,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_auth_status(self):
         """Return authentication status and role for frontend gating."""
+        from glados.auth import bypass as _bypass
+        if _bypass.active():
+            self._send_json(200, {
+                "authenticated": True,
+                "bypass": True,
+                "user": {"username": "bypass", "role": "admin"},
+                "role": "admin",
+            })
+            return
         user = _resolve_user_for_request(self)
         self._send_json(200, {
-            "authenticated": _is_authenticated(self),
+            "authenticated": user is not None,
+            "bypass": False,
+            "user": user,
             "role": user["role"] if user else None,
         })
 
@@ -1742,7 +1774,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/tts":
             from glados.webui.pages.tts_standalone import TTS_STANDALONE_HTML
-            body = TTS_STANDALONE_HTML.encode("utf-8")
+            body = _inject_bypass_banner(TTS_STANDALONE_HTML.encode("utf-8"))
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -3761,10 +3793,12 @@ class Handler(BaseHTTPRequestHandler):
     # â”€â”€ File serving â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _serve_ui(self):
+        body = _inject_bypass_banner(HTML_PAGE.encode())
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(HTML_PAGE.encode())
+        self.wfile.write(body)
 
     _STATIC_MIMES = {
         ".css": "text/css; charset=utf-8",
