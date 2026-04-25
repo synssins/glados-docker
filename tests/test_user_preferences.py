@@ -60,7 +60,7 @@ class TestAreaAliases:
             "  THE  Workshop  ": "garage",
         })
         assert prefs.area_aliases == {
-            "ResidentB's office": "residentb_office",
+            "residentb's office": "residentb_office",
             "the workshop": "garage",
         }
 
@@ -77,9 +77,9 @@ class TestAreaAliases:
         prefs = UserPreferences(area_aliases={
             "ResidentB's Office": "residentb_office",
         })
+        assert prefs.resolve_area_alias("residentb's office") == "residentb_office"
         assert prefs.resolve_area_alias("ResidentB's office") == "residentb_office"
-        assert prefs.resolve_area_alias("ResidentB's office") == "residentb_office"
-        assert prefs.resolve_area_alias("  ResidentB's   office  ") == "residentb_office"
+        assert prefs.resolve_area_alias("  residentb's   office  ") == "residentb_office"
         assert prefs.resolve_area_alias("unknown room") is None
         assert prefs.resolve_area_alias(None) is None
         assert prefs.resolve_area_alias("") is None
@@ -156,7 +156,7 @@ class TestYamlLoadSave:
         # Reload and compare
         reloaded = load_user_preferences(p)
         assert reloaded.default_warm_kelvin == 2400
-        assert reloaded.area_aliases == {"ResidentB's office": "residentb_office"}
+        assert reloaded.area_aliases == {"residentb's office": "residentb_office"}
         assert reloaded.task_areas == ["kitchen", "bathroom_vanity"]
 
     def test_save_atomic_via_tempfile(self, tmp_path: Path) -> None:

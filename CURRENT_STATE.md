@@ -4,7 +4,7 @@
 **Purpose:** Pre-rewrite map of every file, function, and config currently
 involved in command disambiguation. Written per the rewrite prompt's
 "Order of Work" step 1; all file deletions / architectural changes gated on
-ResidentA acknowledging this document.
+the operator acknowledging this document.
 **Scope:** `C:\src\glados-container` (the Docker middleware container, the
 working repo per `C:\src\SESSION_STATE.md`). Host-native GLaDOS at
 `C:\AI\GLaDOS` is NOT covered — it has a parallel but separate codebase.
@@ -310,7 +310,7 @@ a second read before deletion to confirm it is not a separate hook.
 
 ## 12. What the rewrite would replace
 
-If ResidentA approves, deletion candidates after archival to
+If the operator approves, deletion candidates after archival to
 `C:\src\glados-container\archive\pre-rewrite-20260419\`:
 
 - `configs/commands.yaml`
@@ -352,7 +352,7 @@ Things **kept**:
    Assistant's own assistant pipeline (HA handles wake word + STT + routes
    via `conversation/process`), then the "voice pipeline `/command` handler"
    the prompt describes may not be this container's responsibility at all.
-   Worth confirming with ResidentA before deleting `/command`.
+   Worth confirming with the operator before deleting `/command`.
 
 2. **Where do light tier labels live?** The rewrite requires every
    `light.*` entity to carry a label from `{lamp, accent, task, overhead, flood, strip}`.
@@ -368,32 +368,32 @@ Things **kept**:
 
 4. **`glados_disambiguation_cases.csv` — where does it live?** The prompt
    ships it alongside but the file is not in `C:\src\` at the repo level.
-   Before the test harness can be built, ResidentA needs to drop the CSV
+   Before the test harness can be built, the operator needs to drop the CSV
    somewhere (suggested: `tests/fixtures/glados_disambiguation_cases.csv`).
 
 5. **Does the "single resolver for chat + voice" collapse the three-tier
    optimization?** Tier 1's ~1 s latency on simple commands is a real UX
    win over the LLM round-trip. The rewrite description ("The LLM does the
    intent resolution. Code does the plumbing.") implies every command goes
-   through the LLM. Worth an explicit yes/no from ResidentA: are we accepting
+   through the LLM. Worth an explicit yes/no from the operator: are we accepting
    5–11 s latency on *all* device control in exchange for architectural
    simplicity, or does the resolver still fast-path obvious commands?
 
 ---
 
-**Next step (awaiting ResidentA's acknowledgment):** once these five open
+**Next step (awaiting the operator's acknowledgment):** once these five open
 questions are resolved, move on to Order-of-Work step 3 — build
 `SourceContext`, `UserPreferences`, and the memory store in isolation
 with unit tests. No deletions until then.
 
 ---
 
-## ADDENDUM 2026-04-19 — ResidentA's answers + learned-context spec
+## ADDENDUM 2026-04-19 — operator answers + learned-context spec
 
 ### Q1 — Who owns the voice pipeline? **Deferred.**
 
 `docs/Stage 1.md:44` documents `/command` as "ESPHome voice command →
-pre-recorded WAV". ResidentA's direction (2026-04-19): **ignore the voice
+pre-recorded WAV". The operator's direction (2026-04-19): **ignore the voice
 assistant path for this rewrite.** The real voice-assistant flow goes
 through Home Assistant first — by the time speech reaches the GLaDOS
 container, HA will have already attached the satellite's area context.
@@ -465,7 +465,7 @@ model to "user taste").
 ### Q4 — CSV fixture
 
 Created at `tests/fixtures/glados_disambiguation_cases.csv` verbatim
-from ResidentA's paste. 110 rows including the header. Test harness in
+from the operator's paste. 110 rows including the header. Test harness in
 Order-of-Work step 4 reads this file.
 
 ### Q5 — Fast path is fine, plus: **learned-context with HA validation**
@@ -583,7 +583,7 @@ Safety properties:
    HA-validated at use time, decays in 14 days, self-corrects on
    reinforcement ≤ 0.
 
-### Architectural principle (clarified 2026-04-19 by ResidentA): **one door**
+### Architectural principle (clarified 2026-04-19 by the operator): **one door**
 
 GLaDOS is an OpenAI-API-compatible bridge between any consumer and the
 Ollama backend. It acts as Ollama would, from the client's perspective,
@@ -651,4 +651,4 @@ rewrite:
 
 Ready to proceed to Order-of-Work step 3 (build `SourceContext`,
 `UserPreferences`, and the memory/learned-context stores in isolation
-with unit tests, no deletions yet) on ResidentA's go-ahead.
+with unit tests, no deletions yet) on the operator's go-ahead.

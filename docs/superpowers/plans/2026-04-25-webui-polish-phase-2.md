@@ -58,7 +58,7 @@ Audio files NEVER live under `configs/`. Path is `<audio_root>/<Category>/<emoti
 In-container services (TTS, STT, API Wrapper) all live on `:8015`; show as one row: `:8015 — TTS │ STT │ API ●` with green/red status dots per service. No URL inputs.
 
 External services keep their URL fields ONLY when the service is genuinely external from the container's perspective:
-- **Vision** (currently `<external_host>:8016`): status-only on `:8016`. If not configured (no URL or unreachable), show as "inactive" rather than "down" — Vision absence does not block functionality.
+- **Vision** (currently `<external_vision_host>:8016`): status-only on `:8016`. If not configured (no URL or unreachable), show as "inactive" rather than "down" — Vision absence does not block functionality.
 - **Ollama** (currently in Integrations → LLM): folded into Services tab here. URL field retained, model selector, status dot.
 
 **Files:** `system.py`, `ui.js` (existing services-tab JS, plus new LLM-on-services JS).

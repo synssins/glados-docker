@@ -177,7 +177,7 @@ class UserPreferences(BaseModel):
     @classmethod
     def _normalize_aliases(cls, v: dict[str, str]) -> dict[str, str]:
         """Lowercase keys and strip whitespace so a 'ResidentB's Office'
-        entry and a 'cindys office' utterance both match."""
+        entry and a 'residentb office' utterance both match."""
         normalized: dict[str, str] = {}
         for alias, area_id in v.items():
             key = " ".join(str(alias).lower().strip().split())

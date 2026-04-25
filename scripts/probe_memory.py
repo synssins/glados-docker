@@ -20,7 +20,7 @@ def main() -> None:
         "Who is ResidentB?",
         "Tell me about Pet1",
         "Pet6 cat",
-        "ResidentA's father",
+        "the operator's family",
     ]
     for q in queries:
         print()

@@ -167,7 +167,7 @@ Still pending:
    15 more atomic facts. Preprompt's HOUSEHOLD KNOWLEDGE section
    collapsed from a 320-word prose block to a single-line roster +
    one-sentence EMOTIONAL TONE rule. ~400 tokens/turn saved on
-   every LLM call. **Nothing about ResidentA's father appears anywhere
+   every LLM call. **Nothing about the operator's family appears anywhere
    in preprompt or ChromaDB** (operator-explicit exclusion).
 8. **Env-var purge (Phase 2)** — compose env block shrank from 8
    lines to 1 (`TZ=${TZ}`). Dockerfile now bakes

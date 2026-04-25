@@ -616,7 +616,7 @@ auth:
   bootstrap_allowed: true             # flips false after first /setup completes
 
   users:
-    - username: "ResidentA"               # case-sensitive, exact match at login
+    - username: "ResidentA"            # case-sensitive, exact match at login
       display_name: "ResidentA"
       role: "admin"
       password_hash: "$argon2id$v=19$..."
