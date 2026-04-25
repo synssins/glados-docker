@@ -4,13 +4,13 @@
     {
       "id": 0,
       "subject": "Task 0: Run UI polish audit",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Produce docs/ui-polish-audit.md — a single ranked finding catalog covering visual, structural, and functional issues across the WebUI.\n\n**Files:**\n- Create: docs/ui-polish-audit.md\n\n**Acceptance Criteria:**\n- File exists with sections: Visual / Structural / Functional / Per-page summary\n- Each finding tagged P0/P1/P2 with one-line rationale\n- Each finding routed to chunk 4a-4f or Page-<name>\n- Layout-shift root cause explicitly identified\n- Sections-with-no-settings inventory enumerated\n- Committed\n\n**Verify:** wc -l docs/ui-polish-audit.md > 100\n\n```json:metadata\n{\"files\": [\"docs/ui-polish-audit.md\"], \"verifyCommand\": \"git log -1 docs/ui-polish-audit.md && wc -l docs/ui-polish-audit.md\", \"acceptanceCriteria\": [\"file exists with required sections\", \"all findings tagged P0/P1/P2\", \"all findings routed to chunk or Page\", \"layout-shift root cause identified\", \"sections-with-no-settings inventoried\"]}\n```"
     },
     {
       "id": 1,
       "subject": "Task 1: .page-shell wrapper foundation",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0],
       "description": "**Goal:** Single CSS container that every page renders inside. Layout-shift bug closed at source.\n\n**Files:**\n- Modify: glados/webui/static/style.css\n- Modify: glados/webui/pages/_shell.py:91\n- Modify: glados/webui/pages/*.py (every per-page module)\n- Modify: glados/webui/static/ui.js (every JS render function)\n\n**Acceptance Criteria:**\n- .page-shell defined with max-width, padding, grid\n- Every page renders inside exactly one .page-shell\n- Zero layout shift between Configuration sub-pages (DevTools verified)\n- No regression in .tab-content selector\n\n**Verify:** pytest tests/ -k webui -q && visual cycle through Configuration sub-pages\n\n```json:metadata\n{\"files\": [\"glados/webui/static/style.css\", \"glados/webui/pages/_shell.py\", \"glados/webui/pages/chat.py\", \"glados/webui/pages/tts_generator.py\", \"glados/webui/pages/system.py\", \"glados/webui/pages/integrations.py\", \"glados/webui/pages/memory.py\", \"glados/webui/pages/logs.py\", \"glados/webui/pages/users.py\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"pytest tests/ -k webui -q\", \"acceptanceCriteria\": [\".page-shell defined in style.css\", \"every page wrapped in .page-shell\", \"zero layout shift between Configuration sub-pages\", \"webui tests pass\"]}\n```"
     },
@@ -57,5 +57,5 @@
       "description": "**Goal:** Apply operator-approved Variant A: stroke icons, segmented mode pill, persona/format/attitude dropdowns removed, pronunciation overrides applied, telemetry strip.\n\n**Files:**\n- Modify: glados/webui/pages/tts_generator.py (full HTML rewrite)\n- Modify: glados/webui/static/style.css (.tts-seg, .telemetry-strip, .ico-btn)\n- Modify: glados/webui/static/ui.js (renderTTSFileList, ttsGenerate, _ttsSwitchMode)\n- Modify: glados/api/server.py (/api/generate applies pronunciation)\n- Create: tests/test_tts_generator_pronunciation.py\n\n**Acceptance Criteria:**\n- No voiceSelect/formatSelect/attitudeSelect in HTML\n- Mode toggle uses .tts-seg segmented pill\n- Telemetry strip with MODE/PERSONA/FORMAT/PIPER\n- File rows 28-32px tall, 22px icon buttons, no permanent red\n- /api/generate applies pronunciation overrides\n- Visual matches mockup\n\n**Verify:** pytest tests/test_tts_generator_pronunciation.py -v && grep -nE 'id=\"(voiceSelect|formatSelect|attitudeSelect)\"' glados/webui/pages/tts_generator.py\n\n```json:metadata\n{\"files\": [\"tests/test_tts_generator_pronunciation.py\", \"glados/api/server.py\", \"glados/webui/pages/tts_generator.py\", \"glados/webui/static/style.css\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"pytest tests/test_tts_generator_pronunciation.py -v\", \"acceptanceCriteria\": [\"dropdowns removed\", \"segmented mode pill\", \"telemetry strip on page\", \"icon buttons in file rows\", \"pronunciation overrides applied\", \"matches Variant A mockup\"]}\n```"
     }
   ],
-  "lastUpdated": "2026-04-25T13:08:00Z"
+  "lastUpdated": "2026-04-25T14:30:00Z"
 }
