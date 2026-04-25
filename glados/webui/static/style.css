@@ -1787,3 +1787,142 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 .cfg-group-title {
   color: var(--fg-secondary);
 }
+
+
+/* ── Login page ──────────────────────────────────────────────── */
+.login-body {
+  background: var(--bg-dark);
+  color: var(--fg-primary);
+  font-family: var(--font-mono);
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-shell {
+  width: 320px;
+  padding: var(--sp-5);
+}
+.login-brand {
+  color: var(--orange);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+/* .brand-sep and .brand-dim already exist from Task 2 — reused here */
+.login-sub {
+  color: var(--fg-secondary);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  margin: var(--sp-1) 0 var(--sp-4);
+}
+.login-tele {
+  background: rgba(0,0,0,0.25);
+  border: 1px solid var(--border-subtle, rgba(224,224,224,0.06));
+  border-radius: 2px;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 0.6rem;
+  color: var(--fg-tertiary);
+  letter-spacing: 0.06em;
+  margin-bottom: var(--sp-4);
+}
+.login-tele .lt-svc { display: inline-block; }
+.login-tele .lt-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.login-tele .lt-ok { background: var(--green); }
+.login-tele .lt-down { background: var(--red); }
+.login-tele .lt-sep { color: var(--fg-muted); padding: 0 6px; }
+.login-tele-loading { color: var(--fg-muted); }
+.login-label {
+  display: block;
+  color: var(--fg-secondary);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--sp-1);
+}
+.login-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default, rgba(224,224,224,0.10));
+  border-radius: var(--r-input, 4px);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--fg-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  margin-bottom: var(--sp-3);
+}
+.login-input:focus {
+  outline: none;
+  border-color: var(--border-focus, rgba(244,166,35,0.45));
+}
+.login-stay {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--fg-tertiary);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: var(--sp-1) 0 var(--sp-3);
+  cursor: pointer;
+}
+.login-stay input[type="checkbox"] { display: none; }
+.login-stay-box {
+  width: 12px; height: 12px;
+  border: 1px solid var(--border-default, rgba(224,224,224,0.10));
+  background: var(--bg-input);
+  border-radius: 1px;
+  flex: 0 0 12px;
+  position: relative;
+}
+.login-stay input[type="checkbox"]:checked + .login-stay-box {
+  background: var(--orange);
+  border-color: var(--orange);
+}
+.login-submit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  border: 1px solid var(--border-focus, rgba(244,166,35,0.45));
+  color: var(--orange);
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: var(--r-input, 4px);
+}
+.login-submit:hover {
+  background: var(--orange);
+  color: var(--bg-dark);
+}
+.login-submit:disabled {
+  border-color: var(--border-subtle, rgba(224,224,224,0.06));
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+.login-body .error {
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 var(--sp-3);
+  display: none;
+}

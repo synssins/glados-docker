@@ -487,7 +487,7 @@ _service_limiter = TokenBucket(
 
 # Public paths -- no session cookie required.
 # Matches AUTH_DESIGN.md SS3.4. /api/chat and /chat_audio/* require chat.send.
-_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status", "/api/health/aggregate"})
+_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status", "/api/health/aggregate", "/api/health/public"})
 
 _PUBLIC_PREFIXES = (
     # STT + TTS service endpoints (operator decision 2026-04-24)
@@ -765,154 +765,85 @@ def require_perm(handler, perm: str) -> bool:
 
 # â”€â”€ Login page HTML â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-LOGIN_PAGE = r"""<!DOCTYPE html>
+LOGIN_PAGE = r"""<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GLaDOS â€” Login</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    background: #0a0a0a;
-    color: #e0e0e0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-  }
-  .login-box {
-    background: #1a1a2e;
-    border: 1px solid #333;
-    border-radius: 12px;
-    padding: 40px;
-    width: 360px;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-  }
-  .login-box h1 {
-    text-align: center;
-    color: #ff6600;
-    font-size: 1.6em;
-    margin-bottom: 8px;
-  }
-  .login-box .subtitle {
-    text-align: center;
-    color: #888;
-    font-size: 0.85em;
-    margin-bottom: 28px;
-  }
-  .field { margin-bottom: 18px; }
-  .field label {
-    display: block;
-    font-size: 0.85em;
-    color: #aaa;
-    margin-bottom: 6px;
-  }
-  .field input[type="text"],
-  .field input[type="password"] {
-    width: 100%;
-    padding: 10px 12px;
-    background: #111;
-    border: 1px solid #444;
-    border-radius: 6px;
-    color: #e0e0e0;
-    font-size: 1em;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  .field input[type="text"]:focus,
-  .field input[type="password"]:focus { border-color: #ff6600; }
-  .remember {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 22px;
-    font-size: 0.85em;
-    color: #aaa;
-  }
-  .remember input[type="checkbox"] { accent-color: #ff6600; }
-  .btn {
-    width: 100%;
-    padding: 11px;
-    background: #ff6600;
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    font-size: 1em;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-  .btn:hover { background: #e55a00; }
-  .btn:disabled { background: #555; cursor: not-allowed; }
-  .error {
-    background: #3a1111;
-    border: 1px solid #ff4444;
-    color: #ff6666;
-    padding: 10px;
-    border-radius: 6px;
-    margin-bottom: 16px;
-    font-size: 0.85em;
-    display: none;
-  }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GLaDOS — Sign in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-<div class="login-box">
-  <h1>GLaDOS</h1>
-  <div class="subtitle">Control Panel Authentication</div>
-  <div class="error" id="error"></div>
-  <form id="loginForm" method="POST" action="/login">
-    <div class="field">
-      <label for="username">Username</label>
-      <input type="text" id="username" name="username" autofocus required>
+<body class="login-body">
+  <div class="login-shell">
+    <div class="login-brand">
+      <span>GLaDOS</span>
+      <span class="brand-sep">·</span>
+      <span class="brand-dim">CONTROL</span>
     </div>
-    <div class="field">
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password" required>
-    </div>
-    <div class="remember">
-      <input type="checkbox" id="remember" name="remember" value="1">
-      <label for="remember">Stay logged in</label>
-    </div>
-    <button type="submit" class="btn" id="submitBtn">Sign In</button>
-  </form>
-</div>
-<script>
-document.getElementById('loginForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const btn = document.getElementById('submitBtn');
-  const err = document.getElementById('error');
-  btn.disabled = true;
-  btn.textContent = 'Signing in...';
-  err.style.display = 'none';
-  try {
-    const resp = await fetch('/login', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: new URLSearchParams({
-        username: document.getElementById('username').value,
-        password: document.getElementById('password').value,
-        remember: document.getElementById('remember').checked ? '1' : '0'
-      })
+    <div class="login-sub">Sign-in required</div>
+    <div class="login-tele" id="loginTele"><span class="login-tele-loading">…probing</span></div>
+    <div class="error" id="error"></div>
+    <form id="loginForm" method="POST" action="/login">
+      <label class="login-label" for="username">User</label>
+      <input class="login-input" id="username" name="username" autocomplete="username" autofocus required>
+      <label class="login-label" for="password">Password</label>
+      <input class="login-input" id="password" name="password" type="password" autocomplete="current-password" required>
+      <label class="login-stay">
+        <input type="checkbox" id="remember" name="remember" value="1">
+        <span class="login-stay-box"></span>
+        <span>STAY SIGNED IN</span>
+      </label>
+      <button class="login-submit" type="submit" id="submitBtn">SIGN IN →</button>
+    </form>
+  </div>
+  <script>
+    fetch('/api/health/public').then(r => r.json()).then(d => {
+      const el = document.getElementById('loginTele');
+      if (!el || !d.services) return;
+      el.innerHTML = d.services.map(s =>
+        '<span class="lt-svc"><span class="lt-dot lt-' + s.status + '"></span> ' + s.name + '</span>'
+      ).join('<span class="lt-sep">│</span>');
+    }).catch(() => {});
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('submitBtn');
+      const err = document.getElementById('error');
+      btn.disabled = true;
+      btn.textContent = 'SIGNING IN…';
+      err.style.display = 'none';
+      try {
+        const resp = await fetch('/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+            remember: document.getElementById('remember').checked ? '1' : '0'
+          })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          window.location.href = '/';
+        } else {
+          let msg = 'INVALID CREDENTIALS';
+          if (data.error) msg = String(data.error).toUpperCase();
+          err.textContent = msg;
+          err.style.display = 'block';
+          document.getElementById('password').value = '';
+          document.getElementById('password').focus();
+        }
+      } catch (ex) {
+        err.textContent = 'CONNECTION ERROR';
+        err.style.display = 'block';
+      }
+      btn.disabled = false;
+      btn.textContent = 'SIGN IN →';
     });
-    const data = await resp.json();
-    if (data.ok) {
-      window.location.href = '/';
-    } else {
-      err.textContent = data.error || 'Invalid password';
-      err.style.display = 'block';
-      document.getElementById('password').value = '';
-      document.getElementById('password').focus();
-    }
-  } catch (ex) {
-    err.textContent = 'Connection error';
-    err.style.display = 'block';
-  }
-  btn.disabled = false;
-  btn.textContent = 'Sign In';
-});
-</script>
+  </script>
 </body>
 </html>"""
 
@@ -1689,6 +1620,8 @@ class Handler(BaseHTTPRequestHandler):
             self._get_auth_status()
         elif p == "/api/health/aggregate":
             self._get_health_aggregate()
+        elif p == "/api/health/public":
+            self._get_health_public()
         # --- Protected routes below ---
         elif p == "/api/modes":
             self._get_modes()
@@ -3131,6 +3064,56 @@ class Handler(BaseHTTPRequestHandler):
             probes.append(("ChromaDB", False))
 
         self._send_json(200, _build_health_aggregate(authenticated=True, probes=probes))
+
+    def _get_health_public(self):
+        """GET /api/health/public -- unauthenticated per-service status for login telemetry.
+
+        Always returns {"services": [{"name": ..., "status": "ok"|"down"}, ...]}
+        with no auth requirement. Reuses the same probes as _get_health_aggregate.
+        """
+        probes = []
+
+        # GLaDOS API
+        try:
+            req = urllib.request.Request(f"{_svc_api_wrapper()}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("API", resp.status < 400))
+        except Exception:
+            probes.append(("API", False))
+
+        # TTS (speaches -- no /health, use /v1/voices)
+        try:
+            tts_base = _svc_tts_base().rsplit("/v1/", 1)[0].rstrip("/")
+            req = urllib.request.Request(f"{tts_base}/v1/voices")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("TTS", resp.status < 400))
+        except Exception:
+            probes.append(("TTS", False))
+
+        # STT (speaches STT side)
+        try:
+            req = urllib.request.Request(f"{_svc_stt()}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("STT", resp.status < 400))
+        except Exception:
+            probes.append(("STT", False))
+
+        # Home Assistant
+        try:
+            req = urllib.request.Request(
+                f"{HA_URL}/api/",
+                headers={"Authorization": f"Bearer {HA_TOKEN}"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("HA", resp.status < 400))
+        except Exception:
+            probes.append(("HA", False))
+
+        services = [
+            {"name": name, "status": "ok" if status is True else "down"}
+            for name, status in probes
+        ]
+        self._send_json(200, {"services": services})
 
     # â”€â”€ Attitudes endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
