@@ -4553,10 +4553,10 @@ function _memPendingCard(r) {
   return '<div class="mem-pending" data-id="' + id + '">'
     + '<div><strong>' + doc + '</strong></div>'
     + '<div class="mem-fact-meta">source=passive  importance=' + importance + '  age=' + age + '</div>'
-    + '<div class="mem-fact-actions">'
+    + '<div class="mem-fact-actions" style="display:flex;align-items:center;gap:6px;">'
     +   '<button class="btn-small" onclick="memPromote(\'' + id + '\')">Approve</button>'
-    +   ' <button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-    +   ' <button class="btn btn-danger" style="font-size:0.8rem;padding:0.3rem 0.6rem;" onclick="memReject(\'' + id + '\')">Reject</button>'
+    +   '<button class="ico-btn" title="Edit" onclick="memEdit(\'' + id + '\')">' + _PENCIL_SVG + '</button>'
+    +   '<button class="ico-btn danger" title="Reject" onclick="memReject(\'' + id + '\')">' + _TRASH_SVG + '</button>'
     + '</div></div>';
 }
 
