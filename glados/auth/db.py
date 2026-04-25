@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from pathlib import Path
 
 
@@ -61,8 +62,28 @@ def ensure_schema() -> None:
         con.close()
 
 
+# Per-path schema-init memo so we only run ensure_schema once per
+# distinct DB file. Keyed by path so test fixtures that monkeypatch
+# _db_path() to a tmp dir don't share state with previous runs.
+_initialized_paths: set[str] = set()
+_init_lock = threading.Lock()
+
+
 def connect() -> sqlite3.Connection:
-    """Return an open sqlite3.Connection with Row factory enabled."""
-    con = sqlite3.connect(_db_path())
+    """Return an open sqlite3.Connection with Row factory enabled.
+
+    Self-initialises the schema the first time a given DB path is opened.
+    Earlier code required callers to remember to call ensure_schema()
+    explicitly, which broke the login path when user_state.* was the
+    first auth.db consumer of the process and the file didn't yet exist.
+    """
+    path = _db_path()
+    key = str(path)
+    if key not in _initialized_paths:
+        with _init_lock:
+            if key not in _initialized_paths:
+                ensure_schema()
+                _initialized_paths.add(key)
+    con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     return con
