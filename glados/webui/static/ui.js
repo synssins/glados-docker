@@ -4275,10 +4275,28 @@ function memHideAddForm() {
   document.getElementById('memAddText').value = '';
 }
 
+// Segmented control helper — shared by add form and edit form.
+function memSegSelect(cell, segId) {
+  document.querySelectorAll('#' + segId + ' .tts-seg-cell').forEach(c => c.classList.remove('on'));
+  cell.classList.add('on');
+}
+
+// Map a 0-1 numeric importance value to the nearest 5-point label.
+function _memImportanceLabel(val) {
+  const v = Number(val) || 0;
+  if (v <= 0.10) return 'Background';
+  if (v <= 0.30) return 'Background';
+  if (v <= 0.50) return 'Useful';
+  if (v <= 0.70) return 'Important';
+  if (v <= 0.90) return 'Critical';
+  return 'Extreme';
+}
+
 async function memAddFact() {
   const text = document.getElementById('memAddText').value.trim();
   if (!text) { showToast('Text required', 'error'); return; }
-  const importance = parseFloat(document.getElementById('memAddImportance').value);
+  const onCell = document.querySelector('#memAddImportanceSeg .tts-seg-cell.on');
+  const importance = onCell ? parseFloat(onCell.dataset.value) : 0.60;
   try {
     const r = await fetch('/api/memory/add', {
       method: 'POST',
@@ -4331,25 +4349,31 @@ function _memRenderFacts(rows) {
   el.innerHTML = html;
 }
 
+const _PENCIL_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2 L14 5 L5 14 L2 14 L2 11 Z M10 3 L13 6"/></svg>';
+const _TRASH_SVG  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+
 function _memFactCard(r) {
   const m = r.metadata || {};
   const sourceRaw = m.source || '';
   const source = sourceRaw.replace(/^user_/, '') || 'unknown';
-  const importance = (m.importance != null) ? Number(m.importance).toFixed(2) : '?';
+  const impLabel = _memImportanceLabel(m.importance);
   const mentions = m.mention_count || 1;
   const age = _memFmtAge(m.written_at);
   const doc = escHtml(r.document || '');
   const id = escAttr(r.id || '');
-  return '<div class="mem-fact" data-id="' + id + '">'
-    + '<div class="mem-fact-text">' + doc + '</div>'
-    + '<div class="mem-fact-meta">source=' + escHtml(source)
-      + '  importance=' + importance
-      + '  mentions=' + mentions
-      + '  age=' + age + '</div>'
-    + '<div class="mem-fact-actions">'
-    +   '<button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-    +   ' <button class="btn btn-danger" style="font-size:0.8rem;padding:0.3rem 0.6rem;" onclick="memDelete(\'' + id + '\')">Delete</button>'
-    + '</div></div>';
+  return '<div class="mem-fact" data-id="' + id + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
+    + '<div style="min-width:0;flex:1;">'
+    +   '<div class="mem-fact-text">' + doc + '</div>'
+    +   '<div class="mem-fact-meta">source=' + escHtml(source)
+        + '  importance=' + impLabel
+        + '  mentions=' + mentions
+        + '  age=' + age + '</div>'
+    + '</div>'
+    + '<div style="display:flex;gap:4px;flex-shrink:0;margin-top:2px;">'
+    +   '<button class="ico-btn" title="Edit" onclick="memEdit(\'' + id + '\')">' + _PENCIL_SVG + '</button>'
+    +   '<button class="ico-btn danger" title="Delete" onclick="memDelete(\'' + id + '\')">' + _TRASH_SVG + '</button>'
+    + '</div>'
+    + '</div>';
 }
 
 function _memFmtAge(ts) {
@@ -4411,15 +4435,17 @@ async function memReject(id) {
   }
 }
 
-// Recent activity: reuses /api/memory/list; sorts by max(written_at,
-// last_mentioned_at) and shows the top 10. Reinforcement-bump rows
-// can offer "Update wording from latest mention" when last_mention_text
-// differs from the canonical document.
+// Recently learned: reuses /api/memory/list; filters to auto-learned
+// (passive-origin) facts only — source stored as "user_passive" by
+// memory_writer.py. Sorted by recency, shows top 10.
 async function memLoadRecent() {
   try {
     const r = await fetch('/api/memory/list?limit=200');
     const data = await r.json();
-    const rows = (data.rows || []).slice();
+    const rows = (data.rows || []).filter(row => {
+      const src = (row.metadata || {}).source || '';
+      return src === 'user_passive';
+    });
     rows.sort((a, b) => {
       const am = a.metadata || {}, bm = b.metadata || {};
       const at = Math.max(Number(am.last_mentioned_at || 0), Number(am.written_at || 0));
@@ -4435,7 +4461,7 @@ async function memLoadRecent() {
 function _memRenderRecent(rows) {
   const el = document.getElementById('memRecentList');
   if (rows.length === 0) {
-    el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">No recent activity.</div>';
+    el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">No auto-learned facts yet.</div>';
     return;
   }
   let html = '';
@@ -4452,28 +4478,28 @@ function _memRecentItem(r) {
   const age = _memFmtAge(Math.max(Number(m.last_mentioned_at || 0), Number(m.written_at || 0)));
   const lastText = m.last_mention_text || '';
   const canUpdate = isReinforcement && lastText && lastText !== (r.document || '');
-  const importance = Number(m.importance || 0).toFixed(2);
-  const origImportance = Number(m.original_importance || 0).toFixed(2);
-  let label = isReinforcement
-    ? '<span class="mem-bump">reinforced</span> importance ' + origImportance + ' &rarr; ' + importance + ', mentions=' + mentions
-    : 'new fact';
-  let html = '<div class="mem-recent" data-id="' + id + '">'
-    + '<div><strong>' + doc + '</strong></div>'
-    + '<div class="mem-fact-meta">' + label + '  &bull;  ' + age + ' ago</div>';
+  const impLabel = _memImportanceLabel(m.importance);
+  const origLabel = _memImportanceLabel(m.original_importance);
+  let statusLabel = isReinforcement
+    ? '<span class="mem-bump">reinforced</span> ' + origLabel + ' &rarr; ' + impLabel + ', mentions=' + mentions
+    : 'new  importance=' + impLabel;
+  const status = (m.review_status === 'pending') ? '  <span style="color:var(--orange);">pending</span>' : '';
+  let html = '<div class="mem-recent" data-id="' + id + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
+    + '<div style="min-width:0;flex:1;">'
+    +   '<div class="mem-fact-text">' + doc + '</div>'
+    +   '<div class="mem-fact-meta">' + statusLabel + status + '  &bull;  ' + age + ' ago</div>';
   if (canUpdate) {
-    html += '<div class="mem-fact-meta">Latest mention: &ldquo;' + escHtml(lastText) + '&rdquo;</div>';
-    html += '<div class="mem-fact-actions">'
-      + '<button class="btn-small" onclick="memUpdateWording(\'' + id + '\')">Update wording from latest mention</button>'
-      + ' <button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-      + ' <button class="btn btn-danger" style="font-size:0.8rem;padding:0.3rem 0.6rem;" onclick="memDelete(\'' + id + '\')">Delete</button>'
-      + '</div>';
-  } else {
-    html += '<div class="mem-fact-actions">'
-      + '<button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-      + ' <button class="btn btn-danger" style="font-size:0.8rem;padding:0.3rem 0.6rem;" onclick="memDelete(\'' + id + '\')">Delete</button>'
+    html += '<div class="mem-fact-meta">Latest mention: &ldquo;' + escHtml(lastText) + '&rdquo;</div>'
+      + '<div class="mem-fact-actions" style="margin-top:4px;">'
+      + '<button class="btn-small" onclick="memUpdateWording(\'' + id + '\')">Update wording</button>'
       + '</div>';
   }
-  html += '</div>';
+  html += '</div>'
+    + '<div style="display:flex;gap:4px;flex-shrink:0;margin-top:2px;">'
+    +   '<button class="ico-btn" title="Edit" onclick="memEdit(\'' + id + '\')">' + _PENCIL_SVG + '</button>'
+    +   '<button class="ico-btn danger" title="Delete" onclick="memDelete(\'' + id + '\')">' + _TRASH_SVG + '</button>'
+    + '</div>'
+    + '</div>';
   return html;
 }
 
