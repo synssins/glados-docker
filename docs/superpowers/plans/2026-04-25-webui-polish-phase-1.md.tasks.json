@@ -45,7 +45,7 @@
     {
       "id": 6,
       "subject": "Task 6: Token sweep (mechanical, post-audit)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0, 1, 2, 3, 4, 5],
       "description": "**Goal:** Replace --text/--text-dim with four-tier --fg-*; replace #3a3a42 borders with rgba --border-*; normalize off-grid spacing; purge drop-shadows.\n\n**Files:**\n- Modify: glados/webui/static/style.css (broad)\n- Modify: glados/webui/static/ui.js (any inline styles)\n\n**Acceptance Criteria:**\n- 0 var(--text\\b) in rule bodies\n- 0 #3a3a42 in rule bodies\n- 0 box-shadow declarations except 'none'\n- All numeric values use --sp-* / 0 / 100% / auto / 100vh / em\n- Tests pass\n\n**Verify:** grep -nE 'var\\(--text\\b' glados/webui/static/style.css; grep -nE '#3a3a42' glados/webui/static/style.css; pytest tests/ -k webui -q\n\n```json:metadata\n{\"files\": [\"glados/webui/static/style.css\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"grep -nE 'var\\\\(--text\\\\b' glados/webui/static/style.css glados/webui/static/ui.js && grep -nE '#3a3a42' glados/webui/static/style.css\", \"acceptanceCriteria\": [\"--text/--text-dim swept\", \"#3a3a42 swept\", \"box-shadow purged\", \"spacing tokenized\", \"tests pass\"]}\n```"
     },
