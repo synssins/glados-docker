@@ -14,7 +14,7 @@ Before making changes to this repo, read these files in order:
    is live right now." Re-read every session.
 2. **`docs/CHANGES.md`** — chronological change log. Every structural
    change documented with rationale and side effects. Most recent
-   entry at the bottom (currently Change 22, 2026-04-23).
+   entry at the bottom (currently Change 24, 2026-04-25).
 3. **`docs/battery-findings-and-remediation-plan.md`** — Phase 8.x
    battery analysis and remediation plan (complete as of 2026-04-21).
    Useful for understanding the voice-agent quality bar the operator
@@ -33,12 +33,15 @@ belong in `C:\src\SESSION_STATE.md`, never in the committed code.
 
 ---
 
-## 1. Project state snapshot (2026-04-23)
+## 1. Project state snapshot (2026-04-24)
 
 - **Deployed on the operator's Docker host**: `ghcr.io/synssins/glados-docker:latest`
-  at commit `52a57e5`. Healthy. (Prior snapshots reference commit
-  hashes that no longer exist — history was rewritten with
+  at commit `cd3bad2` (image SHA `0a6a03e3`). Healthy. (Prior snapshots reference
+  commit hashes that no longer exist — history was rewritten with
   `git-filter-repo` during the 2026-04-23 secrets scrub.)
+- **Auth rebuild shipped** (2026-04-25). Multi-user Argon2id auth,
+  `/setup` first-run wizard, role-based sidebar, `GLADOS_AUTH_BYPASS`
+  recovery path. See CHANGES.md Change 23–24.
 - **Scope discipline:** this repo is a consumer of external
   services (Ollama, Home Assistant, Speaches, ChromaDB, MQTT).
   Those services run on separate systems with stock firmware from

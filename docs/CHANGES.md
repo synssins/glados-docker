@@ -3011,3 +3011,49 @@ restore the legacy single-password fields if needed. See
 `docs/AUTH_DESIGN.md` §11.
 
 ---
+
+## Change 24 — auth rebuild post-deploy fixes (2026-04-25)
+
+Three bugs surfaced by operator live-testing and were fixed in same-day
+commits on top of the rebuild merge:
+
+- **`auth.db` schema not self-initialised** (3511a28). `_user_state.record_*`
+  was the first auth.db consumer on the login path and called `connect()`
+  before `ensure_schema()`. Login crashed with `OperationalError: no such
+  table: user_state`. Fixed by self-initialising the schema once per
+  distinct DB path inside `connect()`.
+
+- **WebUI UX gaps** (918e52c). Configuration was visible to chat users
+  (showing 403s on click). Visiting `/` immediately redirected to the
+  login form. There was no profile/account UI. Bottom-left of the
+  sidebar now shows an Account block (username + role + Change Password)
+  when authed, replaced by a Sign in button when not; Logout sits below.
+  Configuration parent + children gated by `data-requires-admin`. New
+  landing page initially landed and was later removed.
+
+- **Admin migration not persisted; `/tts` audio non-functional;
+  unauth UX redesign** (cd3bad2). Three issues in one commit:
+  - The legacy-admin synthesizer skipped seeding admin once any non-admin
+    user was in `users[]`, and `_merge_write_user_hash` never persisted
+    the synthesized admin to YAML. Result: after the operator added a
+    chat user, the dormant legacy `password_hash` stopped surfacing as
+    an admin → operator locked out. Fixed by always seeding admin from
+    the legacy hash when no admin role exists in `users[]`, and by
+    making `_merge_write_user_hash` append-and-clear-legacy when the
+    user isn't yet in YAML.
+  - `/tts` standalone page treated `/api/generate`'s JSON response as
+    raw audio bytes. Now parses JSON and uses `data.url`.
+  - Unauth users got a small landing page and a stripped `/tts` page,
+    not the standard SPA shell. The operator wanted the SPA shell at
+    `/` with only TTS in the sidebar and a Sign in button at bottom-left.
+    `/` now always renders the SPA shell. Sidebar items gain a
+    `data-requires-auth` gate; TTS Generator drops its admin-only gate.
+    `/tts` 302s to `/`. Landing page module deleted.
+
+After these fixes, the live container at `0a6a03e3` accepted the
+operator's `admin / glados` login, persisted the migration to YAML
+(legacy `password_hash` cleared, admin appears in `users[]` alongside
+the existing chat user), and TTS Generator works end-to-end for unauth
+visitors.
+
+---

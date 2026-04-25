@@ -87,11 +87,17 @@ ollama pull qwen2.5vl:7b                  # vision (optional)
 # 5. Start GLaDOS + its ChromaDB
 docker compose -f docker/compose.yml up -d
 
-# 6. Verify
+# 6. First-run admin setup
+#    Visit http://localhost:8052 in your browser.
+#    On a fresh install (no users yet) you will be redirected to /setup —
+#    a short wizard that creates the initial admin account.
+#    No docker exec or set_password command needed.
+
+# 7. Verify
 curl http://localhost:8015/health
 curl http://localhost:8015/v1/models
 
-# 7. (Optional) tail the audit log to watch tier decisions in real time
+# 8. (Optional) tail the audit log to watch tier decisions in real time
 docker exec glados tail -f /app/logs/audit.jsonl
 ```
 
@@ -235,10 +241,9 @@ battery analysis and the remediation plan (complete).
 | 8052 | LAN     | Admin WebUI (config editor, health panel, TTS generator, chat) — HTTPS when SSL enabled |
 | 8000 | Localhost only | ChromaDB (vector memory) — no outside consumer |
 
-The container is designed for LAN deployment. If you expose either port
-to the public internet, put it behind a reverse proxy with authentication
-(Cloudflare Access, Authelia, etc.); the WebUI's bundled bcrypt password
-is fine for LAN-trust but not for global exposure.
+The container is designed for LAN deployment. If you expose port 8052
+to the public internet, put it behind a reverse proxy (Cloudflare Access,
+Authelia, etc.) for an additional perimeter layer.
 
 ## External Services (operator-provided)
 
@@ -314,11 +319,75 @@ Selected env vars worth knowing:
 | `REWRITER_TIMEOUT_S` | `8` | LLM call ceiling |
 | `GLADOS_LOGS` | `/app/logs` | Audit log directory |
 | `SSL_ENABLED` | `false` | Toggle HTTPS for WebUI port 8052 |
+| `GLADOS_AUTH_BYPASS` | unset | Set to `1` to disable all auth checks (recovery mode — see Authentication below) |
 
 Operator-tunable disambiguation rules go in `configs/disambiguation.yaml`
 (template at `configs/disambiguation.example.yaml`): naming convention,
 overhead-synonym list, state-inference toggle, freshness budget, candidate
 limit.
+
+## Authentication
+
+### First-run setup
+
+When the container starts with no users configured, visiting the WebUI
+at port 8052 redirects you to `/setup` — a short wizard that walks
+through creating the initial admin account. No `docker exec` commands
+are needed. The `set_password` tool is deprecated; the wizard replaces it.
+
+### Roles
+
+Two roles are supported:
+
+| Role | Access |
+|------|--------|
+| `admin` | Full WebUI access — chat, TTS Generator, audit log, configuration, user management |
+| `chat` | Chat tab only |
+
+Admins manage users via **Configuration → Users**.
+
+### Public routes
+
+By operator decision, the following are unauthenticated:
+
+- `/api/stt` — speech-to-text endpoint
+- `/api/generate` (TTS) — text-to-speech generation
+- **TTS Generator** WebUI panel
+
+Chat requires login. Configuration pages are admin-only.
+
+### Recovery
+
+If admin access is lost:
+
+1. Add `GLADOS_AUTH_BYPASS=1` to your `docker-compose.yml` environment block.
+2. Restart the container (`docker compose restart`).
+3. The WebUI loads with a **bright-red banner** — all auth checks are
+   disabled for this run.
+4. Reset passwords via **Configuration → Users**.
+5. Remove `GLADOS_AUTH_BYPASS` from compose and restart again.
+
+### Config shape
+
+The `auth:` block in `configs/global.yaml` is now multi-user:
+
+```yaml
+auth:
+  users:
+    - username: admin
+      password_hash: "$argon2id$..."
+      role: admin
+    - username: alice
+      password_hash: "$argon2id$..."
+      role: chat
+```
+
+Legacy single-password installs (a bare `password_hash:` at the top
+level of `global.yaml`) migrate transparently: on the first successful
+admin login the hash is rewritten as Argon2id and moved into `users[]`.
+The legacy `password_hash` field is cleared from the file after
+migration. Password hashing is Argon2id; a bcrypt verify path is
+retained during migration only.
 
 ## Security
 

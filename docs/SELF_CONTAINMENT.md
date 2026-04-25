@@ -3,10 +3,10 @@
 Working document for the "minimum-setup, self-contained GLaDOS container"
 initiative. Updated continuously while this is an active project.
 
-**Last updated:** 2026-04-24 (evening — post-Phase-2)
+**Last updated:** 2026-04-25 (auth rebuild shipped + post-deploy hotfixes)
 **Active branch:** `main`
 **Deployed commit at start of project:** `a134723`
-**Deployed commit now:** `2f245eb`
+**Deployed commit now:** `cd3bad2` (image SHA `0a6a03e3`)
 
 ---
 
@@ -200,30 +200,44 @@ Still pending:
     operator availability
   - Phase 5 (README/CLAUDE/roadmap refresh) — pending
 
+### Post-day-2 (2026-04-25) — auth rebuild shipped
+
+- **Deployed commit:** `cd3bad2` (image SHA `0a6a03e3`) on `<docker-host>`
+- **Auth rebuild:** merged `f673ae5`; three same-day hotfixes
+  (`3511a28`, `918e52c`, `cd3bad2`). Admin login verified; migration
+  to `users[]` YAML confirmed; TTS Generator working for unauth.
+- **SELF_CONTAINMENT.md phases:**
+  - Phase 3 (first-run bootstrap) ✅ — covered by `/setup` wizard
+  - Phase 5 (README/CLAUDE/roadmap refresh) ✅ — this commit
+
 ---
 
 ## Remaining work (prioritized)
 
-### ACTIVE — Auth rebuild (new initiative, next session)
+### COMPLETE — Auth rebuild (merged `f673ae5`, 2026-04-25)
 
-Current auth is a single bcrypt hash in `configs/global.yaml` with a
-session cookie. No per-operator identity, no MFA, no OIDC, no rate
-limiting, no recovery path that doesn't require shell access. Not
-acceptable for WebUI-through-reverse-proxy or multi-operator
-scenarios. New session will research supported libraries + design
-a first-run credential bootstrap + configurable session expiry.
-See the prompt at the root of this doc's companion project
-(not committed; passed to the next session directly).
+Multi-user Argon2id auth with itsdangerous sessions and SQLite
+session store. Roles: `admin` (full access) / `chat` (chat tab
+only). First-run `/setup` wizard. `GLADOS_AUTH_BYPASS=1` recovery
+path. TTS/STT public; chat requires login; configuration is
+admin-only. Legacy single-password `global.yaml` migrates
+transparently on first login.
 
-### Phase 3 — First-run bootstrap (deferred)
+Three post-merge hotfixes landed same-day on top of `f673ae5`:
+- `3511a28` — `auth.db` schema self-init on `connect()`
+- `918e52c` — role-aware sidebar, landing page, bottom-left auth area
+- `cd3bad2` — admin migration persistence + `/tts` audio JSON parse
+  + SPA shell for unauth visitors
 
-When `configs/global.yaml` is missing (fresh volume), container seeds
-defaults. When `ha.token` is empty, WebUI is still reachable —
-operator sets token there, live-reload picks it up ~30 s later.
-No startup wizard needed — the live-reload path already handles this.
-Just need the default-seed on fresh volume. **Tied to the auth
-rebuild above** — first-run-ever includes password setup as well
-as HA token + URL.
+Details in CHANGES.md Change 23 (rebuild) and Change 24 (hotfixes).
+
+### Phase 3 — First-run bootstrap (complete, via auth rebuild)
+
+The `/setup` wizard shipped with the auth rebuild (`f673ae5`) covers
+first-run admin account creation. A fresh container with no users
+redirects to `/setup` automatically. HA token + URL are still set
+via the WebUI after login, which the live-reload path handles.
+This phase is effectively done.
 
 ### Phase 4 — Doorbell acceptance test
 
