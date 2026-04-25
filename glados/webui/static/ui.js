@@ -375,7 +375,7 @@ function cfgRenderSection(section) {
   const data = (section === 'ssl') ? (_cfgData.global || {}) : _cfgData[backing];
   if (!data) {
     document.getElementById('cfg-form-area').innerHTML =
-      '<div class="page-shell"><div style="color:#ff6666;padding:20px;">Section not loaded. Click Reload.</div></div>';
+      '<div style="color:#ff6666;padding:20px;">Section not loaded. Click Reload.</div>';
     return;
   }
   const meta = SECTION_META[section] || SECTION_META[backing] || {};
@@ -414,7 +414,7 @@ function cfgRenderSection(section) {
     html += _cfgRenderIntegrationsExtras();
   }
 
-  document.getElementById('cfg-form-area').innerHTML = '<div class="page-shell">' + html + '</div>';
+  document.getElementById('cfg-form-area').innerHTML = html;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -516,7 +516,7 @@ function _cfgRenderIntegrations() {
 
   html += '</div>';  // end page-tab-panels
 
-  document.getElementById('cfg-form-area').innerHTML = '<div class="page-shell">' + html + '</div>';
+  document.getElementById('cfg-form-area').innerHTML = html;
 
   setTimeout(_cfgLoadMqtt, 0);
   setTimeout(_cfgLoadWeather, 0);
@@ -1711,7 +1711,7 @@ function _cfgRenderAudioSpeakers() {
   const audio = _cfgData.audio;
   if (!speakers || !audio) {
     document.getElementById('cfg-form-area').innerHTML =
-      '<div class="page-shell"><div style="color:#ff6666;padding:20px;">Audio &amp; Speakers sections not loaded. Click Reload.</div></div>';
+      '<div style="color:#ff6666;padding:20px;">Audio &amp; Speakers sections not loaded. Click Reload.</div>';
     return;
   }
   const meta = SECTION_META['audio-speakers'] || {};
@@ -1831,7 +1831,7 @@ function _cfgRenderAudioSpeakers() {
 
   html += '</div>';  // end page-tab-panels
 
-  document.getElementById('cfg-form-area').innerHTML = '<div class="page-shell">' + html + '</div>';
+  document.getElementById('cfg-form-area').innerHTML = html;
   setTimeout(loadStartupSpeakers, 0);
   setTimeout(_cfgLoadSpeakersPicker, 0);
   setTimeout(_cfgLoadResponseBehavior, 0);
@@ -3802,7 +3802,7 @@ function cfgRenderRaw() {
     + '<button class="cfg-save-btn" onclick="cfgSaveRaw()">Save ' + _cfgCurrentRawFile + '.yaml</button>'
     + '<span id="cfg-save-result" class="cfg-result"></span>'
     + '</div>';
-  document.getElementById('cfg-form-area').innerHTML = '<div class="page-shell">' + html + '</div>';
+  document.getElementById('cfg-form-area').innerHTML = html;
 }
 
 function cfgSwitchRawFile(name) {
