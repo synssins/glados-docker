@@ -31,30 +31,49 @@ SHELL_TOP = r"""<!DOCTYPE html>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       Chat
     </a>
-    <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')">
+    <a class="nav-item" data-nav-key="tts" onclick="navigateTo('tts')" data-requires-admin="true" style="display:none;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
       TTS Generator
     </a>
-    <a class="nav-item nav-parent" data-nav-key="config" onclick="navToggleConfig()" data-requires-auth="true">
+    <a class="nav-item" href="/tts" data-chat-only="true" style="display:none;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      Speech (TTS)
+    </a>
+    <a class="nav-item nav-parent" data-nav-key="config" onclick="navToggleConfig()" data-requires-admin="true" style="display:none;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-      Configuration <span class="lock-icon" id="lockConfig"></span>
+      Configuration
       <span class="nav-caret">&#9656;</span>
     </a>
-    <div class="nav-children">
-      <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
-      <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')" data-requires-auth="true">Integrations</a>
-      <a class="nav-item" data-nav-key="config.audio-speakers" onclick="navigateTo('config.audio-speakers')" data-requires-auth="true">Audio &amp; Speakers</a>
-      <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')" data-requires-auth="true">Personality</a>
-      <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')" data-requires-auth="true">Memory</a>
-      <a class="nav-item" data-nav-key="config.logs" onclick="navigateTo('config.logs')" data-requires-auth="true">Logs</a>
-      <a class="nav-item" data-nav-key="config.ssl" onclick="navigateTo('config.ssl')" data-requires-auth="true">SSL</a>
-      <a class="nav-item" data-nav-key="config.raw" onclick="navigateTo('config.raw')" data-requires-auth="true">Raw YAML</a>
-      <a class="nav-item" data-nav-key="config.users" onclick="navigateTo('config.users')" data-requires-auth="true" data-requires-admin="true" style="display:none;">Users</a>
+    <div class="nav-children" data-requires-admin="true" style="display:none;">
+      <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')">System</a>
+      <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')">Integrations</a>
+      <a class="nav-item" data-nav-key="config.audio-speakers" onclick="navigateTo('config.audio-speakers')">Audio &amp; Speakers</a>
+      <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')">Personality</a>
+      <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')">Memory</a>
+      <a class="nav-item" data-nav-key="config.logs" onclick="navigateTo('config.logs')">Logs</a>
+      <a class="nav-item" data-nav-key="config.ssl" onclick="navigateTo('config.ssl')">SSL</a>
+      <a class="nav-item" data-nav-key="config.raw" onclick="navigateTo('config.raw')">Raw YAML</a>
+      <a class="nav-item" data-nav-key="config.users" onclick="navigateTo('config.users')">Users</a>
     </div>
     <!-- Training removed: piper_train is a host-native tool, not available in container -->
   </div>
   <div class="sidebar-footer">
-    <a id="authLinkSidebar" href="/login">Sign In</a>
+    <!-- Account block — populated by updateAuthUI() in ui.js -->
+    <div id="sidebarAccount" class="sidebar-account" style="display:none;">
+      <div class="sidebar-account-user">
+        <span class="sidebar-account-icon">&#128100;</span>
+        <span id="sidebarUsername" class="sidebar-account-name"></span>
+        <span id="sidebarRole" class="sidebar-account-role"></span>
+      </div>
+      <a href="#" onclick="navigateTo('config.system');showPageTab('system','account');return false;" class="sidebar-account-link">Change Password</a>
+    </div>
+    <div id="sidebarSignIn" class="sidebar-signin">
+      <a href="/login" class="sidebar-signin-btn">Sign in</a>
+    </div>
+    <a id="sidebarLogout" href="/logout" class="sidebar-logout" style="display:none;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      Sign out
+    </a>
   </div>
 </nav>
 

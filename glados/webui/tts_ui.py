@@ -1750,14 +1750,19 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # Security fix (2026-04-20) — the menu rebuild made `/` serve
-        # the full single-page admin app including the Configuration
-        # tabs. Previously `/` was treated as public because the chat
-        # page lived there alone; now it fronts every protected page
-        # in the SPA. Require auth for `/` and `/index.html` — the
-        # login page redirects here after a successful POST so the
-        # session cookie is already set for real admin users.
+        # / and /index.html: serve the SPA for authenticated users;
+        # render the landing page (with Sign in + Speech tools links)
+        # for unauthenticated visitors instead of redirecting to /login.
         if self.path in ("/", "/index.html"):
+            if not _is_authenticated(self):
+                from glados.webui.pages.landing import LANDING_HTML
+                body = LANDING_HTML.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if not require_perm(self, "webui.view"):
                 return
             self._dispatch_get()

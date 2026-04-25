@@ -178,18 +178,53 @@ body {
 }
 .nav-children .nav-item svg { width: 14px; height: 14px; }
 .sidebar-footer {
-  padding: 0.75rem 1rem;
+  padding: 0.5rem 0.75rem 0.75rem;
   border-top: 1px solid var(--border);
+  margin-top: auto;
 }
-.sidebar-footer a {
-  color: var(--text-dim);
-  text-decoration: none;
-  font-size: 0.8rem;
-  display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.4rem 0;
+/* Account block (logged-in state) */
+.sidebar-account {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.sidebar-account-user {
+  display: flex; align-items: center; gap: 0.4rem;
+  margin-bottom: 0.35rem;
+}
+.sidebar-account-icon { font-size: 1rem; opacity: 0.7; }
+.sidebar-account-name {
+  font-size: 0.82rem; font-weight: 500; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sidebar-account-role {
+  font-size: 0.72rem; color: var(--text-dim); white-space: nowrap;
+}
+.sidebar-account-link {
+  display: block; font-size: 0.78rem; color: var(--text-dim);
+  text-decoration: none; padding: 0.15rem 0;
   transition: color 0.15s;
 }
-.sidebar-footer a:hover { color: var(--orange); }
+.sidebar-account-link:hover { color: var(--orange); }
+/* Sign-in block (logged-out state) */
+.sidebar-signin { margin-bottom: 0.5rem; }
+.sidebar-signin-btn {
+  display: block; text-align: center;
+  background: var(--orange); color: #000;
+  text-decoration: none; border-radius: 5px;
+  padding: 0.45rem 0.75rem; font-size: 0.82rem; font-weight: 600;
+  transition: background 0.15s;
+}
+.sidebar-signin-btn:hover { background: var(--orange-hover); }
+/* Logout link at the very bottom */
+.sidebar-logout {
+  color: var(--text-dim); text-decoration: none; font-size: 0.8rem;
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.4rem 0; transition: color 0.15s;
+}
+.sidebar-logout:hover { color: var(--orange); }
 
 /* â”€â”€ Top bar (mobile) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .topbar {

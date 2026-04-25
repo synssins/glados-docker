@@ -50,7 +50,7 @@ def test_sidebar_contains_phase6_nav_entry(source: str, nav_key: str, label: str
 def test_removed_nav_entries_no_longer_rendered_in_sidebar(source: str, removed_key: str) -> None:
     # Narrow the search to the sidebar <nav-children> block; topbar shortcut
     # may still reference config.integrations/etc.
-    m = re.search(r'<div class="nav-children">(.*?)</div>', source, re.DOTALL)
+    m = re.search(r'<div class="nav-children"[^>]*>(.*?)</div>', source, re.DOTALL)
     assert m, "Missing nav-children block"
     sidebar_html = m.group(1)
     pattern = 'data-nav-key="' + removed_key + '"'

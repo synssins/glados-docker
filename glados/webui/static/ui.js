@@ -8,27 +8,39 @@
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 let _isAuthenticated = false;
+let _currentRole = null;
+let _currentUsername = null;
 
 async function checkAuth() {
   try {
     const r = await fetch('/api/auth/status');
     const data = await r.json();
     _isAuthenticated = data.authenticated === true;
+    _currentRole = data.role || null;
+    _currentUsername = (data.user && data.user.username) || null;
   } catch(e) {
     _isAuthenticated = false;
+    _currentRole = null;
+    _currentUsername = null;
   }
   updateAuthUI();
 }
 
 function updateAuthUI() {
-  // Update sidebar/topbar auth link
-  const sidebarLink = document.getElementById('authLinkSidebar');
-  if (sidebarLink) {
-    sidebarLink.href = _isAuthenticated ? '/logout' : '/login';
-    sidebarLink.textContent = _isAuthenticated ? 'Logout' : 'Sign In';
-  }
+  const isAdmin = _currentRole === 'admin';
 
-  // Update lock icons
+  // Show/hide admin-only sidebar items
+  document.querySelectorAll('[data-requires-admin]').forEach(el => {
+    el.style.display = isAdmin ? '' : 'none';
+  });
+
+  // Show/hide chat-only sidebar items (logged-in non-admin users)
+  const isChatUser = _isAuthenticated && !isAdmin;
+  document.querySelectorAll('[data-chat-only]').forEach(el => {
+    el.style.display = isChatUser ? '' : 'none';
+  });
+
+  // Update lock icons (legacy — no longer used for config items but kept for other uses)
   const locks = document.querySelectorAll('.lock-icon');
   locks.forEach(l => {
     l.textContent = _isAuthenticated ? '' : '\u{1F512}';
@@ -39,6 +51,27 @@ function updateAuthUI() {
   const configOverlay = document.getElementById('configAuthOverlay');
   if (controlOverlay) controlOverlay.style.display = _isAuthenticated ? 'none' : 'flex';
   if (configOverlay) configOverlay.style.display = _isAuthenticated ? 'none' : 'flex';
+
+  // Bottom-left account block
+  const accountBlock = document.getElementById('sidebarAccount');
+  const signInBlock = document.getElementById('sidebarSignIn');
+  const logoutLink = document.getElementById('sidebarLogout');
+
+  if (_isAuthenticated) {
+    if (accountBlock) {
+      accountBlock.style.display = 'block';
+      const nameEl = document.getElementById('sidebarUsername');
+      const roleEl = document.getElementById('sidebarRole');
+      if (nameEl) nameEl.textContent = _currentUsername || '';
+      if (roleEl) roleEl.textContent = _currentRole ? '(' + _currentRole + ')' : '';
+    }
+    if (signInBlock) signInBlock.style.display = 'none';
+    if (logoutLink) logoutLink.style.display = 'flex';
+  } else {
+    if (accountBlock) accountBlock.style.display = 'none';
+    if (signInBlock) signInBlock.style.display = 'block';
+    if (logoutLink) logoutLink.style.display = 'none';
+  }
 }
 
 // Stackable toast system (Phase 5). Multiple toasts can be on screen

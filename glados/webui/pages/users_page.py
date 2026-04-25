@@ -152,6 +152,9 @@ async function usersLoadAll() {
     }
     const data = await r.json();
     _usersData = data.users || [];
+    // Hide auth overlay on success (may have been shown on a previous 403)
+    const ov2 = document.getElementById('usersAuthOverlay');
+    if (ov2) ov2.style.display = 'none';
     _usersRenderTable();
   } catch(e) {
     _usersShowError('Failed to load users: ' + e.message);
@@ -347,15 +350,8 @@ async function usersConfirmDelete(username) {
   }
 }
 
-/* ── Reveal the sidebar nav item for admins ───────────────────────── */
-(function() {
-  fetch('/api/auth/status').then(r => r.json()).then(d => {
-    if (d.role === 'admin') {
-      document.querySelectorAll('[data-requires-admin]').forEach(el => {
-        el.style.display = '';
-      });
-    }
-  }).catch(() => {});
-})();
+/* ── Admin-gated items are revealed by updateAuthUI() in ui.js ─────── */
+/* (The IIFE that used to call /api/auth/status here was removed in     */
+/*  favour of the global checkAuth() → updateAuthUI() flow in ui.js.)   */
 </script>
 """
