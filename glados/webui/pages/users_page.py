@@ -137,6 +137,11 @@ let _usersData = [];
 let _usersEditTarget = null;
 let _usersResetTarget = null;
 
+/* ── Icon SVGs (match Memory / TTS Generator style) ──────────────── */
+const _PENCIL_SVG  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2 L14 5 L5 14 L2 14 L2 11 Z M10 3 L13 6"/></svg>';
+const _TRASH_SVG   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+const _DISABLE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="3.5" y1="3.5" x2="12.5" y2="12.5"/></svg>';
+
 /* ── Load & render ────────────────────────────────────────────────── */
 async function usersLoadAll() {
   const body = document.getElementById('usersTableBody');
@@ -182,10 +187,9 @@ function _usersRenderTable() {
       <td style="padding:8px 10px;">${status}</td>
       <td style="padding:8px 10px;color:var(--text-dim);">${escHtml(lastLogin)}</td>
       <td style="padding:8px 10px;text-align:right;">
-        <button class="btn-small" onclick="usersShowEditModal(${escAttr(JSON.stringify(u.username))})" style="margin-left:4px;">Edit</button>
-        <button class="btn-small" onclick="usersShowResetModal(${escAttr(JSON.stringify(u.username))})" style="margin-left:4px;">Reset PW</button>
-        <button class="btn-small" onclick="usersConfirmDisable(${escAttr(JSON.stringify(u.username))},${u.disabled?'false':'true'})" style="margin-left:4px;background:#6c5c00;">${u.disabled?'Enable':'Disable'}</button>
-        <button class="btn-small" onclick="usersConfirmDelete(${escAttr(JSON.stringify(u.username))})" style="margin-left:4px;background:#7a1f1f;">Delete</button>
+        <button class="ico-btn" title="Edit" onclick="usersShowEditModal(${escAttr(JSON.stringify(u.username))})">${_PENCIL_SVG}</button>
+        <button class="ico-btn ${u.disabled?'danger':''}" title="${u.disabled?'Enable':'Disable'}" onclick="usersConfirmDisable(${escAttr(JSON.stringify(u.username))},${u.disabled?'false':'true'})">${_DISABLE_SVG}</button>
+        <button class="ico-btn danger" title="Delete" onclick="usersConfirmDelete(${escAttr(JSON.stringify(u.username))})">${_TRASH_SVG}</button>
       </td>
     </tr>`;
   }).join('');

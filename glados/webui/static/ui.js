@@ -5573,32 +5573,21 @@ function _cfgRenderSpeakersPicker() {
   if (!body || !_speakersPickerState) return;
   const { detected, config } = _speakersPickerState;
   const enabled = new Set(config.available || []);
-  // Group detected speakers by area for readable scanning.
-  const byArea = {};
-  for (const sp of detected) {
-    const area = sp.area || 'Unassigned';
-    if (!byArea[area]) byArea[area] = [];
-    byArea[area].push(sp);
-  }
-  const areas = Object.keys(byArea).sort();
+  // Flat list sorted alphabetically by friendly name.
+  const sorted = detected.slice().sort((a, b) => a.name.localeCompare(b.name));
   let html = '';
-  for (const area of areas) {
-    html += '<div class="speakers-area-group">';
-    html += '<div class="speakers-area-label">' + escHtml(area) + '</div>';
-    for (const sp of byArea[area].sort((a,b) => a.name.localeCompare(b.name))) {
-      const chk = enabled.has(sp.entity_id) ? ' checked' : '';
-      html += ''
-        + '<label class="speaker-item">'
-        +   '<input type="checkbox" class="speaker-check" '
-        +     'data-entity-id="' + escHtml(sp.entity_id) + '"' + chk
-        +     ' onchange="_cfgOnSpeakerToggle()">'
-        +   '<div class="speaker-item-body">'
-        +     '<div class="speaker-name">' + escHtml(sp.name) + '</div>'
-        +     '<div class="speaker-entity-id">' + escHtml(sp.entity_id) + '</div>'
-        +   '</div>'
-        + '</label>';
-    }
-    html += '</div>';
+  for (const sp of sorted) {
+    const chk = enabled.has(sp.entity_id) ? ' checked' : '';
+    html += ''
+      + '<label class="speaker-item">'
+      +   '<input type="checkbox" class="speaker-check" '
+      +     'data-entity-id="' + escHtml(sp.entity_id) + '"' + chk
+      +     ' onchange="_cfgOnSpeakerToggle()">'
+      +   '<div class="speaker-item-body">'
+      +     '<div class="speaker-name">' + escHtml(sp.name) + '</div>'
+      +     '<div class="speaker-entity-id">' + escHtml(sp.entity_id) + '</div>'
+      +   '</div>'
+      + '</label>';
   }
   // Default-speaker dropdown, scoped to currently-enabled entities.
   html += '<div class="speakers-default-row">';
@@ -5610,7 +5599,7 @@ function _cfgRenderSpeakersPicker() {
   for (const sp of enabledList.sort((a,b) => a.name.localeCompare(b.name))) {
     const sel = sp.entity_id === config.default ? ' selected' : '';
     html += '<option value="' + escHtml(sp.entity_id) + '"' + sel + '>'
-      + escHtml(sp.name) + ' (' + escHtml(sp.area || 'Unassigned') + ')</option>';
+      + escHtml(sp.name) + '</option>';
   }
   html += '</select>';
   html += '</div>';
