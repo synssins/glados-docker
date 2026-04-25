@@ -111,3 +111,6 @@ tests/.playwright-trace/
 
 # Git worktrees for isolated feature work (subagent-driven development).
 .worktrees/
+
+# Superpowers brainstorm session artifacts
+.superpowers/
