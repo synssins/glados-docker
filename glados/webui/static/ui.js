@@ -4830,108 +4830,101 @@ function fmtDate(iso) {
 const textInput = document.getElementById('textInput');
 const genBtn    = document.getElementById('generateBtn');
 
-const _icoPlay  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3 L13 8 L5 13 Z"/></svg>';
 const _icoDl    = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2 L8 11 M4 7 L8 11 L12 7 M3 14 L13 14"/></svg>';
 const _icoDel   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
 const _icoSave  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8 L6 11 L13 4"/></svg>';
 const _icoSaved = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8 L6 12 L14 4" stroke="var(--green)"/></svg>';
 
-// Keyboard shortcut in dock textarea
+// Keyboard shortcut: Ctrl+Enter in the script textarea triggers Generate.
 if (textInput) {
   textInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ttsGenerate(); }
   });
 }
 
-// ── Thread helpers ───────────────────────────────────────────────
-function _ttsThread() { return document.getElementById('ttsThread'); }
-
-function _ttsScrollBottom() {
-  const t = _ttsThread();
-  if (t) t.scrollTop = t.scrollHeight;
+// ── Single shared <audio> element + play/stop state ─────────────
+let _ttsPlayingName = null;
+function _ttsAudio() { return document.getElementById('ttsAudio'); }
+function _ttsPlayBtn(name) {
+  return document.querySelector('.tts-row[data-name="' + (name || '').replace(/"/g, '\\"') + '"] .tts-row-play');
 }
-
-function _ttsFmtTime(iso) {
-  const d = iso ? new Date(iso) : new Date();
-  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+function _ttsResetPlayBtn(name) {
+  const b = _ttsPlayBtn(name);
+  if (b) { b.textContent = '\u25B6'; b.classList.remove('playing'); }
 }
-
-// Append a bubble to the thread. Returns the bubble element.
-// opts: { role:'user'|'glados', text, audio_url, size, synth_ms, filename, timestamp }
-function _ttsAppendBubble(opts) {
-  const thread = _ttsThread();
-  if (!thread) return null;
-  const { role, text, audio_url, size, synth_ms, filename, timestamp } = opts;
-  const ts = _ttsFmtTime(timestamp || null);
-
-  const bubble = document.createElement('div');
-  bubble.className = 'tts-bubble ' + role;
-
-  const whoLabel = role === 'glados' ? 'GLaDOS' : 'YOU';
-  bubble.innerHTML = '<div class="tts-bubble-meta">'
-    + '<span class="who ' + role + '">' + whoLabel + '</span>'
-    + '<span>\u00b7 ' + ts + '</span>'
-    + '</div>'
-    + '<div class="tts-bubble-text">' + escHtml(text || '') + '</div>';
-
-  if (role === 'glados' && audio_url) {
-    const audioWrap = document.createElement('div');
-    audioWrap.className = 'tts-bubble-audio';
-    const aud = document.createElement('audio');
-    aud.controls = true;
-    aud.src = audio_url;
-    audioWrap.appendChild(aud);
-    bubble.appendChild(audioWrap);
-
-    const actRow = document.createElement('div');
-    actRow.className = 'tts-bubble-actions';
-
-    const statEl = document.createElement('span');
-    statEl.className = 'stat';
-    const statParts = [];
-    if (text) statParts.push('<b>' + text.length + '</b> chars');
-    if (synth_ms != null) statParts.push('synth <b>' + (synth_ms / 1000).toFixed(1) + 's</b>');
-    if (size != null) statParts.push('<b>' + fmtSize(size) + '</b>');
-    statEl.innerHTML = statParts.join(' \u00b7 ');
-    actRow.appendChild(statEl);
-
-    const dlBtn = document.createElement('a');
-    dlBtn.className = 'ico-btn';
-    dlBtn.title = 'Download';
-    dlBtn.href = audio_url;
-    dlBtn.download = filename || '';
-    dlBtn.innerHTML = _icoDl;
-    actRow.appendChild(dlBtn);
-
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'ico-btn';
-    saveBtn.title = 'Save to library';
-    saveBtn.innerHTML = _icoSave;
-    saveBtn.onclick = () => _ttsBubbleSaveToggle(bubble, saveBtn, filename);
-    actRow.appendChild(saveBtn);
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'ico-btn danger';
-    delBtn.title = 'Delete';
-    delBtn.innerHTML = _icoDel;
-    delBtn.onclick = () => _ttsBubbleDelete(bubble, filename);
-    actRow.appendChild(delBtn);
-
-    bubble.appendChild(actRow);
+function ttsTogglePlay(btn) {
+  const row = btn.closest('.tts-row');
+  if (!row) return;
+  const name = row.getAttribute('data-name');
+  const url  = row.getAttribute('data-url');
+  const audio = _ttsAudio();
+  if (!audio) return;
+  if (_ttsPlayingName === name) {
+    audio.pause();
+    audio.currentTime = 0;
+    _ttsResetPlayBtn(name);
+    _ttsPlayingName = null;
+    return;
   }
+  if (_ttsPlayingName) _ttsResetPlayBtn(_ttsPlayingName);
+  audio.src = url;
+  audio.play().then(() => {
+    btn.textContent = '\u25A0';
+    btn.classList.add('playing');
+    _ttsPlayingName = name;
+  }).catch(err => console.error('audio play failed:', err));
+}
+(function _ttsBindAudio() {
+  const a = _ttsAudio();
+  if (!a) return;
+  a.addEventListener('ended', () => {
+    if (_ttsPlayingName) { _ttsResetPlayBtn(_ttsPlayingName); _ttsPlayingName = null; }
+  });
+})();
 
-  thread.appendChild(bubble);
-  _ttsScrollBottom();
-  return bubble;
+// ── File row builder + list refresh ─────────────────────────────
+function _ttsRowHtml(f) {
+  const promptHtml = f.prompt
+    ? '<div class="tts-row-prompt" title="' + escAttr(f.prompt) + '">' + escHtml(f.prompt) + '</div>'
+    : '';
+  const sizeStr = fmtSize(f.size || 0);
+  return '<div class="tts-row" data-name="' + escAttr(f.name) + '" data-url="' + escAttr(f.url) + '">'
+    + '<button class="tts-row-play" onclick="ttsTogglePlay(this)" title="Play / stop">\u25B6</button>'
+    + '<div class="tts-row-body">'
+    +   '<div class="tts-row-name">' + escHtml(f.name) + '</div>'
+    +   promptHtml
+    +   '<div class="tts-row-meta">' + sizeStr + '</div>'
+    + '</div>'
+    + '<div class="tts-row-actions">'
+    +   '<a class="ico-btn" title="Download" href="' + escAttr(f.url) + '" download="' + escAttr(f.name) + '">' + _icoDl + '</a>'
+    +   '<button class="ico-btn" title="Save to library" onclick="_ttsRowSaveToggle(this, \'' + escAttr(f.name) + '\')">' + _icoSave + '</button>'
+    +   '<button class="ico-btn danger" title="Delete" onclick="_ttsRowDelete(\'' + escAttr(f.name) + '\')">' + _icoDel + '</button>'
+    + '</div>'
+    + '</div>';
 }
 
-// Per-bubble: save to library (inline form toggle)
-async function _ttsBubbleSaveToggle(bubble, saveBtn, filename) {
-  const existing = bubble.querySelector('.tts-bubble-save-form');
+async function _ttsLoadFiles() {
+  const list = document.getElementById('ttsFileList');
+  if (!list) return;
+  try {
+    const resp = await fetch('/api/files');
+    const data = await resp.json();
+    const files = data.files || [];
+    list.innerHTML = files.map(_ttsRowHtml).join('') || '<div class="tts-row-meta" style="padding:var(--sp-3) 0;">No files yet.</div>';
+  } catch (e) {
+    console.error('TTS file load failed:', e);
+  }
+}
+
+// Save-to-library inline form (toggles below the row)
+async function _ttsRowSaveToggle(saveBtn, filename) {
+  const row = saveBtn.closest('.tts-row');
+  if (!row) return;
+  const existing = row.querySelector('.tts-row-save-form');
   if (existing) { existing.remove(); return; }
 
   const form = document.createElement('div');
-  form.className = 'tts-bubble-save-form';
+  form.className = 'tts-row-save-form';
 
   const catSel = document.createElement('select');
   catSel.innerHTML = '<option value="">-- pick category --</option><option value="__new__">-- new category --</option>';
@@ -4952,7 +4945,7 @@ async function _ttsBubbleSaveToggle(bubble, saveBtn, filename) {
   statusEl.style.fontSize = '0.7rem';
   form.appendChild(statusEl);
 
-  bubble.appendChild(form);
+  row.appendChild(form);
 
   try {
     const r = await fetch('/api/config/sound_categories');
@@ -5001,29 +4994,14 @@ async function _ttsBubbleSaveToggle(bubble, saveBtn, filename) {
   };
 }
 
-// Per-bubble: delete
-async function _ttsBubbleDelete(bubble, filename) {
+async function _ttsRowDelete(filename) {
+  if (!confirm('Delete ' + filename + '?')) return;
+  if (_ttsPlayingName === filename) {
+    const a = _ttsAudio(); if (a) { a.pause(); a.currentTime = 0; }
+    _ttsPlayingName = null;
+  }
   try { await fetch('/api/files/' + encodeURIComponent(filename), { method: 'DELETE' }); } catch(e) {}
-  bubble.remove();
-}
-
-// History pre-load on page init
-async function _ttsRenderThread() {
-  try {
-    const resp = await fetch('/api/files');
-    const data = await resp.json();
-    const files = (data.files || []).slice().reverse(); // oldest first
-    for (const f of files) {
-      _ttsAppendBubble({
-        role: 'glados',
-        text: f.name,
-        audio_url: f.url,
-        size: f.size,
-        filename: f.name,
-        timestamp: f.date,
-      });
-    }
-  } catch(e) { console.error('TTS thread pre-load failed:', e); }
+  await _ttsLoadFiles();
 }
 
 // Script mode: generate
@@ -5031,9 +5009,6 @@ async function ttsGenerate() {
   const text = textInput ? textInput.value.trim() : '';
   if (!text) return;
   if (genBtn) genBtn.disabled = true;
-  _ttsAppendBubble({ role: 'user', text });
-  if (textInput) textInput.value = '';
-  const t0 = performance.now();
   try {
     const resp = await fetch('/api/generate', {
       method: 'POST',
@@ -5042,34 +5017,28 @@ async function ttsGenerate() {
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Generation failed');
-    _ttsAppendBubble({
-      role: 'glados',
-      text,
-      audio_url: data.url,
-      size: data.size,
-      synth_ms: performance.now() - t0,
-      filename: data.filename,
-    });
+    if (textInput) textInput.value = '';
+    await _ttsLoadFiles();
   } catch(e) {
-    _ttsAppendBubble({ role: 'glados', text: '\u26a0 ' + e.message });
+    alert('Generate failed: ' + e.message);
   } finally {
     if (genBtn) genBtn.disabled = false;
   }
 }
 
-// Mode switch (script / improv)
+// Mode switch (script / improv) — toggles the corresponding input card.
 let _ttsMode = 'script';
 
 function _ttsSwitchMode(mode) {
   _ttsMode = mode;
-  const scriptDock = document.getElementById('ttsInputDock');
-  const improvDock = document.getElementById('improvInputDock');
+  const scriptCard = document.getElementById('ttsScriptCard');
+  const improvCard = document.getElementById('ttsImprovCard');
   if (mode === 'improv') {
-    if (scriptDock) scriptDock.style.display = 'none';
-    if (improvDock) improvDock.style.display = '';
+    if (scriptCard) scriptCard.style.display = 'none';
+    if (improvCard) improvCard.style.display = '';
   } else {
-    if (scriptDock) scriptDock.style.display = '';
-    if (improvDock) improvDock.style.display = 'none';
+    if (scriptCard) scriptCard.style.display = '';
+    if (improvCard) improvCard.style.display = 'none';
   }
   for (const el of document.querySelectorAll('.tts-seg-cell')) {
     el.classList.toggle('on', el.getAttribute('data-mode') === mode);
@@ -5097,9 +5066,8 @@ async function _ttsImprovDraft() {
     const data = await r.json();
     if (draftedTextEl) draftedTextEl.value = (data.text || '').trim();
     if (draftSection) draftSection.style.display = '';
-    _ttsAppendBubble({ role: 'user', text: '[Brief] ' + instruction });
   } catch(e) {
-    _ttsAppendBubble({ role: 'glados', text: '\u26a0 Draft failed: ' + e.message });
+    alert('Draft failed: ' + e.message);
     console.error('tts draft failed:', e);
   } finally {
     if (btn) btn.disabled = false;
@@ -5113,7 +5081,6 @@ async function _ttsImprovGenerate() {
   const text   = textEl ? textEl.value.trim() : '';
   if (!text) return;
   if (btn) btn.disabled = true;
-  const t0 = performance.now();
   try {
     const r = await fetch('/api/generate', {
       method: 'POST',
@@ -5122,22 +5089,15 @@ async function _ttsImprovGenerate() {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Generation failed');
-    _ttsAppendBubble({
-      role: 'glados',
-      text,
-      audio_url: data.url,
-      size: data.size,
-      synth_ms: performance.now() - t0,
-      filename: data.filename,
-    });
+    await _ttsLoadFiles();
   } catch(e) {
-    _ttsAppendBubble({ role: 'glados', text: '\u26a0 ' + e.message });
+    alert('Speak failed: ' + e.message);
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-_ttsRenderThread();
+_ttsLoadFiles();
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Tab 2: Chat

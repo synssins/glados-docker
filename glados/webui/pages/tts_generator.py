@@ -1,10 +1,8 @@
 """HTML for the tts_generator tab (id="tab-tts").
 
-Phase 2 Chunk 8 (2026-04-25): chat-thread refit.
-- Legacy player-section card and file-list card replaced with a scrollable
-  bubble thread (user + GLaDOS bubbles).
-- Input docks at the bottom.
-- Telemetry strip + segmented mode pill retained from Phase 1 Task 7.
+2026-04-26: revert of Chunk 8's bubble/dock layout. Standard
+page-header pattern; input on top, file list below; single shared
+<audio> element driven by per-row play/stop buttons.
 """
 
 HTML = r"""<div id="tab-tts" class="tab-content">
@@ -20,8 +18,12 @@ HTML = r"""<div id="tab-tts" class="tab-content">
     <span>PIPER <span class="t-dot t-dot-ok" id="piperDot" title="TTS service status"></span></span>
   </div>
 
-  <h1 class="page-h1">TTS Generator</h1>
-  <p class="page-sub">Type a line, hit generate, hear it back. Pronunciation overrides from Personality apply automatically.</p>
+  <div class="page-header">
+    <div>
+      <h2 class="page-title">TTS Generator</h2>
+      <div class="page-title-desc">Type a line, hit generate, hear it back.</div>
+    </div>
+  </div>
 
   <div class="card">
     <div class="section-title">Recording mode</div>
@@ -31,23 +33,23 @@ HTML = r"""<div id="tab-tts" class="tab-content">
     </div>
   </div>
 
-  <div class="tts-thread" id="ttsThread">
-    <!-- bubbles painted by _ttsRenderThread() -->
+  <div class="card" id="ttsScriptCard">
+    <div class="section-title">Generate</div>
+    <div class="tts-generate-row">
+      <textarea id="textInput" placeholder="Type something to synthesize..." autofocus></textarea>
+      <button class="btn btn-primary" id="generateBtn" onclick="ttsGenerate()">Generate &#x2192;</button>
+    </div>
   </div>
 
-  <div class="tts-input-dock" id="ttsInputDock">
-    <textarea id="textInput" placeholder="Type something to synthesize..." autofocus></textarea>
-    <button class="btn btn-primary" id="generateBtn" onclick="ttsGenerate()">Generate &#x2192;</button>
-  </div>
-
-  <!-- Improv mode dock — swapped in/out by _ttsSwitchMode -->
-  <div id="improvInputDock" style="display:none;">
-    <div class="tts-input-dock">
+  <div class="card" id="ttsImprovCard" style="display:none;">
+    <div class="section-title">Improv brief</div>
+    <div class="tts-generate-row">
       <textarea id="improvInstruction" placeholder="e.g. &#x2018;call everyone to dinner, snidely&#x2019; or &#x2018;announce a thunderstorm, bored voice&#x2019;"></textarea>
       <button class="btn btn-primary" id="improvDraftBtn" onclick="_ttsImprovDraft()">Draft &#x2192;</button>
     </div>
-    <div id="improvDraftSection" style="display:none; margin-top:var(--sp-2);">
-      <div class="tts-input-dock">
+    <div id="improvDraftSection" style="display:none; margin-top:var(--sp-3);">
+      <div class="section-title">Draft</div>
+      <div class="tts-generate-row">
         <textarea id="improvDraftedText" placeholder="[draft appears here; edit if needed]"></textarea>
         <div style="display:flex;flex-direction:column;gap:var(--sp-2);">
           <button class="btn" onclick="_ttsImprovDraft()">Redraft</button>
@@ -56,6 +58,13 @@ HTML = r"""<div id="tab-tts" class="tab-content">
       </div>
     </div>
   </div>
+
+  <div class="card">
+    <div class="section-title">Generated Files</div>
+    <div id="ttsFileList"></div>
+  </div>
+
+  <audio id="ttsAudio" preload="none"></audio>
 
 </div>
 </div>
