@@ -55,7 +55,7 @@ HTML = r"""
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="maintenance"
             onclick="showPageTab('system','maintenance')">Maintenance</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="account"
-            onclick="showPageTab('system','account');_loadSessions()">Account</button>
+            onclick="showPageTab('system','account')">Account</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="ssl"
             onclick="showPageTab('system','ssl');_loadSslIntoSystemTab()">SSL</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="users"
@@ -233,15 +233,6 @@ HTML = r"""
         </div>
       </div>
 
-      <div class="card" style="margin-top:var(--sp-3);">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <div class="section-title" style="margin-bottom:0;">Active Sessions</div>
-          <button class="btn-small" onclick="_loadSessions()">Refresh</button>
-        </div>
-        <div id="sessionsTable" style="margin-top:10px;font-size:0.85rem;color:var(--text-dim);">
-          Loading&hellip;
-        </div>
-      </div>
     </div>
 
     <!-- ════════════════ SSL tab ════════════════ -->

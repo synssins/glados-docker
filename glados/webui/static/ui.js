@@ -4349,8 +4349,13 @@ function _memRenderFacts(rows) {
   el.innerHTML = html;
 }
 
-const _PENCIL_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2 L14 5 L5 14 L2 14 L2 11 Z M10 3 L13 6"/></svg>';
-const _TRASH_SVG  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+// Shared icon SVGs — declared ONCE in this external script because inline
+// <script> blocks in pages/*.py and /static/ui.js share global window
+// scope; duplicate `const` between them is a SyntaxError that aborts the
+// entire SPA at parse time. See feedback_devtools_console_first.md.
+const _PENCIL_SVG  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2 L14 5 L5 14 L2 14 L2 11 Z M10 3 L13 6"/></svg>';
+const _TRASH_SVG   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+const _DISABLE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="3.5" y1="3.5" x2="12.5" y2="12.5"/></svg>';
 
 function _memFactCard(r) {
   const m = r.metadata || {};

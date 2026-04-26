@@ -137,10 +137,14 @@ let _usersData = [];
 let _usersEditTarget = null;
 let _usersResetTarget = null;
 
-/* ── Icon SVGs (match Memory / TTS Generator style) ──────────────── */
-const _PENCIL_SVG  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2 L14 5 L5 14 L2 14 L2 11 Z M10 3 L13 6"/></svg>';
-const _TRASH_SVG   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
-const _DISABLE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="3.5" y1="3.5" x2="12.5" y2="12.5"/></svg>';
+/* ── Icon SVGs ─────────────────────────────────────────────────────
+   _PENCIL_SVG and _TRASH_SVG are declared in /static/ui.js (shared
+   across Memory + Users + future pages). Both inline-script blocks
+   and the external script share the same global window scope, so
+   re-declaring `const` here would fire a parse SyntaxError that
+   aborts the entire SPA. _DISABLE_SVG is the one icon only Users
+   uses; it lives in ui.js too — see _DISABLE_SVG declaration
+   alongside the other shared icons. */
 
 /* ── Load & render ────────────────────────────────────────────────── */
 async function usersLoadAll() {
