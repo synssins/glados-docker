@@ -2295,6 +2295,12 @@ class Handler(BaseHTTPRequestHandler):
         stem = ai_name or _fallback_filename(text)
         file_path = _unique_path(stem, fmt)
         file_path.write_bytes(audio_data)
+        try:
+            file_path.with_suffix(file_path.suffix + ".txt").write_text(
+                text, encoding="utf-8"
+            )
+        except OSError:
+            pass  # best-effort sidecar; don't fail the synth
 
         self._send_json(200, {
             "filename": file_path.name,
@@ -3992,14 +3998,25 @@ class Handler(BaseHTTPRequestHandler):
     def _list_files(self):
         files = []
         for f in sorted(OUTPUT_DIR.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True):
-            if f.is_file():
-                st = f.stat()
-                files.append({
-                    "name": f.name,
-                    "size": st.st_size,
-                    "date": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-                    "url": f"/files/{f.name}",
-                })
+            if not f.is_file():
+                continue
+            if f.suffix == ".txt":
+                continue
+            st = f.stat()
+            prompt: str | None = None
+            sidecar = f.with_suffix(f.suffix + ".txt")
+            if sidecar.is_file():
+                try:
+                    prompt = sidecar.read_text(encoding="utf-8")
+                except OSError:
+                    prompt = None
+            files.append({
+                "name": f.name,
+                "size": st.st_size,
+                "date": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                "url": f"/files/{f.name}",
+                "prompt": prompt,
+            })
         self._send_json(200, {"files": files})
 
     def _serve_file(self):
@@ -4327,6 +4344,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             file_path.unlink()
+            sidecar = file_path.with_suffix(file_path.suffix + ".txt")
+            if sidecar.is_file():
+                try:
+                    sidecar.unlink()
+                except OSError:
+                    pass  # tolerate sidecar removal failure
             self._send_json(200, {"deleted": name})
         except OSError as e:
             self._send_json(500, {"error": str(e)})
