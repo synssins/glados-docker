@@ -70,12 +70,21 @@ _init_lock = threading.Lock()
 
 
 def connect() -> sqlite3.Connection:
-    """Return an open sqlite3.Connection with Row factory enabled.
+    """Return an open sqlite3.Connection with Row factory + WAL pragmas.
 
     Self-initialises the schema the first time a given DB path is opened.
     Earlier code required callers to remember to call ensure_schema()
     explicitly, which broke the login path when user_state.* was the
     first auth.db consumer of the process and the file didn't yet exist.
+
+    Pragma rationale: every auth check (e.g. /api/auth/status) runs a
+    `UPDATE auth_sessions SET last_used_at` + commit. On the operator's
+    docker-host filesystem the default `journal_mode=DELETE` +
+    `synchronous=FULL` makes each commit ~300 ms, which serialised onto
+    the auth-status path means a ~1 second UI freeze on every page load.
+    WAL is persistent on the DB; synchronous=NORMAL is per-connection
+    and must be set every time. Both are SQLite-recommended for this
+    workload.
     """
     path = _db_path()
     key = str(path)
@@ -86,4 +95,6 @@ def connect() -> sqlite3.Connection:
                 _initialized_paths.add(key)
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
     return con
