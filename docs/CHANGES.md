@@ -3057,3 +3057,237 @@ the existing chat user), and TTS Generator works end-to-end for unauth
 visitors.
 
 ---
+
+## Change 25 — WebUI Polish Phase 2 + auth-perf fixes + history scrub (2026-04-25 → 2026-04-26)
+
+The follow-on to Change 24's auth rebuild. Operator-flagged "polish
+phase" addressing layout drift, design-language inconsistency, and a
+list of per-page gripes flagged from live operation. Plus two
+functional bug fixes uncovered along the way (maintenance speaker
+sync, hyphen rendering in TTS), a hard-won auth-perf debug, and a
+pre-public-announcement repo scrub via `git-filter-repo`.
+
+**Phase 2 plan** lives at
+`docs/superpowers/plans/2026-04-25-webui-polish-phase-2.md`. Audit at
+`docs/ui-polish-audit.md`. Spec at
+`docs/superpowers/specs/2026-04-25-webui-polish-design.md`.
+
+### Foundation chunks (1A, 1B, 2)
+
+- **1A — `a4be7c0`.** SSL + Users moved from sidebar to System tabs.
+  Sidebar IA tightens to Chat / TTS Generator / Configuration → (System,
+  Integrations, Audio & Speakers, Personality, Memory, Logs, Raw YAML).
+  Implementation: legacy `tab-config-users` panel stays in the DOM but
+  `_loadUsersIntoSystemTab()` clones its content into a System Users
+  panel on tab activation. SSL: `_loadSslIntoSystemTab()` calls
+  `cfgRenderSsl()` into the System SSL panel.
+- **1B — `f4c16aa`.** Mechanical sweep: every primary action button
+  unified to `.btn-primary` (orange filled, dark text — never
+  white-on-yellow), all `<input>`/`<select>`/`<textarea>` use
+  `--bg-sidebar` (`#16161a`) so inputs read as wells against
+  `--bg-card`. Removed: Test Harness section (Hardware tab),
+  Audio tab (Audio & Speakers). Renamed: "Chimes" → "Sounds".
+  Reload-from-Disk button → `.btn-primary`. The `/api/test-harness/noise-patterns`
+  endpoint is preserved (external test battery consumer); only the
+  WebUI editor is gone.
+- **2 — `73f253a`.** Services tab rebuilt as port-grouped status:
+  in-container TTS / STT / API Wrapper render as one row on `:8015`
+  with three status dots (no URL inputs — they're embedded). Vision
+  on `:8016` is status-only with an `inactive` state when unconfigured.
+  LLM (Ollama) folded in here from Integrations: URL + model dropdown
+  + status, with an Advanced collapsible holding model_options
+  (temperature, top_p, num_ctx, repeat_penalty) and LLM timeouts.
+  The standalone Integrations → LLM card is gone; legacy
+  `navigateTo('config.llm-services')` redirects to System → Services.
+
+### Per-page rebuilds (3, 4, 5)
+
+- **3 — `79e3d51`.** Personality page rebuild. HEXACO traits + PAD/Emotion
+  baseline render as cards with description-above-bar, polarity labels
+  under bar ends (e.g., `Unflappable` / `Anxious`), an editable numeric
+  on the right (HEXACO 0-1 with 2 decimals; Emotion -1 to 1 with sign and
+  a centre tick at 0). Bar capped at 320px regardless of viewport — the
+  operator's main HEXACO complaint. Behavior tab's red sliders re-styled
+  to orange. Disambiguation token descriptions rewritten in plain English
+  ("Reduces likelihood that this entity will be selected" replacing
+  "Loses 50 rank points"). Floor/Area aliases editor removed in favor
+  of a notice card pointing at HA's native alias docs (HA aliases
+  propagate automatically). **Most importantly:** the Preprompt editor
+  in the Identity tab now reads/writes the actual `personality_preprompt`
+  field in `glados_config.yaml` — previously the WebUI was reading the
+  empty `preprompt` field and the persona text was only editable via
+  shell. New `_read_personality_preprompt_from_engine` /
+  `_write_personality_preprompt_to_engine` helpers in `tts_ui.py` mirror
+  the field on every config GET/PUT for the personality section.
+- **4 — `dd98a66` + `a6e471a` + `00beb51`.** Memory page rebuild. RAG
+  explainer card at the top in plain English. Each fact row has icon
+  Edit/Delete (pencil/trash, same SVGs as the TTS Generator). 5-point
+  importance segmented control (Background `0.20` → Useful `0.40` →
+  Important `0.60` → Critical `0.80` → Extreme `1.00`). "Recently learned"
+  card replaces "Recent activity" — filters to `source==='user_passive'`
+  so it shows facts she's auto-extracted from conversation, not facts
+  the operator typed. Inline edit panel with importance segmented
+  replaces the native `prompt()` dialog (`a6e471a`, `00beb51`).
+- **5 — `c2d0af1`.** Users page row icons (Disable / Edit / Delete with
+  hover-red on Disable when account is already disabled — the visual
+  state flags the account, not the action). Reset PW button removed
+  from rows (operator can edit user → set password if needed). Speakers
+  tab rebuilt as a flat alphabetical list (no room grouping per the
+  operator's "obnoxious to use" complaint), each row showing friendly
+  name + entity ID + checkbox.
+
+### Bug investigations (6a, 6b)
+
+- **6a — `2156b7e`. Maintenance default speaker not honored.**
+  Operator: "Living Room 2 selected, but Master Bedroom is the one
+  that is playing whenever she speaks up right now." Root cause: the
+  WebUI's Speakers Save POSTs `default: <entity>` into `speakers.yaml`,
+  but the engine reads the maintenance speaker from HA's
+  `input_text.glados_maintenance_speaker` — which still held the prior
+  Master Bedroom value. Nothing connected the two. Fix:
+  `_sync_maintenance_speaker_to_ha()` in `tts_ui.py` POSTs the new
+  value to HA's `input_text/set_value` service whenever a Speakers
+  PUT lands. Same pattern as `_sync_glados_config_urls` for Ollama
+  URLs. 7 new tests covering empty/missing/whitespace defaults and
+  HA failure handling.
+- **6b — `a235ef3`. Hyphen / em-dash rendering in TTS.** Operator:
+  "TTS treats hyphens as no pause. The hyphens she generates are weird,
+  really long." Root cause: Piper TTS doesn't insert prosodic breaks
+  on Unicode dashes (`-`, `–`, `—`); the persona rewriter (qwen3:14b)
+  loves em-dashes stylistically. Fix: `_normalize_dashes()` helper
+  added to BOTH `glados/api/tts.py:generate_speech` and
+  `glados/webui/tts_ui.py:_apply_pronunciation_to_text` (both
+  TTS-call sites). Replaces em-dashes, en-dashes, and spaced
+  hyphen-minus with `, ` so Piper gets a comma-shaped pause. Compound
+  hyphens (`tea-cup`, `long-running`) are preserved by word-boundary
+  logic. 14 parametrized tests. Helper is duplicated across the two
+  files intentionally — a shared util would create a circular import
+  (`tts_ui` already imports from `glados.api.tts`).
+
+### TTS Generator chat-thread refit (Chunk 8)
+
+- **8 — `91dc9ea`.** Operator-requested redesign. The TTS Generator
+  page now reads like the Chat tab: telemetry strip → mode toggle
+  (Script/Improv) → scrolling thread of user/GLaDOS bubble pairs →
+  docked input at the bottom. Each generation appends a User bubble
+  (the typed text + timestamp) and a GLaDOS bubble (the spoken text
+  + inline audio player + a metadata strip showing chars · synth time
+  · file size + 3 icon-button actions: Download / Save-to-library /
+  Delete). Page-load pre-populates the thread from existing audio
+  files (oldest at top, newest just above the dock). The standalone
+  player card and the file-list table are gone — the thread is the
+  history. Save-to-library inline form expands under the bubble on
+  save-action click instead of a persistent card.
+
+  Note: synth time is measured client-side via `performance.now()`
+  (round-trip latency including network). `/api/generate` doesn't
+  return server-side synth duration. Approximation only.
+
+### Auth-perf debug saga + hard SyntaxError fix
+
+After Phase 2 chunks 1-5 deployed, operator reported "the WebUI is
+broken even on a different system": refresh shows logged-out shell,
+"a few moments later" UI updates to logged in; chat input doesn't
+send. Hours of theorizing went the wrong direction
+(Secure-cookie-on-self-signed-cert, single-threaded server blocking,
+config reload thrash) before a screenshot of the operator's DevTools
+Console showed the actual cause: `Uncaught SyntaxError: Identifier
+'_PENCIL_SVG' has already been declared (at ui.js:1:1)`. Inline
+`<script>` blocks share global window scope with `/static/ui.js`;
+both Chunks 4 and 5 had added the same `const _PENCIL_SVG` declaration
+(one in ui.js for the Memory chunk, one in `pages/users_page.py`'s
+inline script). Duplicate `const` is a parse error that **aborts the
+entire script** — every function definition past that line never
+runs. checkAuth never fires, sign-in form's submit handler never
+binds, etc.
+
+The wrong-but-real-perf wins from the chase landed too:
+
+- **`bb5cbb4` — auth.db pragmas.** Every auth check ran an
+  `UPDATE auth_sessions SET last_used_at` + commit. On the host's
+  bind-mount filesystem each commit took ~300ms in default
+  `journal_mode=DELETE` + `synchronous=FULL`. Switched to WAL +
+  `synchronous=NORMAL` (set in `connect()` so each new connection
+  inherits both). 6× faster commits.
+- **`0585616` — verify() is now read-only.** The auth-status endpoint
+  no longer writes on every call. `last_used_at` updates coalesce in
+  a per-process dict and a daemon thread flushes them to the DB every
+  30s via `executemany`. Worst-case crash window: 30s of staleness in
+  the Account → Sessions panel, acceptable for bookkeeping.
+- **`823b8f7` — SyntaxError fix + Sessions card removal.** Each
+  shared icon SVG (`_PENCIL_SVG`, `_TRASH_SVG`, `_DISABLE_SVG`) is now
+  declared ONCE in `/static/ui.js`. The inline-script duplicate in
+  `pages/users_page.py` is replaced with a comment pointing to
+  `feedback_devtools_console_first.md`. Same commit removed the
+  Active Sessions card on the Account tab per operator instruction
+  ("session list is not necessary").
+
+After the SyntaxError fix landed, `/api/auth/status` is now ~50ms
+warm, ~60ms cold (from 700-1400ms before, in addition to the SPA
+actually working at all).
+
+### Pre-public-announcement repo scrub
+
+The operator announced the repo on Reddit during this session. Before
+the announcement:
+
+- **`160df62` — Sensitive-info HEAD scrub.** Replaced operator-personal
+  references in every tracked file: resident first names (`Chris` →
+  `ResidentA`, `Cindy` → `ResidentB`), pet names (`Frito` → `Pet1`,
+  `Blue` → `Pet2`, `Princess Fluffybutt`/`Prin Prin` → `Pet3`,
+  `Cuddlewumps`/`Wumpy`/`The Good Queen Cuddlewumps` → `Pet4`,
+  `Wobbles` → `Pet5`, `Mama Tips`/`Mama Kitty` → `Pet6`), the LAN IP
+  in the Phase 2 plan doc. 18 tracked files touched.
+- **History rewrite via `git-filter-repo`.** Two passes — first
+  case-sensitive, then case-insensitive — to scrub the same patterns
+  across every commit on every branch. Force-pushed all four branches
+  (`main`, `webui-polish`, `stage1/pure-middleware`, `webui-refactor`).
+  `git log --all -p` post-rewrite returns zero matches for the scrubbed
+  patterns; only `.gitleaks.toml` retains the patterns as REGEX
+  DEFINITIONS so future leaks are still caught. Cost: two ~593MB LFS
+  uploads on force-push.
+- **`93cf16b` — README + compose + .env.example rewrite.** Reflects the
+  self-contained state. One container, two ports, three essential env
+  vars (`OLLAMA_URL`, `HA_URL`, `HA_TOKEN`). `docker/compose.yml`
+  shrank from 100 to 57 lines; `.env.example` from 62 to 40 lines.
+  Speaches references gone (TTS = local Piper, STT = local Parakeet,
+  embeddings = local BGE, ChromaDB = embedded). The README's Deploy
+  section now duplicates the compose YAML inline so readers see what
+  they're getting before pulling. Default image is `ghcr.io/synssins/glados-docker:latest`;
+  `build:` block kept commented for source-builds.
+
+### Operational helpers (committed)
+
+- **`scripts/_local_deploy.py`** (`41a5c35`) — operational fallback when
+  GHA is unavailable. Tars the worktree (excluding caches/`.git`/
+  `.worktrees`/etc), SCPs to the host, runs `docker build` directly
+  there using whatever LFS files are checked out locally, then
+  recreates the glados container via the existing host compose. Used
+  heavily this session because the GHA LFS bandwidth quota burned
+  out twice during the history rewrites. Required env vars match
+  `scripts/deploy_ghcr.py`.
+- **`scripts/_inject_verbatim_rule.py`** (committed during scrub at
+  `160df62`) — one-shot helper to inject or revert a "VERBATIM
+  REPETITION" rule into the persona preprompt for TTS testing. Used
+  for an operator-driven test mid-session and reverted the same
+  session.
+
+### Tests
+
+1388 passed / 5 skipped (was 1355 pre-Phase-2). New coverage:
+- 5 `_build_health_aggregate` tests (Phase 1 Task 3, prior session)
+- 3 TTS pronunciation tests (Phase 1 Task 7, prior session)
+- 7 maintenance speaker sync tests (Chunk 6a)
+- 14 dash normalization parametrized tests (Chunk 6b)
+- + minor adjustments in webui nav restructure tests across Chunks 1A/1B/2
+
+### Live state at session end
+
+- Image SHA: `sha256:e2d209975b6fb49c7723748b92f930505509f3dac3ae815f196c69a76cd3088c`
+- Branch: `webui-polish` HEAD `91dc9ea`
+- All Phase 2 work shipped. `webui-polish` has not been merged to `main`
+  yet — operator wanted to live-review before merging.
+- Public Reddit announcement made; repo at
+  `https://github.com/synssins/glados-docker` is open.
+
+---
