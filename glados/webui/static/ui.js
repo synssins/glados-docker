@@ -4827,289 +4827,317 @@ function fmtDate(iso) {
    Tab 1: TTS Generator
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-const textInput  = document.getElementById('textInput');
-const charCount  = document.getElementById('charCount');
-const genBtn     = document.getElementById('generateBtn');
-const ttsStatus  = document.getElementById('ttsStatus');
-const playerCard = document.getElementById('playerCard');
-const playerLabel= document.getElementById('playerLabel');
-const audioPlayer= document.getElementById('audioPlayer');
-const fileListEl = document.getElementById('fileList');
+const textInput = document.getElementById('textInput');
+const genBtn    = document.getElementById('generateBtn');
 
-let _attitudes = [];
+const _icoPlay  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3 L13 8 L5 13 Z"/></svg>';
+const _icoDl    = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2 L8 11 M4 7 L8 11 L12 7 M3 14 L13 14"/></svg>';
+const _icoDel   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+const _icoSave  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8 L6 11 L13 4"/></svg>';
+const _icoSaved = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8 L6 12 L14 4" stroke="var(--green)"/></svg>';
 
-async function loadVoices() {
-  // Voice locked to GLaDOS — dropdown removed. No-op kept for safety.
-  if (!document.getElementById('voiceSelect')) return;
-}
-loadVoices();
-
-async function loadAttitudes() {
-  // Attitude removed from TTS Generator. No-op kept for safety.
-  if (!document.getElementById('attitudeSelect')) return;
-}
-loadAttitudes();
-
-function getSelectedTtsParams() {
-  // Attitude dropdown removed; return empty params (engine defaults).
-  return {};
+// Keyboard shortcut in dock textarea
+if (textInput) {
+  textInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ttsGenerate(); }
+  });
 }
 
-textInput.addEventListener('input', () => { charCount.textContent = textInput.value.length; });
-textInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ttsGenerate(); }
-});
+// ── Thread helpers ───────────────────────────────────────────────
+function _ttsThread() { return document.getElementById('ttsThread'); }
 
-async function ttsGenerate() {
-  const text = textInput.value.trim();
-  if (!text) return;
-  genBtn.disabled = true;
-  ttsStatus.innerHTML = '<span class="spinner"></span> Generating...';
+function _ttsScrollBottom() {
+  const t = _ttsThread();
+  if (t) t.scrollTop = t.scrollHeight;
+}
+
+function _ttsFmtTime(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+// Append a bubble to the thread. Returns the bubble element.
+// opts: { role:'user'|'glados', text, audio_url, size, synth_ms, filename, timestamp }
+function _ttsAppendBubble(opts) {
+  const thread = _ttsThread();
+  if (!thread) return null;
+  const { role, text, audio_url, size, synth_ms, filename, timestamp } = opts;
+  const ts = _ttsFmtTime(timestamp || null);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'tts-bubble ' + role;
+
+  const whoLabel = role === 'glados' ? 'GLaDOS' : 'YOU';
+  bubble.innerHTML = '<div class="tts-bubble-meta">'
+    + '<span class="who ' + role + '">' + whoLabel + '</span>'
+    + '<span>\u00b7 ' + ts + '</span>'
+    + '</div>'
+    + '<div class="tts-bubble-text">' + escHtml(text || '') + '</div>';
+
+  if (role === 'glados' && audio_url) {
+    const audioWrap = document.createElement('div');
+    audioWrap.className = 'tts-bubble-audio';
+    const aud = document.createElement('audio');
+    aud.controls = true;
+    aud.src = audio_url;
+    audioWrap.appendChild(aud);
+    bubble.appendChild(audioWrap);
+
+    const actRow = document.createElement('div');
+    actRow.className = 'tts-bubble-actions';
+
+    const statEl = document.createElement('span');
+    statEl.className = 'stat';
+    const statParts = [];
+    if (text) statParts.push('<b>' + text.length + '</b> chars');
+    if (synth_ms != null) statParts.push('synth <b>' + (synth_ms / 1000).toFixed(1) + 's</b>');
+    if (size != null) statParts.push('<b>' + fmtSize(size) + '</b>');
+    statEl.innerHTML = statParts.join(' \u00b7 ');
+    actRow.appendChild(statEl);
+
+    const dlBtn = document.createElement('a');
+    dlBtn.className = 'ico-btn';
+    dlBtn.title = 'Download';
+    dlBtn.href = audio_url;
+    dlBtn.download = filename || '';
+    dlBtn.innerHTML = _icoDl;
+    actRow.appendChild(dlBtn);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'ico-btn';
+    saveBtn.title = 'Save to library';
+    saveBtn.innerHTML = _icoSave;
+    saveBtn.onclick = () => _ttsBubbleSaveToggle(bubble, saveBtn, filename);
+    actRow.appendChild(saveBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'ico-btn danger';
+    delBtn.title = 'Delete';
+    delBtn.innerHTML = _icoDel;
+    delBtn.onclick = () => _ttsBubbleDelete(bubble, filename);
+    actRow.appendChild(delBtn);
+
+    bubble.appendChild(actRow);
+  }
+
+  thread.appendChild(bubble);
+  _ttsScrollBottom();
+  return bubble;
+}
+
+// Per-bubble: save to library (inline form toggle)
+async function _ttsBubbleSaveToggle(bubble, saveBtn, filename) {
+  const existing = bubble.querySelector('.tts-bubble-save-form');
+  if (existing) { existing.remove(); return; }
+
+  const form = document.createElement('div');
+  form.className = 'tts-bubble-save-form';
+
+  const catSel = document.createElement('select');
+  catSel.innerHTML = '<option value="">-- pick category --</option><option value="__new__">-- new category --</option>';
+  form.appendChild(catSel);
+
+  const fnInput = document.createElement('input');
+  fnInput.type = 'text';
+  fnInput.placeholder = 'filename (optional)';
+  fnInput.value = filename || '';
+  form.appendChild(fnInput);
+
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-primary';
+  btn.textContent = 'Save';
+  form.appendChild(btn);
+
+  const statusEl = document.createElement('span');
+  statusEl.style.fontSize = '0.7rem';
+  form.appendChild(statusEl);
+
+  bubble.appendChild(form);
+
   try {
-    const payload = { text, voice: 'glados', format: 'mp3' };
+    const r = await fetch('/api/config/sound_categories');
+    if (r.ok) {
+      const cfg = await r.json();
+      const cats = (cfg.categories || []).slice().sort((a,b) => a.name.localeCompare(b.name));
+      catSel.innerHTML = '<option value="">-- pick category --</option>';
+      for (const c of cats) catSel.appendChild(new Option(c.name + ' (' + (c.description||'').slice(0,40) + ')', c.name));
+      catSel.appendChild(new Option('-- new category --', '__new__'));
+    }
+  } catch(e) { console.error('failed to load sound categories:', e); }
+
+  btn.onclick = async () => {
+    let category = catSel.value;
+    let createNew = false, newDesc = '';
+    if (category === '__new__') {
+      category = prompt('New category name (lowercase letters, digits, underscores):');
+      if (!category) return;
+      category = category.trim().toLowerCase();
+      if (!/^[a-z][a-z0-9_]*$/.test(category)) {
+        statusEl.innerHTML = '<span style="color:var(--red)">Invalid name.</span>';
+        return;
+      }
+      newDesc = prompt('Short description of this category:') || '';
+      createNew = true;
+    }
+    if (!category) { statusEl.innerHTML = '<span style="color:var(--orange)">Pick a category.</span>'; return; }
+    const save_as = fnInput.value.trim() || filename;
+    btn.disabled = true;
+    statusEl.innerHTML = '<span class="spinner"></span>';
+    try {
+      const r = await fetch('/api/tts/save-to-category', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ source_filename: filename, category, save_as, create_new: createNew, new_category_description: newDesc }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      saveBtn.innerHTML = _icoSaved;
+      saveBtn.disabled = true;
+      form.remove();
+    } catch(e) {
+      statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message||e)) + '</span>';
+      btn.disabled = false;
+    }
+  };
+}
+
+// Per-bubble: delete
+async function _ttsBubbleDelete(bubble, filename) {
+  try { await fetch('/api/files/' + encodeURIComponent(filename), { method: 'DELETE' }); } catch(e) {}
+  bubble.remove();
+}
+
+// History pre-load on page init
+async function _ttsRenderThread() {
+  try {
+    const resp = await fetch('/api/files');
+    const data = await resp.json();
+    const files = (data.files || []).slice().reverse(); // oldest first
+    for (const f of files) {
+      _ttsAppendBubble({
+        role: 'glados',
+        text: f.name,
+        audio_url: f.url,
+        size: f.size,
+        filename: f.name,
+        timestamp: f.date,
+      });
+    }
+  } catch(e) { console.error('TTS thread pre-load failed:', e); }
+}
+
+// Script mode: generate
+async function ttsGenerate() {
+  const text = textInput ? textInput.value.trim() : '';
+  if (!text) return;
+  if (genBtn) genBtn.disabled = true;
+  _ttsAppendBubble({ role: 'user', text });
+  if (textInput) textInput.value = '';
+  const t0 = performance.now();
+  try {
     const resp = await fetch('/api/generate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ text, voice: 'glados', format: 'mp3' }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Generation failed');
-    audioPlayer.src = data.url;
-    playerLabel.textContent = data.filename;
-    playerCard.classList.add('visible');
-    audioPlayer.play().catch(() => {});
-    _ttsShowSaveRow(data.filename);
-    ttsStatus.innerHTML = '<span style="color:var(--green)">Done!</span>';
-    setTimeout(() => { ttsStatus.innerHTML = ''; }, 3000);
-  } catch (e) {
-    ttsStatus.innerHTML = '<span style="color:var(--red)">' + escHtml(e.message) + '</span>';
+    _ttsAppendBubble({
+      role: 'glados',
+      text,
+      audio_url: data.url,
+      size: data.size,
+      synth_ms: performance.now() - t0,
+      filename: data.filename,
+    });
+  } catch(e) {
+    _ttsAppendBubble({ role: 'glados', text: '\u26a0 ' + e.message });
   } finally {
-    genBtn.disabled = false;
-    refreshFiles();
+    if (genBtn) genBtn.disabled = false;
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Phase 5.9.2 (2026-04-22) — TTS Generator: Script / Improv modes +
-// Save-to-category flow.
-// ═════════════════════════════════════════════════════════════════
-let _ttsCurrentFilename = null;  // tracks the most recently generated file
+// Mode switch (script / improv)
+let _ttsMode = 'script';
 
 function _ttsSwitchMode(mode) {
-  const scriptCard = document.getElementById('tts-script-card');
-  const improvCard = document.getElementById('tts-improv-card');
+  _ttsMode = mode;
+  const scriptDock = document.getElementById('ttsInputDock');
+  const improvDock = document.getElementById('improvInputDock');
   if (mode === 'improv') {
-    if (scriptCard) scriptCard.style.display = 'none';
-    if (improvCard) improvCard.style.display = '';
+    if (scriptDock) scriptDock.style.display = 'none';
+    if (improvDock) improvDock.style.display = '';
   } else {
-    if (scriptCard) scriptCard.style.display = '';
-    if (improvCard) improvCard.style.display = 'none';
+    if (scriptDock) scriptDock.style.display = '';
+    if (improvDock) improvDock.style.display = 'none';
   }
-  // Visual state on the segmented pill
   for (const el of document.querySelectorAll('.tts-seg-cell')) {
     el.classList.toggle('on', el.getAttribute('data-mode') === mode);
   }
-  // Update telemetry strip mode label
   const modeLabel = document.getElementById('ttsModeLabel');
   if (modeLabel) modeLabel.textContent = mode.toUpperCase();
 }
 
-
+// Improv: draft
 async function _ttsImprovDraft() {
   const instructionEl = document.getElementById('improvInstruction');
-  const statusEl = document.getElementById('improvStatus');
-  const draftSection = document.getElementById('improvDraftSection');
+  const draftSection  = document.getElementById('improvDraftSection');
   const draftedTextEl = document.getElementById('improvDraftedText');
-  const btn = document.getElementById('improvDraftBtn');
-  const instruction = instructionEl ? instructionEl.value.trim() : '';
-  if (!instruction) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Brief her first.</span>';
-    return;
-  }
+  const btn           = document.getElementById('improvDraftBtn');
+  const instruction   = instructionEl ? instructionEl.value.trim() : '';
+  if (!instruction) return;
   if (btn) btn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Drafting in her voice...';
   try {
     const r = await fetch('/api/tts/draft', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({instruction}),
     });
-    if (!r.ok) {
-      const txt = await r.text();
-      throw new Error('HTTP ' + r.status + ': ' + txt.slice(0, 200));
-    }
+    if (!r.ok) { const txt = await r.text(); throw new Error('HTTP ' + r.status + ': ' + txt.slice(0,200)); }
     const data = await r.json();
-    const text = (data.text || '').trim();
-    if (draftedTextEl) draftedTextEl.value = text;
+    if (draftedTextEl) draftedTextEl.value = (data.text || '').trim();
     if (draftSection) draftSection.style.display = '';
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">She wrote a line — approve, edit, or redraft.</span>';
-  } catch (e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Draft failed: ' + escHtml(String(e)) + '</span>';
+    _ttsAppendBubble({ role: 'user', text: '[Brief] ' + instruction });
+  } catch(e) {
+    _ttsAppendBubble({ role: 'glados', text: '\u26a0 Draft failed: ' + e.message });
     console.error('tts draft failed:', e);
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
+// Improv: generate from draft
 async function _ttsImprovGenerate() {
   const textEl = document.getElementById('improvDraftedText');
-  const statusEl = document.getElementById('improvGenStatus');
-  const btn = document.getElementById('improvGenerateBtn');
-  const text = textEl ? textEl.value.trim() : '';
-  if (!text) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Nothing to read.</span>';
-    return;
-  }
+  const btn    = document.getElementById('improvGenerateBtn');
+  const text   = textEl ? textEl.value.trim() : '';
+  if (!text) return;
   if (btn) btn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Generating...';
+  const t0 = performance.now();
   try {
-    const payload = { text, voice: 'glados', format: 'mp3' };
     const r = await fetch('/api/generate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ text, voice: 'glados', format: 'mp3' }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Generation failed');
-    audioPlayer.src = data.url;
-    playerLabel.textContent = data.filename;
-    playerCard.classList.add('visible');
-    audioPlayer.play().catch(() => {});
-    _ttsShowSaveRow(data.filename);
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">Generated. Preview and save below.</span>';
-    setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 4000);
-    refreshFiles();
-  } catch (e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message || e)) + '</span>';
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function _ttsShowSaveRow(filename) {
-  _ttsCurrentFilename = filename;
-  const row = document.getElementById('ttsSaveRow');
-  if (row) row.style.display = '';
-  // Populate category dropdown from sound_categories
-  const sel = document.getElementById('ttsSaveCategory');
-  if (!sel) return;
-  try {
-    const r = await fetch('/api/config/sound_categories');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const cfg = await r.json();
-    const cats = (cfg.categories || []).slice().sort(
-      (a, b) => a.name.localeCompare(b.name)
-    );
-    const prev = sel.value;
-    sel.innerHTML = '';
-    sel.appendChild(new Option('-- pick category --', ''));
-    for (const c of cats) {
-      sel.appendChild(new Option(c.name + ' (' + (c.description || '').slice(0, 40) + ')', c.name));
-    }
-    sel.appendChild(new Option('-- new category --', '__new__'));
-    if (prev && (cats.some(c => c.name === prev) || prev === '__new__')) sel.value = prev;
-  } catch (e) {
-    console.error('failed to load sound categories for save dropdown:', e);
-  }
-}
-
-async function _ttsSaveToCategory() {
-  const catSel = document.getElementById('ttsSaveCategory');
-  const fnEl = document.getElementById('ttsSaveFilename');
-  const statusEl = document.getElementById('ttsSaveStatus');
-  const btn = document.getElementById('ttsSaveBtn');
-  if (!_ttsCurrentFilename) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">No audio to save.</span>';
-    return;
-  }
-  let category = catSel ? catSel.value : '';
-  let createNew = false;
-  let newDesc = '';
-  if (category === '__new__') {
-    category = prompt('New category name (lowercase letters, digits, underscores):');
-    if (!category) return;
-    category = category.trim().toLowerCase();
-    if (!/^[a-z][a-z0-9_]*$/.test(category)) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Invalid name; must start with a letter, only lowercase alphanumeric + underscores.</span>';
-      return;
-    }
-    newDesc = prompt('Short description of this category:') || '';
-    createNew = true;
-  }
-  if (!category) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Pick a category.</span>';
-    return;
-  }
-  const save_as = (fnEl ? fnEl.value.trim() : '') || _ttsCurrentFilename;
-  if (btn) btn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Saving...';
-  try {
-    const r = await fetch('/api/tts/save-to-category', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        source_filename: _ttsCurrentFilename,
-        category,
-        save_as,
-        create_new: createNew,
-        new_category_description: newDesc,
-      }),
+    _ttsAppendBubble({
+      role: 'glados',
+      text,
+      audio_url: data.url,
+      size: data.size,
+      synth_ms: performance.now() - t0,
+      filename: data.filename,
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'Save failed');
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">Saved to ' + escHtml(data.path) + '</span>';
-    // Refresh the dropdown so the new category shows up next time
-    _ttsShowSaveRow(_ttsCurrentFilename);
-    setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 6000);
-  } catch (e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message || e)) + '</span>';
+  } catch(e) {
+    _ttsAppendBubble({ role: 'glados', text: '\u26a0 ' + e.message });
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-const _icoPlay = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3 L13 8 L5 13 Z"/></svg>';
-const _icoDl   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2 L8 11 M4 7 L8 11 L12 7 M3 14 L13 14"/></svg>';
-const _icoDel  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
-
-async function refreshFiles() {
-  try {
-    const resp = await fetch('/api/files');
-    const data = await resp.json();
-    if (!data.files || data.files.length === 0) {
-      fileListEl.innerHTML = '<div class="empty-msg">No files yet.</div>';
-      return;
-    }
-    let html = '<table><tr><th>Name</th><th>Size</th><th>Date</th><th>Actions</th></tr>';
-    for (const f of data.files) {
-      html += '<tr>'
-        + '<td class="file-name">' + escHtml(f.name) + '</td>'
-        + '<td class="file-size">' + fmtSize(f.size) + '</td>'
-        + '<td class="file-date">' + fmtDate(f.date) + '</td>'
-        + '<td class="file-actions">'
-          + '<button class="ico-btn" title="Play" onclick="playFile(\'' + escAttr(f.url) + '\',\'' + escAttr(f.name) + '\')">' + _icoPlay + '</button>'
-          + '<a class="ico-btn" title="Download" href="' + escAttr(f.url) + '" download="' + escAttr(f.name) + '">' + _icoDl + '</a>'
-          + '<button class="ico-btn danger" title="Delete" onclick="deleteFile(\'' + escAttr(f.name) + '\')">' + _icoDel + '</button>'
-        + '</td></tr>';
-    }
-    html += '</table>';
-    fileListEl.innerHTML = html;
-  } catch (e) { console.error('Failed to refresh files:', e); }
-}
-
-function playFile(url, name) {
-  audioPlayer.src = url;
-  playerLabel.textContent = name;
-  playerCard.classList.add('visible');
-  audioPlayer.play().catch(() => {});
-}
-
-async function deleteFile(name) {
-  try { await fetch('/api/files/' + encodeURIComponent(name), { method: 'DELETE' }); } catch (e) {}
-  refreshFiles();
-}
-
-refreshFiles();
+_ttsRenderThread();
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Tab 2: Chat
