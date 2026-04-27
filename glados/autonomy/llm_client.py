@@ -85,15 +85,26 @@ def llm_call(
         # that plain-format calls emit when /no_think is active.
         # Downstream JSON parsers (emotion agent, memory classifier)
         # were failing on the raw content.
+        # 2026-04-27 — fall back to ``reasoning_content`` when ``content``
+        # is empty / null / missing. Reasoning models (GLM-4.x,
+        # DeepSeek-R1, OpenAI o-series) emit the substantive output
+        # there when the budget cap or schema-constrained JSON path
+        # leaves the content channel empty.
         from glados.core.llm_directives import strip_thinking_response
         if "choices" in result and result["choices"]:
-            content = result["choices"][0]["message"]["content"]
-            return strip_thinking_response(content) if content else content
+            msg = result["choices"][0].get("message", {})
+            content = msg.get("content") or msg.get("reasoning_content")
+            if not content:
+                return None
+            return strip_thinking_response(content)
 
         # Handle Ollama-style response
         if "message" in result:
-            content = result["message"].get("content")
-            return strip_thinking_response(content) if content else content
+            msg = result["message"]
+            content = msg.get("content") or msg.get("reasoning_content")
+            if not content:
+                return None
+            return strip_thinking_response(content)
 
         logger.warning("LLM call: unexpected response format")
         return None
