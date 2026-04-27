@@ -1193,13 +1193,23 @@ def _strip_chat_suffix(url: str) -> str:
 
 
 def _ollama_chat_url(base_or_chat_url: str) -> str:
-    """Given either a bare Ollama base (`http://host:port`) or the full
-    chat endpoint (`http://host:port/api/chat`), return the `/api/chat`
-    form the engine's GladosConfig.completion_url expects. Tolerant of
-    trailing slashes and of operators who paste either variant into the
-    LLM & Services URL field."""
+    """Given a chat-completion URL stored in the LLM & Services field,
+    return the form the engine's GladosConfig.completion_url expects.
+    Tolerant of trailing slashes and of operators who paste either
+    variant.
+
+    URLs that already end in a known chat suffix
+    (``/v1/chat/completions`` OpenAI, ``/api/chat`` Ollama-native) pass
+    through unchanged. Bare URLs and other ``/api/...`` paths default
+    to ``/api/chat`` for legacy Ollama compatibility — the
+    OpenAI-default Item #3 cleanup is a larger follow-up."""
     url = (base_or_chat_url or "").strip().rstrip("/")
     if not url:
+        return url
+    # Already an OpenAI chat-completions URL — pass through. Auto-rewriting
+    # would yield the malformed ``/v1/chat/completions/api/chat`` that
+    # broke chat through the middleware on 2026-04-27.
+    if url.endswith("/v1/chat/completions"):
         return url
     if url.endswith("/api/chat"):
         return url

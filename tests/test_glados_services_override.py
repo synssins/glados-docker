@@ -94,6 +94,23 @@ class TestOllamaAsChatUrl:
         assert engine_mod._ollama_as_chat_url("") == ""
         assert engine_mod._ollama_as_chat_url(None) == ""
 
+    def test_openai_chat_completions_url_passes_through(self) -> None:
+        """If services.yaml stores an OpenAI-compatible chat URL
+        (LM Studio, vLLM, mainline llama.cpp), the reconciler must NOT
+        append ``/api/chat`` and produce the malformed
+        ``/v1/chat/completions/api/chat``. Operator-mandate Item #3 —
+        the engine speaks OpenAI when the URL says OpenAI."""
+        assert (
+            engine_mod._ollama_as_chat_url("http://lmstudio:11434/v1/chat/completions")
+            == "http://lmstudio:11434/v1/chat/completions"
+        )
+
+    def test_openai_chat_completions_trailing_slash_passes_through(self) -> None:
+        assert (
+            engine_mod._ollama_as_chat_url("http://lmstudio:11434/v1/chat/completions/")
+            == "http://lmstudio:11434/v1/chat/completions"
+        )
+
 
 class TestReconcileOverrides:
     def test_model_override_fires_when_services_disagrees(self, configs_dir: Path) -> None:

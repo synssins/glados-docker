@@ -132,13 +132,24 @@ class HAAudioConfig(BaseModel):
 
 
 def _ollama_as_chat_url(u: str | None) -> str:
-    """Normalize a bare or `/api/...` Ollama URL to the `/api/chat` form
-    stored in Glados.completion_url. Mirrors _ollama_chat_url in
+    """Normalize a chat-completion URL stored in services.yaml to the
+    form Glados.completion_url expects. Mirrors _ollama_chat_url in
     glados/webui/tts_ui.py — duplicated deliberately to avoid an inbound
-    import from webui into core. Both should behave identically."""
+    import from webui into core. Both should behave identically.
+
+    URLs that already end in a known chat suffix (``/v1/chat/completions``
+    OpenAI, ``/api/chat`` Ollama-native) pass through unchanged. Bare
+    URLs and other ``/api/...`` paths default to ``/api/chat`` for legacy
+    Ollama compatibility — the OpenAI-default Item #3 cleanup is a
+    larger follow-up."""
     s = (u or "").strip().rstrip("/")
     if not s:
         return ""
+    # Already an OpenAI chat-completions URL — pass through. Auto-rewriting
+    # would yield the malformed ``/v1/chat/completions/api/chat`` that
+    # broke chat through the middleware on 2026-04-27.
+    if s.endswith("/v1/chat/completions"):
+        return s
     if s.endswith("/api/chat"):
         return s
     if "/api/" in s:

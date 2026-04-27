@@ -49,6 +49,22 @@ class TestOllamaChatUrl:
     def test_whitespace_only_returns_empty(self) -> None:
         assert _ollama_chat_url("   ") == ""
 
+    def test_openai_chat_completions_url_passes_through(self) -> None:
+        """OpenAI-compatible chat URL (LM Studio, vLLM, llama.cpp) must
+        pass through unchanged. The sync would otherwise mangle it to
+        ``/v1/chat/completions/api/chat`` — the live chat-blocker
+        observed 2026-04-27."""
+        assert (
+            _ollama_chat_url("http://lmstudio:11434/v1/chat/completions")
+            == "http://lmstudio:11434/v1/chat/completions"
+        )
+
+    def test_openai_chat_completions_trailing_slash_passes_through(self) -> None:
+        assert (
+            _ollama_chat_url("http://lmstudio:11434/v1/chat/completions/")
+            == "http://lmstudio:11434/v1/chat/completions"
+        )
+
 
 class TestSyncRewrites:
     """Simulate the YAML-rewrite behavior by reading/patching a dict
