@@ -1260,12 +1260,68 @@ class GladosConfigStore:
                 )
         merged = {**existing, **(data or {})}
 
+        # The WebUI's `_get_config_section` masks sensitive fields
+        # before sending them to the browser:
+        #   - global.auth.session_secret  → popped (never in response)
+        #   - global.home_assistant.token → "first20...last8" form
+        # On save, the browser sends back what it has — which is either
+        # absent (session_secret) or the masked form (HA token). The
+        # shallow merge above replaces the entire nested dict, so those
+        # fields would land empty/masked on disk.
+        #
+        # Live incident 2026-04-27: empty session_secret broke every
+        # auth-required endpoint, locked the operator out of the WebUI.
+        # Restore from the existing on-disk values when the incoming
+        # payload doesn't carry a real value.
+        if section == "global":
+            merged = _restore_masked_global_fields(merged, existing)
+
         validated = model_cls.model_validate(merged)
         yaml_str = yaml.dump(
             validated.model_dump(), default_flow_style=False, sort_keys=False,
         )
         path.write_text(yaml_str, encoding="utf-8")
         self.reload()
+
+
+def _restore_masked_global_fields(merged: dict, existing: dict) -> dict:
+    """Re-populate sensitive fields the WebUI strips before sending the
+    config to the browser, so a round-trip Save doesn't wipe them.
+
+    Fields handled:
+      - ``auth.session_secret`` — popped from GET responses; if the
+        incoming save has it empty/missing, restore from on-disk.
+      - ``home_assistant.token`` — masked as ``"first20...last8"`` on
+        GET; if the incoming save still contains ``"..."``, treat as
+        masked and restore from on-disk.
+
+    The merged dict is mutated in place and returned for clarity at
+    the call site.
+    """
+    existing = existing or {}
+
+    # auth.session_secret: preserve if incoming is empty/missing
+    auth = merged.get("auth")
+    existing_auth = existing.get("auth") if isinstance(existing, dict) else None
+    if isinstance(auth, dict) and isinstance(existing_auth, dict):
+        if not auth.get("session_secret") and existing_auth.get("session_secret"):
+            auth["session_secret"] = existing_auth["session_secret"]
+
+    # home_assistant.token: preserve if incoming is empty or in the
+    # "first20...last8" masked form. The "..." sentinel is reliable —
+    # legitimate HA long-lived tokens are JWTs that contain only
+    # base64url + period characters, never an ellipsis.
+    ha = merged.get("home_assistant")
+    existing_ha = (
+        existing.get("home_assistant") if isinstance(existing, dict) else None
+    )
+    if isinstance(ha, dict) and isinstance(existing_ha, dict):
+        token = ha.get("token", "")
+        looks_masked = isinstance(token, str) and "..." in token
+        if (not token or looks_masked) and existing_ha.get("token"):
+            ha["token"] = existing_ha["token"]
+
+    return merged
 
 
 # Module-level singleton
