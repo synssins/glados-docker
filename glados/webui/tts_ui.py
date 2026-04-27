@@ -1174,6 +1174,24 @@ def _normalize_base_url(url: str) -> str:
     return url
 
 
+_CHAT_URL_SUFFIXES = ("/v1/chat/completions", "/api/chat")
+
+
+def _strip_chat_suffix(url: str) -> str:
+    """Strip a known chat-endpoint suffix to get the base URL.
+
+    Operators may store the full chat URL in services.yaml
+    (`http://host:port/api/chat` for Ollama, `http://host:port/v1/chat/
+    completions` for OpenAI-compatible servers). Discovery probes need
+    the bare host:port to target /api/tags or /v1/models correctly.
+    """
+    s = (url or "").strip().rstrip("/")
+    for sfx in _CHAT_URL_SUFFIXES:
+        if s.endswith(sfx):
+            return s[: -len(sfx)]
+    return s
+
+
 def _ollama_chat_url(base_or_chat_url: str) -> str:
     """Given either a bare Ollama base (`http://host:port`) or the full
     chat endpoint (`http://host:port/api/chat`), return the `/api/chat`
@@ -1193,13 +1211,61 @@ def _ollama_chat_url(base_or_chat_url: str) -> str:
 
 
 def discover_ollama(url: str) -> tuple[int, dict]:
-    """GET <url>/api/tags and return model list."""
+    """GET ``<url>/api/tags`` (Ollama-native) or fall back to
+    ``<url>/v1/models`` (OpenAI-compatible) and return a normalized
+    model list.
+
+    Backends covered:
+      * Ollama / IPEX-LLM Ollama — exposes ``/api/tags``.
+      * LM Studio / llmster, vLLM (LLM-Scaler), llama-cpp-server,
+        OpenAI-compatible proxies — expose ``/v1/models``.
+
+    A connection refusal / DNS failure short-circuits with a 502
+    (no /v1/models fallback — the host isn't answering at all).
+    Anything else — HTTP 4xx, non-JSON body, missing ``models`` key —
+    falls through to the OpenAI probe so the WebUI dropdown still
+    populates against modern OpenAI-only backends.
+    """
     try:
-        base = _normalize_base_url(url)
+        base = _normalize_base_url(_strip_chat_suffix(url))
     except ValueError as exc:
         return 400, {"error": str(exc)}
+
+    # 1) Ollama-native /api/tags
+    ollama_payload: Any = None
     try:
-        payload = _http_get_json(f"{base}/api/tags")
+        ollama_payload = _http_get_json(f"{base}/api/tags")
+    except urllib.error.HTTPError:
+        # Service answers but doesn't speak Ollama API. Fall through.
+        pass
+    except urllib.error.URLError as exc:
+        # Connection refused / DNS failure — won't get any further.
+        return 502, {"error": f"unreachable: {exc.reason}"}
+    except json.JSONDecodeError:
+        # Non-JSON body on /api/tags. Fall through.
+        pass
+    except Exception:  # pragma: no cover - defensive
+        pass  # Fall through.
+
+    if (
+        isinstance(ollama_payload, dict)
+        and isinstance(ollama_payload.get("models"), list)
+    ):
+        models = []
+        for m in ollama_payload["models"]:
+            if isinstance(m, dict) and m.get("name"):
+                models.append({
+                    "name": m.get("name"),
+                    "size": m.get("size"),
+                    "modified_at": m.get("modified_at"),
+                })
+        return 200, {"url": base, "models": models, "count": len(models)}
+
+    # 2) OpenAI-compatible /v1/models fallback
+    try:
+        openai_payload = _http_get_json(f"{base}/v1/models")
+    except urllib.error.HTTPError as exc:
+        return 502, {"error": f"upstream {exc.code}"}
     except urllib.error.URLError as exc:
         return 502, {"error": f"unreachable: {exc.reason}"}
     except json.JSONDecodeError:
@@ -1207,18 +1273,20 @@ def discover_ollama(url: str) -> tuple[int, dict]:
     except Exception as exc:  # pragma: no cover - defensive
         return 502, {"error": str(exc)}
 
-    raw_models = payload.get("models") if isinstance(payload, dict) else None
-    if not isinstance(raw_models, list):
+    raw = openai_payload.get("data") if isinstance(openai_payload, dict) else None
+    if not isinstance(raw, list):
         return 502, {"error": "unexpected response shape"}
 
     models = []
-    for m in raw_models:
-        if isinstance(m, dict) and m.get("name"):
-            models.append({
-                "name": m.get("name"),
-                "size": m.get("size"),
-                "modified_at": m.get("modified_at"),
-            })
+    for m in raw:
+        if isinstance(m, dict):
+            name = m.get("id") or m.get("name")
+            if name:
+                models.append({
+                    "name": name,
+                    "size": m.get("size"),  # OpenAI shape doesn't include size
+                    "modified_at": m.get("created"),  # Unix timestamp
+                })
     return 200, {"url": base, "models": models, "count": len(models)}
 
 
@@ -1289,7 +1357,10 @@ def discover_health(url: str, path: str | None = None,
     if path:
         probe_paths = [path]
     elif kind == "ollama":
-        probe_paths = ["/api/tags"]
+        # /api/tags for Ollama-native servers; /v1/models for
+        # OpenAI-compatible backends (LM Studio, vLLM, etc.) that don't
+        # speak the Ollama API.
+        probe_paths = ["/api/tags", "/v1/models"]
     elif kind == "tts":
         # TTS side of speaches exposes /v1/voices.
         probe_paths = ["/v1/voices"]

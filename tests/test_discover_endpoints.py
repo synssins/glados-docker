@@ -99,6 +99,135 @@ class TestDiscoverOllama:
         assert status == 400
 
 
+class TestDiscoverOllamaOpenAIFallback:
+    """OpenAI-compatible servers (LM Studio, vLLM, llama-cpp server,
+    etc.) don't expose Ollama-native /api/tags. The Discover button
+    must still populate the model dropdown by falling through to
+    /v1/models. Regression guard for the 2026-04-27 LM-Studio-on-AIBox
+    cutover that surfaced "unexpected response shape" on every LLM
+    service URL."""
+
+    def test_openai_v1_models_shape_accepted(self) -> None:
+        """LM Studio's /api/tags returns 200 with an error JSON body
+        ({"error":"Unexpected endpoint..."}); the Ollama path doesn't
+        produce a `models` key, so we fall through to /v1/models and
+        normalize the OpenAI list shape."""
+        def _resp(req, timeout=None):
+            if req.full_url.endswith("/api/tags"):
+                return _fake_response({"error": "Unexpected endpoint or method."})
+            if req.full_url.endswith("/v1/models"):
+                return _fake_response({
+                    "object": "list",
+                    "data": [
+                        {"id": "glm-4.7-flash", "object": "model",
+                         "owned_by": "organization_owner"},
+                        {"id": "qwen2.5-vl-3b-instruct", "object": "model",
+                         "owned_by": "organization_owner"},
+                    ],
+                })
+            raise AssertionError(f"unexpected URL: {req.full_url}")
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_resp):
+            status, payload = discover_ollama("http://10.0.0.10:11434")
+        assert status == 200
+        assert payload["count"] == 2
+        names = [m["name"] for m in payload["models"]]
+        assert "glm-4.7-flash" in names
+        assert "qwen2.5-vl-3b-instruct" in names
+
+    def test_falls_back_when_api_tags_404(self) -> None:
+        """Some OpenAI-compat servers genuinely 404 on /api/tags rather
+        than returning a 200+error body. Either failure mode falls
+        through to /v1/models."""
+        def _resp(req, timeout=None):
+            if req.full_url.endswith("/api/tags"):
+                raise urllib.error.HTTPError(
+                    req.full_url, 404, "Not Found", hdrs=None, fp=None,
+                )
+            return _fake_response({
+                "object": "list",
+                "data": [{"id": "model-a"}],
+            })
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_resp):
+            status, payload = discover_ollama("http://10.0.0.10:11434")
+        assert status == 200
+        assert payload["count"] == 1
+        assert payload["models"][0]["name"] == "model-a"
+
+    def test_strips_v1_chat_completions_suffix(self) -> None:
+        """Operators may store the full chat URL in services.yaml
+        (http://host:port/v1/chat/completions). Discover must strip
+        the suffix before probing — otherwise it'd target
+        /v1/chat/completions/api/tags which is nonsense."""
+        calls = []
+
+        def _resp(req, timeout=None):
+            calls.append(req.full_url)
+            if req.full_url.endswith("/api/tags"):
+                raise urllib.error.HTTPError(
+                    req.full_url, 404, "Not Found", hdrs=None, fp=None,
+                )
+            return _fake_response({
+                "object": "list", "data": [{"id": "x"}],
+            })
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_resp):
+            status, payload = discover_ollama(
+                "http://10.0.0.10:11434/v1/chat/completions",
+            )
+        assert status == 200
+        # Probes must have hit the bare host:port, not the chat URL.
+        assert any(u == "http://10.0.0.10:11434/v1/models" for u in calls), (
+            f"expected /v1/models on bare host, got {calls!r}"
+        )
+        assert not any("/v1/chat/completions/" in u for u in calls), (
+            f"probes accidentally appended to chat URL: {calls!r}"
+        )
+
+    def test_strips_api_chat_suffix(self) -> None:
+        """Same suffix-strip logic for Ollama-style /api/chat URLs.
+        Existing services.yaml may store the full /api/chat form."""
+        calls = []
+
+        def _resp(req, timeout=None):
+            calls.append(req.full_url)
+            return _fake_response({"models": [{"name": "qwen3:14b"}]})
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_resp):
+            status, payload = discover_ollama(
+                "http://10.0.0.10:11434/api/chat",
+            )
+        assert status == 200
+        assert payload["count"] == 1
+        assert calls[0] == "http://10.0.0.10:11434/api/tags", (
+            f"expected /api/tags on bare host, got {calls[0]!r}"
+        )
+
+    def test_unreachable_short_circuits_no_v1_fallback(self) -> None:
+        """Connection refused / DNS failure on /api/tags must NOT cascade
+        into a second probe of /v1/models — both would fail the same way,
+        so we'd just double the latency before returning 502."""
+        calls = []
+
+        def _refuse(req, timeout=None):
+            calls.append(req.full_url)
+            raise urllib.error.URLError("connection refused")
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_refuse):
+            status, payload = discover_ollama("http://dead-host:11434")
+        assert status == 502
+        assert "unreachable" in payload["error"]
+        assert len(calls) == 1, (
+            f"expected single probe on URLError, got {len(calls)}"
+        )
+
+
 class TestDiscoverVoices:
     def test_top_level_list_accepted(self) -> None:
         upstream = [
@@ -233,4 +362,30 @@ class TestDiscoverHealth:
         assert payload["reason"] == "connection refused"
         assert len(calls) == 1, (
             f"expected a single probe on connection refused, got {len(calls)}"
+        )
+
+    def test_kind_ollama_falls_back_to_v1_models(self) -> None:
+        """LM Studio / OpenAI-only backends 404 on /api/tags. The Ollama
+        health probe should fall through to /v1/models so the dot still
+        goes green for these servers. Regression guard for the 2026-04-27
+        LM-Studio-on-AIBox cutover."""
+        calls = []
+
+        def _resp(req, timeout=None):
+            calls.append(req.full_url)
+            if req.full_url.endswith("/api/tags"):
+                raise urllib.error.HTTPError(
+                    req.full_url, 404, "Not Found", hdrs=None, fp=None,
+                )
+            return _fake_response({"object": "list", "data": []}, status=200)
+
+        with patch("glados.webui.tts_ui.urllib.request.urlopen",
+                   side_effect=_resp):
+            status, payload = discover_health(
+                "http://10.0.0.10:11434", kind="ollama",
+            )
+        assert status == 200
+        assert payload["ok"] is True
+        assert any(u.endswith("/v1/models") for u in calls), (
+            f"expected /v1/models fallback, got {calls!r}"
         )
