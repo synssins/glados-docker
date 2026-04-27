@@ -157,3 +157,23 @@ class TestProcessChunkReasoningContent:
         lp = _make_lp()
         chunk = {"message": {"content": "from ollama"}}
         assert lp._process_chunk(chunk) == "from ollama"
+
+    def test_error_chunk_with_string_message_does_not_crash(self) -> None:
+        """LM Studio returns
+        ``{"error": {"message": "..."}, "message": "Context size has been exceeded."}``
+        on errors — note ``message`` is a STRING here, not a dict. The
+        Ollama-format branch was crashing with
+        ``'str' object has no attribute 'get'`` on this shape, taking
+        the entire stream down silently. Must return None instead."""
+        lp = _make_lp()
+        chunk = {
+            "error": {"message": "Context size has been exceeded."},
+            "message": "Context size has been exceeded.",
+        }
+        assert lp._process_chunk(chunk) is None
+
+    def test_openai_choices_with_non_dict_delta_does_not_crash(self) -> None:
+        """Defensive: if upstream returns malformed choices, don't crash."""
+        lp = _make_lp()
+        chunk = {"choices": [{"delta": "not-a-dict"}]}
+        assert lp._process_chunk(chunk) is None
