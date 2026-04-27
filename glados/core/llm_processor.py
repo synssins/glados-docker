@@ -356,7 +356,17 @@ class LanguageModelProcessor:
                     return tool_calls
 
                 content = delta.get("content")
-                return str(content) if content else None
+                if content:
+                    return str(content)
+
+                # OpenAI-extended reasoning channel (DeepSeek-R1, GLM-4.x,
+                # OpenAI o-series, vLLM reasoning, mainline Ollama 0.14+).
+                # Acknowledge in the log; never emit to TTS / conversation
+                # store. Same end behaviour as <think>...</think> stripping.
+                reasoning = delta.get("reasoning_content")
+                if reasoning:
+                    logger.debug(f"LLM reasoning_content: {str(reasoning)[:80]}")
+                return None
             # Handle Ollama format
             else:
                 message = line.get("message", {})
@@ -365,7 +375,13 @@ class LanguageModelProcessor:
                     return tool_calls
 
                 content = message.get("content")
-                return content if content else None
+                if content:
+                    return content
+
+                reasoning = message.get("reasoning_content")
+                if reasoning:
+                    logger.debug(f"LLM reasoning_content: {str(reasoning)[:80]}")
+                return None
         except Exception as e:
             logger.error(f"LLM Processor: Error processing chunk: {e}, chunk: {line}")
             return None
