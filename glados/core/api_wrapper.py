@@ -1809,8 +1809,16 @@ def _stream_chat_sse_impl(
     # prelude on each tool round, which was blowing the output budget
     # before a user-visible answer could be produced (see the
     # "It's too bright in the office" investigation in Change 14.3).
+    # Reasoning gate: home commands / tool-call turns benefit from the
+    # hybrid model's thinking mode (entity disambiguation, tool selection,
+    # multi-step planning). Pure chitchat turns short-circuit straight to
+    # /no_think for ~2-5 s replies instead of 30+ s reasoning chains. The
+    # hybrid Qwen3-30B-A3B (NOT the -thinking-2507 variant) honours both
+    # /think and /no_think directives at chat-template level.
     from glados.core.llm_directives import apply_model_family_directives
-    messages = apply_model_family_directives(messages, glados.llm_model)
+    messages = apply_model_family_directives(
+        messages, glados.llm_model, enable_thinking=is_home_command,
+    )
     # 2026-04-20 — cap num_predict on Tier 3 so a confused model
     # can't produce a 2000+ token essay when it mis-reads context
     # (observed live: "What level is the desk lamp set to?" came

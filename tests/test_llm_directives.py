@@ -113,6 +113,79 @@ class TestApplyDirectives:
         assert out[0]["content"] == msgs[0]["content"]
 
 
+class TestEnableThinkingFlag:
+    """``enable_thinking`` opts the caller into Qwen3 hybrid reasoning.
+
+    Default behaviour stays ``/no_think`` (existing fast-triage callers
+    rely on that). Set ``enable_thinking=True`` for the Tier 3 chat
+    path when a turn benefits from reasoning (home-command tool use,
+    ambiguous lighting, multi-step planning).
+    """
+
+    def test_thinking_enabled_does_not_inject_no_think(self) -> None:
+        """When the caller enables thinking, the hybrid model should
+        be allowed to reason — meaning we omit ``/no_think`` and let
+        the chat template default kick in."""
+        msgs = [
+            {"role": "system", "content": "You are GLaDOS."},
+            {"role": "user", "content": "Turn off the lights"},
+        ]
+        out = apply_model_family_directives(
+            msgs, "qwen3-30b-a3b", enable_thinking=True,
+        )
+        assert "/no_think" not in out[0]["content"]
+        assert out[0]["content"] == "You are GLaDOS."
+
+    def test_thinking_enabled_returns_messages_unchanged(self) -> None:
+        msgs = [
+            {"role": "user", "content": "Hi"},
+        ]
+        out = apply_model_family_directives(
+            msgs, "qwen3-30b-a3b", enable_thinking=True,
+        )
+        assert out == msgs
+
+    def test_thinking_disabled_default_still_injects_no_think(self) -> None:
+        """Default ``enable_thinking=False`` preserves the existing fast
+        triage behaviour for the 5 callers that rely on it."""
+        msgs = [
+            {"role": "system", "content": "You are GLaDOS."},
+        ]
+        out = apply_model_family_directives(msgs, "qwen3-30b-a3b")
+        assert out[0]["content"].startswith("/no_think\n")
+
+    def test_thinking_disabled_explicit_still_injects(self) -> None:
+        msgs = [{"role": "system", "content": "X"}]
+        out = apply_model_family_directives(
+            msgs, "qwen3-30b-a3b", enable_thinking=False,
+        )
+        assert out[0]["content"].startswith("/no_think\n")
+
+    def test_thinking_enabled_strips_existing_no_think(self) -> None:
+        """If a caller's system prompt already has ``/no_think`` (e.g.
+        a hand-written prompt or a previously-processed one), and the
+        caller now wants thinking, the directive must come back out so
+        the model actually reasons."""
+        msgs = [
+            {"role": "system", "content": "/no_think\nYou are GLaDOS."},
+            {"role": "user", "content": "Plan a multi-step automation"},
+        ]
+        out = apply_model_family_directives(
+            msgs, "qwen3-30b-a3b", enable_thinking=True,
+        )
+        assert "/no_think" not in out[0]["content"]
+        assert "You are GLaDOS." in out[0]["content"]
+
+    def test_thinking_enabled_on_non_qwen3_returns_unchanged(self) -> None:
+        """Non-Qwen3 models don't speak Qwen3 directive syntax. The
+        flag is a no-op for them."""
+        msgs = [{"role": "system", "content": "X"}]
+        out = apply_model_family_directives(
+            msgs, "llama3:8b", enable_thinking=True,
+        )
+        assert out == msgs
+
+
 class TestStripThinkingResponse:
     def test_strips_empty_think_wrapper(self) -> None:
         # Qwen3 + /no_think on plain-format produces this exact shape.
