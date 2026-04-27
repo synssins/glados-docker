@@ -47,7 +47,16 @@ _GLADOS_CONFIG_DIR = Path(os.environ.get("GLADOS_CONFIG_DIR", str(_GLADOS_ROOT /
 _GLADOS_DATA = Path(os.environ.get("GLADOS_DATA", str(_GLADOS_ROOT / "data")))
 _engine: Glados | None = None
 _api_lock = threading.Lock()
-_response_timeout: float = 45.0
+_response_timeout: float = 180.0  # default; overridable via --timeout
+# Rationale: 45 s was the legacy default from the pre-reasoning-model
+# era. Modern OpenAI-compatible servers (LM Studio, vLLM, Ollama
+# 0.14+, OpenAI o1/o3, DeepSeek-R1, GLM-4.x reasoning variants, etc.)
+# routinely emit 500–2000 reasoning tokens before a single visible
+# content token. At a typical 50–60 tok/s on a workstation GPU this
+# blows past 45 s on any non-trivial prompt. 180 s matches the
+# existing tuning.llm_read_timeout_s and gives reasoning room to
+# breathe without locking the WebUI for too long if the upstream
+# truly hangs.
 
 # Lazy singleton for /v1/audio/transcriptions — avoids paying the
 # ~2 s ONNX session init at container startup for operators who don't
@@ -3670,8 +3679,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=45.0,
-        help="Response timeout in seconds (default: 45)",
+        default=180.0,
+        help=(
+            "Response timeout in seconds (default: 180). Reasoning-mode "
+            "models on OpenAI-compatible backends frequently emit "
+            "500-2000 reasoning tokens before the visible reply, so the "
+            "engine pipeline can take longer than the request → first "
+            "content-token gap. 180 s matches the default "
+            "tuning.llm_read_timeout_s."
+        ),
     )
     parser.add_argument(
         "--announcement",
