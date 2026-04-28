@@ -3621,3 +3621,55 @@ layer. Operator's screenshots: "Who are you and what do you do" — TTFT
 - `~/.lmstudio/NSSM_INSTALL.md` (new).
 - LM Studio: bounced server, reloaded both models with explicit ctx.
 
+## Change 28b — NSSM autoload service installed + duplicate-load fix (2026-04-28 evening)
+
+Follow-up to Change 28. Three things landed after the Change 28 commit
+was pushed; documented here so the chronological log stays accurate.
+
+**What happened:**
+
+1. **`LMStudioAutoload` NSSM service installed and started.** Per the
+   procedure in `~/.lmstudio/NSSM_INSTALL.md`:
+   - `nssm install LMStudioAutoload "%USERPROFILE%\.lmstudio\lms_autoload.bat"`
+   - `AppDirectory`, `Start=SERVICE_AUTO_START`, log routing,
+     `AppExit Default Restart`, `AppRestartDelay 10000`, run as
+     `.\Administrator`.
+   - `nssm start LMStudioAutoload` → `SERVICE_RUNNING`.
+
+2. **Duplicate-instance bug discovered post-install.** First
+   verification revealed `lms ps` reporting both `qwen3-30b-a3b` at
+   ctx=4096 (the pre-existing instance from earlier in the session)
+   AND `qwen3-30b-a3b:2` at ctx=12288 (loaded by the autoload script).
+   `lms load` does **not** replace an existing instance — it suffixes
+   `:2`, `:3`, etc. The autoload script as originally written would
+   have accumulated duplicates on every service restart, eating VRAM
+   and leaving the wrong-ctx instance available for inbound requests.
+
+3. **Script corrected and state cleaned.** Added an unload pass to
+   `~/.lmstudio/lms_autoload.bat` covering `qwen3-30b-a3b`,
+   `qwen3-30b-a3b:2`, `qwen3-30b-a3b:3`,
+   `llama-3.2-1b-instruct`, `llama-3.2-1b-instruct:2` (errors swallowed
+   so "nothing to unload" is fine). Stopped the service, unloaded all
+   instances by hand, restarted the service. Final state: one
+   `qwen3-30b-a3b` at ctx=12288 + one `llama-3.2-1b-instruct` at
+   ctx=4096. Service running, auto-start enabled.
+
+**Operational lesson recorded:** during the install / verify cycle,
+exploratory `nssm dump LMStudioAutoload` was run — that command (with
+no args) silently opens a modal GUI dialog on Windows that the operator
+has to dismiss. Saved as memory `feedback_no_probe_commands.md`:
+execute the action, read the exit code; do not pre-probe with
+`nssm dump` / `nssm list` / repeated `lms ps` / `whoami` / `sc query`.
+
+**AIBox host changes (not in repo):**
+
+- `~/.lmstudio/lms_autoload.bat` — added unload-before-load step.
+- NSSM: installed + started `LMStudioAutoload` service, set
+  `SERVICE_AUTO_START`, run-as `.\Administrator`, restart-on-exit.
+
+**Carried to next session:**
+
+- First-reboot verification of `LMStudioAutoload` still owed. Confirm
+  service auto-starts, log shows fresh banner, `lms ps` shows clean
+  state (one instance per model, no `:2` suffixes).
+
