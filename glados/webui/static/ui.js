@@ -2267,35 +2267,31 @@ async function loadSystemServices() {
 
   html += '</div>'; // end Card 1
 
-  // ── Card 2: LLM (Ollama) ────────────────────────────────────
+  // ── Card 2: LLM endpoints — one card per slot ──────────────
+  // Phase 6.2 (2026-04-22) consolidated LLM into a single hand-rolled
+  // card here, but that hardcoded `llm_interactive` and silently
+  // shared its URL+model with `llm_autonomy` on save — leaving
+  // `llm_vision` and `llm_triage` (added 2026-04-28) completely
+  // unconfigurable via the WebUI. 2026-04-28 fix: render the four
+  // LLM slots through the existing `cfgRenderServices` grid so each
+  // slot gets its own URL + Model dropdown + Discover button.
   html += '<div class="card" style="margin-top:var(--sp-3);">';
-  html +=   '<div class="section-title">LLM (Ollama)</div>';
+  html +=   '<div class="section-title">LLM Endpoints</div>';
+  html +=   '<div class="mode-desc" style="margin-bottom:14px;">'
+    +         'Four independent slots: Interactive (chat), Autonomy '
+    +         '(background subagents), Triage (Tier&nbsp;2 disambiguator + '
+    +         'classification), Vision. Configure each separately; the '
+    +         'engine routes per role.'
+    +       '</div>';
 
-  // URL field
-  html +=   '<div class="cfg-field">';
-  html +=     '<label class="cfg-field-label">URL</label>';
-  html +=     '<div class="svc-url-row">';
-  html +=       '<input id="system-llm-url" type="text" value="' + escAttr(ollama.url || '') + '"'
-    +           ' onblur="_systemLlmDiscover()">';
-  html +=       '<button type="button" class="svc-discover-btn" onclick="_systemLlmDiscover()">&#x21bb; Discover</button>';
-  html +=       '<span class="svc-discover-status" id="system-llm-discover-status"></span>';
-  html +=     '</div>';
-  html +=   '</div>';
-
-  // Model dropdown
-  html +=   '<div class="cfg-field">';
-  html +=     '<label class="cfg-field-label">Model</label>';
-  html +=     '<select id="system-llm-model" class="svc-dropdown">';
-  html +=       '<option value="' + escAttr(ollama.model || '') + '" selected>'
-    +           escHtml(ollama.model || '(enter URL then click Discover)') + '</option>';
-  html +=     '</select>';
-  html +=   '</div>';
-
-  // Status line
-  html +=   '<div class="cfg-field">';
-  html +=     '<label class="cfg-field-label">Status</label>';
-  html +=     '<span id="system-llm-status" style="font-size:0.85rem;color:var(--fg-muted);">—</span>';
-  html +=   '</div>';
+  // Filter the services payload to only LLM slots and render via the
+  // generic 4-card grid. Each card emits cfg-services-{key}-url and
+  // cfg-services-{key}-model inputs that _cfgSaveSystemServices reads.
+  const _llmOnly = {};
+  for (const [k, v] of Object.entries(svc)) {
+    if (k.indexOf('llm_') === 0) _llmOnly[k] = v;
+  }
+  html += cfgRenderServices(_llmOnly, 'llm');
 
   // Advanced collapsible
   html +=   '<div style="margin-top:12px;">';
@@ -2357,31 +2353,6 @@ function _systemLlmToggleAdvanced(btn) {
   if (caret) caret.innerHTML = open ? '&#9656;' : '&#9662;';
 }
 
-async function _systemLlmDiscover() {
-  const urlInput = document.getElementById('system-llm-url');
-  const status = document.getElementById('system-llm-discover-status');
-  const llmStatus = document.getElementById('system-llm-status');
-  if (!urlInput) return;
-  const url = (urlInput.value || '').trim().replace(/\/$/, '');
-  if (!url) { if (status) status.textContent = ''; return; }
-  if (status) { status.className = 'svc-discover-status'; status.textContent = 'discovering\u2026'; }
-  try {
-    const r = await fetch('/api/discover/ollama?url=' + encodeURIComponent(url));
-    const data = await r.json();
-    if (!r.ok) {
-      if (status) { status.className = 'svc-discover-status err'; status.textContent = data.error || 'failed'; }
-      if (llmStatus) llmStatus.textContent = 'Unreachable';
-      return;
-    }
-    const models = (data.models || []).map(m => m.name);
-    _svcPopulateDropdown('system-llm-model', models);
-    if (status) { status.className = 'svc-discover-status ok'; status.textContent = data.count + ' models'; }
-    if (llmStatus) llmStatus.innerHTML = '<span style="color:var(--green);">&#9679;</span> Connected &middot; ' + data.count + ' model(s)';
-  } catch(e) {
-    if (status) { status.className = 'svc-discover-status err'; status.textContent = 'error'; }
-    if (llmStatus) llmStatus.textContent = 'Error: ' + e.message;
-  }
-}
 
 async function _systemServicesPingStatus(svcData) {
   // Ping in-container services via /api/health/aggregate.
@@ -2416,21 +2387,29 @@ async function _cfgSaveSystemServices() {
   const resultEl = document.getElementById('cfg-save-result-system-services');
   if (resultEl) { resultEl.textContent = 'Saving\u2026'; resultEl.className = 'cfg-result'; }
 
-  // 1. Save Ollama URL + model into services (preserve non-LLM keys).
-  const urlInput = document.getElementById('system-llm-url');
-  const modelSel = document.getElementById('system-llm-model');
-  if (urlInput || modelSel) {
-    const partial = Object.assign({}, _cfgData.services || {});
-    if (!partial.llm_interactive) partial.llm_interactive = {};
-    if (!partial.llm_autonomy)    partial.llm_autonomy = {};
-    if (urlInput) {
-      partial.llm_interactive.url = urlInput.value.trim();
-      partial.llm_autonomy.url    = urlInput.value.trim();
+  // 1. Save each LLM slot's URL + model independently (preserve
+  //    non-LLM keys like tts/stt/vision/api_wrapper). Phase 6.2's
+  //    save logic shared one URL+model across interactive+autonomy
+  //    and ignored vision+triage entirely; 2026-04-28 fix lets the
+  //    operator configure each of the four LLM slots independently.
+  const partial = Object.assign({}, _cfgData.services || {});
+  let anyChanged = false;
+  for (const key of Object.keys(SERVICE_NAMES)) {
+    if (key.indexOf('llm_') !== 0) continue;
+    const urlEl   = document.getElementById('cfg-services-' + key + '-url');
+    const modelEl = document.getElementById('cfg-services-' + key + '-model');
+    if (!urlEl && !modelEl) continue;  // card not rendered
+    if (!partial[key]) partial[key] = {};
+    if (urlEl) {
+      partial[key].url = urlEl.value.trim();
+      anyChanged = true;
     }
-    if (modelSel && modelSel.value) {
-      partial.llm_interactive.model = modelSel.value;
-      partial.llm_autonomy.model    = modelSel.value;
+    if (modelEl && modelEl.value) {
+      partial[key].model = modelEl.value;
+      anyChanged = true;
     }
+  }
+  if (anyChanged) {
     try {
       const r = await fetch('/api/config/services', {
         method: 'PUT',
