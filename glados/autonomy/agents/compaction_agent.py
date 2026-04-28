@@ -121,8 +121,12 @@ class CompactionAgent(Subagent):
             estimate_tokens(messages_to_compact),
         )
 
-        summary = summarize_messages(messages_to_compact, self._llm_config)
-        facts = extract_facts(messages_to_compact, self._llm_config)
+        # summarize_messages and extract_facts route to llm_triage internally
+        # — pure classification work, no persona; the small fast triage model
+        # is the right backend regardless of self._llm_config (which targets
+        # llm_autonomy for the persona-bearing subagents).
+        summary = summarize_messages(messages_to_compact)
+        facts = extract_facts(messages_to_compact)
 
         if not summary:
             return SubagentOutput(

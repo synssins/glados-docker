@@ -39,10 +39,12 @@ def estimate_tokens(
 
 def summarize_messages(
     messages: list[dict[str, Any]],
-    llm_config: LLMConfig,
 ) -> str | None:
     """
     Use LLM to summarize a list of conversation messages.
+
+    Routes to the ``llm_triage`` service slot — pure summarization is a
+    perfect fit for the small fast triage model (no persona involvement).
 
     Returns a concise summary preserving key information.
     """
@@ -78,6 +80,7 @@ Rules:
 
     user_prompt = f"Summarize this conversation:\n\n{conversation}"
 
+    llm_config = LLMConfig.for_slot("llm_triage")
     response = llm_call(llm_config, system_prompt, user_prompt)
     if response:
         logger.debug("Summarized {} messages into summary", len(messages))
@@ -86,10 +89,12 @@ Rules:
 
 def extract_facts(
     messages: list[dict[str, Any]],
-    llm_config: LLMConfig,
 ) -> list[str]:
     """
     Use LLM to extract factual information from messages.
+
+    Routes to the ``llm_triage`` service slot — fact extraction is a
+    classification task that belongs on the small fast triage model.
 
     Returns a list of discrete facts worth remembering.
     """
@@ -146,6 +151,7 @@ Do not output "No important facts" or any other explanation — just NONE."""
 
     user_prompt = f"Extract facts from this conversation:\n\n{conversation}"
 
+    llm_config = LLMConfig.for_slot("llm_triage")
     response = llm_call(llm_config, system_prompt, user_prompt)
     if not response:
         return []

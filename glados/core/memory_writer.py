@@ -336,7 +336,11 @@ def classify_and_extract(
 
     Args:
         message: User message to evaluate
-        llm_config: LLMConfig for autonomous LLM calls
+        llm_config: Historical parameter — kept for API compatibility, but
+            no longer used. Both LLM calls now route through the
+            ``llm_triage`` service slot (small fast classifier model)
+            regardless of what the caller passes here. Pure classification
+            work; persona/quality belongs on llm_autonomy / llm_interactive.
         memory_store: MemoryStore for writing
 
     Returns:
@@ -348,11 +352,13 @@ def classify_and_extract(
     cfg = _get_config().get("passive", {})
 
     try:
-        from glados.autonomy.llm_client import llm_call
+        from glados.autonomy.llm_client import LLMConfig, llm_call
+
+        triage_config = LLMConfig.for_slot("llm_triage")
 
         # Step 1: Classify
         classifier_response = llm_call(
-            llm_config,
+            triage_config,
             system_prompt=(
                 "You are a fact classifier. Answer only 'yes' or 'no'.\n"
                 "Question: Does the following message contain a personal fact about "
@@ -372,7 +378,7 @@ def classify_and_extract(
 
         # Step 2: Extract
         extract_response = llm_call(
-            llm_config,
+            triage_config,
             system_prompt=(
                 "Extract the key personal fact from this message as a single, "
                 "clear sentence in third person (e.g. 'Alex prefers...' not 'I prefer...'). "
