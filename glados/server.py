@@ -203,11 +203,12 @@ def _init_ha_client() -> None:
         triage_cfg = LLMConfig.for_slot("llm_triage")
         ollama_url = (
             os.environ.get("DISAMBIGUATOR_OLLAMA_URL", "").strip()
-            or triage_cfg.url
+            or (triage_cfg.url or "").rstrip("/")
         )
         disambig_model = (
             os.environ.get("DISAMBIGUATOR_MODEL", "").strip()
             or triage_cfg.model
+            or "llama-3.2-1b-instruct"
         )
         # Operator's disambiguation rules YAML, optional.
         config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
