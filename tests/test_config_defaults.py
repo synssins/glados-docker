@@ -535,3 +535,80 @@ def test_auth_global_no_warning_on_default_construction() -> None:
     with _capture_warnings() as msgs:
         AuthGlobal()
     assert msgs == [], f"Expected no warnings on default construction, got: {msgs!r}"
+
+
+# ── llm_* schema rename + llm_triage slot (2026-04-28) ─────────────────
+# Schema-level rename from ``ollama_*`` to ``llm_*``. Pydantic
+# ``AliasChoices`` keeps operators' existing services.yaml files (with
+# ``ollama_*`` keys) parsing cleanly for one release; on save the file
+# is rewritten with the new names. New ``llm_triage`` slot defaults to
+# ``llama-3.2-1b-instruct`` so a fresh install routes triage subagents
+# to a small fast model out of the box.
+
+
+def test_config_loads_legacy_ollama_keys(tmp_path):
+    """Operators with services.yaml from before the rename must keep working."""
+    cfgs = tmp_path / "configs"
+    cfgs.mkdir()
+    (cfgs / "services.yaml").write_text(
+        "ollama_interactive:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: qwen3-30b-a3b\n"
+        "ollama_autonomy:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: qwen3-30b-a3b\n"
+        "ollama_vision:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: qwen2.5-vl-3b-instruct\n"
+    )
+    from glados.core.config_store import GladosConfigStore
+    store = GladosConfigStore()
+    store.load(configs_dir=cfgs)
+    assert store.services.llm_interactive.model == "qwen3-30b-a3b"
+    assert store.services.llm_autonomy.model == "qwen3-30b-a3b"
+    assert store.services.llm_vision.model == "qwen2.5-vl-3b-instruct"
+
+
+def test_config_loads_new_llm_keys(tmp_path):
+    """New on-disk shape with llm_* keys parses identically."""
+    cfgs = tmp_path / "configs"
+    cfgs.mkdir()
+    (cfgs / "services.yaml").write_text(
+        "llm_interactive:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: qwen3-30b-a3b\n"
+        "llm_triage:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: llama-3.2-1b-instruct\n"
+    )
+    from glados.core.config_store import GladosConfigStore
+    store = GladosConfigStore()
+    store.load(configs_dir=cfgs)
+    assert store.services.llm_interactive.model == "qwen3-30b-a3b"
+    assert store.services.llm_triage.model == "llama-3.2-1b-instruct"
+
+
+def test_llm_triage_default():
+    """Triage slot defaults to Llama-3.2-1B-Instruct so a fresh install
+    routes triage subagents to the small fast model out of the box."""
+    s = ServicesConfig()
+    assert s.llm_triage.model == "llama-3.2-1b-instruct"
+
+
+def test_config_save_writes_llm_keys():
+    """Round-trip: a ServicesConfig parsed from legacy ollama_* keys must
+    dump under the new llm_* names — operators' on-disk YAML gets
+    rewritten to the new schema on the next save."""
+    s = ServicesConfig.model_validate({
+        "ollama_interactive": {"url": "http://x:11434", "model": "qwen3"},
+        "ollama_autonomy": {"url": "http://x:11434", "model": "qwen3"},
+        "ollama_vision": {"url": "http://x:11434", "model": "vl"},
+    })
+    dumped = s.model_dump(exclude_none=True)
+    assert "llm_interactive" in dumped
+    assert "llm_autonomy" in dumped
+    assert "llm_vision" in dumped
+    assert "llm_triage" in dumped
+    assert "ollama_interactive" not in dumped
+    assert "ollama_autonomy" not in dumped
+    assert "ollama_vision" not in dumped

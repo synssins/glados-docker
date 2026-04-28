@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from glados.robots.config import RobotsConfig
 
@@ -330,6 +330,14 @@ class ServiceEndpoint(BaseModel):
 
 
 class ServicesConfig(BaseModel):
+    """OpenAI-shaped LLM service slots. Field names use the ``llm_*``
+    prefix; ``ollama_*`` aliases are accepted on read for one release of
+    backwards compatibility with operators' existing services.yaml.
+    On save, only the new names are emitted.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
     # TTS / STT default to the container's own api_wrapper endpoint.
     # `/v1/audio/speech` and `/v1/audio/transcriptions` are both served
     # in-process against the bundled VITS + CTC ONNX models. No external
@@ -356,14 +364,29 @@ class ServicesConfig(BaseModel):
     vision: ServiceEndpoint = ServiceEndpoint(
         url=_env("VISION_URL", "")
     )
-    ollama_interactive: ServiceEndpoint = ServiceEndpoint(
-        url=_env("OLLAMA_URL", "http://ollama:11434")
+    llm_interactive: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(
+            url=_env("OLLAMA_URL", "http://ollama:11434")
+        ),
+        validation_alias=AliasChoices("llm_interactive", "ollama_interactive"),
     )
-    ollama_autonomy: ServiceEndpoint = ServiceEndpoint(
-        url=_env("OLLAMA_AUTONOMY_URL", _env("OLLAMA_URL", "http://ollama:11434"))
+    llm_autonomy: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(
+            url=_env("OLLAMA_AUTONOMY_URL", _env("OLLAMA_URL", "http://ollama:11434"))
+        ),
+        validation_alias=AliasChoices("llm_autonomy", "ollama_autonomy"),
     )
-    ollama_vision: ServiceEndpoint = ServiceEndpoint(
-        url=_env("OLLAMA_VISION_URL", _env("OLLAMA_URL", "http://ollama:11434"))
+    llm_vision: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(
+            url=_env("OLLAMA_VISION_URL", _env("OLLAMA_URL", "http://ollama:11434"))
+        ),
+        validation_alias=AliasChoices("llm_vision", "ollama_vision"),
+    )
+    llm_triage: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(
+            url=_env("OLLAMA_URL", "http://ollama:11434"),
+            model="llama-3.2-1b-instruct",
+        ),
     )
     gladys_api: ServiceEndpoint = Field(
         default=ServiceEndpoint(url="http://localhost:8020"),
@@ -704,7 +727,7 @@ class ObserverEntityRule(BaseModel):
 class ObserverConfig(BaseModel):
     enabled: bool = True
     entity_whitelist: list[ObserverEntityRule] = []
-    # Empty default → consumers resolve via cfg.service_model("ollama_autonomy").
+    # Empty default → consumers resolve via cfg.service_model("llm_autonomy").
     # "Nothing hardcoded" principle: operator's LLM & Services page selection
     # is the single source of truth for every LLM consumer.
     judgment_model: str = ""
