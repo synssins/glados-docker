@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 from glados.core.url_utils import compose_endpoint, strip_url_path
+from glados.webui.tts_ui import _validate_llm_urls
 
 
 class TestStripUrlPath:
@@ -150,3 +151,80 @@ class TestAutonomyLLMClientDispatchesAtChatPath:
         with patch("glados.autonomy.llm_client.requests.post", side_effect=_capture):
             llm_call(cfg, "sys", "user")
         assert captured["url"] == "http://host:11434/v1/chat/completions"
+
+
+class TestValidateLlmUrls:
+    """Save-side validator for the four LLM URL slots. Operator's rule:
+    ``scheme + port — REQUIRED``. Empty string means "not configured"
+    and is allowed."""
+
+    @pytest.mark.parametrize("url", [
+        "http://host:11434",
+        "https://host.example.com:8080",
+        "http://192.168.1.75:11434",
+    ])
+    def test_accepts_scheme_host_port(self, url: str) -> None:
+        payload = {"llm_interactive": {"url": url}}
+        assert _validate_llm_urls(payload) is None
+
+    def test_empty_url_allowed_means_not_configured(self) -> None:
+        payload = {"llm_interactive": {"url": ""}}
+        assert _validate_llm_urls(payload) is None
+
+    def test_whitespace_only_url_allowed(self) -> None:
+        payload = {"llm_interactive": {"url": "   "}}
+        assert _validate_llm_urls(payload) is None
+
+    def test_rejects_missing_port(self) -> None:
+        payload = {"llm_interactive": {"url": "http://host"}}
+        err = _validate_llm_urls(payload)
+        assert err is not None
+        assert "port" in err.lower()
+        assert "llm_interactive" in err
+
+    def test_rejects_missing_port_https(self) -> None:
+        payload = {"llm_autonomy": {"url": "https://host.example.com"}}
+        err = _validate_llm_urls(payload)
+        assert err is not None
+        assert "port" in err.lower()
+        assert "llm_autonomy" in err
+
+    def test_rejects_missing_scheme(self) -> None:
+        # urlparse reads "host:11434" as scheme="host" with empty netloc;
+        # the existing scheme/netloc check already rejects this. We just
+        # confirm the new error wording still flags it.
+        payload = {"llm_triage": {"url": "host:11434"}}
+        err = _validate_llm_urls(payload)
+        assert err is not None
+        assert "llm_triage" in err
+
+    def test_rejects_url_with_path_when_no_port(self) -> None:
+        payload = {"llm_vision": {"url": "http://host/v1/chat/completions"}}
+        err = _validate_llm_urls(payload)
+        assert err is not None
+        assert "port" in err.lower()
+
+    def test_accepts_url_with_path_if_port_present(self) -> None:
+        # The validator only enforces shape; ``_ollama_chat_url`` strips
+        # the path on Save. A pasted full URL with a port is still
+        # well-formed for validation purposes.
+        payload = {"llm_vision": {"url": "http://host:11434/v1/chat/completions"}}
+        assert _validate_llm_urls(payload) is None
+
+    def test_non_dict_payload_passes(self) -> None:
+        assert _validate_llm_urls(None) is None
+        assert _validate_llm_urls("not a dict") is None
+
+    def test_non_llm_slots_ignored(self) -> None:
+        # TTS/STT/vision-non-LLM slots have their own validation paths.
+        payload = {"tts": {"url": "http://host"}, "stt": {"url": "http://host"}}
+        assert _validate_llm_urls(payload) is None
+
+    def test_error_message_format(self) -> None:
+        payload = {"llm_interactive": {"url": "http://host"}}
+        err = _validate_llm_urls(payload)
+        assert err is not None
+        # Operator-facing wording — be explicit about the shape.
+        assert "http://host:port" in err
+        assert "scheme" in err.lower()
+        assert "port" in err.lower()

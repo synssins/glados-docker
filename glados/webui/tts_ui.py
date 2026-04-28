@@ -1195,8 +1195,8 @@ def _strip_chat_suffix(url: str) -> str:
 def _validate_llm_urls(services_payload: Any) -> str | None:
     """Minimal sanity check for LLM URL fields on Save.
 
-    Operators paste ``http(s)://host[:port]``; we accept anything with a
-    scheme + host. Empty values are allowed (skip / clear the slot).
+    Operators paste ``http(s)://host:port``; scheme AND port are both
+    required. Empty values are allowed (skip / clear the slot).
     Reachability is not checked here — that's Discover's job.
 
     Returns an error message on failure, ``None`` on success. Only fires
@@ -1207,6 +1207,9 @@ def _validate_llm_urls(services_payload: Any) -> str | None:
         return None
     from urllib.parse import urlparse
     _llm_slots = ("llm_interactive", "llm_autonomy", "llm_triage", "llm_vision")
+    _err = (
+        "expected http://host:port (scheme + port required, no path)"
+    )
     for slot in _llm_slots:
         ep = services_payload.get(slot)
         if not isinstance(ep, dict):
@@ -1214,12 +1217,18 @@ def _validate_llm_urls(services_payload: Any) -> str | None:
         u = (ep.get("url") or "").strip()
         if not u:
             continue
-        parsed = urlparse(u)
+        try:
+            parsed = urlparse(u)
+        except ValueError:
+            return f"Invalid {slot} URL {u!r}: {_err}."
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            return (
-                f"Invalid {slot} URL {u!r}: expected scheme://host[:port] "
-                f"(e.g. http://host:port). Paths are added automatically."
-            )
+            return f"Invalid {slot} URL {u!r}: {_err}."
+        try:
+            port = parsed.port
+        except ValueError:
+            return f"Invalid {slot} URL {u!r}: {_err}."
+        if port is None:
+            return f"Invalid {slot} URL {u!r}: {_err}."
     return None
 
 
