@@ -115,11 +115,11 @@ class TestOllamaAsChatUrl:
 class TestReconcileOverrides:
     def test_model_override_fires_when_services_disagrees(self, configs_dir: Path) -> None:
         _write_services(configs_dir, {
-            "ollama_interactive": {
+            "llm_interactive": {
                 "url": "http://10.0.0.10:11434",
                 "model": "qwen3:14b",
             },
-            "ollama_autonomy": {
+            "llm_autonomy": {
                 "url": "http://10.0.0.10:11434",
                 "model": "qwen3:14b",
             },
@@ -134,8 +134,8 @@ class TestReconcileOverrides:
 
     def test_completion_url_override_fires_when_services_disagrees(self, configs_dir: Path) -> None:
         _write_services(configs_dir, {
-            "ollama_interactive": {"url": "http://10.0.0.10:11436"},
-            "ollama_autonomy":    {"url": "http://10.0.0.10:11436"},
+            "llm_interactive": {"url": "http://10.0.0.10:11436"},
+            "llm_autonomy":    {"url": "http://10.0.0.10:11436"},
         })
         raw = _full_glados_raw()
         with _capture_warnings() as warnings:
@@ -147,11 +147,11 @@ class TestReconcileOverrides:
 
     def test_no_override_when_services_match_glados(self, configs_dir: Path) -> None:
         _write_services(configs_dir, {
-            "ollama_interactive": {
+            "llm_interactive": {
                 "url": "http://10.0.0.10:11434",
                 "model": "qwen3:8b",
             },
-            "ollama_autonomy": {
+            "llm_autonomy": {
                 "url": "http://10.0.0.10:11434",
                 "model": "qwen3:8b",
             },
@@ -169,7 +169,7 @@ class TestReconcileOverrides:
         """A half-configured services.yaml with URL but no model must not
         overwrite a working llm_model with an empty string."""
         _write_services(configs_dir, {
-            "ollama_interactive": {"url": "http://10.0.0.10:11434"},
+            "llm_interactive": {"url": "http://10.0.0.10:11434"},
         })
         raw = _full_glados_raw()
         out = engine_mod._reconcile_glados_with_services(raw)
@@ -194,8 +194,8 @@ class TestReconcileOverrides:
 
     def test_missing_autonomy_block_tolerated(self, configs_dir: Path) -> None:
         _write_services(configs_dir, {
-            "ollama_interactive": {"url": "http://host:11434", "model": "qwen3:14b"},
-            "ollama_autonomy":    {"url": "http://host:11434", "model": "qwen3:14b"},
+            "llm_interactive": {"url": "http://host:11434", "model": "qwen3:14b"},
+            "llm_autonomy":    {"url": "http://host:11434", "model": "qwen3:14b"},
         })
         raw = {
             "llm_model": "qwen3:8b",
@@ -210,8 +210,8 @@ class TestReconcileOverrides:
         When they point at the same host they must compare equal — no
         spurious override / warning."""
         _write_services(configs_dir, {
-            "ollama_interactive": {"url": "http://10.0.0.10:11434"},
-            "ollama_autonomy":    {"url": "http://10.0.0.10:11434"},
+            "llm_interactive": {"url": "http://10.0.0.10:11434"},
+            "llm_autonomy":    {"url": "http://10.0.0.10:11434"},
         })
         raw = {
             "llm_model": "qwen3:8b",

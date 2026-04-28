@@ -296,9 +296,9 @@ const SERVICE_NAMES = {
   stt: 'Speech-to-Text',
   api_wrapper: 'API Wrapper',
   vision: 'Vision Service',
-  ollama_interactive: 'Ollama Interactive',
-  ollama_autonomy: 'Ollama Autonomy',
-  ollama_vision: 'Ollama Vision',
+  llm_interactive: 'Ollama Interactive',
+  llm_autonomy: 'Ollama Autonomy',
+  llm_vision: 'Ollama Vision',
 };
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -2220,7 +2220,7 @@ async function loadSystemServices() {
   const t = ((_cfgData.global || {}).tuning) || {};
 
   // Ollama interactive is the primary LLM endpoint shown.
-  const ollama = svc.ollama_interactive || {};
+  const ollama = svc.llm_interactive || {};
   const vision = svc.vision || {};
   const visionConfigured = !!(vision.url || '').trim();
 
@@ -2420,15 +2420,15 @@ async function _cfgSaveSystemServices() {
   const modelSel = document.getElementById('system-llm-model');
   if (urlInput || modelSel) {
     const partial = Object.assign({}, _cfgData.services || {});
-    if (!partial.ollama_interactive) partial.ollama_interactive = {};
-    if (!partial.ollama_autonomy)    partial.ollama_autonomy = {};
+    if (!partial.llm_interactive) partial.llm_interactive = {};
+    if (!partial.llm_autonomy)    partial.llm_autonomy = {};
     if (urlInput) {
-      partial.ollama_interactive.url = urlInput.value.trim();
-      partial.ollama_autonomy.url    = urlInput.value.trim();
+      partial.llm_interactive.url = urlInput.value.trim();
+      partial.llm_autonomy.url    = urlInput.value.trim();
     }
     if (modelSel && modelSel.value) {
-      partial.ollama_interactive.model = modelSel.value;
-      partial.ollama_autonomy.model    = modelSel.value;
+      partial.llm_interactive.model = modelSel.value;
+      partial.llm_autonomy.model    = modelSel.value;
     }
     try {
       const r = await fetch('/api/config/services', {

@@ -200,15 +200,15 @@ def _init_ha_client() -> None:
         ollama_url = (
             os.environ.get("DISAMBIGUATOR_OLLAMA_URL", "").strip()
             or os.environ.get("OLLAMA_AUTONOMY_URL", "").strip()
-            or cfg.service_url("ollama_autonomy")
+            or cfg.service_url("llm_autonomy")
         )
         # Model source of truth: the Ollama Autonomy row on the LLM &
-        # Services page (services.yaml.ollama_autonomy.model). Hot-reload
+        # Services page (services.yaml.llm_autonomy.model). Hot-reload
         # picks up changes. Env var DISAMBIGUATOR_MODEL is kept as an
         # explicit override for operators who want the disambiguator on
         # a different model than everything else.
         disambig_model = os.environ.get("DISAMBIGUATOR_MODEL", "").strip() \
-            or cfg.service_model("ollama_autonomy", fallback="qwen3:8b")
+            or cfg.service_model("llm_autonomy", fallback="qwen3:8b")
         # Operator's disambiguation rules YAML, optional.
         config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
         rules = load_rules_from_yaml(
@@ -311,7 +311,7 @@ def _init_ha_client() -> None:
         # override for operators who want to pin the rewriter to a
         # small/fast model independent of the chat / autonomy choice.
         rewriter_model = os.environ.get("REWRITER_MODEL", "").strip() \
-            or cfg.service_model("ollama_autonomy", fallback="qwen3:8b")
+            or cfg.service_model("llm_autonomy", fallback="qwen3:8b")
         rewriter = PersonaRewriter(ollama_url=ollama_url, model=rewriter_model)
         init_rewriter(rewriter)
         logger.info("Persona rewriter ready; model={}", rewriter_model)

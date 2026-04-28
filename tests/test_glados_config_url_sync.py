@@ -88,8 +88,8 @@ class TestSyncRewrites:
         """Mirror the logic in _sync_glados_config_urls without the
         IO bits. Returns the mutated cfg for assertion."""
         glados = cfg.get("Glados") or {}
-        interactive = ((services_payload.get("ollama_interactive") or {}).get("url") or "").strip()
-        autonomy = ((services_payload.get("ollama_autonomy") or {}).get("url") or "").strip()
+        interactive = ((services_payload.get("llm_interactive") or {}).get("url") or "").strip()
+        autonomy = ((services_payload.get("llm_autonomy") or {}).get("url") or "").strip()
         if interactive:
             glados["completion_url"] = _ollama_chat_url(interactive)
         if autonomy:
@@ -101,22 +101,22 @@ class TestSyncRewrites:
     def test_interactive_change_rewrites_chat_url(self) -> None:
         cfg = self._fake_glados_config()
         self._apply_sync(cfg, {
-            "ollama_interactive": {"url": "http://10.0.0.10:11436"},
+            "llm_interactive": {"url": "http://10.0.0.10:11436"},
         })
         assert cfg["Glados"]["completion_url"] == "http://10.0.0.10:11436/api/chat"
 
     def test_autonomy_change_rewrites_autonomy_url(self) -> None:
         cfg = self._fake_glados_config()
         self._apply_sync(cfg, {
-            "ollama_autonomy": {"url": "http://t4-host:11436"},
+            "llm_autonomy": {"url": "http://t4-host:11436"},
         })
         assert cfg["Glados"]["autonomy"]["completion_url"] == "http://t4-host:11436/api/chat"
 
     def test_both_rewrite_independently(self) -> None:
         cfg = self._fake_glados_config()
         self._apply_sync(cfg, {
-            "ollama_interactive": {"url": "http://host-a:11434"},
-            "ollama_autonomy":    {"url": "http://host-b:11436"},
+            "llm_interactive": {"url": "http://host-a:11434"},
+            "llm_autonomy":    {"url": "http://host-b:11436"},
         })
         assert cfg["Glados"]["completion_url"] == "http://host-a:11434/api/chat"
         assert cfg["Glados"]["autonomy"]["completion_url"] == "http://host-b:11436/api/chat"
@@ -124,7 +124,7 @@ class TestSyncRewrites:
     def test_empty_url_leaves_existing_alone(self) -> None:
         cfg = self._fake_glados_config()
         before = cfg["Glados"]["completion_url"]
-        self._apply_sync(cfg, {"ollama_interactive": {"url": ""}})
+        self._apply_sync(cfg, {"llm_interactive": {"url": ""}})
         assert cfg["Glados"]["completion_url"] == before
 
     def test_missing_service_keys_leave_config_alone(self) -> None:

@@ -19,7 +19,7 @@ class LLMConfig:
     """Configuration for LLM API calls.
 
     `model` is intentionally required (no default). Callers resolve it
-    from cfg.service_model("ollama_autonomy") or equivalent. Hard-coded
+    from cfg.service_model("llm_autonomy") or equivalent. Hard-coded
     defaults silently route to unintended backends; empty-required fails
     loud at construction time instead.
     """

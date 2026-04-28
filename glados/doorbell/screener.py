@@ -562,11 +562,11 @@ class DoorbellScreener:
         llm_cfg = self._config.get("llm", {})
         llm_port = llm_cfg.get("port")
         explicit_model = (llm_cfg.get("model") or "").strip()
-        model = explicit_model or store_cfg.service_model("ollama_autonomy")
+        model = explicit_model or store_cfg.service_model("llm_autonomy")
         if llm_port:
             ollama_url = f"http://localhost:{llm_port}"
         else:
-            ollama_url = store_cfg.service_url("ollama_autonomy")
+            ollama_url = store_cfg.service_url("llm_autonomy")
 
         # Build conversation history for context
         history_section = ""

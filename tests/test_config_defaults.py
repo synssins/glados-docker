@@ -75,9 +75,9 @@ def test_services_defaults_self_contained() -> None:
     Ollama defaults remain Docker service names (external LLM is still
     a required dependency). Vision defaults to empty (optional)."""
     s = ServicesConfig()
-    assert s.ollama_interactive.url == "http://ollama:11434"
-    assert s.ollama_autonomy.url == "http://ollama:11434"
-    assert s.ollama_vision.url == "http://ollama:11434"
+    assert s.llm_interactive.url == "http://ollama:11434"
+    assert s.llm_autonomy.url == "http://ollama:11434"
+    assert s.llm_vision.url == "http://ollama:11434"
     assert s.tts.url == "http://localhost:8015"
     assert s.stt.url == "http://localhost:8015"
     assert s.vision.url == ""
@@ -190,9 +190,9 @@ def test_services_yaml_url_still_wins_over_default() -> None:
     # legacy host-specific URLs in services.yaml keep working silently. A
     # later release may flip the precedence once YAML URLs are fully retired.
     s = ServicesConfig.model_validate({
-        "ollama_interactive": {"url": "http://10.0.0.10:11434"},
+        "llm_interactive": {"url": "http://10.0.0.10:11434"},
     })
-    assert s.ollama_interactive.url == "http://10.0.0.10:11434"
+    assert s.llm_interactive.url == "http://10.0.0.10:11434"
     # Untouched fields still resolve from pydantic defaults (self-contained).
     assert s.tts.url == "http://localhost:8015"
 
@@ -204,10 +204,10 @@ def test_existing_yaml_with_full_urls_still_parses() -> None:
     # Operators upgrading from pre-Phase-6 configs have hardcoded IPs
     # in services.yaml / global.yaml. Those must continue to work.
     legacy_services = ServicesConfig.model_validate({
-        "ollama_interactive": {"url": "http://10.0.0.10:11434"},
+        "llm_interactive": {"url": "http://10.0.0.10:11434"},
         "tts": {"url": "http://10.0.0.10:5050", "voice": "glados"},
     })
-    assert legacy_services.ollama_interactive.url == "http://10.0.0.10:11434"
+    assert legacy_services.llm_interactive.url == "http://10.0.0.10:11434"
     assert legacy_services.tts.url == "http://10.0.0.10:5050"
 
     legacy_global = GlobalConfig.model_validate({

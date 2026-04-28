@@ -68,12 +68,12 @@ def _svc_vision() -> str:
     return _cfg.service_url("vision")
 
 def _svc_ollama_generate() -> str:
-    return _cfg.service_url("ollama_interactive") + "/api/generate"
+    return _cfg.service_url("llm_interactive") + "/api/generate"
 
 def _svc_ollama_model() -> str:
     # Read the operator-selected model from services.yaml; fall back to
     # qwen3:8b (the current Phase 8.0 default) if unset.
-    return (_cfg.services.ollama_interactive.model or "qwen3:8b").strip()
+    return (_cfg.services.llm_interactive.model or "qwen3:8b").strip()
 
 OUTPUT_DIR = Path(_cfg.audio.tts_ui_output_dir)
 CHAT_AUDIO_DIR = Path(_cfg.audio.chat_audio_dir)
@@ -4567,13 +4567,13 @@ class Handler(BaseHTTPRequestHandler):
         were 504s on URL mismatch and 404s on model-name mismatch.
 
         Fields synced:
-          services.ollama_interactive.url   -> Glados.completion_url
-          services.ollama_interactive.model -> Glados.llm_model
-          services.ollama_autonomy.url      -> Glados.autonomy.completion_url
-          services.ollama_autonomy.model    -> Glados.autonomy.llm_model
+          services.llm_interactive.url   -> Glados.completion_url
+          services.llm_interactive.model -> Glados.llm_model
+          services.llm_autonomy.url      -> Glados.autonomy.completion_url
+          services.llm_autonomy.model    -> Glados.autonomy.llm_model
         """
-        interactive = services_payload.get("ollama_interactive") or {}
-        autonomy = services_payload.get("ollama_autonomy") or {}
+        interactive = services_payload.get("llm_interactive") or {}
+        autonomy = services_payload.get("llm_autonomy") or {}
         interactive_url = (interactive.get("url") or "").strip()
         interactive_model = (interactive.get("model") or "").strip()
         autonomy_url = (autonomy.get("url") or "").strip()
