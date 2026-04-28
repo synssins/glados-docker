@@ -296,9 +296,10 @@ const SERVICE_NAMES = {
   stt: 'Speech-to-Text',
   api_wrapper: 'API Wrapper',
   vision: 'Vision Service',
-  llm_interactive: 'Ollama Interactive',
-  llm_autonomy: 'Ollama Autonomy',
-  llm_vision: 'Ollama Vision',
+  llm_interactive: 'LLM (Interactive)',
+  llm_autonomy: 'LLM (Autonomy)',
+  llm_triage: 'LLM (Triage)',
+  llm_vision: 'LLM (Vision)',
 };
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
