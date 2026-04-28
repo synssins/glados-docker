@@ -9,6 +9,7 @@ HTML = r"""
 <!-- CONFIGURATION > USERS (Task 7b)                                  -->
 <!-- ================================================================ -->
 <div id="tab-config-users" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="usersAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -44,6 +45,7 @@ HTML = r"""
       </table>
     </div>
   </div>
+</div>
 </div>
 </div>
 
@@ -135,6 +137,15 @@ let _usersData = [];
 let _usersEditTarget = null;
 let _usersResetTarget = null;
 
+/* ── Icon SVGs ─────────────────────────────────────────────────────
+   _PENCIL_SVG and _TRASH_SVG are declared in /static/ui.js (shared
+   across Memory + Users + future pages). Both inline-script blocks
+   and the external script share the same global window scope, so
+   re-declaring `const` here would fire a parse SyntaxError that
+   aborts the entire SPA. _DISABLE_SVG is the one icon only Users
+   uses; it lives in ui.js too — see _DISABLE_SVG declaration
+   alongside the other shared icons. */
+
 /* ── Load & render ────────────────────────────────────────────────── */
 async function usersLoadAll() {
   const body = document.getElementById('usersTableBody');
@@ -180,10 +191,9 @@ function _usersRenderTable() {
       <td style="padding:8px 10px;">${status}</td>
       <td style="padding:8px 10px;color:var(--text-dim);">${escHtml(lastLogin)}</td>
       <td style="padding:8px 10px;text-align:right;">
-        <button class="btn-small" onclick="usersShowEditModal(${escAttr(JSON.stringify(u.username))})" style="margin-left:4px;">Edit</button>
-        <button class="btn-small" onclick="usersShowResetModal(${escAttr(JSON.stringify(u.username))})" style="margin-left:4px;">Reset PW</button>
-        <button class="btn-small" onclick="usersConfirmDisable(${escAttr(JSON.stringify(u.username))},${u.disabled?'false':'true'})" style="margin-left:4px;background:#6c5c00;">${u.disabled?'Enable':'Disable'}</button>
-        <button class="btn-small" onclick="usersConfirmDelete(${escAttr(JSON.stringify(u.username))})" style="margin-left:4px;background:#7a1f1f;">Delete</button>
+        <button class="ico-btn" title="Edit" onclick="usersShowEditModal(${escAttr(JSON.stringify(u.username))})">${_PENCIL_SVG}</button>
+        <button class="ico-btn ${u.disabled?'danger':''}" title="${u.disabled?'Enable':'Disable'}" onclick="usersConfirmDisable(${escAttr(JSON.stringify(u.username))},${u.disabled?'false':'true'})">${_DISABLE_SVG}</button>
+        <button class="ico-btn danger" title="Delete" onclick="usersConfirmDelete(${escAttr(JSON.stringify(u.username))})">${_TRASH_SVG}</button>
       </td>
     </tr>`;
   }).join('');

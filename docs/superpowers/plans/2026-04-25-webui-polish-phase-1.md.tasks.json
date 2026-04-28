@@ -4,58 +4,58 @@
     {
       "id": 0,
       "subject": "Task 0: Run UI polish audit",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Produce docs/ui-polish-audit.md — a single ranked finding catalog covering visual, structural, and functional issues across the WebUI.\n\n**Files:**\n- Create: docs/ui-polish-audit.md\n\n**Acceptance Criteria:**\n- File exists with sections: Visual / Structural / Functional / Per-page summary\n- Each finding tagged P0/P1/P2 with one-line rationale\n- Each finding routed to chunk 4a-4f or Page-<name>\n- Layout-shift root cause explicitly identified\n- Sections-with-no-settings inventory enumerated\n- Committed\n\n**Verify:** wc -l docs/ui-polish-audit.md > 100\n\n```json:metadata\n{\"files\": [\"docs/ui-polish-audit.md\"], \"verifyCommand\": \"git log -1 docs/ui-polish-audit.md && wc -l docs/ui-polish-audit.md\", \"acceptanceCriteria\": [\"file exists with required sections\", \"all findings tagged P0/P1/P2\", \"all findings routed to chunk or Page\", \"layout-shift root cause identified\", \"sections-with-no-settings inventoried\"]}\n```"
     },
     {
       "id": 1,
       "subject": "Task 1: .page-shell wrapper foundation",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0],
       "description": "**Goal:** Single CSS container that every page renders inside. Layout-shift bug closed at source.\n\n**Files:**\n- Modify: glados/webui/static/style.css\n- Modify: glados/webui/pages/_shell.py:91\n- Modify: glados/webui/pages/*.py (every per-page module)\n- Modify: glados/webui/static/ui.js (every JS render function)\n\n**Acceptance Criteria:**\n- .page-shell defined with max-width, padding, grid\n- Every page renders inside exactly one .page-shell\n- Zero layout shift between Configuration sub-pages (DevTools verified)\n- No regression in .tab-content selector\n\n**Verify:** pytest tests/ -k webui -q && visual cycle through Configuration sub-pages\n\n```json:metadata\n{\"files\": [\"glados/webui/static/style.css\", \"glados/webui/pages/_shell.py\", \"glados/webui/pages/chat.py\", \"glados/webui/pages/tts_generator.py\", \"glados/webui/pages/system.py\", \"glados/webui/pages/integrations.py\", \"glados/webui/pages/memory.py\", \"glados/webui/pages/logs.py\", \"glados/webui/pages/users.py\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"pytest tests/ -k webui -q\", \"acceptanceCriteria\": [\".page-shell defined in style.css\", \"every page wrapped in .page-shell\", \"zero layout shift between Configuration sub-pages\", \"webui tests pass\"]}\n```"
     },
     {
       "id": 2,
       "subject": "Task 2: Brand mark font fix",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1],
       "description": "**Goal:** Sidebar 'GLaDOS · CONTROL' switches from Major Mono Display to JetBrains Mono.\n\n**Files:**\n- Modify: glados/webui/static/style.css:111-123\n- Modify: glados/webui/pages/_shell.py:24-28\n\n**Acceptance Criteria:**\n- .sidebar-brand uses var(--font-mono)\n- letter-spacing 0.06em, font-weight 700, size 0.85rem\n- Markup reads 'GLaDOS · CONTROL' with brand-sep + brand-dim spans\n- Major Mono Display only on page H1 rules\n\n**Verify:** grep -n 'var(--font-display)' glados/webui/static/style.css → only H1 rules remain\n\n```json:metadata\n{\"files\": [\"glados/webui/static/style.css\", \"glados/webui/pages/_shell.py\"], \"verifyCommand\": \"grep -n 'var(--font-display)' glados/webui/static/style.css\", \"acceptanceCriteria\": [\".sidebar-brand uses --font-mono\", \"correct letter-spacing and weight\", \"markup updated with brand-sep/brand-dim\", \"Major Mono Display reserved for page H1\"]}\n```"
     },
     {
       "id": 3,
       "subject": "Task 3: Status dot live aggregate",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1],
       "description": "**Goal:** Top-left status dot reflects /health aggregate when authed, grey when unauth, hidden on /setup. Tooltip enumerates per-service health.\n\n**Files:**\n- Create: tests/test_health_aggregate.py\n- Modify: glados/webui/tts_ui.py (add /api/health/aggregate)\n- Modify: glados/webui/static/ui.js (updateEngineStatus)\n- Modify: glados/webui/static/style.css:125-133 (add .degraded, .unauth)\n\n**Acceptance Criteria:**\n- GET /api/health/aggregate returns {overall, services} structure\n- Auth required for per-service detail; unauth gets {overall: 'unauth'}\n- Dot CSS classes: running/degraded/stopping/unauth\n- Hidden on /setup\n- Polls every 30s when authed\n- Tooltip lists services\n\n**Verify:** pytest tests/test_health_aggregate.py -v\n\n```json:metadata\n{\"files\": [\"tests/test_health_aggregate.py\", \"glados/webui/tts_ui.py\", \"glados/webui/static/ui.js\", \"glados/webui/static/style.css\"], \"verifyCommand\": \"pytest tests/test_health_aggregate.py -v\", \"acceptanceCriteria\": [\"endpoint returns correct shape\", \"unauth returns overall:unauth only\", \"dot reflects worst-of state\", \"tooltip enumerates services\", \"hidden on /setup\"]}\n```"
     },
     {
       "id": 4,
       "subject": "Task 4: Account cluster rebuild",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1],
       "description": "**Goal:** Replace boxed Account block with plain sidebar-row + click-to-open dropdown (Change Password / Sessions / Sign out).\n\n**Files:**\n- Modify: glados/webui/pages/_shell.py:56-73\n- Modify: glados/webui/static/style.css:180-227\n- Modify: glados/webui/static/ui.js (updateAuthUI, toggleAccountMenu)\n\n**Acceptance Criteria:**\n- No #sidebarAccount box wrapper; row matches .nav-item affordance\n- No purple emoji icon (&#128100; removed)\n- Click toggles .account-menu upward with 3 items\n- Sign out moved into dropdown\n- Outside-click closes menu\n- Sign in (unauth) is single sidebar-row, not button\n\n**Verify:** Visual verification via preview MCP\n\n```json:metadata\n{\"files\": [\"glados/webui/pages/_shell.py\", \"glados/webui/static/style.css\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"# manual visual via preview MCP\", \"acceptanceCriteria\": [\"box wrapper removed\", \"emoji icon removed\", \"dropdown opens upward with 3 items\", \"sign out in dropdown\", \"outside-click closes\", \"unauth shows sidebar-row sign-in\"]}\n```"
     },
     {
       "id": 5,
       "subject": "Task 5: Login page rebuild",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [2],
       "description": "**Goal:** Replace bootstrap-styled login with bare-canvas + telemetry-strip variant (operator approved B).\n\n**Files:**\n- Modify: glados/webui/tts_ui.py (LOGIN_HTML at ~line 752, add /api/health/public)\n- Modify: glados/webui/static/style.css (.login-* classes)\n\n**Acceptance Criteria:**\n- Renders on --bg-dark canvas, no card\n- Brand mark JetBrains Mono\n- Telemetry strip with /health/public probe\n- Inputs use --bg-input + --border-default\n- Custom mono stay-signed-in checkbox\n- Submit button outline orange (warning-light)\n- Error block uses --red, mono caps\n\n**Verify:** Visual match to mockup B at /login\n\n```json:metadata\n{\"files\": [\"glados/webui/tts_ui.py\", \"glados/webui/static/style.css\"], \"verifyCommand\": \"pytest tests/ -k login -q\", \"acceptanceCriteria\": [\"bare canvas no card\", \"telemetry strip on login\", \"design-system inputs\", \"outline orange button\", \"red mono error block\"]}\n```"
     },
     {
       "id": 6,
       "subject": "Task 6: Token sweep (mechanical, post-audit)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [0, 1, 2, 3, 4, 5],
       "description": "**Goal:** Replace --text/--text-dim with four-tier --fg-*; replace #3a3a42 borders with rgba --border-*; normalize off-grid spacing; purge drop-shadows.\n\n**Files:**\n- Modify: glados/webui/static/style.css (broad)\n- Modify: glados/webui/static/ui.js (any inline styles)\n\n**Acceptance Criteria:**\n- 0 var(--text\\b) in rule bodies\n- 0 #3a3a42 in rule bodies\n- 0 box-shadow declarations except 'none'\n- All numeric values use --sp-* / 0 / 100% / auto / 100vh / em\n- Tests pass\n\n**Verify:** grep -nE 'var\\(--text\\b' glados/webui/static/style.css; grep -nE '#3a3a42' glados/webui/static/style.css; pytest tests/ -k webui -q\n\n```json:metadata\n{\"files\": [\"glados/webui/static/style.css\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"grep -nE 'var\\\\(--text\\\\b' glados/webui/static/style.css glados/webui/static/ui.js && grep -nE '#3a3a42' glados/webui/static/style.css\", \"acceptanceCriteria\": [\"--text/--text-dim swept\", \"#3a3a42 swept\", \"box-shadow purged\", \"spacing tokenized\", \"tests pass\"]}\n```"
     },
     {
       "id": 7,
       "subject": "Task 7: TTS Generator redesign (Variant A)",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [1, 6],
       "description": "**Goal:** Apply operator-approved Variant A: stroke icons, segmented mode pill, persona/format/attitude dropdowns removed, pronunciation overrides applied, telemetry strip.\n\n**Files:**\n- Modify: glados/webui/pages/tts_generator.py (full HTML rewrite)\n- Modify: glados/webui/static/style.css (.tts-seg, .telemetry-strip, .ico-btn)\n- Modify: glados/webui/static/ui.js (renderTTSFileList, ttsGenerate, _ttsSwitchMode)\n- Modify: glados/api/server.py (/api/generate applies pronunciation)\n- Create: tests/test_tts_generator_pronunciation.py\n\n**Acceptance Criteria:**\n- No voiceSelect/formatSelect/attitudeSelect in HTML\n- Mode toggle uses .tts-seg segmented pill\n- Telemetry strip with MODE/PERSONA/FORMAT/PIPER\n- File rows 28-32px tall, 22px icon buttons, no permanent red\n- /api/generate applies pronunciation overrides\n- Visual matches mockup\n\n**Verify:** pytest tests/test_tts_generator_pronunciation.py -v && grep -nE 'id=\"(voiceSelect|formatSelect|attitudeSelect)\"' glados/webui/pages/tts_generator.py\n\n```json:metadata\n{\"files\": [\"tests/test_tts_generator_pronunciation.py\", \"glados/api/server.py\", \"glados/webui/pages/tts_generator.py\", \"glados/webui/static/style.css\", \"glados/webui/static/ui.js\"], \"verifyCommand\": \"pytest tests/test_tts_generator_pronunciation.py -v\", \"acceptanceCriteria\": [\"dropdowns removed\", \"segmented mode pill\", \"telemetry strip on page\", \"icon buttons in file rows\", \"pronunciation overrides applied\", \"matches Variant A mockup\"]}\n```"
     }
   ],
-  "lastUpdated": "2026-04-25T13:08:00Z"
+  "lastUpdated": "2026-04-25T14:30:00Z"
 }

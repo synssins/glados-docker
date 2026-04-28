@@ -1,0 +1,61 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-28-autonomy-triage-split.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 0: Add llm_triage slot to ServicesConfig with ollama_* legacy aliases",
+      "status": "completed",
+      "description": "**Goal:** Schema-level rename from ollama_* to llm_*; add llm_triage slot; Pydantic AliasChoices keeps operators' existing services.yaml parsing for one release.\n\n**Files:**\n- Modify: glados/core/config_store.py:332-365\n- Modify: glados/core/config_store.py:707 (docstring)\n- Modify: tests/test_config_defaults.py\n\n**Acceptance Criteria:**\n- ServicesConfig exposes llm_interactive, llm_autonomy, llm_vision, llm_triage\n- Each field aliases its old ollama_* name on read\n- llm_triage.model defaults to llama-3.2-1b-instruct\n- Save round-trip emits new key names\n- 4 new tests pass (legacy alias, new keys, default triage, save format)\n- Note: full suite intentionally red until Task 1\n\n**Verify:** `python -m pytest tests/test_config_defaults.py -v`\n\n```json:metadata\n{\"files\": [\"glados/core/config_store.py\", \"tests/test_config_defaults.py\"], \"verifyCommand\": \"python -m pytest tests/test_config_defaults.py -v\", \"acceptanceCriteria\": [\"llm_triage slot in ServicesConfig\", \"ollama_* aliases still parse\", \"save emits llm_* keys\", \"3 new tests pass\"]}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 1: Migrate engine + webui call sites to services.llm_*",
+      "status": "completed",
+      "blockedBy": [0],
+      "description": "**Goal:** Sweep all svcs.ollama_* references in glados/ to svcs.llm_*; restore full suite to green.\n\n**Files:**\n- Modify: glados/core/engine.py:164,193-230\n- Modify: glados/webui/tts_ui.py:76,4565-4610\n- Modify: tests/test_glados_services_override.py\n- Modify: tests/test_glados_config_url_sync.py\n\n**Acceptance Criteria:**\n- grep returns ZERO svcs.ollama_* matches in glados/\n- Engine reconciler logs reference services.llm_interactive etc.\n- Existing tests verify same behaviour under new field names\n- Full pytest suite green\n\n**Verify:** `python -m pytest -q`\n\n```json:metadata\n{\"files\": [\"glados/core/engine.py\", \"glados/webui/tts_ui.py\", \"tests/test_glados_services_override.py\", \"tests/test_glados_config_url_sync.py\"], \"verifyCommand\": \"python -m pytest -q\", \"acceptanceCriteria\": [\"zero svcs.ollama_* references in glados/\", \"engine logs use llm_* names\", \"existing tests updated\", \"full suite green\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: Add LLMConfig.for_slot() resolver to autonomy llm_client",
+      "status": "completed",
+      "blockedBy": [1],
+      "description": "**Goal:** Callers ask for slot by name; LLMConfig.for_slot('llm_triage') returns a built config from cfg.services. Unknown slot fast-fails.\n\n**Files:**\n- Modify: glados/autonomy/llm_client.py\n- Create: tests/test_llm_config_for_slot.py\n\n**Acceptance Criteria:**\n- for_slot resolves all four slots\n- Unknown slot raises ValueError mentioning the slot name\n- Existing LLMConfig() construction unchanged\n- 5 new tests pass; full suite green\n\n**Verify:** `python -m pytest tests/test_llm_config_for_slot.py -v`\n\n```json:metadata\n{\"files\": [\"glados/autonomy/llm_client.py\", \"tests/test_llm_config_for_slot.py\"], \"verifyCommand\": \"python -m pytest tests/test_llm_config_for_slot.py -v\", \"acceptanceCriteria\": [\"for_slot resolves 4 known slots\", \"unknown slot raises ValueError\", \"5 new tests pass\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Enforce MAX_AUTONOMY_USER_PROMPT_TOKENS budget in llm_call",
+      "status": "completed",
+      "blockedBy": [2],
+      "description": "**Goal:** Cap user_prompt at 8000 chars inside llm_call; truncate oldest content with [...truncated...] sentinel; emit WARNING log on truncation.\n\n**Files:**\n- Modify: glados/autonomy/llm_client.py\n- Create: tests/test_autonomy_llm_client_budget.py\n\n**Acceptance Criteria:**\n- MAX_AUTONOMY_USER_PROMPT_CHARS = 8000 module constant\n- _truncate_user_prompt(prompt, budget) returns (text, truncated)\n- llm_call calls helper before POST\n- Truncation keeps last N chars + sentinel prefix\n- WARNING log on truncation\n- 6 new tests pass\n\n**Verify:** `python -m pytest tests/test_autonomy_llm_client_budget.py -v`\n\n```json:metadata\n{\"files\": [\"glados/autonomy/llm_client.py\", \"tests/test_autonomy_llm_client_budget.py\"], \"verifyCommand\": \"python -m pytest tests/test_autonomy_llm_client_budget.py -v\", \"acceptanceCriteria\": [\"MAX_AUTONOMY_USER_PROMPT_CHARS constant\", \"_truncate_user_prompt helper\", \"integrated into llm_call\", \"WARNING log on truncation\", \"6 new tests pass\"]}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: Route summarization + memory_writer callers to llm_triage",
+      "status": "completed",
+      "blockedBy": [3],
+      "description": "**Goal:** Replace cfg.service_model('ollama_autonomy') resolution in compact_messages, extract_facts, memory classifier and extractor with LLMConfig.for_slot('llm_triage').\n\n**Files:**\n- Modify: glados/autonomy/summarization.py:81,149\n- Modify: glados/core/memory_writer.py:354,374\n- Create: tests/test_summarization_uses_triage_slot.py\n- Create: tests/test_memory_writer_uses_triage_slot.py\n\n**Acceptance Criteria:**\n- All 4 call sites resolve via LLMConfig.for_slot('llm_triage')\n- Patched-requests tests assert URL hit is the triage URL, not autonomy\n- Full suite passes\n\n**Verify:** `python -m pytest tests/test_summarization_uses_triage_slot.py tests/test_memory_writer_uses_triage_slot.py -v`\n\n```json:metadata\n{\"files\": [\"glados/autonomy/summarization.py\", \"glados/core/memory_writer.py\", \"tests/test_summarization_uses_triage_slot.py\", \"tests/test_memory_writer_uses_triage_slot.py\"], \"verifyCommand\": \"python -m pytest tests/test_summarization_uses_triage_slot.py tests/test_memory_writer_uses_triage_slot.py -v\", \"acceptanceCriteria\": [\"4 call sites use for_slot('llm_triage')\", \"requests.post URL is triage URL\", \"2 new test files pass\"]}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: Route Tier 2 disambiguator to llm_triage",
+      "status": "completed",
+      "blockedBy": [3],
+      "description": "**Goal:** Tier 2 disambiguator's LLMConfig resolves via LLMConfig.for_slot('llm_triage') so per-utterance classification costs <500 ms instead of multi-second LLM thinking.\n\n**Files:**\n- Modify: glados/intent/disambiguator.py:1974-1977 (and constructor)\n- Modify: tests/test_disambiguator.py (fixture URL update if needed)\n\n**Acceptance Criteria:**\n- Disambiguator resolves config via LLMConfig.for_slot('llm_triage')\n- Constructor still accepts model/url overrides for tests\n- Boot-log message reads 'Tier 2 disambiguator ready; ollama=<llm_triage URL>'\n- Existing disambiguator tests pass\n- Full suite green\n\n**Verify:** `python -m pytest tests/ -k disambiguator -v`\n\n```json:metadata\n{\"files\": [\"glados/intent/disambiguator.py\", \"tests/test_disambiguator.py\"], \"verifyCommand\": \"python -m pytest tests/ -k disambiguator -v\", \"acceptanceCriteria\": [\"disambiguator uses for_slot('llm_triage')\", \"override path works\", \"boot log reflects new URL\", \"disambiguator tests pass\"]}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: WebUI Services tab — labels + llm_triage card",
+      "status": "completed",
+      "blockedBy": [1],
+      "description": "**Goal:** System → Services tab renders 4 LLM cards (Interactive / Autonomy / Triage / Vision); operator can change triage model without raw YAML edit.\n\n**Files:**\n- Modify: glados/webui/static/ui.js (Services renderer)\n- Modify: glados/webui/tts_ui.py (slot allow-list if explicit)\n\n**Acceptance Criteria:**\n- 4 LLM cards render with status dot + URL + model dropdown\n- Card labels: 'LLM (Interactive)' / '(Autonomy)' / '(Triage)' / '(Vision)'\n- Save round-trip preserves llm_triage in services.yaml\n- Save handler accepts llm_triage slot key\n\n**Verify:** Manual visual verification + `ssh ... grep llm_triage services.yaml` after save\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\", \"glados/webui/tts_ui.py\"], \"verifyCommand\": \"echo 'manual visual + curl /api/services'\", \"acceptanceCriteria\": [\"4 cards render\", \"new labels in place\", \"triage save round-trip works\"]}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: Live verification + docs update",
+      "status": "pending",
+      "blockedBy": [2, 3, 4, 5, 6],
+      "description": "**Goal:** Deploy via _local_deploy.py, validate in browser, refresh SESSION_STATE.md and CHANGES.md.\n\n**Files:**\n- Modify: C:\\src\\SESSION_STATE.md\n- Modify: docs/CHANGES.md\n\n**Acceptance Criteria:**\n- _local_deploy.py completes; container healthy\n- Llama-3.2-1B loaded on AIBox at ctx=8192\n- 5-min log observation: NO 'Context size has been exceeded' for autonomy\n- WebUI chitchat round-trip <5 s\n- Tier 2 disambiguator hits triage URL\n- CHANGES.md gains autonomy-triage-split entry\n- SESSION_STATE.md top section updated\n\n**Verify:** `ssh root@$HOST 'docker logs glados --since 5m | grep -E \"exceeded|truncated|triage\"'`\n\n```json:metadata\n{\"files\": [\"C:\\\\src\\\\SESSION_STATE.md\", \"docs/CHANGES.md\"], \"verifyCommand\": \"ssh root@$GLADOS_SSH_HOST 'docker logs glados --since 5m 2>&1 | grep -E \\\"exceeded|truncated|triage|Tier 2\\\"'\", \"acceptanceCriteria\": [\"deploy healthy\", \"Llama-3.2-1B loaded\", \"no ctx-exceeded errors\", \"chitchat <5s\", \"docs updated\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-04-27T22:50:00-05:00"
+}

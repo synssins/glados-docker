@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from glados.robots.config import RobotsConfig
 
@@ -330,6 +330,14 @@ class ServiceEndpoint(BaseModel):
 
 
 class ServicesConfig(BaseModel):
+    """OpenAI-shaped LLM service slots. Field names use the ``llm_*``
+    prefix; ``ollama_*`` aliases are accepted on read for one release of
+    backwards compatibility with operators' existing services.yaml.
+    On save, only the new names are emitted.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
     # TTS / STT default to the container's own api_wrapper endpoint.
     # `/v1/audio/speech` and `/v1/audio/transcriptions` are both served
     # in-process against the bundled VITS + CTC ONNX models. No external
@@ -356,14 +364,29 @@ class ServicesConfig(BaseModel):
     vision: ServiceEndpoint = ServiceEndpoint(
         url=_env("VISION_URL", "")
     )
-    ollama_interactive: ServiceEndpoint = ServiceEndpoint(
-        url=_env("OLLAMA_URL", "http://ollama:11434")
+    llm_interactive: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(
+            url=_env("OLLAMA_URL", "http://ollama:11434")
+        ),
+        validation_alias=AliasChoices("llm_interactive", "ollama_interactive"),
     )
-    ollama_autonomy: ServiceEndpoint = ServiceEndpoint(
-        url=_env("OLLAMA_AUTONOMY_URL", _env("OLLAMA_URL", "http://ollama:11434"))
+    llm_autonomy: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(
+            url=_env("OLLAMA_AUTONOMY_URL", _env("OLLAMA_URL", "http://ollama:11434"))
+        ),
+        validation_alias=AliasChoices("llm_autonomy", "ollama_autonomy"),
     )
-    ollama_vision: ServiceEndpoint = ServiceEndpoint(
-        url=_env("OLLAMA_VISION_URL", _env("OLLAMA_URL", "http://ollama:11434"))
+    llm_vision: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(
+            url=_env("OLLAMA_VISION_URL", _env("OLLAMA_URL", "http://ollama:11434"))
+        ),
+        validation_alias=AliasChoices("llm_vision", "ollama_vision"),
+    )
+    llm_triage: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(
+            url=_env("OLLAMA_URL", "http://ollama:11434"),
+            model="llama-3.2-1b-instruct",
+        ),
     )
     gladys_api: ServiceEndpoint = Field(
         default=ServiceEndpoint(url="http://localhost:8020"),
@@ -704,7 +727,7 @@ class ObserverEntityRule(BaseModel):
 class ObserverConfig(BaseModel):
     enabled: bool = True
     entity_whitelist: list[ObserverEntityRule] = []
-    # Empty default → consumers resolve via cfg.service_model("ollama_autonomy").
+    # Empty default → consumers resolve via cfg.service_model("llm_autonomy").
     # "Nothing hardcoded" principle: operator's LLM & Services page selection
     # is the single source of truth for every LLM consumer.
     judgment_model: str = ""
@@ -1260,12 +1283,68 @@ class GladosConfigStore:
                 )
         merged = {**existing, **(data or {})}
 
+        # The WebUI's `_get_config_section` masks sensitive fields
+        # before sending them to the browser:
+        #   - global.auth.session_secret  → popped (never in response)
+        #   - global.home_assistant.token → "first20...last8" form
+        # On save, the browser sends back what it has — which is either
+        # absent (session_secret) or the masked form (HA token). The
+        # shallow merge above replaces the entire nested dict, so those
+        # fields would land empty/masked on disk.
+        #
+        # Live incident 2026-04-27: empty session_secret broke every
+        # auth-required endpoint, locked the operator out of the WebUI.
+        # Restore from the existing on-disk values when the incoming
+        # payload doesn't carry a real value.
+        if section == "global":
+            merged = _restore_masked_global_fields(merged, existing)
+
         validated = model_cls.model_validate(merged)
         yaml_str = yaml.dump(
             validated.model_dump(), default_flow_style=False, sort_keys=False,
         )
         path.write_text(yaml_str, encoding="utf-8")
         self.reload()
+
+
+def _restore_masked_global_fields(merged: dict, existing: dict) -> dict:
+    """Re-populate sensitive fields the WebUI strips before sending the
+    config to the browser, so a round-trip Save doesn't wipe them.
+
+    Fields handled:
+      - ``auth.session_secret`` — popped from GET responses; if the
+        incoming save has it empty/missing, restore from on-disk.
+      - ``home_assistant.token`` — masked as ``"first20...last8"`` on
+        GET; if the incoming save still contains ``"..."``, treat as
+        masked and restore from on-disk.
+
+    The merged dict is mutated in place and returned for clarity at
+    the call site.
+    """
+    existing = existing or {}
+
+    # auth.session_secret: preserve if incoming is empty/missing
+    auth = merged.get("auth")
+    existing_auth = existing.get("auth") if isinstance(existing, dict) else None
+    if isinstance(auth, dict) and isinstance(existing_auth, dict):
+        if not auth.get("session_secret") and existing_auth.get("session_secret"):
+            auth["session_secret"] = existing_auth["session_secret"]
+
+    # home_assistant.token: preserve if incoming is empty or in the
+    # "first20...last8" masked form. The "..." sentinel is reliable —
+    # legitimate HA long-lived tokens are JWTs that contain only
+    # base64url + period characters, never an ellipsis.
+    ha = merged.get("home_assistant")
+    existing_ha = (
+        existing.get("home_assistant") if isinstance(existing, dict) else None
+    )
+    if isinstance(ha, dict) and isinstance(existing_ha, dict):
+        token = ha.get("token", "")
+        looks_masked = isinstance(token, str) and "..." in token
+        if (not token or looks_masked) and existing_ha.get("token"):
+            ha["token"] = existing_ha["token"]
+
+    return merged
 
 
 # Module-level singleton

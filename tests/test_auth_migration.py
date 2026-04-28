@@ -34,7 +34,7 @@ def test_new_shape_passes_through_unchanged():
     raw = {
         "enabled": True,
         "bootstrap_allowed": False,
-        "users": [{"username": "ResidentA", "password_hash": "$argon2id$x",
+        "users": [{"username": "residenta", "password_hash": "$argon2id$x",
                    "role": "admin"}],
     }
     out = _synthesize_legacy_admin(raw)
@@ -63,14 +63,14 @@ def test_synthesizer_seeds_admin_when_users_present_but_no_admin():
         "password_hash": "$2b$12$dormantlegacy",
         "session_secret": "s" * 64,
         "users": [{
-            "username": "ResidentA", "role": "chat",
+            "username": "residenta", "role": "chat",
             "password_hash": "$argon2id$x", "hash_algorithm": "argon2id",
         }],
     }
     out = _synthesize_legacy_admin(raw)
     usernames = [u["username"] for u in out["users"]]
     assert "admin" in usernames
-    assert "ResidentA" in usernames
+    assert "residenta" in usernames
     admin = next(u for u in out["users"] if u["username"] == "admin")
     assert admin["role"] == "admin"
     assert admin["hash_algorithm"] == "bcrypt-legacy"

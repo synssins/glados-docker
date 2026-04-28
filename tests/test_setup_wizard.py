@@ -149,7 +149,7 @@ def test_admin_password_step_process_rejects_short_password(fresh_configs):
     from glados.webui.setup.wizard import StepResult
     s = SetAdminPasswordStep()
     h = _mock_handler()
-    form = {"username": "ResidentA", "password": "abc", "confirm": "abc"}
+    form = {"username": "residenta", "password": "abc", "confirm": "abc"}
     assert s.process(h, form) == StepResult.ERROR
 
 
@@ -158,7 +158,7 @@ def test_admin_password_step_process_rejects_mismatched_confirm(fresh_configs):
     from glados.webui.setup.wizard import StepResult
     s = SetAdminPasswordStep()
     h = _mock_handler()
-    form = {"username": "ResidentA", "password": "hunter2goes",
+    form = {"username": "residenta", "password": "hunter2goes",
             "confirm": "different"}
     assert s.process(h, form) == StepResult.ERROR
 

@@ -562,11 +562,11 @@ class DoorbellScreener:
         llm_cfg = self._config.get("llm", {})
         llm_port = llm_cfg.get("port")
         explicit_model = (llm_cfg.get("model") or "").strip()
-        model = explicit_model or store_cfg.service_model("ollama_autonomy")
+        model = explicit_model or store_cfg.service_model("llm_autonomy")
         if llm_port:
             ollama_url = f"http://localhost:{llm_port}"
         else:
-            ollama_url = store_cfg.service_url("ollama_autonomy")
+            ollama_url = store_cfg.service_url("llm_autonomy")
 
         # Build conversation history for context
         history_section = ""
@@ -615,7 +615,10 @@ class DoorbellScreener:
             },
         }
 
-        url = f"{ollama_url}/api/chat"
+        # ``ollama_url`` is the bare ``scheme://host:port`` from the LLM &
+        # Services WebUI; append the OpenAI chat-completions path at dispatch.
+        from glados.core.url_utils import compose_endpoint
+        url = compose_endpoint(ollama_url, "/v1/chat/completions")
         import re as _re
         _THINK_RE = _re.compile(r"<think>.*?</think>", _re.DOTALL | _re.IGNORECASE)
 

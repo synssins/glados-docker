@@ -661,7 +661,7 @@ def test_mvp_pass_rate(tmp_path: Path, cases: list[Case], capsys) -> None:
     print("\n" + report)
 
     # Target from the rewrite prompt: ≥ 85% on first run, MVP-scoped.
-    # Below that, fail so ResidentA sees the diff.
+    # Below that, fail so the operator sees the diff.
     mvp_results = [
         (c, obs, exp, ok) for (c, obs, exp, ok) in results
         if c.feature_needed is None
@@ -672,7 +672,7 @@ def test_mvp_pass_rate(tmp_path: Path, cases: list[Case], capsys) -> None:
     passed_mvp = sum(1 for r in mvp_results if r[3])
     rate = passed_mvp / len(mvp_results)
     # Hold at 0.70 for the first landing. The prompt's 85% bar is
-    # the second iteration target after ResidentA reviews the failure
+    # the second iteration target after the operator reviews the failure
     # modes.
     assert rate >= 0.70, (
         f"MVP pass rate {rate:.1%} below 70% floor. "

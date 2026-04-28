@@ -68,12 +68,12 @@ def _svc_vision() -> str:
     return _cfg.service_url("vision")
 
 def _svc_ollama_generate() -> str:
-    return _cfg.service_url("ollama_interactive") + "/api/generate"
+    return _cfg.service_url("llm_interactive") + "/api/generate"
 
 def _svc_ollama_model() -> str:
     # Read the operator-selected model from services.yaml; fall back to
     # qwen3:8b (the current Phase 8.0 default) if unset.
-    return (_cfg.services.ollama_interactive.model or "qwen3:8b").strip()
+    return (_cfg.services.llm_interactive.model or "qwen3:8b").strip()
 
 OUTPUT_DIR = Path(_cfg.audio.tts_ui_output_dir)
 CHAT_AUDIO_DIR = Path(_cfg.audio.chat_audio_dir)
@@ -487,7 +487,7 @@ _service_limiter = TokenBucket(
 
 # Public paths -- no session cookie required.
 # Matches AUTH_DESIGN.md SS3.4. /api/chat and /chat_audio/* require chat.send.
-_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status"})
+_PUBLIC_PATHS = frozenset({"/login", "/health", "/logout", "/tts", "/api/auth/status", "/api/health/aggregate", "/api/health/public"})
 
 _PUBLIC_PREFIXES = (
     # STT + TTS service endpoints (operator decision 2026-04-24)
@@ -687,6 +687,39 @@ def _resolve_user_for_request(handler) -> dict | None:
     return handler._resolved_user
 
 
+def _build_health_aggregate(
+    authenticated: bool,
+    probes: "list[tuple[str, bool | str]] | None",
+) -> dict:
+    """Aggregate per-service probe results into the status-dot payload.
+
+    probes: list of (service_name, status) where status is True (ok),
+            False (down), or the literal string "degraded".
+    """
+    if not authenticated or probes is None:
+        return {"overall": "unauth"}
+    services = []
+    any_down = False
+    any_degraded = False
+    for name, status in probes:
+        if status is True:
+            s = "ok"
+        elif status == "degraded":
+            s = "degraded"
+            any_degraded = True
+        else:
+            s = "down"
+            any_down = True
+        services.append({"name": name, "status": s})
+    if any_down:
+        overall = "down"
+    elif any_degraded:
+        overall = "degraded"
+    else:
+        overall = "ok"
+    return {"overall": overall, "services": services}
+
+
 def require_perm(handler, perm: str) -> bool:
     """Enforce `perm` on `handler`. Returns True if allowed.
 
@@ -732,154 +765,85 @@ def require_perm(handler, perm: str) -> bool:
 
 # â”€â”€ Login page HTML â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-LOGIN_PAGE = r"""<!DOCTYPE html>
+LOGIN_PAGE = r"""<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GLaDOS â€” Login</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    background: #0a0a0a;
-    color: #e0e0e0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-  }
-  .login-box {
-    background: #1a1a2e;
-    border: 1px solid #333;
-    border-radius: 12px;
-    padding: 40px;
-    width: 360px;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-  }
-  .login-box h1 {
-    text-align: center;
-    color: #ff6600;
-    font-size: 1.6em;
-    margin-bottom: 8px;
-  }
-  .login-box .subtitle {
-    text-align: center;
-    color: #888;
-    font-size: 0.85em;
-    margin-bottom: 28px;
-  }
-  .field { margin-bottom: 18px; }
-  .field label {
-    display: block;
-    font-size: 0.85em;
-    color: #aaa;
-    margin-bottom: 6px;
-  }
-  .field input[type="text"],
-  .field input[type="password"] {
-    width: 100%;
-    padding: 10px 12px;
-    background: #111;
-    border: 1px solid #444;
-    border-radius: 6px;
-    color: #e0e0e0;
-    font-size: 1em;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  .field input[type="text"]:focus,
-  .field input[type="password"]:focus { border-color: #ff6600; }
-  .remember {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 22px;
-    font-size: 0.85em;
-    color: #aaa;
-  }
-  .remember input[type="checkbox"] { accent-color: #ff6600; }
-  .btn {
-    width: 100%;
-    padding: 11px;
-    background: #ff6600;
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    font-size: 1em;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-  .btn:hover { background: #e55a00; }
-  .btn:disabled { background: #555; cursor: not-allowed; }
-  .error {
-    background: #3a1111;
-    border: 1px solid #ff4444;
-    color: #ff6666;
-    padding: 10px;
-    border-radius: 6px;
-    margin-bottom: 16px;
-    font-size: 0.85em;
-    display: none;
-  }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GLaDOS — Sign in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-<div class="login-box">
-  <h1>GLaDOS</h1>
-  <div class="subtitle">Control Panel Authentication</div>
-  <div class="error" id="error"></div>
-  <form id="loginForm" method="POST" action="/login">
-    <div class="field">
-      <label for="username">Username</label>
-      <input type="text" id="username" name="username" autofocus required>
+<body class="login-body">
+  <div class="login-shell">
+    <div class="login-brand">
+      <span>GLaDOS</span>
+      <span class="brand-sep">·</span>
+      <span class="brand-dim">CONTROL</span>
     </div>
-    <div class="field">
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password" required>
-    </div>
-    <div class="remember">
-      <input type="checkbox" id="remember" name="remember" value="1">
-      <label for="remember">Stay logged in</label>
-    </div>
-    <button type="submit" class="btn" id="submitBtn">Sign In</button>
-  </form>
-</div>
-<script>
-document.getElementById('loginForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const btn = document.getElementById('submitBtn');
-  const err = document.getElementById('error');
-  btn.disabled = true;
-  btn.textContent = 'Signing in...';
-  err.style.display = 'none';
-  try {
-    const resp = await fetch('/login', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: new URLSearchParams({
-        username: document.getElementById('username').value,
-        password: document.getElementById('password').value,
-        remember: document.getElementById('remember').checked ? '1' : '0'
-      })
+    <div class="login-sub">Sign-in required</div>
+    <div class="login-tele" id="loginTele"><span class="login-tele-loading">…probing</span></div>
+    <div class="error" id="error"></div>
+    <form id="loginForm" method="POST" action="/login">
+      <label class="login-label" for="username">User</label>
+      <input class="login-input" id="username" name="username" autocomplete="username" autofocus required>
+      <label class="login-label" for="password">Password</label>
+      <input class="login-input" id="password" name="password" type="password" autocomplete="current-password" required>
+      <label class="login-stay">
+        <input type="checkbox" id="remember" name="remember" value="1">
+        <span class="login-stay-box"></span>
+        <span>STAY SIGNED IN</span>
+      </label>
+      <button class="login-submit" type="submit" id="submitBtn">SIGN IN →</button>
+    </form>
+  </div>
+  <script>
+    fetch('/api/health/public').then(r => r.json()).then(d => {
+      const el = document.getElementById('loginTele');
+      if (!el || !d.services) return;
+      el.innerHTML = d.services.map(s =>
+        '<span class="lt-svc"><span class="lt-dot lt-' + s.status + '"></span> ' + s.name + '</span>'
+      ).join('<span class="lt-sep">│</span>');
+    }).catch(() => {});
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('submitBtn');
+      const err = document.getElementById('error');
+      btn.disabled = true;
+      btn.textContent = 'SIGNING IN…';
+      err.style.display = 'none';
+      try {
+        const resp = await fetch('/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+            remember: document.getElementById('remember').checked ? '1' : '0'
+          })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          window.location.href = '/';
+        } else {
+          let msg = 'INVALID CREDENTIALS';
+          if (data.error) msg = String(data.error).toUpperCase();
+          err.textContent = msg;
+          err.style.display = 'block';
+          document.getElementById('password').value = '';
+          document.getElementById('password').focus();
+        }
+      } catch (ex) {
+        err.textContent = 'CONNECTION ERROR';
+        err.style.display = 'block';
+      }
+      btn.disabled = false;
+      btn.textContent = 'SIGN IN →';
     });
-    const data = await resp.json();
-    if (data.ok) {
-      window.location.href = '/';
-    } else {
-      err.textContent = data.error || 'Invalid password';
-      err.style.display = 'block';
-      document.getElementById('password').value = '';
-      document.getElementById('password').focus();
-    }
-  } catch (ex) {
-    err.textContent = 'Connection error';
-    err.style.display = 'block';
-  }
-  btn.disabled = false;
-  btn.textContent = 'Sign In';
-});
-</script>
+  </script>
 </body>
 </html>"""
 
@@ -1055,7 +1019,64 @@ def _ai_filename(text: str, timeout: float = 3.0) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers â€” HA REST API
+# Helpers — Pronunciation converter (TTS Generator path)
+# ---------------------------------------------------------------------------
+
+def _get_pronunciation_converter():
+    """Return the SpokenTextConverter instance used by the engine path.
+
+    Returns None if conversion is unavailable (e.g., import error during
+    startup). Errors are swallowed to keep TTS Generator working even if
+    the pronunciation layer is misconfigured.
+    """
+    try:
+        from glados.api.tts import _get_converter as _engine_get_converter
+        return _engine_get_converter()
+    except Exception:
+        return None
+
+
+def _normalize_dashes(text: str) -> str:
+    """Replace en/em-dashes with comma+space so Piper produces a natural pause.
+
+    Piper does not insert prosodic breaks on Unicode dashes; operators report
+    em-dashes (—) come out as a long buzz or get dropped entirely. The persona
+    rewriter (qwen3:14b) loves em-dashes stylistically. We strip them before
+    synthesis so the audio gets a comma-shaped pause; the text the operator
+    sees in transcripts is unchanged.
+    """
+    if not text:
+        return text
+    s = text
+    # Em-dash and en-dash → ", "
+    s = re.sub(r"\s*[\u2014\u2013]\s*", ", ", s)
+    # Spaced hyphen-minus used as a dash substitute → ", "
+    # Plain hyphens inside compound words (e.g. "tea-cup") are left alone.
+    s = re.sub(r" - ", ", ", s)
+    # Collapse runs like ',,' or ', ,' or ', ,,' to a single ','
+    s = re.sub(r",(\s*,)+", ",", s)
+    return s
+
+
+def _apply_pronunciation_to_text(text: str) -> str:
+    """Apply the engine's pronunciation overrides to text headed for TTS.
+
+    Used by /api/generate so that TTS Generator output matches engine speech
+    for the same input. See ``glados/api/tts.py:generate_speech`` for the
+    primary call site.
+    """
+    text = _normalize_dashes(text)
+    converter = _get_pronunciation_converter()
+    if converter is None:
+        return text
+    try:
+        return converter.text_to_spoken(text)
+    except Exception:
+        return text
+
+
+# ---------------------------------------------------------------------------
+# Helpers — HA REST API
 # ---------------------------------------------------------------------------
 
 def _ha_get(endpoint: str, timeout: float = 5.0) -> dict | str | None:
@@ -1153,32 +1174,143 @@ def _normalize_base_url(url: str) -> str:
     return url
 
 
+_CHAT_URL_SUFFIXES = ("/v1/chat/completions", "/api/chat")
+
+
+def _strip_chat_suffix(url: str) -> str:
+    """Strip a known chat-endpoint suffix to get the base URL.
+
+    Operators may store the full chat URL in services.yaml
+    (`http://host:port/api/chat` for Ollama, `http://host:port/v1/chat/
+    completions` for OpenAI-compatible servers). Discovery probes need
+    the bare host:port to target /api/tags or /v1/models correctly.
+    """
+    s = (url or "").strip().rstrip("/")
+    for sfx in _CHAT_URL_SUFFIXES:
+        if s.endswith(sfx):
+            return s[: -len(sfx)]
+    return s
+
+
+def _validate_llm_urls(services_payload: Any) -> str | None:
+    """Minimal sanity check for LLM URL fields on Save.
+
+    Operators paste ``http(s)://host:port``; scheme AND port are both
+    required. Empty values are allowed (skip / clear the slot).
+    Reachability is not checked here — that's Discover's job.
+
+    Returns an error message on failure, ``None`` on success. Only fires
+    on the four LLM slots; non-LLM service URLs (TTS, STT, vision, etc.)
+    have their own validation paths and are left alone.
+    """
+    if not isinstance(services_payload, dict):
+        return None
+    from urllib.parse import urlparse
+    _llm_slots = ("llm_interactive", "llm_autonomy", "llm_triage", "llm_vision")
+    _err = (
+        "expected http://host:port (scheme + port required, no path)"
+    )
+    for slot in _llm_slots:
+        ep = services_payload.get(slot)
+        if not isinstance(ep, dict):
+            continue
+        u = (ep.get("url") or "").strip()
+        if not u:
+            continue
+        try:
+            parsed = urlparse(u)
+        except ValueError:
+            return f"Invalid {slot} URL {u!r}: {_err}."
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return f"Invalid {slot} URL {u!r}: {_err}."
+        try:
+            port = parsed.port
+        except ValueError:
+            return f"Invalid {slot} URL {u!r}: {_err}."
+        if port is None:
+            return f"Invalid {slot} URL {u!r}: {_err}."
+    return None
+
+
 def _ollama_chat_url(base_or_chat_url: str) -> str:
-    """Given either a bare Ollama base (`http://host:port`) or the full
-    chat endpoint (`http://host:port/api/chat`), return the `/api/chat`
-    form the engine's GladosConfig.completion_url expects. Tolerant of
-    trailing slashes and of operators who paste either variant into the
-    LLM & Services URL field."""
-    url = (base_or_chat_url or "").strip().rstrip("/")
-    if not url:
-        return url
-    if url.endswith("/api/chat"):
-        return url
-    # Strip any other trailing /api/... path the operator might have set
-    # (e.g. /api/tags from testing), then append the canonical suffix.
-    if "/api/" in url:
-        url = url.rsplit("/api/", 1)[0]
-    return url + "/api/chat"
+    """Normalize an operator-pasted LLM URL to the bare ``scheme://host:port``
+    form the system stores everywhere.
+
+    The engine appends ``/v1/chat/completions`` (or ``/v1/models`` etc.)
+    at dispatch time — paths are protocol-internal and never leak to the
+    user. This helper is forgiving on input: an operator who follows old
+    docs or copies a full chat URL still ends up with the bare form
+    after Save:
+
+      - ``http://host:port`` → ``http://host:port`` (already bare)
+      - ``http://host:port/`` → ``http://host:port`` (trailing slash stripped)
+      - ``http://host:port/v1/chat/completions`` → ``http://host:port``
+      - ``http://host:port/api/chat`` → ``http://host:port``
+      - ``http://host:port/api/tags`` → ``http://host:port``
+      - ``http://host:port/v1/models`` → ``http://host:port``
+
+    Empty / whitespace-only input → empty string.
+    """
+    from glados.core.url_utils import strip_url_path
+    return strip_url_path(base_or_chat_url)
 
 
 def discover_ollama(url: str) -> tuple[int, dict]:
-    """GET <url>/api/tags and return model list."""
+    """GET ``<url>/api/tags`` (Ollama-native) or fall back to
+    ``<url>/v1/models`` (OpenAI-compatible) and return a normalized
+    model list.
+
+    Backends covered:
+      * Ollama / IPEX-LLM Ollama — exposes ``/api/tags``.
+      * LM Studio / llmster, vLLM (LLM-Scaler), llama-cpp-server,
+        OpenAI-compatible proxies — expose ``/v1/models``.
+
+    A connection refusal / DNS failure short-circuits with a 502
+    (no /v1/models fallback — the host isn't answering at all).
+    Anything else — HTTP 4xx, non-JSON body, missing ``models`` key —
+    falls through to the OpenAI probe so the WebUI dropdown still
+    populates against modern OpenAI-only backends.
+    """
     try:
-        base = _normalize_base_url(url)
+        base = _normalize_base_url(_strip_chat_suffix(url))
     except ValueError as exc:
         return 400, {"error": str(exc)}
+
+    # 1) Ollama-native /api/tags
+    ollama_payload: Any = None
     try:
-        payload = _http_get_json(f"{base}/api/tags")
+        ollama_payload = _http_get_json(f"{base}/api/tags")
+    except urllib.error.HTTPError:
+        # Service answers but doesn't speak Ollama API. Fall through.
+        pass
+    except urllib.error.URLError as exc:
+        # Connection refused / DNS failure — won't get any further.
+        return 502, {"error": f"unreachable: {exc.reason}"}
+    except json.JSONDecodeError:
+        # Non-JSON body on /api/tags. Fall through.
+        pass
+    except Exception:  # pragma: no cover - defensive
+        pass  # Fall through.
+
+    if (
+        isinstance(ollama_payload, dict)
+        and isinstance(ollama_payload.get("models"), list)
+    ):
+        models = []
+        for m in ollama_payload["models"]:
+            if isinstance(m, dict) and m.get("name"):
+                models.append({
+                    "name": m.get("name"),
+                    "size": m.get("size"),
+                    "modified_at": m.get("modified_at"),
+                })
+        return 200, {"url": base, "models": models, "count": len(models)}
+
+    # 2) OpenAI-compatible /v1/models fallback
+    try:
+        openai_payload = _http_get_json(f"{base}/v1/models")
+    except urllib.error.HTTPError as exc:
+        return 502, {"error": f"upstream {exc.code}"}
     except urllib.error.URLError as exc:
         return 502, {"error": f"unreachable: {exc.reason}"}
     except json.JSONDecodeError:
@@ -1186,18 +1318,20 @@ def discover_ollama(url: str) -> tuple[int, dict]:
     except Exception as exc:  # pragma: no cover - defensive
         return 502, {"error": str(exc)}
 
-    raw_models = payload.get("models") if isinstance(payload, dict) else None
-    if not isinstance(raw_models, list):
+    raw = openai_payload.get("data") if isinstance(openai_payload, dict) else None
+    if not isinstance(raw, list):
         return 502, {"error": "unexpected response shape"}
 
     models = []
-    for m in raw_models:
-        if isinstance(m, dict) and m.get("name"):
-            models.append({
-                "name": m.get("name"),
-                "size": m.get("size"),
-                "modified_at": m.get("modified_at"),
-            })
+    for m in raw:
+        if isinstance(m, dict):
+            name = m.get("id") or m.get("name")
+            if name:
+                models.append({
+                    "name": name,
+                    "size": m.get("size"),  # OpenAI shape doesn't include size
+                    "modified_at": m.get("created"),  # Unix timestamp
+                })
     return 200, {"url": base, "models": models, "count": len(models)}
 
 
@@ -1268,7 +1402,10 @@ def discover_health(url: str, path: str | None = None,
     if path:
         probe_paths = [path]
     elif kind == "ollama":
-        probe_paths = ["/api/tags"]
+        # /api/tags for Ollama-native servers; /v1/models for
+        # OpenAI-compatible backends (LM Studio, vLLM, etc.) that don't
+        # speak the Ollama API.
+        probe_paths = ["/api/tags", "/v1/models"]
     elif kind == "tts":
         # TTS side of speaches exposes /v1/voices.
         probe_paths = ["/v1/voices"]
@@ -1654,6 +1791,10 @@ class Handler(BaseHTTPRequestHandler):
             self._get_voices()
         elif p == "/api/auth/status":
             self._get_auth_status()
+        elif p == "/api/health/aggregate":
+            self._get_health_aggregate()
+        elif p == "/api/health/public":
+            self._get_health_public()
         # --- Protected routes below ---
         elif p == "/api/modes":
             self._get_modes()
@@ -2245,6 +2386,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": f"Invalid format: {fmt}"})
             return
 
+        # Apply pronunciation overrides (same converter the engine uses)
+        text = _apply_pronunciation_to_text(text)
+
         # Build TTS request with voice and optional attitude TTS params
         voice = body.get("voice", "glados")
         tts_payload: dict = {"input": text, "voice": voice, "response_format": fmt}
@@ -2267,6 +2411,12 @@ class Handler(BaseHTTPRequestHandler):
         stem = ai_name or _fallback_filename(text)
         file_path = _unique_path(stem, fmt)
         file_path.write_bytes(audio_data)
+        try:
+            file_path.with_suffix(file_path.suffix + ".txt").write_text(
+                text, encoding="utf-8"
+            )
+        except OSError:
+            pass  # best-effort sidecar; don't fail the synth
 
         self._send_json(200, {
             "filename": file_path.name,
@@ -3025,6 +3175,127 @@ class Handler(BaseHTTPRequestHandler):
         status["running"] = bool(status.get("glados_api"))
 
         self._send_json(200, status)
+
+    def _get_health_aggregate(self):
+        """GET /api/health/aggregate -- sidebar status-dot feed.
+
+        Unauthenticated callers get {"overall": "unauth"} only.
+        Authenticated callers get the full payload with per-service detail.
+        Reuses the same probes as _get_status(); no new HTTP calls.
+        """
+        from glados.auth import bypass as _bypass
+
+        if _bypass.active():
+            authenticated = True
+        else:
+            from glados.core.config_store import cfg as _cfg_live
+            if not _cfg_live.auth.enabled:
+                authenticated = True
+            else:
+                authenticated = _resolve_user_for_request(self) is not None
+
+        if not authenticated:
+            self._send_json(200, _build_health_aggregate(authenticated=False, probes=None))
+            return
+
+        # Probe each service using the same logic as _get_status().
+        probes = []
+
+        # GLaDOS API
+        try:
+            req = urllib.request.Request(f"{_svc_api_wrapper()}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("API", resp.status < 400))
+        except Exception:
+            probes.append(("API", False))
+
+        # TTS (speaches -- no /health, use /v1/voices)
+        try:
+            tts_base = _svc_tts_base().rsplit("/v1/", 1)[0].rstrip("/")
+            req = urllib.request.Request(f"{tts_base}/v1/voices")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("TTS", resp.status < 400))
+        except Exception:
+            probes.append(("TTS", False))
+
+        # STT (speaches STT side)
+        try:
+            req = urllib.request.Request(f"{_svc_stt()}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("STT", resp.status < 400))
+        except Exception:
+            probes.append(("STT", False))
+
+        # Home Assistant
+        try:
+            req = urllib.request.Request(
+                f"{HA_URL}/api/",
+                headers={"Authorization": f"Bearer {HA_TOKEN}"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("HA", resp.status < 400))
+        except Exception:
+            probes.append(("HA", False))
+
+        # ChromaDB (embedded -- check directory writability same as _get_status)
+        try:
+            from pathlib import Path as _P
+            ch_path = _P(getattr(_cfg.memory, "chromadb_path", "/app/data/chromadb"))
+            probes.append(("ChromaDB", ch_path.exists() and os.access(ch_path, os.W_OK)))
+        except Exception:
+            probes.append(("ChromaDB", False))
+
+        self._send_json(200, _build_health_aggregate(authenticated=True, probes=probes))
+
+    def _get_health_public(self):
+        """GET /api/health/public -- unauthenticated per-service status for login telemetry.
+
+        Always returns {"services": [{"name": ..., "status": "ok"|"down"}, ...]}
+        with no auth requirement. Reuses the same probes as _get_health_aggregate.
+        """
+        probes = []
+
+        # GLaDOS API
+        try:
+            req = urllib.request.Request(f"{_svc_api_wrapper()}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("API", resp.status < 400))
+        except Exception:
+            probes.append(("API", False))
+
+        # TTS (speaches -- no /health, use /v1/voices)
+        try:
+            tts_base = _svc_tts_base().rsplit("/v1/", 1)[0].rstrip("/")
+            req = urllib.request.Request(f"{tts_base}/v1/voices")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("TTS", resp.status < 400))
+        except Exception:
+            probes.append(("TTS", False))
+
+        # STT (speaches STT side)
+        try:
+            req = urllib.request.Request(f"{_svc_stt()}/health")
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("STT", resp.status < 400))
+        except Exception:
+            probes.append(("STT", False))
+
+        # Home Assistant
+        try:
+            req = urllib.request.Request(
+                f"{HA_URL}/api/",
+                headers={"Authorization": f"Bearer {HA_TOKEN}"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:  # noqa: S310
+                probes.append(("HA", resp.status < 400))
+        except Exception:
+            probes.append(("HA", False))
+
+        services = [
+            {"name": name, "status": "ok" if status is True else "down"}
+            for name, status in probes
+        ]
+        self._send_json(200, {"services": services})
 
     # â”€â”€ Attitudes endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -3843,14 +4114,25 @@ class Handler(BaseHTTPRequestHandler):
     def _list_files(self):
         files = []
         for f in sorted(OUTPUT_DIR.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True):
-            if f.is_file():
-                st = f.stat()
-                files.append({
-                    "name": f.name,
-                    "size": st.st_size,
-                    "date": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-                    "url": f"/files/{f.name}",
-                })
+            if not f.is_file():
+                continue
+            if f.suffix == ".txt":
+                continue
+            st = f.stat()
+            prompt: str | None = None
+            sidecar = f.with_suffix(f.suffix + ".txt")
+            if sidecar.is_file():
+                try:
+                    prompt = sidecar.read_text(encoding="utf-8")
+                except OSError:
+                    prompt = None
+            files.append({
+                "name": f.name,
+                "size": st.st_size,
+                "date": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                "url": f"/files/{f.name}",
+                "prompt": prompt,
+            })
         self._send_json(200, {"files": files})
 
     def _serve_file(self):
@@ -4178,6 +4460,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             file_path.unlink()
+            sidecar = file_path.with_suffix(file_path.suffix + ".txt")
+            if sidecar.is_file():
+                try:
+                    sidecar.unlink()
+                except OSError:
+                    pass  # tolerate sidecar removal failure
             self._send_json(200, {"deleted": name})
         except OSError as e:
             self._send_json(500, {"error": str(e)})
@@ -4197,6 +4485,11 @@ class Handler(BaseHTTPRequestHandler):
         if "global" in data and "auth" in data["global"]:
             data["global"]["auth"].pop("password_hash", None)
             data["global"]["auth"].pop("session_secret", None)
+        # Phase 2 Chunk 3: inject personality_preprompt from glados_config.yaml
+        # so the WebUI Identity tab shows the live engine persona.
+        if "personality" in data:
+            data["personality"]["personality_preprompt"] = \
+                self._read_personality_preprompt_from_engine()
         self._send_json(200, data)
 
     def _get_config_section(self, section: str):
@@ -4206,6 +4499,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error(404, f"Unknown config section: {section}")
             return
         data = full[section]
+        # Phase 2 Chunk 3: inject live personality_preprompt for the personality section.
+        if section == "personality":
+            data["personality_preprompt"] = self._read_personality_preprompt_from_engine()
         # Mask sensitive values in global section
         if section == "global":
             if "home_assistant" in data:
@@ -4268,10 +4564,30 @@ class Handler(BaseHTTPRequestHandler):
             data.pop("password_is_set", None)
             if not data.get("password"):
                 data["password"] = _cfg.mqtt.password
+        # LLM URL minimal sanity check. Operators must supply
+        # ``http(s)://host[:port]`` — no auto-add of scheme or port, no
+        # reachability probe (Discover does that), but a typo / missing
+        # scheme should surface here instead of failing silently at the
+        # next dispatch.
+        if section == "services":
+            _err = _validate_llm_urls(data)
+            if _err:
+                self._send_error(400, _err)
+                return
         try:
+            # Phase 2 Chunk 3: extract personality_preprompt before validation
+            # so the Pydantic model doesn't reject an unknown field, then sync
+            # it to glados_config.yaml after a successful save.
+            _preprompt_to_sync: list[dict] | None = None
+            if section == "personality" and "personality_preprompt" in data:
+                _preprompt_to_sync = data.pop("personality_preprompt")
             _cfg.update_section(section, data)
             if section == "services":
                 self._sync_glados_config_urls(data)
+            if section == "speakers":
+                self._sync_maintenance_speaker_to_ha(data)
+            if section == "personality" and _preprompt_to_sync is not None:
+                self._write_personality_preprompt_to_engine(_preprompt_to_sync)
             applied = _apply_config_live(section)
             self._send_json(200, {
                 "ok": True,
@@ -4296,13 +4612,13 @@ class Handler(BaseHTTPRequestHandler):
         were 504s on URL mismatch and 404s on model-name mismatch.
 
         Fields synced:
-          services.ollama_interactive.url   -> Glados.completion_url
-          services.ollama_interactive.model -> Glados.llm_model
-          services.ollama_autonomy.url      -> Glados.autonomy.completion_url
-          services.ollama_autonomy.model    -> Glados.autonomy.llm_model
+          services.llm_interactive.url   -> Glados.completion_url
+          services.llm_interactive.model -> Glados.llm_model
+          services.llm_autonomy.url      -> Glados.autonomy.completion_url
+          services.llm_autonomy.model    -> Glados.autonomy.llm_model
         """
-        interactive = services_payload.get("ollama_interactive") or {}
-        autonomy = services_payload.get("ollama_autonomy") or {}
+        interactive = services_payload.get("llm_interactive") or {}
+        autonomy = services_payload.get("llm_autonomy") or {}
         interactive_url = (interactive.get("url") or "").strip()
         interactive_model = (interactive.get("model") or "").strip()
         autonomy_url = (autonomy.get("url") or "").strip()
@@ -4368,6 +4684,95 @@ class Handler(BaseHTTPRequestHandler):
             )
         except OSError as exc:
             logger.warning("glados_config LLM sync: write failed: {}", exc)
+
+    def _glados_config_path(self) -> "Path":
+        return Path(os.environ.get("GLADOS_CONFIG", "/app/configs/glados_config.yaml"))
+
+    def _sync_maintenance_speaker_to_ha(self, speakers_payload: dict) -> None:
+        """Mirror the saved maintenance speaker default into HA.
+
+        When the operator saves a default speaker on the Audio & Speakers
+        config page, push that entity ID to HA's
+        ``input_text.glados_maintenance_speaker`` so the runtime engine
+        (which reads that HA entity via ha_sensor_watcher) immediately
+        reflects the new selection.
+
+        Without this sync, ``speakers.yaml:default`` is written but the
+        engine keeps routing audio to whatever HA last stored, which may
+        be a stale value from a previous maintenance session.
+        """
+        default_speaker = (speakers_payload.get("default") or "").strip()
+        if not default_speaker:
+            return
+        entity_id = _cfg.mode_entities.maintenance_speaker
+        ok = _ha_post("/api/services/input_text/set_value", {
+            "entity_id": entity_id,
+            "value": default_speaker,
+        })
+        if ok:
+            logger.info(
+                "speakers save: synced maintenance speaker → {} (entity: {})",
+                default_speaker, entity_id,
+            )
+        else:
+            logger.warning(
+                "speakers save: failed to sync maintenance speaker to HA (entity: {})",
+                entity_id,
+            )
+
+    def _read_personality_preprompt_from_engine(self) -> list[dict]:
+        """Read Glados.personality_preprompt from glados_config.yaml.
+
+        Returns a list of {system|user|assistant: text} dicts, or [] if the
+        file is absent / the block is missing.
+        """
+        cfg_path = self._glados_config_path()
+        if not cfg_path.exists():
+            return []
+        try:
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("personality_preprompt read: {}", exc)
+            return []
+        glados_block = raw.get("Glados") if isinstance(raw.get("Glados"), dict) else None
+        if glados_block is None:
+            return []
+        entries = glados_block.get("personality_preprompt") or []
+        if not isinstance(entries, list):
+            return []
+        result = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                # Each entry has exactly one of: system / user / assistant
+                item = {}
+                for role in ("system", "user", "assistant"):
+                    if role in entry and entry[role] is not None:
+                        item[role] = str(entry[role])
+                if item:
+                    result.append(item)
+        return result
+
+    def _write_personality_preprompt_to_engine(self, entries: list[dict]) -> None:
+        """Write personality_preprompt list back to glados_config.yaml."""
+        cfg_path = self._glados_config_path()
+        if not cfg_path.exists():
+            logger.debug("glados_config not found at {}; skip preprompt sync", cfg_path)
+            return
+        try:
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            logger.warning("personality_preprompt write: read failed: {}", exc)
+            return
+        glados_block = raw.get("Glados")
+        if not isinstance(glados_block, dict):
+            logger.debug("glados_config has no Glados block; skip preprompt sync")
+            return
+        glados_block["personality_preprompt"] = entries
+        try:
+            cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+            logger.info("personality_preprompt synced to glados_config.yaml ({} entries)", len(entries))
+        except OSError as exc:
+            logger.warning("personality_preprompt write: write failed: {}", exc)
 
     def _put_config_raw(self):
         """Update a single config file from raw YAML text."""

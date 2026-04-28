@@ -156,24 +156,43 @@ def is_qwen3_family(model: str | None) -> bool:
 def apply_model_family_directives(
     messages: list[dict[str, Any]],
     model: str | None,
+    enable_thinking: bool = False,
 ) -> list[dict[str, Any]]:
     """Return a new messages list with any model-family directives
     injected. Original list is not mutated.
 
-    For Qwen3: prepends `/no_think\\n` to the first system message's
-    content. If no system message exists, inserts one at the start.
-    The directive tells Qwen3 to emit an empty think block (so the
-    model skips reasoning mode and answers directly). This is safe for
-    strict-JSON prompts (Tier 2 disambiguator) AND tool-continuation
-    prompts (Tier 3 agentic loop) — both were hitting token caps
-    because the model was reasoning instead of answering.
+    For Qwen3 hybrid models (e.g. ``qwen3-30b-a3b``):
 
-    No-op when:
-      - the model is not in a known thinking family
-      - the first system message already contains `/no_think`
+    * ``enable_thinking=False`` (default) — prepends ``/no_think\\n``
+      to the first system message's content (or inserts a system
+      message containing it if none exists). Qwen3 emits an empty
+      think block and answers directly. Use for fast triage paths
+      (Tier 2 disambiguator, autonomy subagents, persona rewriter,
+      doorbell screener, llm_decision helpers) — these never benefit
+      from reasoning and were hitting token caps when the model
+      decided to think on its own.
+
+    * ``enable_thinking=True`` — leaves the messages unchanged
+      (the hybrid Qwen3 chat template defaults to thinking ON when
+      no directive is present). If the input already contains
+      ``/no_think``, that directive is stripped so the model
+      actually reasons. Use on the Tier 3 chat path when the turn
+      benefits from multi-step planning or tool selection.
+
+    Note: Qwen3 *thinking-only* variants (``qwen3-*-thinking-2507``)
+    have the thinking marker baked into their chat template and ignore
+    these directives. To get conditional reasoning, use the original
+    hybrid Qwen3 release (no ``-thinking-2507`` suffix).
+
+    No-op when the model is not in a known thinking family.
     """
     if not is_qwen3_family(model):
         return messages
+
+    if enable_thinking:
+        # Strip any pre-existing /no_think so the hybrid model reasons.
+        return _strip_no_think_directive(messages)
+
     if not messages:
         return [{"role": "system", "content": _NO_THINK_MARKER}]
 
@@ -199,6 +218,45 @@ def apply_model_family_directives(
 
     # No system message in the list → inject one at the front.
     return [{"role": "system", "content": _NO_THINK_MARKER}, *out]
+
+
+def _strip_no_think_directive(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a new messages list with any leading ``/no_think``
+    directive removed from the first system message. If the system
+    message becomes empty, drop it. Original list is not mutated."""
+    if not messages:
+        return messages
+    out = list(messages)
+    for i, msg in enumerate(out):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "system":
+            break
+        content = msg.get("content")
+        if not isinstance(content, str) or _NO_THINK_MARKER not in content:
+            continue
+        # Strip the marker plus its trailing newline / whitespace, but
+        # only when it appears at the very start (the only place we
+        # ever write it).
+        stripped = content
+        for prefix in (f"{_NO_THINK_MARKER}\n", f"{_NO_THINK_MARKER} ", _NO_THINK_MARKER):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):]
+                break
+        else:
+            # Mid-string — leave alone; the caller wrote it that way.
+            continue
+        if stripped == "":
+            # System message was just the marker; drop it.
+            out.pop(i)
+            return out
+        new_msg = dict(msg)
+        new_msg["content"] = stripped
+        out[i] = new_msg
+        return out
+    return out
 
 
 __all__ = [

@@ -11,6 +11,7 @@ HTML = r"""
 <!-- TAB 4: Configuration                                           -->
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 <div id="tab-config" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="configAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -44,6 +45,7 @@ HTML = r"""
        Now they show up only where an operator would go to actually
        do maintenance. -->
 
+</div>
 </div>
 </div>
 """

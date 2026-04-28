@@ -47,7 +47,16 @@ _GLADOS_CONFIG_DIR = Path(os.environ.get("GLADOS_CONFIG_DIR", str(_GLADOS_ROOT /
 _GLADOS_DATA = Path(os.environ.get("GLADOS_DATA", str(_GLADOS_ROOT / "data")))
 _engine: Glados | None = None
 _api_lock = threading.Lock()
-_response_timeout: float = 45.0
+_response_timeout: float = 180.0  # default; overridable via --timeout
+# Rationale: 45 s was the legacy default from the pre-reasoning-model
+# era. Modern OpenAI-compatible servers (LM Studio, vLLM, Ollama
+# 0.14+, OpenAI o1/o3, DeepSeek-R1, GLM-4.x reasoning variants, etc.)
+# routinely emit 500–2000 reasoning tokens before a single visible
+# content token. At a typical 50–60 tok/s on a workstation GPU this
+# blows past 45 s on any non-trivial prompt. 180 s matches the
+# existing tuning.llm_read_timeout_s and gives reasoning room to
+# breathe without locking the WebUI for too long if the upstream
+# truly hangs.
 
 # Lazy singleton for /v1/audio/transcriptions — avoids paying the
 # ~2 s ONNX session init at container startup for operators who don't
@@ -1701,10 +1710,15 @@ def _stream_chat_sse_impl(
     except Exception as _emo_exc:
         logger.debug("[{}] Emotion directive skipped: {}", request_id, _emo_exc)
 
-    # Determine endpoint
-    completion_url = str(glados.completion_url)
+    # Determine endpoint. The system stores ``glados.completion_url`` as the
+    # bare ``scheme://host:port``; ``/v1/chat/completions`` is appended only
+    # at dispatch time so the operator never has to type or know about
+    # protocol-internal paths. ``compose_endpoint`` is forgiving — if a
+    # legacy installation still has ``/api/chat`` baked into the stored URL,
+    # the path component is stripped before the OpenAI suffix is appended.
+    from glados.core.url_utils import compose_endpoint
+    completion_url = compose_endpoint(str(glados.completion_url), "/v1/chat/completions")
     parsed_url = urlparse(completion_url)
-    ollama_mode = parsed_url.path.rstrip("/").endswith("/api/chat")
 
     # ── Entity name resolver ─────────────────────────────────────────
     # Pre-resolve fuzzy device names against HA's actual entity list
@@ -1800,8 +1814,16 @@ def _stream_chat_sse_impl(
     # prelude on each tool round, which was blowing the output budget
     # before a user-visible answer could be produced (see the
     # "It's too bright in the office" investigation in Change 14.3).
+    # Reasoning gate: home commands / tool-call turns benefit from the
+    # hybrid model's thinking mode (entity disambiguation, tool selection,
+    # multi-step planning). Pure chitchat turns short-circuit straight to
+    # /no_think for ~2-5 s replies instead of 30+ s reasoning chains. The
+    # hybrid Qwen3-30B-A3B (NOT the -thinking-2507 variant) honours both
+    # /think and /no_think directives at chat-template level.
     from glados.core.llm_directives import apply_model_family_directives
-    messages = apply_model_family_directives(messages, glados.llm_model)
+    messages = apply_model_family_directives(
+        messages, glados.llm_model, enable_thinking=is_home_command,
+    )
     # 2026-04-20 — cap num_predict on Tier 3 so a confused model
     # can't produce a 2000+ token essay when it mis-reads context
     # (observed live: "What level is the desk lamp set to?" came
@@ -1817,6 +1839,12 @@ def _stream_chat_sse_impl(
         "messages": messages,
         "options": _streaming_options,
     }
+    # OpenAI-compat servers (LM Studio, vLLM) emit a final `usage` chunk
+    # only when stream_options.include_usage=true. Ollama-native (`/api/chat`)
+    # reports the same counters in its own `done` chunk and may reject
+    # unknown top-level fields, so gate on path.
+    if "/v1/" in parsed_url.path:
+        payload["stream_options"] = {"include_usage": True}
     if tools:
         payload["tools"] = tools
     logger.success(
@@ -1981,12 +2009,24 @@ def _stream_chat_sse_impl(
                 else:
                     try:
                         parsed = json.loads(json_str)
-                        delta = parsed.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content")
-                        _tc = delta.get("tool_calls")
-                        if _tc:
-                            pending_tool_calls.extend(_tc)
-                    except (json.JSONDecodeError, IndexError):
+                        # OpenAI-compat sends `usage` in a terminal chunk
+                        # with choices=[] when stream_options.include_usage
+                        # is set. Map onto the same keys the metrics block
+                        # below already reads from `ollama_metrics`.
+                        _usage = parsed.get("usage")
+                        if isinstance(_usage, dict):
+                            if "prompt_tokens" in _usage:
+                                ollama_metrics["prompt_eval_count"] = _usage["prompt_tokens"]
+                            if "completion_tokens" in _usage:
+                                ollama_metrics["eval_count"] = _usage["completion_tokens"]
+                        _choices = parsed.get("choices") or []
+                        if _choices:
+                            delta = _choices[0].get("delta", {})
+                            content = delta.get("content")
+                            _tc = delta.get("tool_calls")
+                            if _tc:
+                                pending_tool_calls.extend(_tc)
+                    except json.JSONDecodeError:
                         pass
             else:
                 try:
@@ -2193,7 +2233,18 @@ def _stream_chat_sse_impl(
             round((t_first_token - t_request_sent) * 1000, 1) if t_first_token else None
         )
         gen_ms = round((t_stream_end - t_request_sent) * 1000, 1)
-        tok_per_sec = round(completion_tokens / (eval_dur_ms / 1000), 1) if eval_dur_ms > 0 else None
+        # tok/sec: prefer Ollama's eval_duration (authoritative). For
+        # OpenAI-compat servers that report counts via the usage chunk but
+        # no per-token timing, fall back to wall-clock generation-only time
+        # (first-token → stream-end), since prompt-prefill shouldn't count
+        # against generation throughput.
+        if eval_dur_ms > 0:
+            tok_per_sec = round(completion_tokens / (eval_dur_ms / 1000), 1)
+        elif completion_tokens > 0 and t_first_token is not None:
+            gen_only_s = max(t_stream_end - t_first_token, 0.001)
+            tok_per_sec = round(completion_tokens / gen_only_s, 1)
+        else:
+            tok_per_sec = None
 
         metrics_payload = {
             "prompt_tokens": prompt_tokens,
@@ -2266,12 +2317,11 @@ def _stream_chat_sse_impl(
             try:
                 from glados.core.memory_writer import classify_and_extract
                 _mem_store = getattr(glados, "memory_store", None)
-                _llm_cfg = getattr(glados, "_autonomy_llm_config", None)
-                if _mem_store and _llm_cfg:
+                if _mem_store:
                     import threading as _t
                     _t.Thread(
                         target=classify_and_extract,
-                        args=(user_message, _llm_cfg, _mem_store),
+                        args=(user_message, _mem_store),
                         daemon=True,
                     ).start()
             except Exception as _pe:
@@ -3670,8 +3720,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=45.0,
-        help="Response timeout in seconds (default: 45)",
+        default=180.0,
+        help=(
+            "Response timeout in seconds (default: 180). Reasoning-mode "
+            "models on OpenAI-compatible backends frequently emit "
+            "500-2000 reasoning tokens before the visible reply, so the "
+            "engine pipeline can take longer than the request → first "
+            "content-token gap. 180 s matches the default "
+            "tuning.llm_read_timeout_s."
+        ),
     )
     parser.add_argument(
         "--announcement",

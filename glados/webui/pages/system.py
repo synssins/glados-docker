@@ -6,14 +6,13 @@ page-tabs chrome. Zones became tabs:
   Status       — service health
   Mode         — mode controls + auth & audit
   Services     — TTS/STT/Vision/api_wrapper endpoints
-  Hardware     — display (eye demo) + robot nodes + test harness (adv)
+  Hardware     — display (eye demo) + robot nodes
   Maintenance  — reload from disk + audio storage
 
 Page-save button at top-right dispatches to the relevant per-tab
 save handler (Mode → _cfgSaveSystemAuthAudit, Services →
-_cfgSaveSystemServices, Hardware → cfgSaveTestHarness). Status and
-Maintenance tabs have no direct save — their actions (restart,
-reload, clear) fire inline.
+_cfgSaveSystemServices). Status, Hardware, and Maintenance tabs
+have no direct save — their actions (restart, reload, clear) fire inline.
 """
 
 HTML = r"""
@@ -21,6 +20,7 @@ HTML = r"""
 <!-- TAB 3: System Control — Phase 6.5.3 page-tabs conversion          -->
 <!-- ════════════════════════════════════════════════════════════════ -->
 <div id="tab-config-system" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="controlAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
@@ -55,7 +55,11 @@ HTML = r"""
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="maintenance"
             onclick="showPageTab('system','maintenance')">Maintenance</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="account"
-            onclick="showPageTab('system','account');_loadSessions()">Account</button>
+            onclick="showPageTab('system','account')">Account</button>
+    <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="ssl"
+            onclick="showPageTab('system','ssl');_loadSslIntoSystemTab()">SSL</button>
+    <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="users"
+            onclick="showPageTab('system','users');_loadUsersIntoSystemTab()">Users</button>
   </nav>
 
   <div class="page-tab-panels">
@@ -142,19 +146,7 @@ HTML = r"""
 
     <!-- ════════════════ Services tab ════════════════ -->
     <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="services">
-      <div class="card">
-        <div class="section-title">Service endpoints</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
-          Non-LLM backends GLaDOS calls: TTS (Speaches), STT (Faster-Whisper),
-          Vision, and the local api-wrapper. URL + health + discovery per service.
-          LLM / Ollama config lives under <em>Integrations &rsquo;LLM&rsquo;</em>.
-        </div>
-        <div id="system-services-body">Loading services&hellip;</div>
-        <div class="cfg-save-row">
-          <button class="cfg-save-btn" onclick="_cfgSaveSystemServices()">Save Services</button>
-          <span id="cfg-save-result-system-services" class="cfg-result"></span>
-        </div>
-      </div>
+      <div id="system-services-body">Loading services&hellip;</div>
     </div>
 
     <!-- ════════════════ Hardware tab ════════════════ -->
@@ -176,7 +168,7 @@ HTML = r"""
       <div class="card" id="robotNodesCard" style="display:none;margin-top:var(--sp-3);">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
           <div class="section-title" style="margin-bottom:0;">Robot Nodes</div>
-          <button class="btn-small" onclick="robotEmergencyStop()" style="font-size:0.8rem;padding:5px 14px;background:#e74c3c;font-weight:600;letter-spacing:0.5px;" title="Emergency stop all nodes">&#9724; E-STOP</button>
+          <button class="btn btn-danger" onclick="robotEmergencyStop()" style="font-size:0.8rem;padding:5px 14px;font-weight:600;letter-spacing:0.5px;" title="Emergency stop all nodes">&#9724; E-STOP</button>
         </div>
         <div id="robotNodesList" style="margin-top:10px;font-size:0.85rem;color:var(--text-dim);">Loading...</div>
         <div style="margin-top:12px;display:flex;gap:6px;align-items:center;">
@@ -190,24 +182,6 @@ HTML = r"""
         </div>
       </div>
 
-      <div class="card" data-advanced="true" style="margin-top:var(--sp-3);">
-        <div class="section-title">Test Harness</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
-          Battery-scoring knobs consumed by the external test harness
-          (<code>C:\\src\\glados-test-battery\\harness.py</code>). Noise-entity globs
-          list entities that flip in the background (AC displays, Sonos diagnostics,
-          <code>*_button_indication</code>, <code>*_node_identify</code>) and must not
-          count toward PASS. Direction-match requires the targeted entity to end in
-          the expected state ('on' for "turn on", etc.), not merely "something changed."
-          Harness fetches these on run-start from <code>/api/test-harness/noise-patterns</code>
-          (public endpoint, no auth).
-        </div>
-        <div id="testHarnessForm"></div>
-        <div class="cfg-save-row">
-          <button class="cfg-save-btn" onclick="cfgSaveTestHarness()">Save Test Harness</button>
-          <span id="cfg-save-result-test-harness" class="cfg-result"></span>
-        </div>
-      </div>
     </div>
 
     <!-- ════════════════ Maintenance tab ════════════════ -->
@@ -220,7 +194,7 @@ HTML = r"""
           from another session that haven&rsquo;t been picked up yet.
         </div>
         <div style="display:flex;gap:12px;align-items:center;">
-          <button class="btn" onclick="cfgReload()" style="background:#555;">Reload from Disk</button>
+          <button class="btn btn-primary" onclick="cfgReload()">Reload from Disk</button>
           <span id="cfg-status" style="color:var(--text-dim);font-size:0.85em;"></span>
         </div>
       </div>
@@ -252,26 +226,27 @@ HTML = r"""
           <input type="password" id="cpwConfirm" placeholder="Confirm new password"
                  style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-size:0.85rem;">
           <div style="display:flex;align-items:center;gap:12px;">
-            <button class="btn-small" onclick="_submitChangePassword()"
+            <button class="btn btn-primary" onclick="_submitChangePassword()"
                     style="padding:6px 16px;font-size:0.85rem;">Change Password</button>
             <span id="cpwResult" style="font-size:0.82rem;"></span>
           </div>
         </div>
       </div>
 
-      <div class="card" style="margin-top:var(--sp-3);">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <div class="section-title" style="margin-bottom:0;">Active Sessions</div>
-          <button class="btn-small" onclick="_loadSessions()"
-                  style="font-size:0.78rem;padding:4px 12px;">Refresh</button>
-        </div>
-        <div id="sessionsTable" style="margin-top:10px;font-size:0.85rem;color:var(--text-dim);">
-          Loading&hellip;
-        </div>
-      </div>
+    </div>
+
+    <!-- ════════════════ SSL tab ════════════════ -->
+    <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="ssl">
+      <div id="systemSslMount"></div>
+    </div>
+
+    <!-- ════════════════ Users tab ════════════════ -->
+    <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="users">
+      <div id="systemUsersMount"></div>
     </div>
 
   </div>
+</div>
 </div>
 </div>
 
@@ -336,7 +311,7 @@ HTML = r"""
           + '<td style="padding:5px 8px;">' + lastUsed + '</td>'
           + '<td style="padding:5px 8px;">' + _escSession(s.remote_addr || '—') + '</td>'
           + '<td style="padding:5px 8px;">'
-          + '<button class="btn-small" style="font-size:0.75rem;padding:3px 10px;background:#c0392b;" '
+          + '<button class="btn btn-danger" style="font-size:0.75rem;padding:3px 10px;" '
           + 'data-revoke-sid="' + _escSession(s.session_id) + '">Revoke</button>'
           + '</td></tr>';
       });

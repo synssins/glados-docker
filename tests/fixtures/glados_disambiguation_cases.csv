@@ -112,6 +112,6 @@ Command,Expected Behavior,Comments for Claude Code
 "Slowly turn off the lights","Turn off lights in caller's area with a long transition (e.g., 30s fade).","Transition parameter. HA light.turn_off supports transition."
 "Fade to black","Same as 'Slowly turn off' with extended transition (60s).","Cinematic fade."
 "Flash the lights","Use light.turn_on with flash: long on caller's area lights.","HA built-in flash attribute."
-"Strobe the office","Apply strobe effect on RGBW office lights. Warn if seizure-risk? (ResidentA is sensory-sensitive but not epileptic — respect his agency, do it.)","Effect command. Respect user autonomy."
+"Strobe the office","Apply strobe effect on RGBW office lights. Warn if seizure-risk? (ResidentA is sensory-sensitive but not epileptic — respect their agency, do it.)","Effect command. Respect user autonomy."
 "Who turned on the lights","Query to HA logbook for last state_change on caller's area lights. Report actor (user, automation, schedule).","Audit query. Non-destructive."
 "Why is it so bright","Ambiguous — complaint or question. Treat as 'It's too bright' intent and act.","Favor action on complaint-phrased input."

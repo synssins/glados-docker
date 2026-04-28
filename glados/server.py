@@ -191,24 +191,25 @@ def _init_ha_client() -> None:
         init_singletons(client, bridge, cache)
         logger.info("HA WS client started; url={}", ws_url)
 
-        # Tier 2 disambiguator. Uses the autonomy Ollama (faster T4)
-        # because the disambiguator is on the latency path and produces
-        # short JSON, not free-form prose.
-        # Env vars take precedence over services.yaml (which often has
-        # stale hardcoded URLs). DISAMBIGUATOR_OLLAMA_URL is the explicit
-        # override; OLLAMA_AUTONOMY_URL is the next preference.
+        # Tier 2 disambiguator. Routes through the llm_triage slot so
+        # per-utterance classification costs <500 ms on a small fast
+        # model instead of multi-second LLM thinking on the chat-quality
+        # model. The disambiguator emits short JSON (not free-form
+        # prose), which the triage model handles fine.
+        # DISAMBIGUATOR_OLLAMA_URL / DISAMBIGUATOR_MODEL remain as
+        # explicit operator overrides for pinning the disambiguator to
+        # a non-default endpoint or model.
+        from glados.autonomy.llm_client import LLMConfig
+        triage_cfg = LLMConfig.for_slot("llm_triage")
         ollama_url = (
             os.environ.get("DISAMBIGUATOR_OLLAMA_URL", "").strip()
-            or os.environ.get("OLLAMA_AUTONOMY_URL", "").strip()
-            or cfg.service_url("ollama_autonomy")
+            or (triage_cfg.url or "").rstrip("/")
         )
-        # Model source of truth: the Ollama Autonomy row on the LLM &
-        # Services page (services.yaml.ollama_autonomy.model). Hot-reload
-        # picks up changes. Env var DISAMBIGUATOR_MODEL is kept as an
-        # explicit override for operators who want the disambiguator on
-        # a different model than everything else.
-        disambig_model = os.environ.get("DISAMBIGUATOR_MODEL", "").strip() \
-            or cfg.service_model("ollama_autonomy", fallback="qwen3:8b")
+        disambig_model = (
+            os.environ.get("DISAMBIGUATOR_MODEL", "").strip()
+            or triage_cfg.model
+            or "llama-3.2-1b-instruct"
+        )
         # Operator's disambiguation rules YAML, optional.
         config_dir = os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
         rules = load_rules_from_yaml(
@@ -298,7 +299,8 @@ def _init_ha_client() -> None:
         )
         init_disambiguator(disambig)
         logger.info(
-            "Tier 2 disambiguator ready; ollama={} model={} semantic={}",
+            "Tier 2 disambiguator ready; "
+            "ollama={} model={} (slot=llm_triage) semantic={}",
             ollama_url, disambig_model, bool(semantic_index),
         )
 
@@ -311,7 +313,7 @@ def _init_ha_client() -> None:
         # override for operators who want to pin the rewriter to a
         # small/fast model independent of the chat / autonomy choice.
         rewriter_model = os.environ.get("REWRITER_MODEL", "").strip() \
-            or cfg.service_model("ollama_autonomy", fallback="qwen3:8b")
+            or cfg.service_model("llm_autonomy", fallback="qwen3:8b")
         rewriter = PersonaRewriter(ollama_url=ollama_url, model=rewriter_model)
         init_rewriter(rewriter)
         logger.info("Persona rewriter ready; model={}", rewriter_model)

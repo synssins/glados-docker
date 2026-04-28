@@ -75,9 +75,9 @@ def test_services_defaults_self_contained() -> None:
     Ollama defaults remain Docker service names (external LLM is still
     a required dependency). Vision defaults to empty (optional)."""
     s = ServicesConfig()
-    assert s.ollama_interactive.url == "http://ollama:11434"
-    assert s.ollama_autonomy.url == "http://ollama:11434"
-    assert s.ollama_vision.url == "http://ollama:11434"
+    assert s.llm_interactive.url == "http://ollama:11434"
+    assert s.llm_autonomy.url == "http://ollama:11434"
+    assert s.llm_vision.url == "http://ollama:11434"
     assert s.tts.url == "http://localhost:8015"
     assert s.stt.url == "http://localhost:8015"
     assert s.vision.url == ""
@@ -190,9 +190,9 @@ def test_services_yaml_url_still_wins_over_default() -> None:
     # legacy host-specific URLs in services.yaml keep working silently. A
     # later release may flip the precedence once YAML URLs are fully retired.
     s = ServicesConfig.model_validate({
-        "ollama_interactive": {"url": "http://10.0.0.10:11434"},
+        "llm_interactive": {"url": "http://10.0.0.10:11434"},
     })
-    assert s.ollama_interactive.url == "http://10.0.0.10:11434"
+    assert s.llm_interactive.url == "http://10.0.0.10:11434"
     # Untouched fields still resolve from pydantic defaults (self-contained).
     assert s.tts.url == "http://localhost:8015"
 
@@ -204,10 +204,10 @@ def test_existing_yaml_with_full_urls_still_parses() -> None:
     # Operators upgrading from pre-Phase-6 configs have hardcoded IPs
     # in services.yaml / global.yaml. Those must continue to work.
     legacy_services = ServicesConfig.model_validate({
-        "ollama_interactive": {"url": "http://10.0.0.10:11434"},
+        "llm_interactive": {"url": "http://10.0.0.10:11434"},
         "tts": {"url": "http://10.0.0.10:5050", "voice": "glados"},
     })
-    assert legacy_services.ollama_interactive.url == "http://10.0.0.10:11434"
+    assert legacy_services.llm_interactive.url == "http://10.0.0.10:11434"
     assert legacy_services.tts.url == "http://10.0.0.10:5050"
 
     legacy_global = GlobalConfig.model_validate({
@@ -385,6 +385,84 @@ def test_partial_global_save_preserves_auth_block(tmp_path) -> None:
     assert reloaded["auth"]["session_secret"] == "preserved-secret-xyz"
 
 
+def test_partial_global_save_preserves_session_secret_when_auth_block_missing_field(tmp_path) -> None:
+    """Live incident 2026-04-27: operator's WebUI was rendered logged-out
+    after a Save (no response, sidebar entries vanished, chat replied
+    "Failed to fetch"). Container logs showed every authenticated
+    request raising RuntimeError("auth.session_secret is empty").
+
+    Root cause: ``_get_config_section`` masks ``auth.session_secret`` and
+    ``home_assistant.token`` from GET responses (correctly — don't leak
+    secrets to the browser). But on PUT, the shallow merge in
+    update_section replaces the ``auth`` dict wholesale with whatever
+    the WebUI sent, and the WebUI hadn't been given session_secret to
+    send back. Result: the session-signing key got nuked, all session
+    cookies became invalid, every authenticated endpoint 500'd, sidebar
+    couldn't render past role-aware gating, and the operator was
+    effectively locked out.
+
+    Contract this test locks: when an incoming partial save omits a
+    masked sensitive field (or sends it as empty/masked-form), the
+    on-disk value MUST be preserved.
+    """
+    import yaml as _yaml
+
+    from glados.core.config_store import GladosConfigStore
+
+    configs_dir = tmp_path / "configs"
+    configs_dir.mkdir()
+    (configs_dir / "global.yaml").write_text(_yaml.dump({
+        "home_assistant": {
+            "url": "http://original:8123",
+            "ws_url": "ws://original:8123/api/websocket",
+            "token": "original-secret-token-not-leaked-to-ui",
+        },
+        "auth": {
+            "enabled": True,
+            "session_secret":
+                "a824c35be8082e54e64bd196c6c2aab685bc937e1c527fd69b97ae9bab9e8bbf",
+            "users": [],
+        },
+        "audit": {"enabled": True},
+    }), encoding="utf-8")
+
+    store = GladosConfigStore()
+    store.load(configs_dir=configs_dir)
+
+    # Simulate the WebUI POSTing the auth block back without
+    # session_secret (because GET stripped it). Also send HA token in
+    # the masked form ("first20...last8") that GET hands the browser.
+    store.update_section("global", {
+        "auth": {
+            "enabled": False,            # operator toggled auth off
+            "users": [],
+        },
+        "home_assistant": {
+            "url": "http://original:8123",
+            "ws_url": "ws://original:8123/api/websocket",
+            "token": "original-secret-tok...not_leak",  # masked form
+        },
+    })
+
+    # Operator's edit landed
+    assert store.global_.auth.enabled is False
+
+    # Sensitive fields preserved from on-disk values.
+    assert store.global_.auth.session_secret == (
+        "a824c35be8082e54e64bd196c6c2aab685bc937e1c527fd69b97ae9bab9e8bbf"
+    ), "session_secret must survive a partial save that omits it"
+    assert store.global_.home_assistant.token == \
+        "original-secret-token-not-leaked-to-ui", \
+        "HA token must survive a partial save that includes only the masked form"
+
+    # And the YAML on disk reflects preservation.
+    reloaded = _yaml.safe_load(
+        (configs_dir / "global.yaml").read_text(encoding="utf-8")
+    )
+    assert reloaded["auth"]["session_secret"] != ""
+    assert "..." not in reloaded["home_assistant"]["token"]
+
+
 # ── Auth schema (added 2026-04-24 for multi-user rebuild) ──────────
 
 def test_auth_global_new_shape_defaults():
@@ -457,3 +535,80 @@ def test_auth_global_no_warning_on_default_construction() -> None:
     with _capture_warnings() as msgs:
         AuthGlobal()
     assert msgs == [], f"Expected no warnings on default construction, got: {msgs!r}"
+
+
+# ── llm_* schema rename + llm_triage slot (2026-04-28) ─────────────────
+# Schema-level rename from ``ollama_*`` to ``llm_*``. Pydantic
+# ``AliasChoices`` keeps operators' existing services.yaml files (with
+# ``ollama_*`` keys) parsing cleanly for one release; on save the file
+# is rewritten with the new names. New ``llm_triage`` slot defaults to
+# ``llama-3.2-1b-instruct`` so a fresh install routes triage subagents
+# to a small fast model out of the box.
+
+
+def test_config_loads_legacy_ollama_keys(tmp_path):
+    """Operators with services.yaml from before the rename must keep working."""
+    cfgs = tmp_path / "configs"
+    cfgs.mkdir()
+    (cfgs / "services.yaml").write_text(
+        "ollama_interactive:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: qwen3-30b-a3b\n"
+        "ollama_autonomy:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: qwen3-30b-a3b\n"
+        "ollama_vision:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: qwen2.5-vl-3b-instruct\n"
+    )
+    from glados.core.config_store import GladosConfigStore
+    store = GladosConfigStore()
+    store.load(configs_dir=cfgs)
+    assert store.services.llm_interactive.model == "qwen3-30b-a3b"
+    assert store.services.llm_autonomy.model == "qwen3-30b-a3b"
+    assert store.services.llm_vision.model == "qwen2.5-vl-3b-instruct"
+
+
+def test_config_loads_new_llm_keys(tmp_path):
+    """New on-disk shape with llm_* keys parses identically."""
+    cfgs = tmp_path / "configs"
+    cfgs.mkdir()
+    (cfgs / "services.yaml").write_text(
+        "llm_interactive:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: qwen3-30b-a3b\n"
+        "llm_triage:\n"
+        "  url: http://example:11434/v1/chat/completions\n"
+        "  model: llama-3.2-1b-instruct\n"
+    )
+    from glados.core.config_store import GladosConfigStore
+    store = GladosConfigStore()
+    store.load(configs_dir=cfgs)
+    assert store.services.llm_interactive.model == "qwen3-30b-a3b"
+    assert store.services.llm_triage.model == "llama-3.2-1b-instruct"
+
+
+def test_llm_triage_default():
+    """Triage slot defaults to Llama-3.2-1B-Instruct so a fresh install
+    routes triage subagents to the small fast model out of the box."""
+    s = ServicesConfig()
+    assert s.llm_triage.model == "llama-3.2-1b-instruct"
+
+
+def test_config_save_writes_llm_keys():
+    """Round-trip: a ServicesConfig parsed from legacy ollama_* keys must
+    dump under the new llm_* names — operators' on-disk YAML gets
+    rewritten to the new schema on the next save."""
+    s = ServicesConfig.model_validate({
+        "ollama_interactive": {"url": "http://x:11434", "model": "qwen3"},
+        "ollama_autonomy": {"url": "http://x:11434", "model": "qwen3"},
+        "ollama_vision": {"url": "http://x:11434", "model": "vl"},
+    })
+    dumped = s.model_dump(exclude_none=True)
+    assert "llm_interactive" in dumped
+    assert "llm_autonomy" in dumped
+    assert "llm_vision" in dumped
+    assert "llm_triage" in dumped
+    assert "ollama_interactive" not in dumped
+    assert "ollama_autonomy" not in dumped
+    assert "ollama_vision" not in dumped

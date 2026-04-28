@@ -132,25 +132,25 @@ class HAAudioConfig(BaseModel):
 
 
 def _ollama_as_chat_url(u: str | None) -> str:
-    """Normalize a bare or `/api/...` Ollama URL to the `/api/chat` form
-    stored in Glados.completion_url. Mirrors _ollama_chat_url in
-    glados/webui/tts_ui.py — duplicated deliberately to avoid an inbound
-    import from webui into core. Both should behave identically."""
-    s = (u or "").strip().rstrip("/")
-    if not s:
-        return ""
-    if s.endswith("/api/chat"):
-        return s
-    if "/api/" in s:
-        s = s.rsplit("/api/", 1)[0]
-    return s + "/api/chat"
+    """Normalize a URL stored in services.yaml to the bare
+    ``scheme://host:port`` form the engine stores in
+    ``Glados.completion_url``.
+
+    Mirrors ``_ollama_chat_url`` in ``glados/webui/tts_ui.py`` — same
+    contract, duplicated deliberately to avoid an inbound import from
+    webui into core. Stale path components on input (``/api/chat``,
+    ``/v1/chat/completions``, ``/api/tags``, ``/v1/models``, anything
+    else) are stripped; dispatch sites compose the right path at request
+    time via ``glados.core.url_utils.compose_endpoint``."""
+    from .url_utils import strip_url_path
+    return strip_url_path(u)
 
 
 def _reconcile_glados_with_services(glados_raw: Any) -> Any:
     """Override Glados-block llm_model / completion_url (and autonomy
     equivalents) from services.yaml whenever they disagree.
 
-    services.ollama_interactive and services.ollama_autonomy are the
+    services.llm_interactive and services.llm_autonomy are the
     UI's authoritative source (LLM & Services page). The Glados block
     historically duplicated these fields for engine convenience; the
     save-side sync (`glados/webui/tts_ui.py::_sync_glados_config_urls`)
@@ -179,25 +179,25 @@ def _reconcile_glados_with_services(glados_raw: Any) -> Any:
         logger.warning("Services reconciliation skipped: {}", exc)
         return glados_raw
 
-    chat_model = (svcs.ollama_interactive.model or "").strip()
-    chat_url = _ollama_as_chat_url(svcs.ollama_interactive.url)
-    auton_model = (svcs.ollama_autonomy.model or "").strip()
-    auton_url = _ollama_as_chat_url(svcs.ollama_autonomy.url)
+    chat_model = (svcs.llm_interactive.model or "").strip()
+    chat_url = _ollama_as_chat_url(svcs.llm_interactive.url)
+    auton_model = (svcs.llm_autonomy.model or "").strip()
+    auton_url = _ollama_as_chat_url(svcs.llm_autonomy.url)
 
     if chat_model and glados_raw.get("llm_model") != chat_model:
         logger.warning(
             "Config drift: Glados.llm_model={!r} overridden by "
-            "services.ollama_interactive.model={!r} (UI is source of truth)",
+            "services.llm_interactive.model={!r} (UI is source of truth)",
             glados_raw.get("llm_model"), chat_model,
         )
         glados_raw["llm_model"] = chat_model
 
     if chat_url:
-        current_chat = (glados_raw.get("completion_url") or "").strip().rstrip("/")
+        current_chat = _ollama_as_chat_url(glados_raw.get("completion_url") or "")
         if current_chat != chat_url:
             logger.warning(
                 "Config drift: Glados.completion_url={!r} overridden by "
-                "services.ollama_interactive.url={!r} (UI is source of truth)",
+                "services.llm_interactive.url={!r} (UI is source of truth)",
                 glados_raw.get("completion_url"), chat_url,
             )
             glados_raw["completion_url"] = chat_url
@@ -207,16 +207,16 @@ def _reconcile_glados_with_services(glados_raw: Any) -> Any:
         if auton_model and (auton.get("llm_model") or "") != auton_model:
             logger.warning(
                 "Config drift: Glados.autonomy.llm_model={!r} overridden by "
-                "services.ollama_autonomy.model={!r} (UI is source of truth)",
+                "services.llm_autonomy.model={!r} (UI is source of truth)",
                 auton.get("llm_model"), auton_model,
             )
             auton["llm_model"] = auton_model
         if auton_url:
-            current_auton = (auton.get("completion_url") or "").strip().rstrip("/")
+            current_auton = _ollama_as_chat_url(auton.get("completion_url") or "")
             if current_auton != auton_url:
                 logger.warning(
                     "Config drift: Glados.autonomy.completion_url={!r} overridden by "
-                    "services.ollama_autonomy.url={!r} (UI is source of truth)",
+                    "services.llm_autonomy.url={!r} (UI is source of truth)",
                     auton.get("completion_url"), auton_url,
                 )
                 auton["completion_url"] = auton_url

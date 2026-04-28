@@ -1,4 +1,5 @@
 import io
+import re
 import threading
 
 import numpy as np
@@ -55,6 +56,28 @@ def reset_converter() -> None:
         _converter = None
 
 
+def _normalize_dashes(text: str) -> str:
+    """Replace en/em-dashes with comma+space so Piper produces a natural pause.
+
+    Piper does not insert prosodic breaks on Unicode dashes; operators report
+    em-dashes (—) come out as a long buzz or get dropped entirely. The persona
+    rewriter (qwen3:14b) loves em-dashes stylistically. We strip them before
+    synthesis so the audio gets a comma-shaped pause; the text the operator
+    sees in transcripts is unchanged.
+    """
+    if not text:
+        return text
+    s = text
+    # Em-dash and en-dash → ", "
+    s = re.sub(r"\s*[\u2014\u2013]\s*", ", ", s)
+    # Spaced hyphen-minus used as a dash substitute → ", "
+    # Plain hyphens inside compound words (e.g. "tea-cup") are left alone.
+    s = re.sub(r" - ", ", ", s)
+    # Collapse runs like ',,' or ', ,' or ', ,,' to a single ','
+    s = re.sub(r",(\s*,)+", ",", s)
+    return s
+
+
 def generate_speech(
     text: str,
     voice: str = "glados",
@@ -76,7 +99,7 @@ def generate_speech(
     """
     synth = _get_synthesizer(voice)
     conv = _get_converter()
-    converted_text = conv.text_to_spoken(text)
+    converted_text = conv.text_to_spoken(_normalize_dashes(text))
     tts_kwargs: dict[str, float] = {}
     if length_scale is not None:
         tts_kwargs["length_scale"] = length_scale

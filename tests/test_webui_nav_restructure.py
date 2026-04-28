@@ -31,7 +31,8 @@ def source() -> str:
     ("config.audio-speakers", "Audio &amp; Speakers"),
     ("config.personality", "Personality"),
     ("config.memory", "Memory"),
-    ("config.ssl", "SSL"),
+    # Phase 2 Chunk 1A: SSL and Users moved into System tabs; no longer
+    # top-level sidebar entries.
     ("config.raw", "Raw YAML"),
 ])
 def test_sidebar_contains_phase6_nav_entry(source: str, nav_key: str, label: str) -> None:
@@ -46,6 +47,9 @@ def test_sidebar_contains_phase6_nav_entry(source: str, nav_key: str, label: str
     "config.services",
     "config.speakers",
     "config.audio",
+    # Phase 2 Chunk 1A: SSL and Users moved into System tabs.
+    "config.ssl",
+    "config.users",
 ])
 def test_removed_nav_entries_no_longer_rendered_in_sidebar(source: str, removed_key: str) -> None:
     # Narrow the search to the sidebar <nav-children> block; topbar shortcut
@@ -67,9 +71,15 @@ def test_removed_nav_entries_no_longer_rendered_in_sidebar(source: str, removed_
     ("control", "config.system"),
     ("config", "config.integrations"),
     ("config.global", "config.integrations"),
-    ("config.services", "config.llm-services"),
+    # Phase 2 Chunk 2: config.services and config.llm-services both redirect
+    # to config.system (Services tab). Old target config.llm-services is gone.
+    ("config.services", "config.system"),
+    ("config.llm-services", "config.system"),
     ("config.speakers", "config.audio-speakers"),
     ("config.audio", "config.audio-speakers"),
+    # Phase 2 Chunk 1A: SSL and Users are now System sub-tabs.
+    ("config.ssl", "config.system"),
+    ("config.users", "config.system"),
 ])
 def test_legacy_key_migrates_to_phase6_equivalent(source: str, legacy: str, target: str) -> None:
     pattern = re.compile(
@@ -90,11 +100,13 @@ def test_virtual_backing_map_routes_integrations_to_global(source: str) -> None:
     ), "Integrations virtual page must route to the 'global' backing section"
 
 
-def test_virtual_backing_map_routes_llm_services_to_services(source: str) -> None:
-    assert re.search(
+def test_virtual_backing_map_no_longer_has_llm_services(source: str) -> None:
+    # Phase 2 Chunk 2: LLM moved to System → Services tab. The llm-services
+    # virtual page and its _CFG_BACKING entry are both removed.
+    assert not re.search(
         r"_CFG_BACKING\s*=\s*\{[^}]*'llm-services'\s*:\s*'services'",
         source, re.DOTALL,
-    ), "LLM & Services virtual page must route to the 'services' backing section"
+    ), "llm-services should no longer be in _CFG_BACKING (LLM moved to System→Services)"
 
 
 def test_audio_speakers_has_custom_renderer(source: str) -> None:
@@ -123,12 +135,10 @@ def test_audio_speakers_renders_save_buttons_for_both_backing_sections(source: s
         "_cfgSaveSpeakersPicker must POST to the /api/config/speakers "
         "endpoint so the speakers YAML is still the backing store"
     )
-    # The Audio section continues to use the generic cfgSaveSection
-    # route (no picker UI), so its assertion stays as-was.
-    assert re.search(
-        r"cfgSaveSection\(\\?'audio\\?',\s*\\?'cfg-save-result-audio\\?'\)",
-        source,
-    ), "Audio & Speakers page must save the Audio form to the 'audio' backing"
+    # Audio tab removed 2026-04-25 (operator polish sweep): directory paths
+    # are configured in docker YAML, no need to expose them in the UI.
+    # audio section is still saved via the backend; the tab just doesn't
+    # appear in the Audio & Speakers page anymore.
 
 
 # ── cfgSaveSection accepts an optional result-element id ───────────────

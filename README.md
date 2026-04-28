@@ -25,87 +25,152 @@
 
 ## What This Is
 
-The GLaDOS container is a **pure middleware persona layer**. It sits between
-any OpenAI-compatible client and the LLM inference backend, injecting
-personality, emotion, memory, and tool execution into the conversation. It
-runs no ML inference itself — all of that is delegated to external services.
+The GLaDOS container is a **self-contained persona + smart-home middleware layer**.
+It bundles TTS, STT, embeddings, and vector storage internally — a single Docker
+image is all you need to run. The only things that live outside it are the LLM
+backend and optionally Home Assistant.
 
-Responsibilities that live in this container:
+**Bundled inside the container:**
 
-- **Three-tier command matcher** for Home Assistant device control
-  (Stage 3 Phase 1, see "Architecture" below)
-- GLaDOS personality and persona pipeline
-- Persona rewriter — restyles plain HA confirmations into GLaDOS voice
-- Emotional state system (PAD model, HEXACO traits, escalation detection)
-- Attitude directive system (per-response tone variation)
-- Semantic memory (ChromaDB vector store — bundled in this compose)
-- Tool execution loop (OpenAI agentic loop → HA MCP executor)
-- Autonomy loop (background agents: HA sensor watcher, weather, camera)
-- Discord integration
-- HUB75 LED display control
-- SSL/HTTPS with Let's Encrypt (DNS-01 via Cloudflare) or manual upload
-- Admin WebUI with TTS generator, chat client, audit-log viewer,
-  Memory management page (dedup-with-reinforcement long-term facts,
-  retention sweep trigger), and service auto-discovery (one-click
-  populate of Ollama models / Speaches voices from upstream)
-- JSON-lines audit log of every utterance and tier decision
+- **TTS** — local Piper (VITS) inference on CPU; voice is `glados.onnx`, baked into the image
+- **STT** — local Parakeet CTC + Silero VAD on CPU
+- **Embeddings** — local BGE-small-en-v1.5 ONNX for semantic retrieval
+- **Vector store** — ChromaDB via `PersistentClient` at `/app/data/chromadb/` (in-process; no sidecar)
+- **Persona pipeline** — GLaDOS personality, emotional state system (PAD/HEXACO), attitude directives
+- **Three-tier command matcher** for Home Assistant device control (see "Architecture" below)
+- **Persona rewriter** — restyles plain HA confirmations into GLaDOS voice
+- **Tool execution loop** — OpenAI agentic loop → HA MCP executor
+- **Autonomy loop** — background agents: HA sensor watcher, weather, camera
+- **Discord integration**
+- **HUB75 LED display control**
+- **SSL/HTTPS** with Let's Encrypt (DNS-01 via Cloudflare) or manual cert upload
+- **Admin WebUI** — TTS generator, chat client, audit-log viewer, Memory management,
+  Personality editor, Configuration pages
+- **JSON-lines audit log** of every utterance and tier decision
 
-Responsibilities that live **outside** this container:
+**External dependencies (the only things the container talks to outside itself):**
 
-- **LLM inference** — Ollama (or any OpenAI-compatible backend) at `OLLAMA_URL`
-- **Speech synthesis + recognition** — speaches at `SPEACHES_URL`
-- **Chat UI** — Open WebUI is optional; operators run it separately if desired
-- **Home Assistant** — the control plane, at `HA_URL` (REST + WebSocket)
+| Dependency | Required? | Purpose |
+|------------|-----------|---------|
+| Any **OpenAI-compatible LLM endpoint** (Ollama, LM Studio, vLLM, llama.cpp `llama-server`, …) | Required | Chat, Tier 2 disambiguator, persona rewriter, autonomy |
+| **Home Assistant** at `HA_URL` + `HA_TOKEN` | Recommended | Device control, state queries, autonomy |
+| Vision-capable LLM endpoint | Optional | Camera/image analysis; nothing breaks if absent |
+
+URLs are configured as bare `scheme://host:port` — the container appends
+`/v1/chat/completions`, `/api/chat`, `/v1/audio/speech`, etc. at dispatch
+time. See `docs/models.md` for recommended models and a sample VRAM budget.
+
+## Hardware Requirements
+
+- **CPU only.** The container runs all inference (TTS, STT, embeddings) on CPU — no GPU
+  required inside the container itself.
+- **~700 MB** image size; **2–4 GB** resident memory in normal use.
+- The LLM (Ollama) is what benefits from GPU — that runs on a separate machine or
+  host-native. Any OpenAI-compatible endpoint works, any topology.
 
 ## Quick Start
 
 ```bash
 # 1. Configure
+mkdir -p glados && cd glados
+curl -O https://raw.githubusercontent.com/synssins/glados-docker/main/.env.example
 cp .env.example .env
-cp configs/config.example.yaml configs/config.yaml
-# Edit both — set HA_TOKEN at minimum. Upstream service URLs default to
-# same-stack hostnames (http://ollama:11434, http://speaches:8800,
-# http://homeassistant.local:8123, etc.); override via env or the WebUI
-# (Configuration → LLM & Services / Integrations) if your services live
-# elsewhere. Phase 6 made the WebUI the primary place to edit URLs —
-# YAML pins are still honoured for backward compatibility.
+# Edit .env — set OLLAMA_URL (required) and HA_URL+HA_TOKEN (recommended)
 
-# 2. (Optional but recommended) install gitleaks pre-commit hook
-pip install pre-commit && pre-commit install
+# 2. Make a chat-capable model available on your inference endpoint.
+#    Either of these is a tested-good baseline; see docs/models.md for
+#    full recommendations including a triage and vision model.
+ollama pull qwen3:14b                          # original recommendation (Ollama)
+# or, with LM Studio:
+# lms load qwen3-30b-a3b -c 12288 --parallel 4 --gpu max
 
-# 3. Make sure Ollama and speaches are running and reachable.
-#    They are NOT in this compose — run them separately.
+# 3. Pull and start GLaDOS
+curl -O https://raw.githubusercontent.com/synssins/glados-docker/main/docker/compose.yml
+docker compose -f compose.yml up -d
 
-# 4. Pull the models the container needs onto your Ollama instance.
-#    A single Ollama instance at OLLAMA_URL can host everything —
-#    chat / Tier 2 disambiguator / rewriter / vision are all unified
-#    by default. Set OLLAMA_AUTONOMY_URL / OLLAMA_VISION_URL only if
-#    you want hardware isolation (see .env.example).
-ollama pull qwen3:14b                     # chat + disambiguator + rewriter
-ollama pull qwen2.5vl:7b                  # vision (optional)
+# 4. First-run setup
+# Open https://localhost:8052 (self-signed cert; accept the warning).
+# You'll be redirected to /setup — a wizard that creates the first admin
+# account. No docker exec, no shell commands.
 
-# 5. Start GLaDOS + its ChromaDB
-docker compose -f docker/compose.yml up -d
-
-# 6. First-run admin setup
-#    Visit http://localhost:8052 in your browser.
-#    On a fresh install (no users yet) you will be redirected to /setup —
-#    a short wizard that creates the initial admin account.
-#    No docker exec or set_password command needed.
-
-# 7. Verify
+# 5. Verify
 curl http://localhost:8015/health
-curl http://localhost:8015/v1/models
+```
 
-# 8. (Optional) tail the audit log to watch tier decisions in real time
-docker exec glados tail -f /app/logs/audit.jsonl
+## Deploy
+
+The compose file below is also kept at `docker/compose.yml` in this repo.
+
+```yaml
+# docker/compose.yml — GLaDOS, single container.
+#
+# The container is self-contained: TTS (local Piper), STT (local Parakeet),
+# embeddings (BGE), and ChromaDB all run inside. The only external services
+# you need are an LLM (Ollama or any OpenAI-compatible endpoint) and
+# optionally Home Assistant + a vision service.
+#
+# Required env (.env or shell):
+#   OLLAMA_URL    LLM inference endpoint                      e.g. http://host.docker.internal:11434
+#   HA_URL        Home Assistant base URL  (optional)         e.g. http://host.docker.internal:8123
+#   HA_TOKEN      Home Assistant long-lived access token (optional, paired with HA_URL)
+#
+# Optional env:
+#   TZ                       Timezone, default UTC
+#   OLLAMA_AUTONOMY_URL      Override autonomy / disambiguator / rewriter endpoint
+#   OLLAMA_VISION_URL        Override vision-call endpoint
+#   VISION_URL               External vision service (e.g. http://host.docker.internal:8016)
+#   GLADOS_DOCKER_GID        Host's docker group GID (enables WebUI Logs page; see comment below)
+#
+# Usage:
+#   cp ../.env.example ../.env       # edit values
+#   docker compose -f docker/compose.yml up -d
+#
+# To build from source instead of pulling :latest, uncomment the build: block
+# and comment out the image: line.
+
+services:
+  glados:
+    image: ghcr.io/synssins/glados-docker:latest
+    # build:
+    #   context: ..
+    #   dockerfile: Dockerfile
+    container_name: glados
+    ports:
+      - "8015:8015"   # OpenAI-compatible API
+      - "8052:8052"   # Admin WebUI (HTTPS-capable; HTTP redirect on 8053 if WEBUI_HTTP_REDIRECT_PORT set)
+    volumes:
+      - glados_configs:/app/configs    # YAML config — first run creates defaults
+      - glados_data:/app/data          # ChromaDB + conversation history + semantic memory
+      - glados_audio:/app/audio_files  # TTS-generated audio + chimes
+      - glados_logs:/app/logs          # audit JSONL + service logs
+      - glados_certs:/app/certs        # Let's Encrypt cert/key (auto-managed) or operator uploads
+      # Optional: read-only docker socket for the WebUI Logs page to tail
+      # the GLaDOS container's own stdout. Comment out if you don't need it.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=${TZ:-UTC}
+    env_file:
+      - ../.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # required on Linux Docker; harmless on Desktop
+    # Grant access to the host's docker group for the Logs page (optional).
+    # On Linux:  getent group docker | cut -d: -f3
+    group_add:
+      - "${GLADOS_DOCKER_GID:-0}"
+    restart: unless-stopped
+
+volumes:
+  glados_configs:
+  glados_data:
+  glados_audio:
+  glados_logs:
+  glados_certs:
 ```
 
 ## Architecture
 
-This container is intentionally **CPU-only and hardware-agnostic**. It does
-not benefit from GPU access — every ML operation is an HTTP call to
-something else. Put your GPU where Ollama and speaches live.
+This container is intentionally **CPU-only and hardware-agnostic** for everything
+it hosts internally. Put your GPU where Ollama lives.
 
 ### Three-tier command matcher (Stage 3 Phase 1)
 
@@ -115,7 +180,7 @@ at the first hit:
 | Tier | Path | Typical latency | Used for |
 |------|------|-----------------|----------|
 | **1** | HA's WebSocket `conversation/process` + persona rewriter | ~0.6–1 s | "turn off the kitchen lights", "what time is it", state queries |
-| **2** | LLM disambiguator (qwen2.5:14b) with cache-grounded candidates + intent allowlist | ~5–11 s | "bedroom lights" (ambiguous), "all lights" (universal), "I want to read in the living room" (activity → scene inference) |
+| **2** | LLM disambiguator on the `llm_triage` slot (recommended: `llama-3.2-1b-instruct`; falls back to `llm_interactive`) with cache-grounded candidates + intent allowlist | ~1–11 s depending on model | "bedroom lights" (ambiguous), "all lights" (universal), "I want to read in the living room" (activity → scene inference) |
 | **3** | Existing full LLM agentic loop with HA MCP tools | 10–30 s | Conversation, multi-step reasoning, anything Tier 1/2 can't resolve |
 
 Key properties:
@@ -237,58 +302,78 @@ battery analysis and the remediation plan (complete).
 
 | Port | Exposed | Purpose |
 |------|---------|---------|
-| 8015 | LAN     | OpenAI-compatible persona API (`/v1/chat/completions`, `/v1/audio/speech`, custom endpoints) |
+| 8015 | LAN     | OpenAI-compatible persona API (`/v1/chat/completions`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`, `/v1/voices`) |
 | 8052 | LAN     | Admin WebUI (config editor, health panel, TTS generator, chat) — HTTPS when SSL enabled |
-| 8000 | Localhost only | ChromaDB (vector memory) — no outside consumer |
 
 The container is designed for LAN deployment. If you expose port 8052
 to the public internet, put it behind a reverse proxy (Cloudflare Access,
 Authelia, etc.) for an additional perimeter layer.
 
-## External Services (operator-provided)
+## OpenAI API Compatibility
 
-GLaDOS needs to reach these. Any routing works — container, host, LAN,
-cloud — as long as the URL in `.env` resolves.
+Port 8015 speaks the OpenAI HTTP protocol. Drop-in clients (the
+official `openai` SDK, LangChain, LlamaIndex, Open WebUI, …) work
+without modification — point them at `http://<host>:8015` and pass
+any model name; the persona pipeline overrides the upstream model
+identifier anyway.
 
-| Service                         | Default URL                                  | Provides |
-|---------------------------------|----------------------------------------------|----------|
-| Ollama (interactive)            | `http://host.docker.internal:11434`          | `/v1/chat/completions` for user-facing chat (Tier 3) |
-| Ollama (autonomy)               | `http://host.docker.internal:11436`          | Background agents + Tier 2 disambiguator + persona rewriter |
-| Ollama (vision)                 | `http://host.docker.internal:11435`          | Vision model (optional) |
-| speaches                        | `http://host.docker.internal:8800`           | `/v1/audio/speech` + `/v1/audio/transcriptions` |
-| Home Assistant (REST)           | (no default — set `HA_URL`)                  | MCP tools, REST service calls, fallback state queries |
-| Home Assistant (WebSocket)      | `ws://<HA_URL host>/api/websocket` (`HA_WS_URL`) | Persistent state mirror, `call_service`, `conversation/process` |
-| MQTT broker (Stage 3 Phase 2, pending) | (not yet wired)                       | NodeRed/Sonorium peer bus |
+| Endpoint | Behavior |
+|----------|----------|
+| `POST /v1/chat/completions` | Streaming + non-streaming. Persona-rewritten, emotion-tinted, three-tier matched. Returns OpenAI delta chunks; tool calls stream through `delta.tool_calls`. |
+| `POST /v1/audio/speech`      | TTS via local Piper. Returns `audio/wav` or `audio/mpeg`. |
+| `POST /v1/audio/transcriptions` | STT via local Parakeet + Silero VAD. Returns the OpenAI `{text}` shape. |
+| `GET /v1/models`             | Lists the persona-overlaid `glados` virtual model. |
+| `GET /v1/voices` and `/v1/audio/voices` | Lists available Piper voices. |
+
+**Streaming features:**
+
+- **`stream_options.include_usage=true`** — when set on the upstream
+  request, the terminal usage chunk's `prompt_tokens` /
+  `completion_tokens` populate the `tokens_per_second` field in the
+  WebUI metrics bar. This means Ollama-native and OpenAI-compat backends
+  (LM Studio, vLLM) both surface throughput, even when the upstream
+  doesn't emit Ollama's `eval_count` / `eval_duration`.
+- **Tool-call deltas** stream alongside content deltas; the three-tier
+  matcher dispatches to HA MCP and the follow-up tokens stream back.
+- **`/no_think` injection** at the system layer for chitchat on
+  Qwen3-family models drops TTFT from ~30 s to ~3 s with no client
+  change.
+
+**Backend URLs are bare `scheme://host:port`.** The container appends
+the right path (`/v1/chat/completions`, `/api/chat`, etc.) at dispatch
+time, so operators don't need to know which protocol path their backend
+expects.
+
+The container itself uses stdlib `http.client` against the upstream —
+no OpenAI SDK is imported. Anything emitting canonical OpenAI SSE
+chunks works as a backend; production runs to date use Ollama and LM
+Studio.
 
 ## Models
 
-A single Ollama instance at `OLLAMA_URL` hosts everything by default
-(chat, Tier 2 disambiguator, persona rewriter, vision). Pull all
-three onto it:
+The container is **backend-agnostic** — anything that speaks
+`/v1/chat/completions` works. Each LLM role has its own slot in
+`services.yaml`, configured independently in **System → Services**:
 
-| Model | Size | Used by | Tunable via |
-|-------|------|---------|-------------|
-| `qwen3:14b`                   | 9.3 GB | chat + Tier 2 disambiguator + persona rewriter | WebUI LLM & Services page, or `DISAMBIGUATOR_MODEL` / `REWRITER_MODEL` env |
-| `qwen2.5vl:7b`                | 6.0 GB | vision queries (optional)   | WebUI LLM & Services page |
+| Slot | Used by | Recommended model |
+|------|---------|-------------------|
+| `llm_interactive` | Tier 3 chat, persona rewrites, tool-call planning | `qwen3:14b` (Ollama) or `qwen3-30b-a3b` (LM Studio) |
+| `llm_autonomy`    | Background autonomy loops (sensor watcher, weather, camera, news) | Same as `llm_interactive`, or split onto a dedicated GPU |
+| `llm_triage`      | Tier 2 disambiguator, autonomy compaction, memory classifier | `llama-3.2-1b-instruct` (small + fast) or `qwen3:8b` |
+| `llm_vision`      | Camera / image analysis (optional) | `qwen2.5vl:7b` or `qwen2.5-vl-3b-instruct` |
 
-A smaller 8B model (`qwen3:8b`) works as a fallback on hosts without
-enough VRAM for 14B. The persona rewriter can also be pointed at a
-smaller dedicated model if latency matters more than consistency.
+A single endpoint can host all four; operators with a dedicated GPU
+per role can split them onto separate URLs. Unset slots fall back to
+`llm_interactive`.
 
-Operators who want hardware isolation (e.g. a dedicated GPU for
-background autonomy) can set `OLLAMA_AUTONOMY_URL` and/or
-`OLLAMA_VISION_URL` to point at separate Ollama instances; unset,
-both fall back to `OLLAMA_URL`.
+See [docs/models.md](docs/models.md) for VRAM math, throughput
+numbers, and the trade-offs between the 14B and 30B chat options
+including an LM Studio JIT-loader gotcha that can silently revert
+context size.
 
-The chat model defaults to whatever `glados.llm_model` is in
-`glados_config.yaml`. A base instruct model (qwen2.5, llama3.1,
-mistral-nemo, etc.) gets the GLaDOS persona injected via the
-container's `personality_preprompt` — no Modelfile needed. See
-"Model Independence" in `docs/roadmap.md` for context.
-
-If none of the models are available the container still starts, but
-Tier 1 / Tier 2 fall through to the slow Tier 3 path and responses
-come back without persona rewrite.
+If no LLM is available the container still starts, but Tier 1 / Tier 2
+fall through to the slow Tier 3 path and responses come back without
+persona rewrite.
 
 ## Configuration
 
@@ -298,8 +383,8 @@ operator can keep secrets out of git:
 - **`.env`** — secrets and deployment-specific URLs (HA_TOKEN, OLLAMA_URL,
   SSL toggle, etc.). Gitignored. See `.env.example` for the full list.
 - **`configs/*.yaml`** — non-secret tuning (personality, attitudes, audio,
-  observer rules, disambiguation rules). Most operator deployments use
-  bind mounts so config edits don't require rebuilding the image.
+  observer rules, disambiguation rules). Managed as a Docker volume so
+  first-run creates defaults without any pre-staging.
 
 Selected env vars worth knowing:
 
@@ -312,13 +397,14 @@ Selected env vars worth knowing:
 | `OLLAMA_AUTONOMY_URL` | `OLLAMA_URL` | Optional split — autonomy Ollama (Tier 2 + rewriter) |
 | `OLLAMA_VISION_URL` | `OLLAMA_URL` | Optional split — vision Ollama |
 | `DISAMBIGUATOR_OLLAMA_URL` | `OLLAMA_AUTONOMY_URL` | Tier 2 only override |
-| `GLADOS_DOCKER_GID` | unset | Docker group GID for the Logs page's container/chromadb sources (`getent group docker`) |
-| `DISAMBIGUATOR_MODEL` | `qwen2.5:14b-instruct-q4_K_M` | |
+| `GLADOS_DOCKER_GID` | unset | Docker group GID for the Logs page's container source (`getent group docker`) |
+| `DISAMBIGUATOR_MODEL` | `qwen3:14b` | |
 | `DISAMBIGUATOR_TIMEOUT_S` | `25` | LLM call ceiling |
-| `REWRITER_MODEL` | `qwen2.5:3b-instruct-q4_K_M` | |
+| `REWRITER_MODEL` | `qwen3:14b` | |
 | `REWRITER_TIMEOUT_S` | `8` | LLM call ceiling |
 | `GLADOS_LOGS` | `/app/logs` | Audit log directory |
 | `SSL_ENABLED` | `false` | Toggle HTTPS for WebUI port 8052 |
+| `WEBUI_HTTP_REDIRECT_PORT` | unset | If set, listen on this port and redirect HTTP → HTTPS |
 | `GLADOS_AUTH_BYPASS` | unset | Set to `1` to disable all auth checks (recovery mode — see Authentication below) |
 
 Operator-tunable disambiguation rules go in `configs/disambiguation.yaml`
@@ -333,7 +419,7 @@ limit.
 When the container starts with no users configured, visiting the WebUI
 at port 8052 redirects you to `/setup` — a short wizard that walks
 through creating the initial admin account. No `docker exec` commands
-are needed. The `set_password` tool is deprecated; the wizard replaces it.
+are needed.
 
 ### Roles
 
@@ -408,12 +494,9 @@ retained during migration only.
   tier decision with origin, principal (session id), latency, and
   result. Useful for forensic review and post-hoc disambiguation analysis.
 
-**Never commit `.env` or `configs/config.yaml` — both are gitignored.**
+**Never commit `.env` — it is gitignored.**
 
 ## Known Limitations
-
-Items that are still open (some of these were fixed in Phase 8; the
-list below is the remaining set):
 
 - **Piper pronunciation of context-dependent homographs** — words
   like `live` / `read` / `lead` have training-data pronunciations
@@ -436,5 +519,4 @@ list below is the remaining set):
 - **Stage 3 Phase 3 test corpus** — labeled regression test corpus,
   WS reconnect integration tests, second-factor design for
   sensitive intents. Not started.
-- **Quip library content** — currently 156 lines; Phase 8.7 target
-  was ~450. Operator can grow via the Quip editor.
+- **Quip library content** — currently 156 lines; operator can grow via the Quip editor.

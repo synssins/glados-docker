@@ -68,27 +68,41 @@ def _write_services(configs_dir: Path, payload: dict) -> None:
 def _full_glados_raw() -> dict:
     return {
         "llm_model": "qwen3:8b",
-        "completion_url": "http://10.0.0.10:11434/api/chat",
+        "completion_url": "http://10.0.0.10:11434",
         "autonomy": {
             "enabled": True,
             "llm_model": "qwen3:8b",
-            "completion_url": "http://10.0.0.10:11434/api/chat",
+            "completion_url": "http://10.0.0.10:11434",
         },
     }
 
 
 class TestOllamaAsChatUrl:
-    def test_bare_base_gets_api_chat_suffix(self) -> None:
-        assert engine_mod._ollama_as_chat_url("http://ollama:11434") == "http://ollama:11434/api/chat"
+    """The engine stores the bare ``scheme://host:port``; protocol-internal
+    paths are appended at dispatch. ``_ollama_as_chat_url`` is the
+    forgiving normalizer that strips a stale path operators may have
+    pasted from old docs."""
+
+    def test_bare_base_passes_through(self) -> None:
+        assert engine_mod._ollama_as_chat_url("http://ollama:11434") == "http://ollama:11434"
 
     def test_trailing_slash_stripped(self) -> None:
-        assert engine_mod._ollama_as_chat_url("http://ollama:11434/") == "http://ollama:11434/api/chat"
+        assert engine_mod._ollama_as_chat_url("http://ollama:11434/") == "http://ollama:11434"
 
-    def test_already_chat_path_unchanged(self) -> None:
-        assert engine_mod._ollama_as_chat_url("http://ollama:11434/api/chat") == "http://ollama:11434/api/chat"
+    def test_chat_completions_path_stripped(self) -> None:
+        assert (
+            engine_mod._ollama_as_chat_url("http://ollama:11434/v1/chat/completions")
+            == "http://ollama:11434"
+        )
 
-    def test_other_api_path_rewritten(self) -> None:
-        assert engine_mod._ollama_as_chat_url("http://ollama:11434/api/tags") == "http://ollama:11434/api/chat"
+    def test_api_chat_path_stripped(self) -> None:
+        assert engine_mod._ollama_as_chat_url("http://ollama:11434/api/chat") == "http://ollama:11434"
+
+    def test_api_tags_path_stripped(self) -> None:
+        assert engine_mod._ollama_as_chat_url("http://ollama:11434/api/tags") == "http://ollama:11434"
+
+    def test_v1_models_path_stripped(self) -> None:
+        assert engine_mod._ollama_as_chat_url("http://ollama:11434/v1/models") == "http://ollama:11434"
 
     def test_empty_returns_empty(self) -> None:
         assert engine_mod._ollama_as_chat_url("") == ""
@@ -98,11 +112,11 @@ class TestOllamaAsChatUrl:
 class TestReconcileOverrides:
     def test_model_override_fires_when_services_disagrees(self, configs_dir: Path) -> None:
         _write_services(configs_dir, {
-            "ollama_interactive": {
+            "llm_interactive": {
                 "url": "http://10.0.0.10:11434",
                 "model": "qwen3:14b",
             },
-            "ollama_autonomy": {
+            "llm_autonomy": {
                 "url": "http://10.0.0.10:11434",
                 "model": "qwen3:14b",
             },
@@ -117,24 +131,25 @@ class TestReconcileOverrides:
 
     def test_completion_url_override_fires_when_services_disagrees(self, configs_dir: Path) -> None:
         _write_services(configs_dir, {
-            "ollama_interactive": {"url": "http://10.0.0.10:11436"},
-            "ollama_autonomy":    {"url": "http://10.0.0.10:11436"},
+            "llm_interactive": {"url": "http://10.0.0.10:11436"},
+            "llm_autonomy":    {"url": "http://10.0.0.10:11436"},
         })
         raw = _full_glados_raw()
         with _capture_warnings() as warnings:
             out = engine_mod._reconcile_glados_with_services(raw)
-        assert out["completion_url"] == "http://10.0.0.10:11436/api/chat"
-        assert out["autonomy"]["completion_url"] == "http://10.0.0.10:11436/api/chat"
+        # Stored form is the bare base; dispatch sites append the path.
+        assert out["completion_url"] == "http://10.0.0.10:11436"
+        assert out["autonomy"]["completion_url"] == "http://10.0.0.10:11436"
         assert any("Glados.completion_url" in m for m in warnings)
         assert any("Glados.autonomy.completion_url" in m for m in warnings)
 
     def test_no_override_when_services_match_glados(self, configs_dir: Path) -> None:
         _write_services(configs_dir, {
-            "ollama_interactive": {
+            "llm_interactive": {
                 "url": "http://10.0.0.10:11434",
                 "model": "qwen3:8b",
             },
-            "ollama_autonomy": {
+            "llm_autonomy": {
                 "url": "http://10.0.0.10:11434",
                 "model": "qwen3:8b",
             },
@@ -143,16 +158,16 @@ class TestReconcileOverrides:
         with _capture_warnings() as warnings:
             out = engine_mod._reconcile_glados_with_services(raw)
         assert out["llm_model"] == "qwen3:8b"
-        assert out["completion_url"] == "http://10.0.0.10:11434/api/chat"
+        assert out["completion_url"] == "http://10.0.0.10:11434"
         assert out["autonomy"]["llm_model"] == "qwen3:8b"
-        assert out["autonomy"]["completion_url"] == "http://10.0.0.10:11434/api/chat"
+        assert out["autonomy"]["completion_url"] == "http://10.0.0.10:11434"
         assert not any("overridden" in m for m in warnings)
 
     def test_empty_services_model_does_not_blank_glados(self, configs_dir: Path) -> None:
         """A half-configured services.yaml with URL but no model must not
         overwrite a working llm_model with an empty string."""
         _write_services(configs_dir, {
-            "ollama_interactive": {"url": "http://10.0.0.10:11434"},
+            "llm_interactive": {"url": "http://10.0.0.10:11434"},
         })
         raw = _full_glados_raw()
         out = engine_mod._reconcile_glados_with_services(raw)
@@ -177,34 +192,40 @@ class TestReconcileOverrides:
 
     def test_missing_autonomy_block_tolerated(self, configs_dir: Path) -> None:
         _write_services(configs_dir, {
-            "ollama_interactive": {"url": "http://host:11434", "model": "qwen3:14b"},
-            "ollama_autonomy":    {"url": "http://host:11434", "model": "qwen3:14b"},
+            "llm_interactive": {"url": "http://host:11434", "model": "qwen3:14b"},
+            "llm_autonomy":    {"url": "http://host:11434", "model": "qwen3:14b"},
         })
         raw = {
             "llm_model": "qwen3:8b",
-            "completion_url": "http://host:11434/api/chat",
+            "completion_url": "http://host:11434",
         }
         out = engine_mod._reconcile_glados_with_services(raw)
         assert out["llm_model"] == "qwen3:14b"
         assert "autonomy" not in out
 
-    def test_bare_url_matches_chat_form_in_glados(self, configs_dir: Path) -> None:
-        """services.yaml stores the bare base; Glados stores /api/chat.
-        When they point at the same host they must compare equal — no
-        spurious override / warning."""
+    def test_legacy_glados_path_is_normalized_silently(self, configs_dir: Path) -> None:
+        """A legacy ``glados_config.yaml`` may still carry a path on
+        ``completion_url`` (``/api/chat`` / ``/v1/chat/completions``)
+        from a previous install. After path-stripping both sides they
+        compare equal against the operator's bare-form services URL —
+        no spurious override / warning, and the stored form is rewritten
+        only when there's a genuine drift."""
         _write_services(configs_dir, {
-            "ollama_interactive": {"url": "http://10.0.0.10:11434"},
-            "ollama_autonomy":    {"url": "http://10.0.0.10:11434"},
+            "llm_interactive": {"url": "http://10.0.0.10:11434"},
+            "llm_autonomy":    {"url": "http://10.0.0.10:11434"},
         })
         raw = {
             "llm_model": "qwen3:8b",
             "completion_url": "http://10.0.0.10:11434/api/chat",
             "autonomy": {
                 "enabled": True,
-                "completion_url": "http://10.0.0.10:11434/api/chat",
+                "completion_url": "http://10.0.0.10:11434/v1/chat/completions",
             },
         }
         with _capture_warnings() as warnings:
             out = engine_mod._reconcile_glados_with_services(raw)
-        assert out["completion_url"] == "http://10.0.0.10:11434/api/chat"
+        # Legacy paths are tolerated on read — they compare equal once
+        # both sides are normalized to the bare base form. Reconciler
+        # leaves the stale path in place because the comparator already
+        # said "no drift".
         assert not any("completion_url" in m and "overridden" in m for m in warnings)

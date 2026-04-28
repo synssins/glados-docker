@@ -107,7 +107,10 @@ def compose_speech(
             "top_p": 0.9,
         },
     }
-    url = ollama_url.rstrip("/") + "/api/chat"
+    # ``ollama_url`` is the bare ``scheme://host:port`` from the LLM &
+    # Services WebUI; append the OpenAI chat-completions path at dispatch.
+    from glados.core.url_utils import compose_endpoint
+    url = compose_endpoint(ollama_url, "/v1/chat/completions")
     try:
         req_obj = urllib.request.Request(
             url,

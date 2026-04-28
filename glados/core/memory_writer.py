@@ -324,7 +324,6 @@ def should_classify_message(message: str) -> bool:
 
 def classify_and_extract(
     message: str,
-    llm_config: Any,
     memory_store: Any,
 ) -> bool:
     """
@@ -334,9 +333,12 @@ def classify_and_extract(
       1. Classifier: "Does this contain a storable personal fact? yes/no"
       2. Extractor: "Extract the fact as a single sentence"
 
+    Both calls route through the ``llm_triage`` service slot (small fast
+    classifier model). Pure classification work; persona/quality belongs
+    on llm_autonomy / llm_interactive.
+
     Args:
         message: User message to evaluate
-        llm_config: LLMConfig for autonomous LLM calls
         memory_store: MemoryStore for writing
 
     Returns:
@@ -348,11 +350,13 @@ def classify_and_extract(
     cfg = _get_config().get("passive", {})
 
     try:
-        from glados.autonomy.llm_client import llm_call
+        from glados.autonomy.llm_client import LLMConfig, llm_call
+
+        triage_config = LLMConfig.for_slot("llm_triage")
 
         # Step 1: Classify
         classifier_response = llm_call(
-            llm_config,
+            triage_config,
             system_prompt=(
                 "You are a fact classifier. Answer only 'yes' or 'no'.\n"
                 "Question: Does the following message contain a personal fact about "
@@ -372,7 +376,7 @@ def classify_and_extract(
 
         # Step 2: Extract
         extract_response = llm_call(
-            llm_config,
+            triage_config,
             system_prompt=(
                 "Extract the key personal fact from this message as a single, "
                 "clear sentence in third person (e.g. 'Alex prefers...' not 'I prefer...'). "

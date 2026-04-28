@@ -12,11 +12,25 @@ HTML = r"""
 <!-- CONFIGURATION > MEMORY (Phase 5)                                   -->
 <!-- ================================================================ -->
 <div id="tab-config-memory" class="tab-content">
+<div class="page-shell">
 <div class="container" style="position:relative;">
   <div id="memoryAuthOverlay" class="auth-overlay" style="display:none;">
     <div class="auth-overlay-icon">&#128274;</div>
     <div class="auth-overlay-text">Authentication required to access Memory</div>
     <a href="/login" class="auth-overlay-btn">Sign In</a>
+  </div>
+
+  <div class="card">
+    <div class="section-title">About this page</div>
+    <div class="mode-desc" style="line-height:1.55;">
+      <strong>Retrieval-Augmented Generation (RAG).</strong> When GLaDOS is about to respond,
+      the most relevant facts from the library below are pulled in and quoted to
+      her so she can reference them accurately &mdash; names, preferences, household
+      details, things she&rsquo;s learned over time. The library combines facts you&rsquo;ve
+      added manually with ones she&rsquo;s auto-extracted from conversation. Approved
+      facts are RAG-eligible; pending facts queue for your review before becoming
+      available.
+    </div>
   </div>
 
   <div class="card">
@@ -47,9 +61,14 @@ HTML = r"""
     <div id="memAddForm" style="display:none;margin-top:12px;">
       <textarea id="memAddText" placeholder="The operator prefers the living room lights at 40% in the evening"></textarea>
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <label style="font-size:0.82rem;color:var(--text-dim);">Importance:
-          <input id="memAddImportance" type="number" step="0.05" min="0" max="1" value="0.9" style="width:70px;margin-left:4px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;">
-        </label>
+        <span style="font-size:0.82rem;color:var(--text-dim);">Importance:</span>
+        <div class="tts-seg" id="memAddImportanceSeg">
+          <div class="tts-seg-cell" data-value="0.20" onclick="memSegSelect(this,'memAddImportanceSeg')">Background</div>
+          <div class="tts-seg-cell" data-value="0.40" onclick="memSegSelect(this,'memAddImportanceSeg')">Useful</div>
+          <div class="tts-seg-cell on" data-value="0.60" onclick="memSegSelect(this,'memAddImportanceSeg')">Important</div>
+          <div class="tts-seg-cell" data-value="0.80" onclick="memSegSelect(this,'memAddImportanceSeg')">Critical</div>
+          <div class="tts-seg-cell" data-value="1.00" onclick="memSegSelect(this,'memAddImportanceSeg')">Extreme</div>
+        </div>
         <button class="btn-small" onclick="memAddFact()">Save</button>
         <button class="btn-small" onclick="memHideAddForm()" style="background:#555;">Cancel</button>
       </div>
@@ -59,10 +78,10 @@ HTML = r"""
 
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;">
-      <div class="section-title" style="margin-bottom:0;">Recent activity</div>
+      <div class="section-title" style="margin-bottom:0;">Recently learned</div>
       <button class="btn-small" onclick="memLoadRecent()">Refresh</button>
     </div>
-    <div class="mode-desc" style="margin-top:4px;">Last 10 facts added or reinforced.</div>
+    <div class="mode-desc" style="margin-top:4px;">Facts she&rsquo;s added on her own from conversation. Review and promote/reject if needed.</div>
     <div id="memRecentList" style="margin-top:10px;">Loading...</div>
   </div>
 
@@ -74,6 +93,7 @@ HTML = r"""
     <div class="mode-desc" style="margin-top:4px;">Facts auto-extracted but not yet approved for RAG.</div>
     <div id="memPendingList" style="margin-top:10px;">Loading...</div>
   </div>
+</div>
 </div>
 </div>
 """

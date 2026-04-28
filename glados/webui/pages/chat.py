@@ -11,6 +11,7 @@ HTML = r"""
 <!-- TAB 2: Chat                                                    -->
 <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 <div id="tab-chat" class="tab-content active">
+<div class="page-shell">
 <div class="container">
   <div class="card" style="padding:0.75rem;">
     <div class="chat-messages" id="chatMessages">
@@ -23,6 +24,7 @@ HTML = r"""
       <button class="btn btn-primary" onclick="chatSend()">Send</button>
     </div>
   </div>
+</div>
 </div>
 </div>
 """

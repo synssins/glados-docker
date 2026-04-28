@@ -60,7 +60,6 @@ function updateAuthUI() {
   // Bottom-left account block
   const accountBlock = document.getElementById('sidebarAccount');
   const signInBlock = document.getElementById('sidebarSignIn');
-  const logoutLink = document.getElementById('sidebarLogout');
 
   if (_isAuthenticated) {
     if (accountBlock) {
@@ -71,12 +70,33 @@ function updateAuthUI() {
       if (roleEl) roleEl.textContent = _currentRole ? '(' + _currentRole + ')' : '';
     }
     if (signInBlock) signInBlock.style.display = 'none';
-    if (logoutLink) logoutLink.style.display = 'flex';
   } else {
     if (accountBlock) accountBlock.style.display = 'none';
-    if (signInBlock) signInBlock.style.display = 'block';
-    if (logoutLink) logoutLink.style.display = 'none';
+    if (signInBlock) signInBlock.style.display = '';
   }
+}
+
+// Account dropdown helpers
+function toggleAccountMenu(ev) {
+  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+  const m = document.getElementById('accountMenu');
+  if (!m) return;
+  if (m.hasAttribute('hidden')) {
+    m.removeAttribute('hidden');
+    setTimeout(() => document.addEventListener('click', closeAccountMenuOnOutside), 0);
+  } else {
+    closeAccountMenu();
+  }
+}
+function closeAccountMenu() {
+  const m = document.getElementById('accountMenu');
+  if (m) m.setAttribute('hidden', '');
+  document.removeEventListener('click', closeAccountMenuOnOutside);
+}
+function closeAccountMenuOnOutside(ev) {
+  const m = document.getElementById('accountMenu');
+  const t = document.querySelector('.account-trigger');
+  if (m && !m.contains(ev.target) && t && !t.contains(ev.target)) closeAccountMenu();
 }
 
 // Stackable toast system (Phase 5). Multiple toasts can be on screen
@@ -97,36 +117,35 @@ function showToast(msg, type) {
   }, 4000);
 }
 
-// Phase 5: engine status in sidebar header. Polls /api/status every 30 s
-// when the page is visible; skips polling when tab is hidden so we don't
+// Phase 5: engine status in sidebar header. Polls /api/health/aggregate every
+// 30 s when the page is visible; skips polling when tab is hidden so we don't
 // wake the container unnecessarily.
 let _engineStatusTimer = null;
 async function pollEngineStatus() {
   const dot = document.getElementById('engineStatusDot');
   if (!dot) return;
+  // Hide on /setup
+  if (window.location.pathname.startsWith('/setup')) {
+    dot.style.display = 'none';
+    return;
+  }
   try {
-    const r = await fetch('/api/status', { signal: AbortSignal.timeout(5000) });
-    if (r.ok) {
-      const data = await r.json();
-      // /api/status returns {"running": bool, ...}; map to dot state.
-      if (data && data.running) {
-        dot.className = 'engine-status-dot running';
-        dot.title = 'Engine running';
-      } else {
-        dot.className = 'engine-status-dot stopping';
-        dot.title = 'Engine not running';
-      }
-    } else if (r.status === 401 || r.status === 403) {
-      // Unauthenticated — the endpoint is protected; keep the dot neutral.
-      dot.className = 'engine-status-dot';
-      dot.title = 'Sign in to see engine status';
+    const r = await fetch('/api/health/aggregate', { credentials: 'same-origin' });
+    const data = await r.json();
+    dot.classList.remove('running', 'degraded', 'stopping', 'unauth');
+    const cls = ({
+      ok: 'running', degraded: 'degraded', down: 'stopping', unauth: 'unauth',
+    })[data.overall] || 'unauth';
+    dot.classList.add(cls);
+    if (data.services) {
+      dot.title = data.services.map(s => `${s.name}: ${s.status}`).join('\n');
     } else {
-      dot.className = 'engine-status-dot stopping';
-      dot.title = 'HTTP ' + r.status;
+      dot.title = 'Sign in to see service health';
     }
-  } catch(e) {
-    dot.className = 'engine-status-dot stopping';
-    dot.title = 'Unreachable';
+  } catch (e) {
+    dot.classList.remove('running', 'degraded', 'stopping');
+    dot.classList.add('unauth');
+    dot.title = 'Service status unknown';
   }
 }
 function startEngineStatusPoll() {
@@ -256,7 +275,6 @@ const FIELD_META = {
 const SECTION_META = {
   // Phase 6 page names (operators see these titles in the sidebar).
   integrations:     { title: 'Integrations', desc: 'Home Assistant, MQTT, and media-stack integrations (MQTT + *arr/Plex arrive in later phases)' },
-  'llm-services':   { title: 'LLM & Services', desc: 'Ollama, TTS (speaches), STT, vision — endpoint URLs, health, and model options' },
   'audio-speakers': { title: 'Audio & Speakers', desc: 'HA media players and speech synthesis parameters' },
   personality:      { title: 'Personality', desc: 'Attitudes, TTS defaults, HEXACO traits, and emotion model' },
   memory:           { title: 'Memory', desc: 'ChromaDB retention, passive-fact defaults, and the review queue' },
@@ -278,9 +296,10 @@ const SERVICE_NAMES = {
   stt: 'Speech-to-Text',
   api_wrapper: 'API Wrapper',
   vision: 'Vision Service',
-  ollama_interactive: 'Ollama Interactive',
-  ollama_autonomy: 'Ollama Autonomy',
-  ollama_vision: 'Ollama Vision',
+  llm_interactive: 'LLM (Interactive)',
+  llm_autonomy: 'LLM (Autonomy)',
+  llm_triage: 'LLM (Triage)',
+  llm_vision: 'LLM (Vision)',
 };
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -323,10 +342,10 @@ function cfgSwitchSection(name, btn) {
 // cfgCollectForm / cfgSaveSection keep working unchanged.
 const _CFG_BACKING = {
   'integrations':   'global',
-  'llm-services':   'services',
   // 'audio-speakers' has no single backing — rendered by a custom
   // path that calls cfgBuildForm twice (speakers + audio) with
   // per-subsection save buttons.
+  // 'llm-services' removed: LLM is now under System → Services tab.
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -379,10 +398,19 @@ function cfgRenderSection(section) {
     return;
   }
   const meta = SECTION_META[section] || SECTION_META[backing] || {};
-  let html = '<div class="cfg-section-header">'
-    + '<div class="cfg-section-title">' + escHtml(meta.title || section) + '</div>'
-    + '<div class="cfg-section-desc">' + escHtml(meta.desc || '') + '</div>'
-    + '</div>';
+
+  // personality and ssl have their own full-page chrome (page-header + tabs
+  // for personality; standalone renderer for ssl) — skip the shared header
+  // and trailing save button so they don't double-render.
+  const hasOwnChrome = (backing === 'personality' || section === 'ssl');
+
+  let html = '';
+  if (!hasOwnChrome) {
+    html += '<div class="cfg-section-header">'
+      + '<div class="cfg-section-title">' + escHtml(meta.title || section) + '</div>'
+      + '<div class="cfg-section-desc">' + escHtml(meta.desc || '') + '</div>'
+      + '</div>';
+  }
 
   if (backing === 'services') {
     html += cfgRenderServices(data);
@@ -401,7 +429,7 @@ function cfgRenderSection(section) {
     html += cfgBuildForm(data, backing, '', skipKeys);
   }
 
-  if (section !== 'ssl') {
+  if (!hasOwnChrome) {
     const label = meta.title || backing;
     html += '<div class="cfg-save-row">'
       + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'' + backing + '\')">Save ' + escHtml(label) + '</button>'
@@ -414,7 +442,10 @@ function cfgRenderSection(section) {
     html += _cfgRenderIntegrationsExtras();
   }
 
-  document.getElementById('cfg-form-area').innerHTML = html;
+  const _frmArea = document.getElementById('cfg-form-area');
+  _frmArea.innerHTML = html;
+  // Wire custom pbar sliders for HEXACO / PAD cards (personality section).
+  if (backing === 'personality') setTimeout(function() { _pbarInit(_frmArea); }, 0);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -426,21 +457,12 @@ function cfgRenderSection(section) {
 // the top tab bar. Each panel hosts whatever was previously on the
 // long scroll. Top-right Save button saves the active tab's section.
 function _cfgRenderIntegrations() {
-  // Phase 6.2 (2026-04-22): LLM tab added — Ollama endpoints +
-  // Model Options + LLM Timeouts, moved from the deleted LLM &
-  // Services page. Disambiguation / Candidate Retrieval stay for
-  // now; they move off this page in a follow-up commit.
+  // LLM moved to System → Services tab (Phase 2 Chunk 2).
   const globalData = _cfgData.global || {};
-  const servicesData = _cfgData.services || {};
   const meta = SECTION_META['integrations'] || {};
 
-  // Phase 6.3 (2026-04-22): Disambiguation + Candidate retrieval
-  // moved to Personality > Behavior dials (advanced). They're
-  // tier-2 tuning knobs, not 'external systems' — Integrations
-  // now only holds things GLaDOS talks to.
   const TABS = [
     { id: 'ha',      label: 'Home Assistant' },
-    { id: 'llm',     label: 'LLM' },
     { id: 'weather', label: 'Weather' },
     { id: 'mqtt',    label: 'MQTT' },
   ];
@@ -477,21 +499,6 @@ function _cfgRenderIntegrations() {
   html +=   '<div class="card">' + cfgBuildForm(haSubset, 'global', '') + '</div>';
   html += '</div>';
 
-  // ── LLM panel ───────────────────────────────────────────────
-  // Ollama endpoints (scope='llm') + Model Options + LLM Timeouts.
-  html += '<div class="page-tab-panel' + (activeTabId === 'llm' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="llm">';
-  html +=   '<div class="card">';
-  html +=     '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-        +      'Ollama endpoints, models, and LLM runtime knobs. URL + Model discovery buttons '
-        +      'query the upstream; edits save to <code>services.yaml</code> (URLs/models), '
-        +      '<code>personality.yaml</code> (model options), and <code>global.yaml</code> '
-        +      '(timeouts).'
-        +    '</div>';
-  html +=     cfgRenderServices(servicesData, 'llm');
-  html +=     _cfgRenderLLMExtrasOnly();
-  html +=   '</div>';
-  html += '</div>';
-
   // ── Weather panel (Phase 6.4) ──────────────────────────────
   html += '<div class="page-tab-panel' + (activeTabId === 'weather' ? ' active' : '') + '" data-page-tab-panel-group="integrations" data-tab="weather">';
   html +=   '<div class="card" id="cfg-weather-card">';
@@ -520,12 +527,13 @@ function _cfgRenderIntegrations() {
 
   setTimeout(_cfgLoadMqtt, 0);
   setTimeout(_cfgLoadWeather, 0);
-  setTimeout(() => cfgPingServices(servicesData), 100);
 }
 
-// Model Options + LLM Timeouts cards — extracted from the original
-// _cfgRenderLLMServicesExtras so the LLM tab can include them inline
-// without the surrounding service grid.
+// Model Options + LLM Timeouts cards — kept for standalone use by
+// cfgSaveModelOptions / cfgSaveLLMTimeouts (called from System → Services
+// Advanced collapsible). The function itself is no longer called to render
+// HTML but the save functions it backed still reference the same field IDs
+// which are now rendered by loadSystemServices().
 function _cfgRenderLLMExtrasOnly() {
   const mo = (_cfgData.personality || {}).model_options || {};
   const t = ((_cfgData.global || {}).tuning) || {};
@@ -563,69 +571,15 @@ function _cfgRenderLLMExtrasOnly() {
   return html;
 }
 
-// Save dispatcher for Integrations page. Page-save button click
-// routes to the active tab's save handler. Covers LLM (compound:
-// services subset + model_options + timeouts) in addition to the
-// original HA/MQTT/Disamb cases.
+// Dispatch the page Save button to the active Integrations tab's save handler.
+// LLM moved to System → Services (Phase 2 Chunk 2).
 function _cfgSaveCurrentIntegrationsTab() {
   const active = document.querySelector('[data-page-tab-group="integrations"].active');
   const id = active ? active.getAttribute('data-tab') : 'ha';
   switch (id) {
     case 'ha':      return cfgSaveSection('global');
-    case 'llm':     return _cfgSaveIntegrationsLLM();
     case 'weather': return _cfgSaveWeather();
     case 'mqtt':    return _cfgSaveMqtt();
-    default: return;
-  }
-}
-
-// Compound save for Integrations → LLM tab. Collects Ollama URL/model
-// changes, merges into the current services config (so TTS/STT/Vision
-// on the System page aren't wiped), PUTs services.yaml, then cascades
-// to cfgSaveModelOptions + cfgSaveLLMTimeouts. Each sub-save shows
-// its own inline status; the compound surface is one click for the
-// operator.
-async function _cfgSaveIntegrationsLLM() {
-  // 1. Collect Ollama fields currently in DOM.
-  const partial = cfgCollectForm('services');
-  const merged = Object.assign({}, _cfgData.services || {}, partial);
-  try {
-    const r = await fetch('/api/config/services', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(merged),
-    });
-    const resp = await r.json();
-    if (!r.ok) {
-      showToast('Ollama save failed: ' + (resp.error || r.status), 'error');
-    } else {
-      _cfgData.services = merged;
-    }
-  } catch (e) {
-    showToast('Ollama save error: ' + e.message, 'error');
-  }
-  // 2. Model Options (personality.model_options).
-  if (document.getElementById('cfg-personality-model_options-temperature')) {
-    await cfgSaveModelOptions();
-  }
-  // 3. LLM Timeouts (global.tuning.llm_*).
-  if (document.getElementById('cfg-llm-connect-timeout')) {
-    await cfgSaveLLMTimeouts();
-  }
-  showToast('LLM settings saved.', 'success');
-}
-
-
-
-// Dispatch the page Save button to the active tab's save handler.
-function _cfgSaveCurrentIntegrationsTab() {
-  const active = document.querySelector('[data-page-tab-group="integrations"].active');
-  const id = active ? active.getAttribute('data-tab') : 'ha';
-  switch (id) {
-    case 'ha':      return cfgSaveSection('global');
-    case 'mqtt':    return _cfgSaveMqtt();
-    case 'disamb':  return (typeof _disambSave === 'function') ? _disambSave() : null;
-    case 'candret': return;  // read-only / trigger-only panel
     default: return;
   }
 }
@@ -704,7 +658,7 @@ function _cfgRenderWeather() {
   html +=     '</div>';
   html +=     '<div class="mqtt-field" style="flex:0 0 auto;">';
   html +=       '<label class="mqtt-label">&nbsp;</label>';
-  html +=       '<button class="btn" style="background:var(--bg-input);padding:var(--sp-2) var(--sp-4);" onclick="_cfgWeatherGeocode()">Look up</button>';
+  html +=       '<button class="btn btn-primary" style="padding:var(--sp-2) var(--sp-4);" onclick="_cfgWeatherGeocode()">Look up</button>';
   html +=     '</div>';
   html +=   '</div>';
   html +=   '<div id="wx-candidates" class="trait-desc" style="margin-top:var(--sp-2);"></div>';
@@ -732,7 +686,7 @@ function _cfgRenderWeather() {
   html += '<div class="mqtt-subgroup">Current reading</div>';
   html += '<div id="wx-preview" class="trait-desc" style="font-size:0.84rem;">Loading&hellip;</div>';
   html += '<div class="controls" style="margin-top:var(--sp-2);">';
-  html +=   '<button class="btn" style="background:var(--bg-input);" onclick="_cfgRenderWeatherPreview()">Refresh preview</button>';
+  html +=   '<button class="btn btn-primary" onclick="_cfgRenderWeatherPreview()">Refresh preview</button>';
   html += '</div>';
 
   body.innerHTML = html;
@@ -1050,6 +1004,9 @@ async function _cfgLoadDisambiguation() {
 }
 
 function _disambPopulate(data) {
+  // Stash the raw server payload so the save handler can round-trip
+  // floor_aliases / area_aliases that no longer have UI inputs.
+  window._cfgDisambData = data;
   const body = document.getElementById('cfg-disamb-body');
   if (!body) return;
   const dedup = (data.twin_dedup === false) ? false : true;
@@ -1057,11 +1014,6 @@ function _disambPopulate(data) {
   const pairs = Array.isArray(data.opposing_token_pairs) ? data.opposing_token_pairs : [];
   const verifyMode = (typeof data.verification_mode === 'string') ? data.verification_mode : 'strict';
   const verifyTimeout = (typeof data.verification_timeout_s === 'number') ? data.verification_timeout_s : 3.0;
-  // Phase 8.5 — {spoken keyword: registry name} alias maps.
-  const floorAliases = (data.floor_aliases && typeof data.floor_aliases === 'object')
-    ? data.floor_aliases : {};
-  const areaAliases = (data.area_aliases && typeof data.area_aliases === 'object')
-    ? data.area_aliases : {};
   let html = '';
   html += '<div class="cfg-field" style="display:flex;align-items:center;gap:10px;">'
     +   '<input type="checkbox" id="cfg-disamb-twin-dedup"' + (dedup ? ' checked' : '') + ' style="width:auto;">'
@@ -1090,15 +1042,17 @@ function _disambPopulate(data) {
     + '</div>';
   html += '<div class="cfg-field-label" style="margin-top:6px;">Opposing-token pairs</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
-    +   'If an utterance contains one side of a pair and a candidate&rsquo;s entity name contains the other, '
-    +   'the candidate loses 50 rank points. Leave empty to use the shipped defaults '
+    +   'Word pairs that rarely belong in the same command. If an utterance contains one side of a pair '
+    +   'and a candidate device name contains the other side, that device becomes much less likely to be '
+    +   'chosen &mdash; so saying &ldquo;upstairs&rdquo; won&rsquo;t accidentally target a device named &ldquo;downstairs.&rdquo; '
+    +   'Leave empty to use the shipped defaults '
     +   '(<code>upstairs/downstairs</code>, <code>lower/upper</code>, <code>front/back</code>, '
     +   '<code>inside/outside</code>, <code>indoor/outdoor</code>, <code>master/guest</code>, '
     +   '<code>left/right</code>, <code>top/bottom</code>, <code>primary/secondary</code>, '
     +   '<code>north/south</code>, <code>east/west</code>).'
     + '</div>';
   html += '<div id="cfg-disamb-pairs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;"></div>';
-  html += '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddPair()">+ Add pair</button>';
+  html += '<button type="button" class="cfg-save-btn" onclick="_disambAddPair()">+ Add pair</button>';
   // Phase 8.3.5 — operator-editable extra segment tokens used by
   // the device-diversity filter on top-K retrieval. Merges with
   // the shipped defaults (seg, segment, zone, channel, strip,
@@ -1111,7 +1065,7 @@ function _disambPopulate(data) {
     +   '<code>pixel</code>) if your strip entities use a different naming convention.'
     + '</div>'
     + '<div id="cfg-disamb-tokens" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddToken()">+ Add token</button>';
+    + '<button type="button" class="cfg-save-btn" onclick="_disambAddToken()">+ Add token</button>';
   // Phase 8.4 — post-execute state verification.
   html += '<div class="cfg-field-label" style="margin-top:18px;">Post-execute state verification</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:8px;">'
@@ -1135,26 +1089,17 @@ function _disambPopulate(data) {
     +   '<label class="cfg-field-label" for="cfg-disamb-verify-timeout" style="margin:0;min-width:140px;">Timeout (seconds)</label>'
     +   '<input type="number" id="cfg-disamb-verify-timeout" min="0.1" max="30" step="0.1" value="' + escAttr(verifyTimeout.toFixed(1)) + '" style="flex:1;min-width:120px;">'
     + '</div>';
-  // Phase 8.5 — area / floor alias editor.
-  html += '<div class="cfg-field-label" style="margin-top:18px;">Area &amp; floor aliases</div>'
+  // Phase 2 Chunk 3: floor/area alias editor removed — HA natively supports
+  // aliases per area/floor. Render a notice card pointing to HA docs instead.
+  // Existing floor_aliases / area_aliases in YAML are preserved on save (below).
+  html += '<div class="cfg-field-label" style="margin-top:18px;">Area &amp; Floor Aliases</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:8px;">'
-    +   'Map house-specific keywords the shipped defaults don&rsquo;t know to the exact <em>registry name</em> '
-    +   'of one of your HA areas or floors. Examples: <code>living floor &rarr; Main Level</code>, '
-    +   '<code>mom&rsquo;s room &rarr; Master Bedroom</code>. Keywords match case-insensitively against the utterance; '
-    +   'registry names must match exactly (including punctuation and spacing) so the inference can resolve them.'
+    +   'GLaDOS uses Home Assistant&rsquo;s built-in area and floor aliases to interpret commands like '
+    +   '&ldquo;turn off the lights upstairs.&rdquo; Set aliases per-area or per-floor in your Home Assistant '
+    +   'settings &mdash; they propagate here automatically. '
+    +   '<a href="https://www.home-assistant.io/docs/organizing/areas/" target="_blank" rel="noopener noreferrer">'
+    +   'Home Assistant alias docs &nearr;</a>'
     + '</div>';
-  html += '<div class="cfg-field-label" style="margin-top:6px;">Floor aliases</div>'
-    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
-    +   'Utterance keyword &rarr; floor-registry name (e.g. <code>main level &rarr; Main Level</code>).'
-    + '</div>'
-    + '<div id="cfg-disamb-floor-aliases" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddFloorAlias()">+ Add floor alias</button>';
-  html += '<div class="cfg-field-label" style="margin-top:14px;">Area aliases</div>'
-    + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
-    +   'Utterance keyword &rarr; area-registry name (e.g. <code>mom&rsquo;s room &rarr; Master Bedroom</code>).'
-    + '</div>'
-    + '<div id="cfg-disamb-area-aliases" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_disambAddAreaAlias()">+ Add area alias</button>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
     + '<button class="cfg-save-btn" onclick="cfgSaveDisambiguation()">Save Disambiguation rules</button>'
     + '<span id="cfg-save-result-disamb" class="cfg-result"></span>'
@@ -1164,13 +1109,8 @@ function _disambPopulate(data) {
   pairs.forEach(p => _disambRenderPairRow(rows, p[0] || '', p[1] || ''));
   const tokensHost = document.getElementById('cfg-disamb-tokens');
   tokens.forEach(t => _disambRenderTokenRow(tokensHost, t));
-  const floorHost = document.getElementById('cfg-disamb-floor-aliases');
-  Object.keys(floorAliases).forEach(k =>
-    _disambRenderAliasRow(floorHost, 'floor', k, floorAliases[k] || ''));
-  const areaHost = document.getElementById('cfg-disamb-area-aliases');
-  Object.keys(areaAliases).forEach(k =>
-    _disambRenderAliasRow(areaHost, 'area', k, areaAliases[k] || ''));
 }
+
 
 function _disambRenderAliasRow(host, kind, keyword, target) {
   const row = document.createElement('div');
@@ -1180,7 +1120,7 @@ function _disambRenderAliasRow(host, kind, keyword, target) {
     + '<input type="text" class="cfg-disamb-alias-keyword" value="' + escAttr(keyword) + '" placeholder="e.g. living floor" style="flex:1;">'
     + '<span style="opacity:0.6;">&rarr;</span>'
     + '<input type="text" class="cfg-disamb-alias-target" value="' + escAttr(target) + '" placeholder="e.g. Main Level" style="flex:1;">'
-    + '<button type="button" title="Remove alias" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove alias">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -1202,7 +1142,7 @@ function _disambRenderTokenRow(host, t) {
   row.style.cssText = 'display:flex;gap:6px;align-items:center;';
   row.innerHTML = ''
     + '<input type="text" class="cfg-disamb-token" value="' + escAttr(t) + '" placeholder="e.g. pixel" style="flex:1;">'
-    + '<button type="button" title="Remove token" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove token">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -1221,7 +1161,7 @@ function _disambRenderPairRow(host, a, b) {
     + '<input type="text" class="cfg-disamb-pair-a" value="' + escAttr(a) + '" placeholder="e.g. upstairs" style="flex:1;">'
     + '<span style="opacity:0.6;">&harr;</span>'
     + '<input type="text" class="cfg-disamb-pair-b" value="' + escAttr(b) + '" placeholder="e.g. downstairs" style="flex:1;">'
-    + '<button type="button" title="Remove pair" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove pair">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -1387,19 +1327,13 @@ async function cfgSaveDisambiguation() {
   const verifyTimeoutEl = document.getElementById('cfg-disamb-verify-timeout');
   let verifyTimeout = verifyTimeoutEl ? parseFloat(verifyTimeoutEl.value) : 3.0;
   if (!isFinite(verifyTimeout) || verifyTimeout <= 0) verifyTimeout = 3.0;
-  // Phase 8.5 — collect alias rows.
-  const floorAliases = {};
-  document.querySelectorAll('#cfg-disamb-floor-aliases .cfg-disamb-alias-row').forEach(row => {
-    const k = ((row.querySelector('.cfg-disamb-alias-keyword') || {}).value || '').trim();
-    const v = ((row.querySelector('.cfg-disamb-alias-target') || {}).value || '').trim();
-    if (k && v) floorAliases[k] = v;
-  });
-  const areaAliases = {};
-  document.querySelectorAll('#cfg-disamb-area-aliases .cfg-disamb-alias-row').forEach(row => {
-    const k = ((row.querySelector('.cfg-disamb-alias-keyword') || {}).value || '').trim();
-    const v = ((row.querySelector('.cfg-disamb-alias-target') || {}).value || '').trim();
-    if (k && v) areaAliases[k] = v;
-  });
+  // Phase 2 Chunk 3: alias editor removed from UI but data preserved.
+  // Read the last-loaded server values so existing YAML aliases aren't wiped.
+  const _disambData = (window._cfgDisambData) || {};
+  const floorAliases = (_disambData.floor_aliases && typeof _disambData.floor_aliases === 'object')
+    ? _disambData.floor_aliases : {};
+  const areaAliases = (_disambData.area_aliases && typeof _disambData.area_aliases === 'object')
+    ? _disambData.area_aliases : {};
   try {
     const r = await fetch('/api/config/disambiguation', {
       method: 'PUT',
@@ -1521,77 +1455,16 @@ function loadSystemConfigCards() {
   const run = () => {
     _cfgRenderSystemMaintForm();
     _cfgRenderSystemAuthAuditForm();
-    _cfgRenderTestHarnessForm();
   };
   if (have) { run(); }
   else if (typeof cfgLoadAll === 'function') { cfgLoadAll().then(run); }
 }
 
-// Phase 8.9 — Test harness card. Simple two-field editor: patterns
-// (textarea, one glob per line) + direction-match toggle. Saves to
-// /api/config/test_harness.
-function _cfgRenderTestHarnessForm() {
-  const host = document.getElementById('testHarnessForm');
-  if (!host) return;
-  const th = _cfgData.test_harness || {};
-  const patterns = Array.isArray(th.noise_entity_patterns)
-    ? th.noise_entity_patterns.join('\n') : '';
-  const require = th.require_direction_match !== false;
-  host.innerHTML =
-    '<div class="cfg-field">'
-    + '<label class="cfg-label" for="th-patterns">Noise entity patterns'
-    + ' <span style="color:var(--text-dim);font-weight:normal;">'
-    + '(fnmatch globs, one per line — e.g. <code>switch.hvac_unit_*_display</code>)'
-    + '</span></label>'
-    + '<textarea id="th-patterns" rows="8" style="width:100%;background:var(--bg-input);'
-    + 'color:var(--text);border:1px solid var(--border);border-radius:4px;padding:8px;'
-    + 'font-family:monospace;font-size:0.82rem;">'
-    + escHtml(patterns) + '</textarea>'
-    + '</div>'
-    + '<div class="cfg-field" style="margin-top:10px;">'
-    + '<label style="display:flex;align-items:center;gap:8px;">'
-    + '<input type="checkbox" id="th-direction"' + (require ? ' checked' : '') + '>'
-    + '<span>Require direction match (recommended)</span>'
-    + '</label>'
-    + '<div class="mode-desc" style="margin-top:4px;">'
-    + 'When on, harness requires the targeted entity to end in the expected state. '
-    + 'When off, any state change counts — use only for A/B comparison against the pre-8.9 scorer.'
-    + '</div>'
-    + '</div>';
-}
-
-async function cfgSaveTestHarness() {
-  const resultEl = document.getElementById('cfg-save-result-test-harness');
-  if (resultEl) { resultEl.textContent = 'Saving...'; resultEl.className = 'cfg-result'; }
-  const raw = document.getElementById('th-patterns');
-  const dir = document.getElementById('th-direction');
-  if (!raw || !dir) return;
-  const patterns = raw.value.split('\n').map(s => s.trim()).filter(Boolean);
-  const body = {
-    noise_entity_patterns: patterns,
-    require_direction_match: !!dir.checked,
-  };
-  try {
-    const r = await fetch('/api/config/test_harness', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-    });
-    const txt = await r.text();
-    let resp = {};
-    try { resp = JSON.parse(txt); } catch (_) { resp = { error: txt }; }
-    if (r.ok) {
-      _cfgData.test_harness = body;
-      if (resultEl) resultEl.textContent = '';
-      showToast('Test-harness config saved.', 'success');
-    } else if (resultEl) {
-      resultEl.textContent = resp.error || ('Error (' + r.status + ')');
-      resultEl.className = 'cfg-result err';
-    }
-  } catch (e) {
-    if (resultEl) { resultEl.textContent = 'Error: ' + e.message; resultEl.className = 'cfg-result err'; }
-  }
-}
+// Test harness UI removed 2026-04-25 (operator-directed polish sweep).
+// The /api/test-harness/noise-patterns GET endpoint is KEPT — the
+// external test battery (glados-test-battery/harness.py) depends on it.
+// test_harness.yaml is still read/written by config_store; the UI just
+// no longer exposes it.
 
 function _cfgRenderSystemMaintForm() {
   const me = (_cfgData.global || {}).mode_entities || {};
@@ -1718,10 +1591,9 @@ function _cfgRenderAudioSpeakers() {
 
   const TABS = [
     { id: 'speakers',      label: 'Speakers' },
-    { id: 'audio',         label: 'Audio' },
     { id: 'response',      label: 'Response behavior' },
     { id: 'pronunciation', label: 'Pronunciation' },
-    { id: 'chimes',        label: 'Chimes' },
+    { id: 'chimes',        label: 'Sounds' },
   ];
   const activeTabId = _loadPageTab('audio-speakers', 'speakers');
 
@@ -1765,22 +1637,6 @@ function _cfgRenderAudioSpeakers() {
         +  '</div>';
   html +=   '<div id="startupSpeakers" style="opacity:0.5;">Loading&hellip;</div>';
   html +=   '<div id="startupSpeakersStatus" style="font-size:0.75rem;color:var(--orange);margin-top:6px;min-height:1.2em;"></div>';
-  html += '</div>';
-  html += '</div>';
-
-  // ── Audio tab ─────────────────────────────────────────────
-  html += '<div class="page-tab-panel' + (activeTabId === 'audio' ? ' active' : '') + '" data-page-tab-panel-group="audio-speakers" data-tab="audio">';
-  html += '<div class="card">';
-  html += '<div class="cfg-subsection-title">Audio engine</div>';
-  html += '<div class="cfg-field-desc" style="margin-bottom:10px;">'
-    + 'Low-level audio settings &mdash; sentence pacing, cache sizes, directory paths, streaming pacing knobs. '
-    + 'Most fields are advanced; toggle <em>Show Advanced Settings</em> to reveal the full set.'
-    + '</div>';
-  html += cfgBuildForm(audio, 'audio', '');
-  html += '<div class="cfg-save-row">'
-    + '<button class="cfg-save-btn" onclick="cfgSaveSection(\'audio\', \'cfg-save-result-audio\')">Save Audio</button>'
-    + '<span id="cfg-save-result-audio" class="cfg-result"></span>'
-    + '</div>';
   html += '</div>';
   html += '</div>';
 
@@ -1839,24 +1695,51 @@ function _cfgRenderAudioSpeakers() {
   setTimeout(_cfgLoadChimes, 0);
 }
 
-// Page-save dispatcher for System (Phase 6.5.3). Status and
+// Page-save dispatcher for System (Phase 6.5.3). Status, Hardware, and
 // Maintenance have no direct save; Mode saves auth+audit, Services
-// saves the service endpoint grid, Hardware saves test harness.
+// saves the service endpoint grid.
 function _cfgSaveCurrentSystemTab() {
   const active = document.querySelector('[data-page-tab-group="system"].active');
   const id = active ? active.getAttribute('data-tab') : 'status';
   switch (id) {
     case 'mode':     return cfgSaveSystemAuthAudit();
     case 'services': return _cfgSaveSystemServices();
-    case 'hardware': return cfgSaveTestHarness();
+    case 'hardware':
+      showToast('Hardware tab has no saveable fields. Toggle changes apply immediately.', 'info');
+      return;
     case 'status':
       showToast('Status tab is read-only. Restart buttons on each service save-by-action.', 'info');
       return;
     case 'maintenance':
       showToast('Maintenance actions save immediately; no separate save needed.', 'info');
       return;
+    case 'ssl':    return cfgSaveSsl();
+    case 'users':
+      showToast('User actions save immediately via their own buttons.', 'info');
+      return;
     default: return;
   }
+}
+
+function _loadSslIntoSystemTab() {
+  cfgLoadAll().then(function() {
+    var ssl = (_cfgData.global && _cfgData.global.ssl) ? _cfgData.global.ssl : {};
+    var mount = document.getElementById('systemSslMount');
+    if (mount) mount.innerHTML = cfgRenderSsl(ssl);
+  });
+}
+
+function _loadUsersIntoSystemTab() {
+  var mount = document.getElementById('systemUsersMount');
+  if (!mount) return;
+  if (mount.children.length === 0) {
+    // First visit: clone the users content from the legacy panel.
+    var src = document.getElementById('tab-config-users');
+    if (src) {
+      mount.innerHTML = src.innerHTML;
+    }
+  }
+  if (typeof usersLoadAll === 'function') usersLoadAll();
 }
 
 // Page-save dispatcher for Audio & Speakers. Routes by active tab
@@ -1867,7 +1750,6 @@ function _cfgSaveCurrentAudioSpeakersTab() {
   const id = active ? active.getAttribute('data-tab') : 'speakers';
   switch (id) {
     case 'speakers':      return _cfgSaveSpeakersPicker();
-    case 'audio':         return cfgSaveSection('audio', 'cfg-save-result-audio');
     case 'response':
     case 'pronunciation': {
       // Click the card's own Save button if present.
@@ -1877,7 +1759,7 @@ function _cfgSaveCurrentAudioSpeakersTab() {
       return;
     }
     case 'chimes':
-      showToast('Chime uploads and deletes save immediately. No separate save needed.', 'info');
+      showToast('Sound uploads and deletes save immediately. No separate save needed.', 'info');
       return;
     default: return;
   }
@@ -1911,16 +1793,16 @@ function _chimesPopulate(data) {
     ? files.map(f =>
         '<tr>'
         + '<td style="padding:4px 8px;font-family:monospace;">' + escHtml(f.name) + '</td>'
-        + '<td style="padding:4px 8px;color:var(--text-dim);text-align:right;">'
+        + '<td style="padding:4px 8px;color:var(--fg-secondary);text-align:right;">'
         +   _chimesFmtBytes(f.bytes)
         + '</td>'
         + '<td style="padding:4px 8px;">'
         +   '<button class="btn-small" onclick="_chimesPlay(\'' + encodeURIComponent(f.name) + '\')" style="font-size:0.72rem;padding:3px 10px;margin-right:6px;">Play</button>'
-        +   '<button class="btn-small" onclick="_chimesDelete(\'' + encodeURIComponent(f.name) + '\')" style="font-size:0.72rem;padding:3px 10px;background:#c0392b;">Delete</button>'
+        +   '<button class="btn btn-danger" onclick="_chimesDelete(\'' + encodeURIComponent(f.name) + '\')" style="font-size:0.72rem;padding:3px 10px;">Delete</button>'
         + '</td>'
         + '</tr>'
       ).join('')
-    : '<tr><td colspan="3" style="padding:8px;color:var(--text-dim);font-style:italic;">No chime files. Upload one below.</td></tr>';
+    : '<tr><td colspan="3" style="padding:8px;color:var(--fg-secondary);font-style:italic;">No chime files. Upload one below.</td></tr>';
   let html = '';
   html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;margin-bottom:12px;">';
   html += '<thead><tr style="background:var(--bg-input);">'
@@ -1932,8 +1814,8 @@ function _chimesPopulate(data) {
   html += '</table>';
   html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
     +   '<input type="file" id="cfg-chimes-upload" accept=".wav,.mp3,audio/wav,audio/mpeg" '
-    +     'style="flex:1;min-width:220px;background:var(--bg-input);color:var(--text);'
-    +     'border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:0.82rem;">'
+    +     'style="flex:1;min-width:220px;background:var(--bg-input);color:var(--fg-primary);'
+    +     'border:1px solid var(--border-default);border-radius:4px;padding:5px 8px;font-size:0.82rem;">'
     +   '<button class="btn-small" onclick="_chimesUpload()" style="font-size:0.78rem;padding:5px 14px;">Upload</button>'
     +   '<audio id="cfg-chimes-player" controls style="flex:2;min-width:240px;"></audio>'
     + '</div>';
@@ -2039,15 +1921,15 @@ function _pronunciationPopulate(data) {
   const words = data.word_expansions || {};
   const symText = Object.entries(sym).map(a => a[0] + ' = ' + a[1]).join('\n');
   const wordText = Object.entries(words).map(a => a[0] + ' = ' + a[1]).join('\n');
-  const ta = 'background:var(--bg-input);color:var(--text);border:1px solid var(--border);'
+  const ta = 'background:var(--bg-input);color:var(--fg-primary);border:1px solid var(--border-default);'
     + 'border-radius:4px;padding:8px;width:100%;font-family:monospace;font-size:0.82rem;';
   let html = '';
   html += '<div class="cfg-field">'
-    + '<label class="cfg-label">Word expansions <span style="color:var(--text-dim);font-weight:normal;">(whole-word, case-insensitive)</span></label>'
+    + '<label class="cfg-label">Word expansions <span style="color:var(--fg-secondary);font-weight:normal;">(whole-word, case-insensitive)</span></label>'
     + '<textarea id="cfg-pr-words" rows="6" style="' + ta + '">' + escHtml(wordText) + '</textarea>'
     + '</div>';
   html += '<div class="cfg-field" style="margin-top:10px;">'
-    + '<label class="cfg-label">Symbol expansions <span style="color:var(--text-dim);font-weight:normal;">(literal replace, e.g. <code>%</code>, <code>&amp;</code>)</span></label>'
+    + '<label class="cfg-label">Symbol expansions <span style="color:var(--fg-secondary);font-weight:normal;">(literal replace, e.g. <code>%</code>, <code>&amp;</code>)</span></label>'
     + '<textarea id="cfg-pr-symbols" rows="3" style="' + ta + '">' + escHtml(symText) + '</textarea>'
     + '</div>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
@@ -2316,7 +2198,7 @@ function cfgBuildForm(obj, section, prefix, skipKeys) {
 // Ollama URLs go through /api/tags; TTS URLs through /v1/voices.
 function _svcDiscoverKind(key) {
   if (key === 'tts') return 'voices';
-  if (key.indexOf('ollama') === 0) return 'ollama';
+  if (key.indexOf('llm_') === 0) return 'ollama';
   return null;
 }
 
@@ -2326,43 +2208,237 @@ function _svcDiscoverKind(key) {
 const SERVICES_HIDDEN = new Set(['gladys_api']);
 
 
-// Phase 6.2 (2026-04-22) — System page Services zone loader + save.
-// The Services zone lives inside pages/system.py; we hydrate it on
-// config.system activation with the non-LLM services (scope='system').
+// Phase 2 Chunk 2 — System → Services tab: port-grouped status panel + LLM section.
+// Replaces the old URL-input grid for in-container services.
 async function loadSystemServices() {
   const body = document.getElementById('system-services-body');
   if (!body) return;
-  // Make sure _cfgData.services is populated (config.system doesn't
-  // auto-call cfgLoadAll; this is the System-page entry point).
   if (!_cfgData.services) {
     try { await cfgLoadAll(); } catch (e) { /* continue with empty */ }
   }
-  const data = _cfgData.services || {};
-  body.innerHTML = cfgRenderServices(data, 'system');
-  setTimeout(() => cfgPingServices(data), 100);
+  const svc = _cfgData.services || {};
+  const mo = (_cfgData.personality || {}).model_options || {};
+  const t = ((_cfgData.global || {}).tuning) || {};
+
+  // Ollama interactive is the primary LLM endpoint shown.
+  const ollama = svc.llm_interactive || {};
+  const vision = svc.vision || {};
+  const visionConfigured = !!(vision.url || '').trim();
+
+  let html = '';
+
+  // ── Card 1: Service Endpoints (port-grouped status) ─────────
+  html += '<div class="card">';
+  html +=   '<div class="section-title">Service Endpoints</div>';
+  html +=   '<div class="mode-desc" style="margin-bottom:14px;">'
+    +         'In-container services share port 8015. Vision is optional and external.'
+    +       '</div>';
+
+  // :8015 row — TTS, STT, API Wrapper (in-container)
+  html +=   '<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;">';
+  html +=     '<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--fg-primary);min-width:50px;">:8015</span>';
+  html +=     '<span class="svc-health-dot" id="svc-dot-tts"></span>';
+  html +=     '<span style="font-size:0.85rem;margin-right:14px;">TTS</span>';
+  html +=     '<span class="svc-health-dot" id="svc-dot-stt"></span>';
+  html +=     '<span style="font-size:0.85rem;margin-right:14px;">STT</span>';
+  html +=     '<span class="svc-health-dot" id="svc-dot-api_wrapper"></span>';
+  html +=     '<span style="font-size:0.85rem;">API Wrapper</span>';
+  html +=   '</div>';
+  html +=   '<div class="mode-desc" style="margin-bottom:14px;padding-left:60px;">'
+    +         'In-container — no URL configuration. These start and stop with GLaDOS.'
+    +       '</div>';
+
+  // :vision row — Vision (external, optional)
+  const visionDotCls = 'svc-health-dot' + (visionConfigured ? '' : '');
+  html +=   '<div style="display:flex;gap:10px;align-items:center;margin-bottom:4px;">';
+  html +=     '<span style="font-family:var(--font-mono);font-size:0.82rem;color:var(--fg-primary);min-width:50px;">vision</span>';
+  if (visionConfigured) {
+    html +=   '<span class="svc-health-dot" id="svc-dot-vision"></span>';
+    html +=   '<span style="font-size:0.85rem;">Vision</span>';
+  } else {
+    html +=   '<span class="svc-health-dot" id="svc-dot-vision"></span>';
+    html +=   '<span style="font-size:0.85rem;font-style:italic;color:var(--fg-muted);">Vision &mdash; inactive (not configured)</span>';
+  }
+  html +=   '</div>';
+  html +=   '<div class="mode-desc" style="padding-left:60px;">'
+    +         'External vision service. Configure via <code>VISION_URL</code> env var. '
+    +         'Unconfigured or unreachable: vision feature unavailable, other functions unaffected.'
+    +       '</div>';
+
+  html += '</div>'; // end Card 1
+
+  // ── Card 2: LLM endpoints — one card per slot ──────────────
+  // Phase 6.2 (2026-04-22) consolidated LLM into a single hand-rolled
+  // card here, but that hardcoded `llm_interactive` and silently
+  // shared its URL+model with `llm_autonomy` on save — leaving
+  // `llm_vision` and `llm_triage` (added 2026-04-28) completely
+  // unconfigurable via the WebUI. 2026-04-28 fix: render the four
+  // LLM slots through the existing `cfgRenderServices` grid so each
+  // slot gets its own URL + Model dropdown + Discover button.
+  html += '<div class="card" style="margin-top:var(--sp-3);">';
+  html +=   '<div class="section-title">LLM Endpoints</div>';
+  html +=   '<div class="mode-desc" style="margin-bottom:14px;">'
+    +         'Four independent slots: Interactive (chat), Autonomy '
+    +         '(background subagents), Triage (Tier&nbsp;2 disambiguator + '
+    +         'classification), Vision. Configure each separately; the '
+    +         'engine routes per role.'
+    +       '</div>';
+
+  // Filter the services payload to only LLM slots and render via the
+  // generic 4-card grid. Each card emits cfg-services-{key}-url and
+  // cfg-services-{key}-model inputs that _cfgSaveSystemServices reads.
+  const _llmOnly = {};
+  for (const [k, v] of Object.entries(svc)) {
+    if (k.indexOf('llm_') === 0) _llmOnly[k] = v;
+  }
+  html += cfgRenderServices(_llmOnly, 'llm');
+
+  // Advanced collapsible
+  html +=   '<div style="margin-top:12px;">';
+  html +=     '<button type="button" class="cfg-save-btn" style="background:none;border:none;padding:0;'
+    +         'color:var(--fg-primary);font-size:0.85rem;cursor:pointer;display:flex;align-items:center;gap:6px;"'
+    +         ' onclick="_systemLlmToggleAdvanced(this)">'
+    +         '<span id="system-llm-adv-caret" style="font-size:0.7rem;">&#9656;</span>'
+    +         'Advanced (Model Options &amp; Timeouts)'
+    +         '</button>';
+  html +=     '<div id="system-llm-advanced" style="display:none;margin-top:10px;">';
+
+  // Model Options
+  html +=       '<div class="cfg-subsection-title">Model Options</div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Temperature</label>'
+    +           '<div class="cfg-field-desc">0.0 is deterministic, 1.0+ is creative</div>'
+    +           '<input id="cfg-personality-model_options-temperature" data-path="model_options.temperature" data-type="number" type="number" step="any" value="' + escAttr(String(mo.temperature ?? 0.7)) + '"></div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Top P</label>'
+    +           '<div class="cfg-field-desc">Nucleus sampling threshold (0.0 - 1.0)</div>'
+    +           '<input id="cfg-personality-model_options-top_p" data-path="model_options.top_p" data-type="number" type="number" step="any" value="' + escAttr(String(mo.top_p ?? 0.9)) + '"></div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Context Window (num_ctx)</label>'
+    +           '<div class="cfg-field-desc">Tokens of context the model sees per turn</div>'
+    +           '<input id="cfg-personality-model_options-num_ctx" data-path="model_options.num_ctx" data-type="number" type="number" value="' + escAttr(String(mo.num_ctx ?? 16384)) + '"></div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Repeat Penalty</label>'
+    +           '<div class="cfg-field-desc">Higher values reduce parroting (typical 1.0 - 1.3)</div>'
+    +           '<input id="cfg-personality-model_options-repeat_penalty" data-path="model_options.repeat_penalty" data-type="number" type="number" step="any" value="' + escAttr(String(mo.repeat_penalty ?? 1.1)) + '"></div>';
+
+  // LLM Timeouts
+  html +=       '<div class="cfg-subsection-title" style="margin-top:12px;">LLM Timeouts</div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Connect Timeout (s)</label>'
+    +           '<div class="cfg-field-desc">Seconds to wait for LLM connection</div>'
+    +           '<input id="cfg-llm-connect-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_connect_timeout_s ?? 10)) + '"></div>';
+  html +=       '<div class="cfg-field"><label class="cfg-field-label">Read Timeout (s)</label>'
+    +           '<div class="cfg-field-desc">Max seconds to wait for LLM response</div>'
+    +           '<input id="cfg-llm-read-timeout" data-type="number" type="number" value="' + escAttr(String(t.llm_read_timeout_s ?? 180)) + '"></div>';
+
+  html +=     '</div>'; // end #system-llm-advanced
+  html +=   '</div>';   // end collapsible wrapper
+
+  // Save button
+  html +=   '<div class="cfg-save-row" style="margin-top:14px;">';
+  html +=     '<button class="btn btn-primary" onclick="_cfgSaveSystemServices()">Save Services &amp; LLM</button>';
+  html +=     '<span id="cfg-save-result-system-services" class="cfg-result"></span>';
+  html +=   '</div>';
+
+  html += '</div>'; // end Card 2
+
+  body.innerHTML = html;
+
+  // Ping in-container services via health aggregate.
+  _systemServicesPingStatus(svc);
+}
+
+function _systemLlmToggleAdvanced(btn) {
+  const adv = document.getElementById('system-llm-advanced');
+  const caret = document.getElementById('system-llm-adv-caret');
+  if (!adv) return;
+  const open = adv.style.display !== 'none';
+  adv.style.display = open ? 'none' : 'block';
+  if (caret) caret.innerHTML = open ? '&#9656;' : '&#9662;';
+}
+
+
+async function _systemServicesPingStatus(svcData) {
+  // Ping in-container services via /api/health/aggregate.
+  try {
+    const r = await fetch('/api/health/aggregate', { credentials: 'same-origin' });
+    const data = await r.json();
+    const byName = {};
+    (data.services || []).forEach(s => { byName[s.name.toLowerCase()] = s.status; });
+    const map = { tts: 'tts', stt: 'stt', api_wrapper: 'api', vision: 'vision' };
+    for (const [key, aggName] of Object.entries(map)) {
+      const dot = document.getElementById('svc-dot-' + key);
+      if (!dot) continue;
+      if (key === 'vision') {
+        const vision = svcData.vision || {};
+        const configured = !!(vision.url || '').trim();
+        if (!configured) {
+          dot.className = 'svc-health-dot';  // grey = inactive
+          dot.title = 'Not configured';
+        } else {
+          const st = byName[aggName] || byName['vision'];
+          dot.className = 'svc-health-dot ' + (st === 'ok' ? 'ok' : 'err');
+        }
+      } else {
+        const st = byName[aggName];
+        if (st) dot.className = 'svc-health-dot ' + (st === 'ok' ? 'ok' : 'err');
+      }
+    }
+  } catch(e) { /* leave dots grey */ }
 }
 
 async function _cfgSaveSystemServices() {
   const resultEl = document.getElementById('cfg-save-result-system-services');
-  if (resultEl) { resultEl.textContent = 'Saving…'; resultEl.className = 'cfg-result'; }
-  const partial = cfgCollectForm('services');
-  const merged = Object.assign({}, _cfgData.services || {}, partial);
-  try {
-    const r = await fetch('/api/config/services', {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(merged),
-    });
-    const resp = await r.json();
-    if (!r.ok) {
-      if (resultEl) { resultEl.textContent = resp.error || ('Error ' + r.status); resultEl.className = 'cfg-result err'; }
+  if (resultEl) { resultEl.textContent = 'Saving\u2026'; resultEl.className = 'cfg-result'; }
+
+  // 1. Save each LLM slot's URL + model independently (preserve
+  //    non-LLM keys like tts/stt/vision/api_wrapper). Phase 6.2's
+  //    save logic shared one URL+model across interactive+autonomy
+  //    and ignored vision+triage entirely; 2026-04-28 fix lets the
+  //    operator configure each of the four LLM slots independently.
+  const partial = Object.assign({}, _cfgData.services || {});
+  let anyChanged = false;
+  for (const key of Object.keys(SERVICE_NAMES)) {
+    if (key.indexOf('llm_') !== 0) continue;
+    const urlEl   = document.getElementById('cfg-services-' + key + '-url');
+    const modelEl = document.getElementById('cfg-services-' + key + '-model');
+    if (!urlEl && !modelEl) continue;  // card not rendered
+    if (!partial[key]) partial[key] = {};
+    if (urlEl) {
+      partial[key].url = urlEl.value.trim();
+      anyChanged = true;
+    }
+    if (modelEl && modelEl.value) {
+      partial[key].model = modelEl.value;
+      anyChanged = true;
+    }
+  }
+  if (anyChanged) {
+    try {
+      const r = await fetch('/api/config/services', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(partial),
+      });
+      const resp = await r.json();
+      if (!r.ok) {
+        if (resultEl) { resultEl.textContent = resp.error || ('Error ' + r.status); resultEl.className = 'cfg-result err'; }
+        return;
+      }
+      _cfgData.services = partial;
+    } catch (e) {
+      if (resultEl) { resultEl.textContent = String(e); resultEl.className = 'cfg-result err'; }
       return;
     }
-    _cfgData.services = merged;
-    if (resultEl) { resultEl.textContent = 'Saved'; resultEl.className = 'cfg-result cfg-result-ok'; }
-  } catch (e) {
-    if (resultEl) { resultEl.textContent = String(e); resultEl.className = 'cfg-result err'; }
   }
+
+  // 2. Model Options — only if the advanced section was rendered.
+  if (document.getElementById('cfg-personality-model_options-temperature')) {
+    await cfgSaveModelOptions();
+  }
+
+  // 3. LLM Timeouts.
+  if (document.getElementById('cfg-llm-connect-timeout')) {
+    await cfgSaveLLMTimeouts();
+  }
+
+  if (resultEl) { resultEl.textContent = 'Saved'; resultEl.className = 'cfg-result cfg-result-ok'; }
 }
 
 function cfgRenderServices(data, scope) {
@@ -2370,7 +2446,7 @@ function cfgRenderServices(data, scope) {
   //   scope === 'llm'    -> Ollama endpoints only (Integrations page)
   //   scope === 'system' -> TTS / STT / Vision / api_wrapper (System page)
   //   scope === null     -> full grid (legacy behavior)
-  const _isLLM = k => k.indexOf('ollama') === 0;
+  const _isLLM = k => k.indexOf('llm_') === 0;
   let html = '<div class="service-grid">';
   for (const [key, svc] of Object.entries(data)) {
     if (SERVICES_HIDDEN.has(key)) continue;
@@ -2381,6 +2457,12 @@ function cfgRenderServices(data, scope) {
     const discoverKind = _svcDiscoverKind(key);
     const hasVoice = (key === 'tts' && svc.voice !== undefined);
     const hasModel = (svc.model !== undefined) || (discoverKind === 'ollama');
+    // LLM cards get an explicit ``http://host:port`` placeholder + a
+    // hint that protocol-internal paths (``/v1/chat/completions`` etc.)
+    // are appended automatically at dispatch — operators only ever type
+    // the bare base URL. Other service kinds keep the legacy unhinted
+    // input because their URL shapes differ (TTS, STT, vision).
+    const _urlPlaceholder = _isLLM(key) ? 'http://host:port' : '';
     html += '<div class="service-card">'
       + '<div class="service-card-header">'
       + '<span class="svc-health-dot" id="svc-dot-' + key + '"></span>'
@@ -2390,14 +2472,18 @@ function cfgRenderServices(data, scope) {
       + '<label class="cfg-field-label">URL</label>'
       + '<div class="svc-url-row">'
       +   '<input id="' + urlId + '" data-path="' + key + '.url" data-type="string" value="' + escAttr(svc.url || '') + '"'
+      +     (_urlPlaceholder ? ' placeholder="' + escAttr(_urlPlaceholder) + '"' : '')
       +     (discoverKind ? ' onblur="svcUrlBlur(\'' + escAttr(key) + '\')"' : '')
       +   '>';
     if (discoverKind) {
       html += '<button type="button" class="svc-discover-btn" title="Discover from upstream" onclick="svcDiscover(\'' + escAttr(key) + '\')">&#x21bb; Discover</button>';
     }
     html +=   '<span class="svc-discover-status" id="svc-status-' + key + '"></span>'
-      + '</div>'
       + '</div>';
+    if (_isLLM(key)) {
+      html += '<div class="cfg-field-hint">Server URL — paths added automatically (e.g. /v1/chat/completions)</div>';
+    }
+    html += '</div>';
     if (hasVoice) {
       html += '<div class="cfg-field" style="margin-bottom:6px;">'
         + '<label class="cfg-field-label">Voice</label>'
@@ -2427,7 +2513,7 @@ function cfgRenderServices(data, scope) {
 // /health, GLaDOS-own services use /health. Without this hint,
 // every Ollama / TTS dot is false-red because /health returns 404.
 function _svcHealthKind(key) {
-  if (key.indexOf('ollama') === 0) return 'ollama';
+  if (key.indexOf('llm_') === 0) return 'ollama';
   if (key === 'tts') return 'tts';
   if (key === 'stt') return 'stt';
   if (key === 'api_wrapper' || key === 'vision') return key;
@@ -2528,6 +2614,88 @@ function _svcPopulateDropdown(id, options) {
   el.innerHTML = html;
 }
 
+/* ─── Custom pbar slider helpers (Phase 2 Chunk 3) ─────────────── *
+ * Wires click+drag on .pbar-wrap elements rendered by cfgRenderPersonality.
+ * _pbarNumChange: called from the number input onchange attribute.
+ * _pbarInit:      call after innerHTML is set to attach mousedown handlers.
+ */
+
+function _pbarSetValue(barId, numId, min, max, val) {
+  val = Math.max(min, Math.min(max, val));
+  const pct = ((val - min) / (max - min) * 100);
+  const thumb = document.getElementById(barId + '-thumb');
+  const fill  = document.getElementById(barId + '-fill');
+  const num   = document.getElementById(numId);
+  if (thumb) thumb.style.left = pct.toFixed(4) + '%';
+  if (num) num.value = (min < 0)
+    ? (val > 0 ? '+' + val.toFixed(2) : val.toFixed(2))
+    : val.toFixed(2);
+  if (fill) {
+    if (min < 0) {
+      if (val >= 0) {
+        fill.style.left  = '50%';
+        fill.style.width = (pct - 50).toFixed(4) + '%';
+      } else {
+        fill.style.left  = pct.toFixed(4) + '%';
+        fill.style.width = (50 - pct).toFixed(4) + '%';
+      }
+    } else {
+      fill.style.left  = '0';
+      fill.style.width = pct.toFixed(4) + '%';
+    }
+  }
+}
+
+function _pbarNumChange(barId, numId, min, max) {
+  const num = document.getElementById(numId);
+  if (!num) return;
+  _pbarSetValue(barId, numId, min, max, parseFloat(num.value) || 0);
+}
+
+function _pbarInit(containerEl) {
+  const wraps = containerEl ? containerEl.querySelectorAll('.pbar-wrap') : [];
+  wraps.forEach(wrap => {
+    const bar   = wrap.querySelector('.pbar');
+    const thumb = wrap.querySelector('.pbar-thumb');
+    if (!bar || !thumb) return;
+    const barId  = bar.id;
+    const numId  = barId.replace(/-bar$/, '-num');
+    const numEl  = document.getElementById(numId);
+    const min    = numEl ? parseFloat(numEl.min) : 0;
+    const max    = numEl ? parseFloat(numEl.max) : 1;
+
+    function _valFromClientX(cx) {
+      const rect = bar.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
+      return min + ratio * (max - min);
+    }
+
+    function _onMove(e) {
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      _pbarSetValue(barId, numId, min, max, _valFromClientX(cx));
+    }
+
+    function _onUp() {
+      document.removeEventListener('mousemove', _onMove);
+      document.removeEventListener('mouseup', _onUp);
+      document.removeEventListener('touchmove', _onMove);
+      document.removeEventListener('touchend', _onUp);
+    }
+
+    bar.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      _pbarSetValue(barId, numId, min, max, _valFromClientX(e.clientX));
+      document.addEventListener('mousemove', _onMove);
+      document.addEventListener('mouseup', _onUp);
+    });
+    bar.addEventListener('touchstart', function(e) {
+      _pbarSetValue(barId, numId, min, max, _valFromClientX(e.touches[0].clientX));
+      document.addEventListener('touchmove', _onMove, {passive: true});
+      document.addEventListener('touchend', _onUp);
+    }, {passive: true});
+  });
+}
+
 /* â”€â”€ Personality custom renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function cfgRenderPersonality(data) {
@@ -2573,10 +2741,13 @@ function cfgRenderPersonality(data) {
   html += '<div class="page-tab-panel' + (activeTabId === 'identity' ? ' active' : '') + '" data-page-tab-panel-group="personality" data-tab="identity">';
 
   // Preprompt entries (system/user/assistant seed messages)
-  if (data.preprompt && data.preprompt.length > 0) {
+  // Bug fix (Phase 2 Chunk 3): was reading data.preprompt (empty list in
+  // personality.yaml); actual persona lives at data.personality_preprompt.
+  const _prepromptList = Array.isArray(data.personality_preprompt) ? data.personality_preprompt : [];
+  if (_prepromptList.length > 0) {
     html += '<div class="cfg-group"><div class="cfg-group-title">Preprompt Messages</div>';
-    for (let i = 0; i < data.preprompt.length; i++) {
-      const entry = data.preprompt[i];
+    for (let i = 0; i < _prepromptList.length; i++) {
+      const entry = _prepromptList[i];
       for (const role of ['system', 'user', 'assistant']) {
         if (entry[role] != null) {
           html += '<div class="preprompt-pair">'
@@ -2596,48 +2767,66 @@ function cfgRenderPersonality(data) {
         label: 'Honesty – Humility',
         desc: 'Sincerity and fairness versus willingness to manipulate and exploit others. '
             + 'Lower is more self-serving and manipulative; higher is more transparent and fair-minded.',
+        pole_low: 'Manipulative', pole_high: 'Sincere',
       },
       emotionality: {
         label: 'Emotionality',
         desc: 'Fearfulness, anxiety, and sentimentality versus emotional detachment. '
             + 'Lower is more stoic and unflappable; higher is more anxious and sentimental.',
+        pole_low: 'Unflappable', pole_high: 'Anxious',
       },
       extraversion: {
         label: 'Extraversion',
         desc: 'Outgoing sociability and liveliness versus reserved introversion. '
             + 'Lower is more reserved and withholding; higher is more outgoing and expressive.',
+        pole_low: 'Reserved', pole_high: 'Outgoing',
       },
       agreeableness: {
         label: 'Agreeableness',
         desc: 'Patience, forgiveness, and cooperation versus combative irritability. '
             + 'Lower is more suspicious and caustic; higher is more trusting and forgiving.',
+        pole_low: 'Combative', pole_high: 'Cooperative',
       },
       conscientiousness: {
         label: 'Conscientiousness',
         desc: 'Organization, discipline, and diligence versus carelessness. '
             + 'Lower is more impulsive and sloppy; higher is more organized and deliberate.',
+        pole_low: 'Impulsive', pole_high: 'Disciplined',
       },
       openness: {
         label: 'Openness to experience',
         desc: 'Curiosity, imagination, and unconventionality versus preference for the familiar. '
             + 'Lower is more conventional and routine-bound; higher is more curious and experimental.',
+        pole_low: 'Conventional', pole_high: 'Curious',
       },
     };
     html += '<div class="cfg-group" data-advanced="true"><div class="cfg-group-title">HEXACO Personality Traits</div>';
-    html += '<div class="cfg-field-desc" style="margin-bottom:12px;">Six-factor personality model. Each trait runs 0.00 (minimum of the trait) to 1.00 (maximum), with 0.50 as balanced.</div>';
+    html += '<div class="cfg-field-desc" style="margin-bottom:12px;">Six-factor personality model. Each trait runs 0.00 (minimum) to 1.00 (maximum), with 0.50 as balanced.</div>';
     for (const [k, v] of Object.entries(data.hexaco)) {
-      const fieldId = 'cfg-personality-hexaco-' + k;
-      const meta = HEXACO_META[k] || { label: k.replace(/_/g, ' '), desc: '' };
-      const display = (v == null ? 0 : v).toFixed(2);
-      html += '<div class="trait-row">'
-        + '<div class="trait-head">'
-        +   '<label class="trait-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
-        +   '<output class="trait-value" id="' + fieldId + '-value">' + display + '</output>'
+      const numId = 'cfg-personality-hexaco-' + k + '-num';
+      const barId = 'cfg-personality-hexaco-' + k + '-bar';
+      const meta = HEXACO_META[k] || { label: k.replace(/_/g, ' '), desc: '', pole_low: '0', pole_high: '1' };
+      const val = (v == null ? 0 : v);
+      const pct = (val * 100).toFixed(4);
+      const display = val.toFixed(2);
+      html += '<div class="ptrait">'
+        + '<div class="ptrait-name">' + escHtml(meta.label) + '</div>'
+        + (meta.desc ? '<div class="ptrait-desc">' + escHtml(meta.desc) + '</div>' : '')
+        + '<div class="ptrait-slider-row">'
+        +   '<div class="pbar-wrap" id="' + barId + '-wrap">'
+        +     '<div class="pbar" id="' + barId + '">'
+        +       '<div class="pbar-fill" id="' + barId + '-fill" style="left:0;width:' + pct + '%;"></div>'
+        +       '<div class="pbar-thumb" id="' + barId + '-thumb" style="left:' + pct + '%;"></div>'
+        +     '</div>'
+        +     '<div class="pbar-poles">'
+        +       '<span>' + escHtml(meta.pole_low || '0') + '</span>'
+        +       '<span>' + escHtml(meta.pole_high || '1') + '</span>'
+        +     '</div>'
+        +   '</div>'
+        +   '<input class="pnum" id="' + numId + '" type="number" min="0" max="1" step="0.01" value="' + display + '" '
+        +     'data-path="hexaco.' + k + '" data-type="number" '
+        +     'onchange="_pbarNumChange(\'' + barId + '\',\'' + numId + '\',0,1)">'
         + '</div>'
-        + '<input id="' + fieldId + '" data-path="hexaco.' + k + '" data-type="number" type="range" '
-        +   'min="0" max="1" step="0.01" value="' + v + '" '
-        +   'oninput="document.getElementById(\'' + fieldId + '-value\').textContent = parseFloat(this.value).toFixed(2);">'
-        + (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
         + '</div>';
     }
     html += '</div>';
@@ -2649,9 +2838,9 @@ function cfgRenderPersonality(data) {
       enabled:             { label: 'Emotion engine enabled',    desc: 'Master switch. When off, GLaDOS always responds from her baseline mood without updating based on events.' },
       tick_interval_s:     { label: 'Tick interval (seconds)',   desc: 'How often the emotion engine re-evaluates mood between events. Shorter is more reactive, longer is calmer.' },
       max_events:          { label: 'Event memory',              desc: 'Number of recent interactions that influence current mood before they fade out.' },
-      baseline_pleasure:   { label: 'Baseline pleasure',         desc: 'Default pleasantness when nothing has happened. −1 is miserable, 0 is neutral, +1 is delighted.' },
-      baseline_arousal:    { label: 'Baseline arousal',          desc: 'Default alertness. −1 is sedate, 0 is calm, +1 is frantic.' },
-      baseline_dominance:  { label: 'Baseline dominance',        desc: 'Default assertiveness. −1 is submissive, 0 is neutral, +1 is commanding.' },
+      baseline_pleasure:   { label: 'Baseline pleasure',         desc: 'Default pleasantness when nothing has happened. −1 is miserable, 0 is neutral, +1 is delighted.',   pole_low: 'Displeased −1', pole_high: '+1 Pleased' },
+      baseline_arousal:    { label: 'Baseline arousal',          desc: 'Default alertness. −1 is sedate, 0 is calm, +1 is frantic.',                                        pole_low: 'Sedate −1',    pole_high: '+1 Frantic' },
+      baseline_dominance:  { label: 'Baseline dominance',        desc: 'Default assertiveness. −1 is submissive, 0 is neutral, +1 is commanding.',                          pole_low: 'Submissive −1', pole_high: '+1 Commanding' },
       mood_drift_rate:     { label: 'Mood drift rate',           desc: 'Per-tick pull from current mood back toward baseline. Higher is faster forgiveness; lower means events stick.' },
       baseline_drift_rate: { label: 'Baseline drift rate',       desc: 'Per-tick shift of baseline itself from repeated exposure. Lower is more stable personality; higher means sustained interactions reshape her.' },
     };
@@ -2660,6 +2849,8 @@ function cfgRenderPersonality(data) {
 
     function _renderEmotionField(k, v) {
       const fieldId = 'cfg-personality-emotion-' + k;
+      const numId = fieldId + '-num';
+      const barId = fieldId + '-bar';
       const meta = EMOTION_META[k] || { label: k.replace(/_/g, ' '), desc: '' };
       if (typeof v === 'boolean') {
         return ''
@@ -2673,17 +2864,32 @@ function cfgRenderPersonality(data) {
           + '</div>';
       }
       if (pad_fields.indexOf(k) >= 0) {
-        const display = (v == null ? 0 : v).toFixed(2);
+        // Range −1 to 1. Fill anchors at 50% (zero) and grows in either direction.
+        const val = (v == null ? 0 : v);
+        const pct = ((val + 1) / 2 * 100).toFixed(4);
+        const fillLeft = val >= 0 ? '50%' : pct + '%';
+        const fillWidth = (Math.abs(val) / 2 * 100).toFixed(4) + '%';
+        const signStr = val > 0 ? '+' + val.toFixed(2) : val.toFixed(2);
         return ''
-          + '<div class="trait-row">'
-          +   '<div class="trait-head">'
-          +     '<label class="trait-label" for="' + fieldId + '">' + escHtml(meta.label) + '</label>'
-          +     '<output class="trait-value" id="' + fieldId + '-value">' + display + '</output>'
+          + '<div class="ptrait">'
+          +   '<div class="ptrait-name">' + escHtml(meta.label) + '</div>'
+          +   (meta.desc ? '<div class="ptrait-desc">' + escHtml(meta.desc) + '</div>' : '')
+          +   '<div class="ptrait-slider-row">'
+          +     '<div class="pbar-wrap" id="' + barId + '-wrap">'
+          +       '<div class="pbar" id="' + barId + '">'
+          +         '<div class="pbar-fill" id="' + barId + '-fill" style="left:' + fillLeft + ';width:' + fillWidth + ';"></div>'
+          +         '<div class="pbar-thumb" id="' + barId + '-thumb" style="left:' + pct + '%;"></div>'
+          +         '<div class="pbar-zero" style="left:50%;"></div>'
+          +       '</div>'
+          +       '<div class="pbar-poles">'
+          +         '<span>' + escHtml(meta.pole_low || '−1') + '</span>'
+          +         '<span>' + escHtml(meta.pole_high || '+1') + '</span>'
+          +       '</div>'
+          +     '</div>'
+          +     '<input class="pnum" id="' + numId + '" type="number" min="-1" max="1" step="0.01" value="' + signStr + '" '
+          +       'data-path="emotion.' + k + '" data-type="number" '
+          +       'onchange="_pbarNumChange(\'' + barId + '\',\'' + numId + '\',-1,1)">'
           +   '</div>'
-          +   '<input id="' + fieldId + '" data-path="emotion.' + k + '" data-type="number" type="range" '
-          +     'min="-1" max="1" step="0.05" value="' + v + '" '
-          +     'oninput="document.getElementById(\'' + fieldId + '-value\').textContent = parseFloat(this.value).toFixed(2);">'
-          +   (meta.desc ? '<div class="trait-desc">' + escHtml(meta.desc) + '</div>' : '')
           + '</div>';
       }
       return ''
@@ -2728,7 +2934,7 @@ function cfgRenderPersonality(data) {
         + '</tr>';
     }
     html += '</table>';
-    html += '<div style="font-size:0.73rem;color:var(--text-muted);margin-top:6px;">Edit attitudes via Raw YAML tab</div>';
+    html += '<div style="font-size:0.73rem;color:var(--fg-tertiary);margin-top:6px;">Edit attitudes via Raw YAML tab</div>';
     html += '</div>';
   }
 
@@ -2932,7 +3138,7 @@ function _cfgRenderEmotionTTS(data) {
            +    '<div class="cfg-group-title" style="font-size:1em;">' + escHtml(band.label) + '</div>'
            +    '<div class="cfg-field-desc" style="margin:4px 0 0 0;">' + escHtml(band.desc) + '</div>'
            +  '</div>';
-    html +=   '<button type="button" class="cfg-save-btn" style="background:#333;font-size:0.85em;padding:4px 10px;" '
+    html +=   '<button type="button" class="cfg-save-btn" style="font-size:0.85em;padding:4px 10px;" '
            +    'onclick="_cfgResetEmotionTTSBand(\'' + band.key + '\')" '
            +    'title="Reset this band to Piper defaults (silent no-op)">Reset</button>';
     html += '</div>';
@@ -3047,8 +3253,8 @@ function _quipRenderTree(data) {
   html += '<div style="flex:2;min-width:320px;display:flex;flex-direction:column;gap:8px;">';
   html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
     + '<input type="text" id="cfg-quip-path" placeholder="command_ack/turn_on/normal.txt" style="flex:1;min-width:220px;">'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_quipLoadFromPath()">Open</button>'
-    + '<button type="button" class="cfg-save-btn" style="background:#a33;" onclick="_quipDelete()">Delete</button>'
+    + '<button type="button" class="cfg-save-btn" onclick="_quipLoadFromPath()">Open</button>'
+    + '<button type="button" class="btn btn-danger" onclick="_quipDelete()">Delete</button>'
     + '</div>';
   html += '<textarea id="cfg-quip-editor" style="width:100%;min-height:280px;font-family:monospace;background:#1a1a1a;color:#ddd;border:1px solid #333;padding:8px;"></textarea>';
   html += '<div class="cfg-save-row"><button class="cfg-save-btn" onclick="_quipSave()">Save file</button>'
@@ -3071,7 +3277,7 @@ function _quipRenderTree(data) {
     +   '<option value="cranky">cranky</option>'
     +   '<option value="amused">amused</option>'
     + '</select>'
-    + '<button class="cfg-save-btn" style="background:#333;" onclick="_quipDryRun()">Pick a line</button>'
+    + '<button class="cfg-save-btn" onclick="_quipDryRun()">Pick a line</button>'
     + '</div>'
     + '<div id="cfg-quip-test-result" style="margin-top:8px;font-family:monospace;color:#9cdcfe;"></div>';
   body.innerHTML = html;
@@ -3223,8 +3429,8 @@ function _canonRenderTree(data) {
   html += '<div style="flex:2;min-width:320px;display:flex;flex-direction:column;gap:8px;">';
   html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
     + '<input type="text" id="cfg-canon-path" placeholder="<topic>.txt" style="flex:1;min-width:220px;">'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_canonLoadFromPath()">Open</button>'
-    + '<button type="button" class="cfg-save-btn" style="background:#a33;" onclick="_canonDelete()">Delete</button>'
+    + '<button type="button" class="cfg-save-btn" onclick="_canonLoadFromPath()">Open</button>'
+    + '<button type="button" class="btn btn-danger" onclick="_canonDelete()">Delete</button>'
     + '</div>';
   html += '<textarea id="cfg-canon-editor" style="width:100%;min-height:300px;font-family:monospace;background:#1a1a1a;color:#ddd;border:1px solid #333;padding:8px;" placeholder="# Optional comment line.\n\nFirst canon entry. One to three sentences.\n\nSecond canon entry. Blank line separates."></textarea>';
   html += '<div class="cfg-save-row"><button class="cfg-save-btn" onclick="_canonSave()">Save file</button>'
@@ -3235,7 +3441,7 @@ function _canonRenderTree(data) {
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">Enter an utterance; the panel shows whether the canon gate fires and which entries would be injected into the LLM context.</div>'
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
     + '<input type="text" id="cfg-canon-test-utt" placeholder="How did you cope with being a potato?" style="flex:1;min-width:280px;">'
-    + '<button class="cfg-save-btn" style="background:#333;" onclick="_canonDryRun()">Retrieve</button>'
+    + '<button class="cfg-save-btn" onclick="_canonDryRun()">Retrieve</button>'
     + '</div>'
     + '<div id="cfg-canon-test-result" style="margin-top:8px;font-family:monospace;font-size:0.9em;color:#ddd;"></div>';
   body.innerHTML = html;
@@ -3376,13 +3582,13 @@ function _cmdrecPopulate(data) {
     +   'light, set, put, dial, slide, push, pull, close, open, shut, drop).'
     + '</div>'
     + '<div id="cfg-cmdrec-verbs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_cmdrecAddVerb()">+ Add verb</button>';
+    + '<button type="button" class="cfg-save-btn" onclick="_cmdrecAddVerb()">+ Add verb</button>';
   html += '<div class="cfg-field-label" style="margin-top:14px;">Extra ambient-state patterns (regex)</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
     +   'Case-insensitive Python regex. Invalid patterns are rejected on save.'
     + '</div>'
     + '<div id="cfg-cmdrec-patterns" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px;"></div>'
-    + '<button type="button" class="cfg-save-btn" style="background:#333;" onclick="_cmdrecAddPattern()">+ Add pattern</button>';
+    + '<button type="button" class="cfg-save-btn" onclick="_cmdrecAddPattern()">+ Add pattern</button>';
   html += '<div class="cfg-field-label" style="margin-top:18px;">Test input</div>'
     + '<div class="cfg-field-desc" style="margin-bottom:6px;">'
     +   'Type a phrase and see whether the current precheck (defaults + any edits above once saved) would recognise it.'
@@ -3409,7 +3615,7 @@ function _cmdrecRenderVerbRow(host, v) {
   row.style.cssText = 'display:flex;gap:6px;align-items:center;';
   row.innerHTML = ''
     + '<input type="text" class="cfg-cmdrec-verb" value="' + escAttr(v) + '" placeholder="e.g. nudge" style="flex:1;">'
-    + '<button type="button" title="Remove verb" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove verb">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -3421,7 +3627,7 @@ function _cmdrecRenderPatternRow(host, p) {
   row.style.cssText = 'display:flex;gap:6px;align-items:center;';
   row.innerHTML = ''
     + '<input type="text" class="cfg-cmdrec-pattern" value="' + escAttr(p) + '" placeholder="e.g. \\\\bthe cats? (?:need|want)\\\\b" style="flex:1;font-family:monospace;">'
-    + '<button type="button" title="Remove pattern" style="background:#a33;color:#fff;border:0;border-radius:3px;padding:4px 10px;cursor:pointer;">&times;</button>';
+    + '<button type="button" class="btn btn-danger" title="Remove pattern">&times;</button>';
   const del = row.querySelector('button');
   if (del) del.addEventListener('click', () => row.remove());
   host.appendChild(row);
@@ -3583,7 +3789,8 @@ function cfgCollectPersonality() {
     }
     obj[parts[parts.length - 1]] = val;
   });
-  // Collect preprompt textareas
+  // Collect preprompt textareas — write back to personality_preprompt (not preprompt).
+  // Bug fix Phase 2 Chunk 3: the actual persona lives at personality_preprompt.
   const prepromptEls = document.querySelectorAll('[data-preprompt]');
   if (prepromptEls.length > 0) {
     const entries = {};
@@ -3592,7 +3799,7 @@ function cfgCollectPersonality() {
       if (!entries[idx]) entries[idx] = {};
       entries[idx][role] = el.value;
     });
-    result.preprompt = Object.values(entries);
+    result.personality_preprompt = Object.values(entries);
   }
   // Preserve attitudes as-is (read-only in form view)
   if (_cfgData.personality && _cfgData.personality.attitudes) {
@@ -4058,10 +4265,28 @@ function memHideAddForm() {
   document.getElementById('memAddText').value = '';
 }
 
+// Segmented control helper — shared by add form and edit form.
+function memSegSelect(cell, segId) {
+  document.querySelectorAll('#' + segId + ' .tts-seg-cell').forEach(c => c.classList.remove('on'));
+  cell.classList.add('on');
+}
+
+// Map a 0-1 numeric importance value to the nearest 5-point label.
+function _memImportanceLabel(val) {
+  const v = Number(val) || 0;
+  if (v <= 0.10) return 'Background';
+  if (v <= 0.30) return 'Background';
+  if (v <= 0.50) return 'Useful';
+  if (v <= 0.70) return 'Important';
+  if (v <= 0.90) return 'Critical';
+  return 'Extreme';
+}
+
 async function memAddFact() {
   const text = document.getElementById('memAddText').value.trim();
   if (!text) { showToast('Text required', 'error'); return; }
-  const importance = parseFloat(document.getElementById('memAddImportance').value);
+  const onCell = document.querySelector('#memAddImportanceSeg .tts-seg-cell.on');
+  const importance = onCell ? parseFloat(onCell.dataset.value) : 0.60;
   try {
     const r = await fetch('/api/memory/add', {
       method: 'POST',
@@ -4106,7 +4331,7 @@ async function memLoadFacts() {
 function _memRenderFacts(rows) {
   const el = document.getElementById('memFactsList');
   if (rows.length === 0) {
-    el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No facts yet. Click + Add to record one.</div>';
+    el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">No facts yet. Click + Add to record one.</div>';
     return;
   }
   let html = '';
@@ -4114,25 +4339,37 @@ function _memRenderFacts(rows) {
   el.innerHTML = html;
 }
 
+// Shared icon SVGs — declared ONCE in this external script because inline
+// <script> blocks in pages/*.py and /static/ui.js share global window
+// scope; duplicate `const` between them is a SyntaxError that aborts the
+// entire SPA at parse time. See feedback_devtools_console_first.md.
+const _PENCIL_SVG  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 2 L14 5 L5 14 L2 14 L2 11 Z M10 3 L13 6"/></svg>';
+const _TRASH_SVG   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+const _DISABLE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><line x1="3.5" y1="3.5" x2="12.5" y2="12.5"/></svg>';
+
 function _memFactCard(r) {
   const m = r.metadata || {};
   const sourceRaw = m.source || '';
   const source = sourceRaw.replace(/^user_/, '') || 'unknown';
-  const importance = (m.importance != null) ? Number(m.importance).toFixed(2) : '?';
+  const impLabel = _memImportanceLabel(m.importance);
   const mentions = m.mention_count || 1;
   const age = _memFmtAge(m.written_at);
   const doc = escHtml(r.document || '');
   const id = escAttr(r.id || '');
-  return '<div class="mem-fact" data-id="' + id + '">'
-    + '<div class="mem-fact-text">' + doc + '</div>'
-    + '<div class="mem-fact-meta">source=' + escHtml(source)
-      + '  importance=' + importance
-      + '  mentions=' + mentions
-      + '  age=' + age + '</div>'
-    + '<div class="mem-fact-actions">'
-    +   '<button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-    +   ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
-    + '</div></div>';
+  const imp = Number(m.importance || 0).toFixed(2);
+  return '<div class="mem-fact" data-id="' + id + '" data-importance="' + imp + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
+    + '<div style="min-width:0;flex:1;">'
+    +   '<div class="mem-fact-text">' + doc + '</div>'
+    +   '<div class="mem-fact-meta">source=' + escHtml(source)
+        + '  importance=' + impLabel
+        + '  mentions=' + mentions
+        + '  age=' + age + '</div>'
+    + '</div>'
+    + '<div style="display:flex;gap:4px;flex-shrink:0;margin-top:2px;">'
+    +   '<button class="ico-btn" title="Edit" onclick="memEdit(\'' + id + '\')">' + _PENCIL_SVG + '</button>'
+    +   '<button class="ico-btn danger" title="Delete" onclick="memDelete(\'' + id + '\')">' + _TRASH_SVG + '</button>'
+    + '</div>'
+    + '</div>';
 }
 
 function _memFmtAge(ts) {
@@ -4144,22 +4381,89 @@ function _memFmtAge(ts) {
   return Math.floor(d / 86400) + 'd';
 }
 
-async function memEdit(id) {
+// Bucket a numeric importance value to its 5-point segment value, using the
+// same thresholds as _memImportanceLabel so the pre-selected segment matches
+// the label rendered in the row meta.
+function _memImportanceToSeg(v) {
+  const x = Number(v) || 0;
+  if (x <= 0.30) return 0.20;
+  if (x <= 0.50) return 0.40;
+  if (x <= 0.70) return 0.60;
+  if (x <= 0.90) return 0.80;
+  return 1.00;
+}
+
+function memEdit(id) {
   const row = document.querySelector('.mem-fact[data-id="' + id + '"], .mem-recent[data-id="' + id + '"], .mem-pending[data-id="' + id + '"]');
-  const currentText = row ? (row.querySelector('.mem-fact-text, strong') || {}).textContent || '' : '';
-  const newText = prompt('Edit fact:', currentText);
-  if (newText == null || newText.trim() === '' || newText.trim() === currentText.trim()) return;
+  if (!row) return;
+  const existing = row.parentNode.querySelector('.mem-edit-panel[data-edit-for="' + id + '"]');
+  if (existing) {
+    const ta = existing.querySelector('textarea');
+    if (ta) ta.focus();
+    return;
+  }
+  const currentText = (row.querySelector('.mem-fact-text, strong') || {}).textContent || '';
+  const currentImp = parseFloat(row.dataset.importance || '0.60');
+  const seg = _memImportanceToSeg(currentImp);
+  const idAttr = escAttr(id);
+  const segId = 'memEditSeg-' + idAttr;
+  const opts = [
+    [0.20, 'Background'],
+    [0.40, 'Useful'],
+    [0.60, 'Important'],
+    [0.80, 'Critical'],
+    [1.00, 'Extreme'],
+  ];
+  const cells = opts.map(o => {
+    const v = o[0], label = o[1];
+    const on = (Math.abs(v - seg) < 1e-6) ? ' on' : '';
+    return '<div class="tts-seg-cell' + on + '" data-value="' + v.toFixed(2) + '"'
+      + ' onclick="memSegSelect(this,\'' + segId + '\')">' + label + '</div>';
+  }).join('');
+  const html = '<div class="mem-edit-panel" data-edit-for="' + idAttr + '" style="margin-top:4px;padding:10px;background:var(--bg-input);border:1px solid var(--border-default);border-radius:var(--r-input);">'
+    + '<textarea class="mem-edit-text" style="width:100%;min-height:60px;">' + escHtml(currentText) + '</textarea>'
+    + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+    +   '<span style="font-size:0.82rem;color:var(--text-dim);">Importance:</span>'
+    +   '<div class="tts-seg" id="' + segId + '">' + cells + '</div>'
+    +   '<button class="btn-small" onclick="memEditSave(\'' + idAttr + '\')">Save</button>'
+    +   '<button class="btn-small" onclick="memEditCancel(\'' + idAttr + '\')" style="background:#555;">Cancel</button>'
+    + '</div>'
+    + '</div>';
+  row.insertAdjacentHTML('afterend', html);
+  const panel = row.parentNode.querySelector('.mem-edit-panel[data-edit-for="' + idAttr + '"]');
+  const ta = panel ? panel.querySelector('textarea') : null;
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+
+async function memEditSave(id) {
+  const panel = document.querySelector('.mem-edit-panel[data-edit-for="' + id + '"]');
+  if (!panel) return;
+  const ta = panel.querySelector('textarea');
+  const newText = (ta ? ta.value : '').trim();
+  if (!newText) { showToast('Text required', 'error'); return; }
+  const onCell = panel.querySelector('.tts-seg-cell.on');
+  const importance = onCell ? parseFloat(onCell.dataset.value) : 0.60;
   try {
-    await fetch('/api/memory/' + encodeURIComponent(id) + '/edit', {
+    const r = await fetch('/api/memory/' + encodeURIComponent(id) + '/edit', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({document: newText.trim()}),
+      body: JSON.stringify({document: newText, importance: importance}),
     });
+    const data = await r.json();
+    if (!data.updated) {
+      showToast('Edit failed: ' + (data.error || 'unknown'), 'error');
+      return;
+    }
     memLoadFacts(); memLoadRecent(); memLoadPending();
     showToast('Edited', 'success');
   } catch(e) {
     showToast('Edit failed: ' + e.message, 'error');
   }
+}
+
+function memEditCancel(id) {
+  const panel = document.querySelector('.mem-edit-panel[data-edit-for="' + id + '"]');
+  if (panel) panel.remove();
 }
 
 async function memDelete(id) {
@@ -4194,15 +4498,17 @@ async function memReject(id) {
   }
 }
 
-// Recent activity: reuses /api/memory/list; sorts by max(written_at,
-// last_mentioned_at) and shows the top 10. Reinforcement-bump rows
-// can offer "Update wording from latest mention" when last_mention_text
-// differs from the canonical document.
+// Recently learned: reuses /api/memory/list; filters to auto-learned
+// (passive-origin) facts only — source stored as "user_passive" by
+// memory_writer.py. Sorted by recency, shows top 10.
 async function memLoadRecent() {
   try {
     const r = await fetch('/api/memory/list?limit=200');
     const data = await r.json();
-    const rows = (data.rows || []).slice();
+    const rows = (data.rows || []).filter(row => {
+      const src = (row.metadata || {}).source || '';
+      return src === 'user_passive';
+    });
     rows.sort((a, b) => {
       const am = a.metadata || {}, bm = b.metadata || {};
       const at = Math.max(Number(am.last_mentioned_at || 0), Number(am.written_at || 0));
@@ -4218,7 +4524,7 @@ async function memLoadRecent() {
 function _memRenderRecent(rows) {
   const el = document.getElementById('memRecentList');
   if (rows.length === 0) {
-    el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">No recent activity.</div>';
+    el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">No auto-learned facts yet.</div>';
     return;
   }
   let html = '';
@@ -4235,28 +4541,29 @@ function _memRecentItem(r) {
   const age = _memFmtAge(Math.max(Number(m.last_mentioned_at || 0), Number(m.written_at || 0)));
   const lastText = m.last_mention_text || '';
   const canUpdate = isReinforcement && lastText && lastText !== (r.document || '');
-  const importance = Number(m.importance || 0).toFixed(2);
-  const origImportance = Number(m.original_importance || 0).toFixed(2);
-  let label = isReinforcement
-    ? '<span class="mem-bump">reinforced</span> importance ' + origImportance + ' &rarr; ' + importance + ', mentions=' + mentions
-    : 'new fact';
-  let html = '<div class="mem-recent" data-id="' + id + '">'
-    + '<div><strong>' + doc + '</strong></div>'
-    + '<div class="mem-fact-meta">' + label + '  &bull;  ' + age + ' ago</div>';
+  const impLabel = _memImportanceLabel(m.importance);
+  const origLabel = _memImportanceLabel(m.original_importance);
+  const imp = Number(m.importance || 0).toFixed(2);
+  let statusLabel = isReinforcement
+    ? '<span class="mem-bump">reinforced</span> ' + origLabel + ' &rarr; ' + impLabel + ', mentions=' + mentions
+    : 'new  importance=' + impLabel;
+  const status = (m.review_status === 'pending') ? '  <span style="color:var(--orange);">pending</span>' : '';
+  let html = '<div class="mem-recent" data-id="' + id + '" data-importance="' + imp + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
+    + '<div style="min-width:0;flex:1;">'
+    +   '<div class="mem-fact-text">' + doc + '</div>'
+    +   '<div class="mem-fact-meta">' + statusLabel + status + '  &bull;  ' + age + ' ago</div>';
   if (canUpdate) {
-    html += '<div class="mem-fact-meta">Latest mention: &ldquo;' + escHtml(lastText) + '&rdquo;</div>';
-    html += '<div class="mem-fact-actions">'
-      + '<button class="btn-small" onclick="memUpdateWording(\'' + id + '\')">Update wording from latest mention</button>'
-      + ' <button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-      + ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
-      + '</div>';
-  } else {
-    html += '<div class="mem-fact-actions">'
-      + '<button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-      + ' <button class="btn-small" style="background:#c0392b;" onclick="memDelete(\'' + id + '\')">Delete</button>'
+    html += '<div class="mem-fact-meta">Latest mention: &ldquo;' + escHtml(lastText) + '&rdquo;</div>'
+      + '<div class="mem-fact-actions" style="margin-top:4px;">'
+      + '<button class="btn-small" onclick="memUpdateWording(\'' + id + '\')">Update wording</button>'
       + '</div>';
   }
-  html += '</div>';
+  html += '</div>'
+    + '<div style="display:flex;gap:4px;flex-shrink:0;margin-top:2px;">'
+    +   '<button class="ico-btn" title="Edit" onclick="memEdit(\'' + id + '\')">' + _PENCIL_SVG + '</button>'
+    +   '<button class="ico-btn danger" title="Delete" onclick="memDelete(\'' + id + '\')">' + _TRASH_SVG + '</button>'
+    + '</div>'
+    + '</div>';
   return html;
 }
 
@@ -4290,7 +4597,7 @@ async function memLoadPending() {
     const el = document.getElementById('memPendingList');
     const rows = data.rows || [];
     if (rows.length === 0) {
-      el.innerHTML = '<div style="color:var(--text-dim);padding:8px;">Nothing pending.</div>';
+      el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">Nothing pending.</div>';
       return;
     }
     let html = '';
@@ -4307,13 +4614,13 @@ function _memPendingCard(r) {
   const id = escAttr(r.id || '');
   const importance = Number(m.importance || 0).toFixed(2);
   const age = _memFmtAge(m.written_at);
-  return '<div class="mem-pending" data-id="' + id + '">'
+  return '<div class="mem-pending" data-id="' + id + '" data-importance="' + importance + '">'
     + '<div><strong>' + doc + '</strong></div>'
     + '<div class="mem-fact-meta">source=passive  importance=' + importance + '  age=' + age + '</div>'
-    + '<div class="mem-fact-actions">'
+    + '<div class="mem-fact-actions" style="display:flex;align-items:center;gap:6px;">'
     +   '<button class="btn-small" onclick="memPromote(\'' + id + '\')">Approve</button>'
-    +   ' <button class="btn-small" onclick="memEdit(\'' + id + '\')">Edit</button>'
-    +   ' <button class="btn-small" style="background:#c0392b;" onclick="memReject(\'' + id + '\')">Reject</button>'
+    +   '<button class="ico-btn" title="Edit" onclick="memEdit(\'' + id + '\')">' + _PENCIL_SVG + '</button>'
+    +   '<button class="ico-btn danger" title="Reject" onclick="memReject(\'' + id + '\')">' + _TRASH_SVG + '</button>'
     + '</div></div>';
 }
 
@@ -4352,7 +4659,6 @@ function _panelIdFor(key) {
   if (key === 'config.system') return 'tab-config-system';
   if (key === 'config.memory') return 'tab-config-memory';
   if (key === 'config.logs')   return 'tab-config-logs';
-  if (key === 'config.users')  return 'tab-config-users';
   if (key && key.indexOf('config.') === 0) return 'tab-config';
   return 'tab-' + key;
 }
@@ -4367,10 +4673,14 @@ function _panelIdFor(key) {
 function _migrateLegacyKey(k) {
   if (k === 'control') return 'config.system';
   if (k === 'config')  return 'config.integrations';
-  if (k === 'config.global')    return 'config.integrations';
-  if (k === 'config.services')  return 'config.llm-services';
-  if (k === 'config.speakers')  return 'config.audio-speakers';
-  if (k === 'config.audio')     return 'config.audio-speakers';
+  if (k === 'config.global')      return 'config.integrations';
+  // legacy: config.services and config.llm-services both go to System → Services
+  if (k === 'config.services')    return 'config.system';
+  if (k === 'config.llm-services') return 'config.system';
+  if (k === 'config.speakers')    return 'config.audio-speakers';
+  if (k === 'config.audio')       return 'config.audio-speakers';
+  if (k === 'config.ssl')         return 'config.system';
+  if (k === 'config.users')       return 'config.system';
   return k;
 }
 
@@ -4389,6 +4699,10 @@ function navToggleConfig() {
 let _activeNavKey = 'chat';
 
 function navigateTo(key) {
+  // Capture legacy sub-tab intent before migration collapses the key.
+  var _sslRedirect      = (key === 'config.ssl');
+  var _usersRedirect    = (key === 'config.users');
+  var _servicesRedirect = (key === 'config.llm-services' || key === 'config.services');
   key = _migrateLegacyKey(key);
   // Leaving Logs? Tear down the 10 s polling timer so we don't keep
   // hitting /api/logs/tail when the operator's on another page.
@@ -4432,13 +4746,14 @@ function navigateTo(key) {
     loadSystemServices();
     startRobotAutoRefresh();
     if (typeof loadSystemConfigCards === 'function') loadSystemConfigCards();
+    if (_sslRedirect)      { showPageTab('system', 'ssl');      _loadSslIntoSystemTab(); }
+    if (_usersRedirect)    { showPageTab('system', 'users');    _loadUsersIntoSystemTab(); }
+    if (_servicesRedirect) { showPageTab('system', 'services'); }
   } else if (key === 'config.memory') {
     // Memory page UI arrives in Phase 5 Commit 3; placeholder for now.
     if (typeof memoryLoadAll === 'function') memoryLoadAll();
   } else if (key === 'config.logs') {
     if (typeof logsOnTabActivate === 'function') logsOnTabActivate();
-  } else if (key === 'config.users') {
-    if (typeof usersLoadAll === 'function') usersLoadAll();
   } else if (key.indexOf('config.') === 0) {
     const section = key.substring('config.'.length);
     _cfgCurrentSection = section;
@@ -4502,116 +4817,212 @@ function fmtDate(iso) {
    Tab 1: TTS Generator
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-const textInput  = document.getElementById('textInput');
-const charCount  = document.getElementById('charCount');
-const voiceSel   = document.getElementById('voiceSelect');
-const formatSel  = document.getElementById('formatSelect');
-const attitudeSel= document.getElementById('attitudeSelect');
-const genBtn     = document.getElementById('generateBtn');
-const ttsStatus  = document.getElementById('ttsStatus');
-const playerCard = document.getElementById('playerCard');
-const playerLabel= document.getElementById('playerLabel');
-const audioPlayer= document.getElementById('audioPlayer');
-const fileListEl = document.getElementById('fileList');
+const textInput = document.getElementById('textInput');
+const genBtn    = document.getElementById('generateBtn');
 
-let _attitudes = [];
+const _icoDl    = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2 L8 11 M4 7 L8 11 L12 7 M3 14 L13 14"/></svg>';
+const _icoDel   = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+const _icoSave  = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8 L6 11 L13 4"/></svg>';
+const _icoSaved = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8 L6 12 L14 4" stroke="var(--green)"/></svg>';
 
-async function loadVoices() {
-  try {
-    const resp = await fetch('/api/voices');
-    const data = await resp.json();
-    const voices = data.voices || ['glados'];
-    voiceSel.innerHTML = '';
-    for (const v of voices) {
-      const opt = document.createElement('option');
-      opt.value = v;
-      const label = v.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-      opt.textContent = 'Voice: ' + label;
-      voiceSel.appendChild(opt);
-    }
-  } catch (e) { console.warn('Failed to load voices:', e); }
+// Keyboard shortcut: Ctrl+Enter in the script textarea triggers Generate.
+if (textInput) {
+  textInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ttsGenerate(); }
+  });
 }
-loadVoices();
 
-voiceSel.addEventListener('change', () => {
-  const isGlados = voiceSel.value === 'glados';
-  attitudeSel.disabled = !isGlados;
-  if (!isGlados) attitudeSel.value = 'default';
-});
-
-async function loadAttitudes() {
-  try {
-    const resp = await fetch('/api/attitudes');
-    const data = await resp.json();
-    _attitudes = data.attitudes || [];
-    for (const a of _attitudes) {
-      const opt = document.createElement('option');
-      opt.value = a.tag;
-      opt.textContent = 'Attitude: ' + (a.label || a.tag);
-      attitudeSel.appendChild(opt);
-    }
-  } catch (e) { console.warn('Failed to load attitudes:', e); }
+// ── Single shared <audio> element + play/stop state ─────────────
+let _ttsPlayingName = null;
+function _ttsAudio() { return document.getElementById('ttsAudio'); }
+function _ttsPlayBtn(name) {
+  return document.querySelector('.tts-row[data-name="' + (name || '').replace(/"/g, '\\"') + '"] .tts-row-play');
 }
-loadAttitudes();
-
-function getSelectedTtsParams() {
-  const val = attitudeSel.value;
-  if (val === 'default') return {};
-  if (val === 'random') {
-    if (_attitudes.length === 0) return {};
-    const pick = _attitudes[Math.floor(Math.random() * _attitudes.length)];
-    return pick.tts || {};
+function _ttsResetPlayBtn(name) {
+  const b = _ttsPlayBtn(name);
+  if (b) { b.textContent = '\u25B6'; b.classList.remove('playing'); }
+}
+function ttsTogglePlay(btn) {
+  const row = btn.closest('.tts-row');
+  if (!row) return;
+  const name = row.getAttribute('data-name');
+  const url  = row.getAttribute('data-url');
+  const audio = _ttsAudio();
+  if (!audio) return;
+  if (_ttsPlayingName === name) {
+    audio.pause();
+    audio.currentTime = 0;
+    _ttsResetPlayBtn(name);
+    _ttsPlayingName = null;
+    return;
   }
-  const found = _attitudes.find(a => a.tag === val);
-  return found ? (found.tts || {}) : {};
+  if (_ttsPlayingName) _ttsResetPlayBtn(_ttsPlayingName);
+  audio.src = url;
+  audio.play().then(() => {
+    btn.textContent = '\u25A0';
+    btn.classList.add('playing');
+    _ttsPlayingName = name;
+  }).catch(err => console.error('audio play failed:', err));
+}
+(function _ttsBindAudio() {
+  const a = _ttsAudio();
+  if (!a) return;
+  a.addEventListener('ended', () => {
+    if (_ttsPlayingName) { _ttsResetPlayBtn(_ttsPlayingName); _ttsPlayingName = null; }
+  });
+})();
+
+// ── File row builder + list refresh ─────────────────────────────
+function _ttsRowHtml(f) {
+  const promptHtml = f.prompt
+    ? '<div class="tts-row-prompt" title="' + escAttr(f.prompt) + '">' + escHtml(f.prompt) + '</div>'
+    : '';
+  const sizeStr = fmtSize(f.size || 0);
+  return '<div class="tts-row" data-name="' + escAttr(f.name) + '" data-url="' + escAttr(f.url) + '">'
+    + '<button class="tts-row-play" onclick="ttsTogglePlay(this)" title="Play / stop">\u25B6</button>'
+    + '<div class="tts-row-body">'
+    +   '<div class="tts-row-name">' + escHtml(f.name) + '</div>'
+    +   promptHtml
+    +   '<div class="tts-row-meta">' + sizeStr + '</div>'
+    + '</div>'
+    + '<div class="tts-row-actions">'
+    +   '<a class="ico-btn" title="Download" href="' + escAttr(f.url) + '" download="' + escAttr(f.name) + '">' + _icoDl + '</a>'
+    +   '<button class="ico-btn" title="Save to library" onclick="_ttsRowSaveToggle(this, \'' + escAttr(f.name) + '\')">' + _icoSave + '</button>'
+    +   '<button class="ico-btn danger" title="Delete" onclick="_ttsRowDelete(\'' + escAttr(f.name) + '\')">' + _icoDel + '</button>'
+    + '</div>'
+    + '</div>';
 }
 
-textInput.addEventListener('input', () => { charCount.textContent = textInput.value.length; });
-textInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ttsGenerate(); }
-});
-
-async function ttsGenerate() {
-  const text = textInput.value.trim();
-  if (!text) return;
-  genBtn.disabled = true;
-  ttsStatus.innerHTML = '<span class="spinner"></span> Generating...';
+async function _ttsLoadFiles() {
+  const list = document.getElementById('ttsFileList');
+  if (!list) return;
   try {
-    const ttsParams = getSelectedTtsParams();
-    const payload = { text, voice: voiceSel.value, format: formatSel.value, ...ttsParams };
+    const resp = await fetch('/api/files');
+    const data = await resp.json();
+    const files = data.files || [];
+    list.innerHTML = files.map(_ttsRowHtml).join('') || '<div class="tts-row-meta" style="padding:var(--sp-3) 0;">No files yet.</div>';
+  } catch (e) {
+    console.error('TTS file load failed:', e);
+  }
+}
+
+// Save-to-library inline form (toggles below the row)
+async function _ttsRowSaveToggle(saveBtn, filename) {
+  const row = saveBtn.closest('.tts-row');
+  if (!row) return;
+  const existing = row.querySelector('.tts-row-save-form');
+  if (existing) { existing.remove(); return; }
+
+  const form = document.createElement('div');
+  form.className = 'tts-row-save-form';
+
+  const catSel = document.createElement('select');
+  catSel.innerHTML = '<option value="">-- pick category --</option><option value="__new__">-- new category --</option>';
+  form.appendChild(catSel);
+
+  const fnInput = document.createElement('input');
+  fnInput.type = 'text';
+  fnInput.placeholder = 'filename (optional)';
+  fnInput.value = filename || '';
+  form.appendChild(fnInput);
+
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-primary';
+  btn.textContent = 'Save';
+  form.appendChild(btn);
+
+  const statusEl = document.createElement('span');
+  statusEl.style.fontSize = '0.7rem';
+  form.appendChild(statusEl);
+
+  row.appendChild(form);
+
+  try {
+    const r = await fetch('/api/config/sound_categories');
+    if (r.ok) {
+      const cfg = await r.json();
+      const cats = (cfg.categories || []).slice().sort((a,b) => a.name.localeCompare(b.name));
+      catSel.innerHTML = '<option value="">-- pick category --</option>';
+      for (const c of cats) catSel.appendChild(new Option(c.name + ' (' + (c.description||'').slice(0,40) + ')', c.name));
+      catSel.appendChild(new Option('-- new category --', '__new__'));
+    }
+  } catch(e) { console.error('failed to load sound categories:', e); }
+
+  btn.onclick = async () => {
+    let category = catSel.value;
+    let createNew = false, newDesc = '';
+    if (category === '__new__') {
+      category = prompt('New category name (lowercase letters, digits, underscores):');
+      if (!category) return;
+      category = category.trim().toLowerCase();
+      if (!/^[a-z][a-z0-9_]*$/.test(category)) {
+        statusEl.innerHTML = '<span style="color:var(--red)">Invalid name.</span>';
+        return;
+      }
+      newDesc = prompt('Short description of this category:') || '';
+      createNew = true;
+    }
+    if (!category) { statusEl.innerHTML = '<span style="color:var(--orange)">Pick a category.</span>'; return; }
+    const save_as = fnInput.value.trim() || filename;
+    btn.disabled = true;
+    statusEl.innerHTML = '<span class="spinner"></span>';
+    try {
+      const r = await fetch('/api/tts/save-to-category', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ source_filename: filename, category, save_as, create_new: createNew, new_category_description: newDesc }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      saveBtn.innerHTML = _icoSaved;
+      saveBtn.disabled = true;
+      form.remove();
+    } catch(e) {
+      statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message||e)) + '</span>';
+      btn.disabled = false;
+    }
+  };
+}
+
+async function _ttsRowDelete(filename) {
+  if (!confirm('Delete ' + filename + '?')) return;
+  if (_ttsPlayingName === filename) {
+    const a = _ttsAudio(); if (a) { a.pause(); a.currentTime = 0; }
+    _ttsPlayingName = null;
+  }
+  try { await fetch('/api/files/' + encodeURIComponent(filename), { method: 'DELETE' }); } catch(e) {}
+  await _ttsLoadFiles();
+}
+
+// Script mode: generate
+async function ttsGenerate() {
+  const text = textInput ? textInput.value.trim() : '';
+  if (!text) return;
+  if (genBtn) genBtn.disabled = true;
+  try {
     const resp = await fetch('/api/generate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ text, voice: 'glados', format: 'mp3' }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Generation failed');
-    audioPlayer.src = data.url;
-    playerLabel.textContent = data.filename;
-    playerCard.classList.add('visible');
-    audioPlayer.play().catch(() => {});
-    // Phase 5.9.2: expose the Save-to-category row once we have audio.
-    _ttsShowSaveRow(data.filename);
-    const attLabel = attitudeSel.options[attitudeSel.selectedIndex].textContent;
-    ttsStatus.innerHTML = '<span style="color:var(--green)">Done! (' + escHtml(attLabel) + ')</span>';
-    setTimeout(() => { ttsStatus.innerHTML = ''; }, 3000);
-  } catch (e) {
-    ttsStatus.innerHTML = '<span style="color:var(--red)">' + escHtml(e.message) + '</span>';
+    if (textInput) textInput.value = '';
+    await _ttsLoadFiles();
+  } catch(e) {
+    alert('Generate failed: ' + e.message);
   } finally {
-    genBtn.disabled = false;
-    refreshFiles();
+    if (genBtn) genBtn.disabled = false;
   }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Phase 5.9.2 (2026-04-22) — TTS Generator: Script / Improv modes +
-// Save-to-category flow.
-// ═════════════════════════════════════════════════════════════════
-let _ttsCurrentFilename = null;  // tracks the most recently generated file
+// Mode switch (script / improv) — toggles the corresponding input card.
+let _ttsMode = 'script';
 
 function _ttsSwitchMode(mode) {
-  const scriptCard = document.getElementById('tts-script-card');
-  const improvCard = document.getElementById('tts-improv-card');
+  _ttsMode = mode;
+  const scriptCard = document.getElementById('ttsScriptCard');
+  const improvCard = document.getElementById('ttsImprovCard');
   if (mode === 'improv') {
     if (scriptCard) scriptCard.style.display = 'none';
     if (improvCard) improvCard.style.display = '';
@@ -4619,239 +5030,64 @@ function _ttsSwitchMode(mode) {
     if (scriptCard) scriptCard.style.display = '';
     if (improvCard) improvCard.style.display = 'none';
   }
-  // Visual state on the radio cards
-  for (const el of document.querySelectorAll('.tts-mode-option')) {
-    el.classList.toggle('active', el.getAttribute('data-mode') === mode);
+  for (const el of document.querySelectorAll('.tts-seg-cell')) {
+    el.classList.toggle('on', el.getAttribute('data-mode') === mode);
   }
-  // Mirror voice/format/attitude options from Script into Improv on first switch
-  _ttsSyncImprovSelects();
+  const modeLabel = document.getElementById('ttsModeLabel');
+  if (modeLabel) modeLabel.textContent = mode.toUpperCase();
 }
 
-function _ttsSyncImprovSelects() {
-  const copy = (fromId, toId) => {
-    const a = document.getElementById(fromId);
-    const b = document.getElementById(toId);
-    if (!a || !b || b.options.length > 2) return;  // already populated
-    b.innerHTML = '';
-    for (const opt of a.options) b.appendChild(opt.cloneNode(true));
-    b.value = a.value;
-  };
-  copy('voiceSelect', 'improvVoiceSelect');
-  copy('formatSelect', 'improvFormatSelect');
-  copy('attitudeSelect', 'improvAttitudeSelect');
-}
-
+// Improv: draft
 async function _ttsImprovDraft() {
   const instructionEl = document.getElementById('improvInstruction');
-  const statusEl = document.getElementById('improvStatus');
-  const draftSection = document.getElementById('improvDraftSection');
+  const draftSection  = document.getElementById('improvDraftSection');
   const draftedTextEl = document.getElementById('improvDraftedText');
-  const btn = document.getElementById('improvDraftBtn');
-  const instruction = instructionEl ? instructionEl.value.trim() : '';
-  if (!instruction) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Brief her first.</span>';
-    return;
-  }
+  const btn           = document.getElementById('improvDraftBtn');
+  const instruction   = instructionEl ? instructionEl.value.trim() : '';
+  if (!instruction) return;
   if (btn) btn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Drafting in her voice...';
   try {
     const r = await fetch('/api/tts/draft', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({instruction}),
     });
-    if (!r.ok) {
-      const txt = await r.text();
-      throw new Error('HTTP ' + r.status + ': ' + txt.slice(0, 200));
-    }
+    if (!r.ok) { const txt = await r.text(); throw new Error('HTTP ' + r.status + ': ' + txt.slice(0,200)); }
     const data = await r.json();
-    const text = (data.text || '').trim();
-    if (draftedTextEl) draftedTextEl.value = text;
+    if (draftedTextEl) draftedTextEl.value = (data.text || '').trim();
     if (draftSection) draftSection.style.display = '';
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">She wrote a line — approve, edit, or redraft.</span>';
-  } catch (e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Draft failed: ' + escHtml(String(e)) + '</span>';
+  } catch(e) {
+    alert('Draft failed: ' + e.message);
     console.error('tts draft failed:', e);
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
+// Improv: generate from draft
 async function _ttsImprovGenerate() {
   const textEl = document.getElementById('improvDraftedText');
-  const voiceSel = document.getElementById('improvVoiceSelect');
-  const formatSel = document.getElementById('improvFormatSelect');
-  const attitudeSel = document.getElementById('improvAttitudeSelect');
-  const statusEl = document.getElementById('improvGenStatus');
-  const btn = document.getElementById('improvGenerateBtn');
-  const text = textEl ? textEl.value.trim() : '';
-  if (!text) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Nothing to read.</span>';
-    return;
-  }
+  const btn    = document.getElementById('improvGenerateBtn');
+  const text   = textEl ? textEl.value.trim() : '';
+  if (!text) return;
   if (btn) btn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Generating...';
   try {
-    // Reuse the same attitude→tts_params logic as Script mode.
-    let ttsParams = {};
-    const val = attitudeSel ? attitudeSel.value : 'default';
-    if (val !== 'default') {
-      if (val === 'random' && _attitudes.length) {
-        const pick = _attitudes[Math.floor(Math.random() * _attitudes.length)];
-        ttsParams = pick.tts || {};
-      } else {
-        const found = _attitudes.find(a => a.tag === val);
-        if (found) ttsParams = found.tts || {};
-      }
-    }
-    const payload = {
-      text,
-      voice: voiceSel ? voiceSel.value : 'glados',
-      format: formatSel ? formatSel.value : 'wav',
-      ...ttsParams,
-    };
     const r = await fetch('/api/generate', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ text, voice: 'glados', format: 'mp3' }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Generation failed');
-    audioPlayer.src = data.url;
-    playerLabel.textContent = data.filename;
-    playerCard.classList.add('visible');
-    audioPlayer.play().catch(() => {});
-    _ttsShowSaveRow(data.filename);
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">Generated. Preview and save below.</span>';
-    setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 4000);
-    refreshFiles();
-  } catch (e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message || e)) + '</span>';
+    await _ttsLoadFiles();
+  } catch(e) {
+    alert('Speak failed: ' + e.message);
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-async function _ttsShowSaveRow(filename) {
-  _ttsCurrentFilename = filename;
-  const row = document.getElementById('ttsSaveRow');
-  if (row) row.style.display = '';
-  // Populate category dropdown from sound_categories
-  const sel = document.getElementById('ttsSaveCategory');
-  if (!sel) return;
-  try {
-    const r = await fetch('/api/config/sound_categories');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const cfg = await r.json();
-    const cats = (cfg.categories || []).slice().sort(
-      (a, b) => a.name.localeCompare(b.name)
-    );
-    const prev = sel.value;
-    sel.innerHTML = '';
-    sel.appendChild(new Option('-- pick category --', ''));
-    for (const c of cats) {
-      sel.appendChild(new Option(c.name + ' (' + (c.description || '').slice(0, 40) + ')', c.name));
-    }
-    sel.appendChild(new Option('-- new category --', '__new__'));
-    if (prev && (cats.some(c => c.name === prev) || prev === '__new__')) sel.value = prev;
-  } catch (e) {
-    console.error('failed to load sound categories for save dropdown:', e);
-  }
-}
-
-async function _ttsSaveToCategory() {
-  const catSel = document.getElementById('ttsSaveCategory');
-  const fnEl = document.getElementById('ttsSaveFilename');
-  const statusEl = document.getElementById('ttsSaveStatus');
-  const btn = document.getElementById('ttsSaveBtn');
-  if (!_ttsCurrentFilename) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">No audio to save.</span>';
-    return;
-  }
-  let category = catSel ? catSel.value : '';
-  let createNew = false;
-  let newDesc = '';
-  if (category === '__new__') {
-    category = prompt('New category name (lowercase letters, digits, underscores):');
-    if (!category) return;
-    category = category.trim().toLowerCase();
-    if (!/^[a-z][a-z0-9_]*$/.test(category)) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Invalid name; must start with a letter, only lowercase alphanumeric + underscores.</span>';
-      return;
-    }
-    newDesc = prompt('Short description of this category:') || '';
-    createNew = true;
-  }
-  if (!category) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--orange)">Pick a category.</span>';
-    return;
-  }
-  const save_as = (fnEl ? fnEl.value.trim() : '') || _ttsCurrentFilename;
-  if (btn) btn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span class="spinner"></span> Saving...';
-  try {
-    const r = await fetch('/api/tts/save-to-category', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        source_filename: _ttsCurrentFilename,
-        category,
-        save_as,
-        create_new: createNew,
-        new_category_description: newDesc,
-      }),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'Save failed');
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">Saved to ' + escHtml(data.path) + '</span>';
-    // Refresh the dropdown so the new category shows up next time
-    _ttsShowSaveRow(_ttsCurrentFilename);
-    setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 6000);
-  } catch (e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message || e)) + '</span>';
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function refreshFiles() {
-  try {
-    const resp = await fetch('/api/files');
-    const data = await resp.json();
-    if (!data.files || data.files.length === 0) {
-      fileListEl.innerHTML = '<div class="empty-msg">No files yet.</div>';
-      return;
-    }
-    let html = '<table><tr><th>Name</th><th>Size</th><th>Date</th><th>Actions</th></tr>';
-    for (const f of data.files) {
-      html += '<tr>'
-        + '<td class="file-name">' + escHtml(f.name) + '</td>'
-        + '<td class="file-size">' + fmtSize(f.size) + '</td>'
-        + '<td class="file-date">' + fmtDate(f.date) + '</td>'
-        + '<td class="file-actions">'
-          + '<button class="btn-small" onclick="playFile(\'' + escAttr(f.url) + '\',\'' + escAttr(f.name) + '\')">Play</button>'
-          + '<a class="dl-link" href="' + escAttr(f.url) + '" download="' + escAttr(f.name) + '">Download</a>'
-          + '<button class="btn btn-danger" onclick="deleteFile(\'' + escAttr(f.name) + '\')">Delete</button>'
-        + '</td></tr>';
-    }
-    html += '</table>';
-    fileListEl.innerHTML = html;
-  } catch (e) { console.error('Failed to refresh files:', e); }
-}
-
-function playFile(url, name) {
-  audioPlayer.src = url;
-  playerLabel.textContent = name;
-  playerCard.classList.add('visible');
-  audioPlayer.play().catch(() => {});
-}
-
-async function deleteFile(name) {
-  try { await fetch('/api/files/' + encodeURIComponent(name), { method: 'DELETE' }); } catch (e) {}
-  refreshFiles();
-}
-
-refreshFiles();
+_ttsLoadFiles();
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Tab 2: Chat
@@ -5337,7 +5573,7 @@ async function loadVerbositySliders() {
         + '<span style="font-size:0.85rem;min-width:36px;text-align:right;">' + pct + '%</span>'
         + '</div></div>';
     }
-    container.innerHTML = html || '<div style="color:var(--text-dim);">No announcement scenarios found.</div>';
+    container.innerHTML = html || '<div style="color:var(--fg-secondary);">No announcement scenarios found.</div>';
     container.style.opacity = '1';
   } catch (e) {
     container.innerHTML = '<div style="color:var(--error);">Failed to load announcement settings.</div>';
@@ -5389,32 +5625,21 @@ function _cfgRenderSpeakersPicker() {
   if (!body || !_speakersPickerState) return;
   const { detected, config } = _speakersPickerState;
   const enabled = new Set(config.available || []);
-  // Group detected speakers by area for readable scanning.
-  const byArea = {};
-  for (const sp of detected) {
-    const area = sp.area || 'Unassigned';
-    if (!byArea[area]) byArea[area] = [];
-    byArea[area].push(sp);
-  }
-  const areas = Object.keys(byArea).sort();
+  // Flat list sorted alphabetically by friendly name.
+  const sorted = detected.slice().sort((a, b) => a.name.localeCompare(b.name));
   let html = '';
-  for (const area of areas) {
-    html += '<div class="speakers-area-group">';
-    html += '<div class="speakers-area-label">' + escHtml(area) + '</div>';
-    for (const sp of byArea[area].sort((a,b) => a.name.localeCompare(b.name))) {
-      const chk = enabled.has(sp.entity_id) ? ' checked' : '';
-      html += ''
-        + '<label class="speaker-item">'
-        +   '<input type="checkbox" class="speaker-check" '
-        +     'data-entity-id="' + escHtml(sp.entity_id) + '"' + chk
-        +     ' onchange="_cfgOnSpeakerToggle()">'
-        +   '<div class="speaker-item-body">'
-        +     '<div class="speaker-name">' + escHtml(sp.name) + '</div>'
-        +     '<div class="speaker-entity-id">' + escHtml(sp.entity_id) + '</div>'
-        +   '</div>'
-        + '</label>';
-    }
-    html += '</div>';
+  for (const sp of sorted) {
+    const chk = enabled.has(sp.entity_id) ? ' checked' : '';
+    html += ''
+      + '<label class="speaker-item">'
+      +   '<input type="checkbox" class="speaker-check" '
+      +     'data-entity-id="' + escHtml(sp.entity_id) + '"' + chk
+      +     ' onchange="_cfgOnSpeakerToggle()">'
+      +   '<div class="speaker-item-body">'
+      +     '<div class="speaker-name">' + escHtml(sp.name) + '</div>'
+      +     '<div class="speaker-entity-id">' + escHtml(sp.entity_id) + '</div>'
+      +   '</div>'
+      + '</label>';
   }
   // Default-speaker dropdown, scoped to currently-enabled entities.
   html += '<div class="speakers-default-row">';
@@ -5426,7 +5651,7 @@ function _cfgRenderSpeakersPicker() {
   for (const sp of enabledList.sort((a,b) => a.name.localeCompare(b.name))) {
     const sel = sp.entity_id === config.default ? ' selected' : '';
     html += '<option value="' + escHtml(sp.entity_id) + '"' + sel + '>'
-      + escHtml(sp.name) + ' (' + escHtml(sp.area || 'Unassigned') + ')</option>';
+      + escHtml(sp.name) + '</option>';
   }
   html += '</select>';
   html += '</div>';
@@ -5495,7 +5720,7 @@ async function loadStartupSpeakers() {
     const data = await resp.json();
     const speakers = data.speakers || [];
     if (!speakers.length) {
-      container.innerHTML = '<div style="color:var(--text-dim);">No speakers found in speakers.yaml.</div>';
+      container.innerHTML = '<div style="color:var(--fg-secondary);">No speakers found in speakers.yaml.</div>';
       container.style.opacity = '1';
       return;
     }
@@ -5695,7 +5920,7 @@ async function loadWeather() {
     const resp = await fetch('/api/weather');
     const data = await resp.json();
     if (data.error) {
-      panel.innerHTML = '<div style="color:var(--text-dim)">' + escHtml(data.error) + '</div>';
+      panel.innerHTML = '<div style="color:var(--fg-secondary)">' + escHtml(data.error) + '</div>';
       return;
     }
     const c = data.current || {};
@@ -5732,12 +5957,12 @@ async function loadGPU() {
     const resp = await fetch('/api/gpu');
     const data = await resp.json();
     if (data.error) {
-      panel.innerHTML = '<div style="color:var(--text-dim)">' + escHtml(data.error) + '</div>';
+      panel.innerHTML = '<div style="color:var(--fg-secondary)">' + escHtml(data.error) + '</div>';
       return;
     }
     const gpus = data.gpus || [];
     if (!gpus.length) {
-      panel.innerHTML = '<div style="color:var(--text-dim)">No GPUs detected</div>';
+      panel.innerHTML = '<div style="color:var(--fg-secondary)">No GPUs detected</div>';
       return;
     }
     let html = '';
@@ -5870,7 +6095,7 @@ async function loadAudioStats() {
     for (const [key, stats] of Object.entries(data)) {
       html += '<div style="background:var(--bg-input);padding:10px;border-radius:6px;">'
         + '<div style="font-weight:500;margin-bottom:4px;">' + escHtml(labels[key] || key) + '</div>'
-        + '<div style="font-size:0.78rem;color:var(--text-dim);">' + stats.count + ' files (' + fmtSize(stats.size_bytes) + ')</div>'
+        + '<div style="font-size:0.78rem;color:var(--fg-secondary);">' + stats.count + ' files (' + fmtSize(stats.size_bytes) + ')</div>'
         + '<button class="btn-small" style="margin-top:6px;font-size:0.72rem;padding:3px 8px;" onclick="clearAudioDir(\'' + key + '\')">Clear</button>'
         + '</div>';
     }
@@ -5922,7 +6147,7 @@ async function loadRobots() {
     const nodes = data.nodes || {};
     const nodeIds = Object.keys(nodes);
     if (nodeIds.length === 0) {
-      list.innerHTML = '<div style="color:var(--text-dim);">No nodes configured. Add one below.</div>';
+      list.innerHTML = '<div style="color:var(--fg-secondary);">No nodes configured. Add one below.</div>';
     } else {
       let html = '<div class="health-grid">';
       for (const [nid, n] of Object.entries(nodes)) {
@@ -5951,7 +6176,7 @@ async function loadRobots() {
       for (const [bid, b] of Object.entries(bots)) {
         const bLabel = b.name || bid;
         bhtml += '<div style="background:var(--bg-input);padding:8px 10px;border-radius:4px;margin-bottom:4px;">'
-          + '<strong>' + escHtml(bLabel) + '</strong> <span style="color:var(--text-dim);">(' + escHtml(b.profile) + ')</span>';
+          + '<strong>' + escHtml(bLabel) + '</strong> <span style="color:var(--fg-secondary);">(' + escHtml(b.profile) + ')</span>';
         for (const [role, rn] of Object.entries(b.nodes || {})) {
           const rdot = rn.reachable ? '&#9679;' : '&#9675;';
           bhtml += ' <span style="margin-left:8px;">' + rdot + ' ' + escHtml(role) + ': ' + escHtml(rn.node_id) + '</span>';

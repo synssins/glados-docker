@@ -3057,3 +3057,668 @@ the existing chat user), and TTS Generator works end-to-end for unauth
 visitors.
 
 ---
+
+## Change 25 — WebUI Polish Phase 2 + auth-perf fixes + history scrub (2026-04-25 → 2026-04-26)
+
+The follow-on to Change 24's auth rebuild. Operator-flagged "polish
+phase" addressing layout drift, design-language inconsistency, and a
+list of per-page gripes flagged from live operation. Plus two
+functional bug fixes uncovered along the way (maintenance speaker
+sync, hyphen rendering in TTS), a hard-won auth-perf debug, and a
+pre-public-announcement repo scrub via `git-filter-repo`.
+
+**Phase 2 plan** lives at
+`docs/superpowers/plans/2026-04-25-webui-polish-phase-2.md`. Audit at
+`docs/ui-polish-audit.md`. Spec at
+`docs/superpowers/specs/2026-04-25-webui-polish-design.md`.
+
+### Foundation chunks (1A, 1B, 2)
+
+- **1A — `a4be7c0`.** SSL + Users moved from sidebar to System tabs.
+  Sidebar IA tightens to Chat / TTS Generator / Configuration → (System,
+  Integrations, Audio & Speakers, Personality, Memory, Logs, Raw YAML).
+  Implementation: legacy `tab-config-users` panel stays in the DOM but
+  `_loadUsersIntoSystemTab()` clones its content into a System Users
+  panel on tab activation. SSL: `_loadSslIntoSystemTab()` calls
+  `cfgRenderSsl()` into the System SSL panel.
+- **1B — `f4c16aa`.** Mechanical sweep: every primary action button
+  unified to `.btn-primary` (orange filled, dark text — never
+  white-on-yellow), all `<input>`/`<select>`/`<textarea>` use
+  `--bg-sidebar` (`#16161a`) so inputs read as wells against
+  `--bg-card`. Removed: Test Harness section (Hardware tab),
+  Audio tab (Audio & Speakers). Renamed: "Chimes" → "Sounds".
+  Reload-from-Disk button → `.btn-primary`. The `/api/test-harness/noise-patterns`
+  endpoint is preserved (external test battery consumer); only the
+  WebUI editor is gone.
+- **2 — `73f253a`.** Services tab rebuilt as port-grouped status:
+  in-container TTS / STT / API Wrapper render as one row on `:8015`
+  with three status dots (no URL inputs — they're embedded). Vision
+  on `:8016` is status-only with an `inactive` state when unconfigured.
+  LLM (Ollama) folded in here from Integrations: URL + model dropdown
+  + status, with an Advanced collapsible holding model_options
+  (temperature, top_p, num_ctx, repeat_penalty) and LLM timeouts.
+  The standalone Integrations → LLM card is gone; legacy
+  `navigateTo('config.llm-services')` redirects to System → Services.
+
+### Per-page rebuilds (3, 4, 5)
+
+- **3 — `79e3d51`.** Personality page rebuild. HEXACO traits + PAD/Emotion
+  baseline render as cards with description-above-bar, polarity labels
+  under bar ends (e.g., `Unflappable` / `Anxious`), an editable numeric
+  on the right (HEXACO 0-1 with 2 decimals; Emotion -1 to 1 with sign and
+  a centre tick at 0). Bar capped at 320px regardless of viewport — the
+  operator's main HEXACO complaint. Behavior tab's red sliders re-styled
+  to orange. Disambiguation token descriptions rewritten in plain English
+  ("Reduces likelihood that this entity will be selected" replacing
+  "Loses 50 rank points"). Floor/Area aliases editor removed in favor
+  of a notice card pointing at HA's native alias docs (HA aliases
+  propagate automatically). **Most importantly:** the Preprompt editor
+  in the Identity tab now reads/writes the actual `personality_preprompt`
+  field in `glados_config.yaml` — previously the WebUI was reading the
+  empty `preprompt` field and the persona text was only editable via
+  shell. New `_read_personality_preprompt_from_engine` /
+  `_write_personality_preprompt_to_engine` helpers in `tts_ui.py` mirror
+  the field on every config GET/PUT for the personality section.
+- **4 — `dd98a66` + `a6e471a` + `00beb51`.** Memory page rebuild. RAG
+  explainer card at the top in plain English. Each fact row has icon
+  Edit/Delete (pencil/trash, same SVGs as the TTS Generator). 5-point
+  importance segmented control (Background `0.20` → Useful `0.40` →
+  Important `0.60` → Critical `0.80` → Extreme `1.00`). "Recently learned"
+  card replaces "Recent activity" — filters to `source==='user_passive'`
+  so it shows facts she's auto-extracted from conversation, not facts
+  the operator typed. Inline edit panel with importance segmented
+  replaces the native `prompt()` dialog (`a6e471a`, `00beb51`).
+- **5 — `c2d0af1`.** Users page row icons (Disable / Edit / Delete with
+  hover-red on Disable when account is already disabled — the visual
+  state flags the account, not the action). Reset PW button removed
+  from rows (operator can edit user → set password if needed). Speakers
+  tab rebuilt as a flat alphabetical list (no room grouping per the
+  operator's "obnoxious to use" complaint), each row showing friendly
+  name + entity ID + checkbox.
+
+### Bug investigations (6a, 6b)
+
+- **6a — `2156b7e`. Maintenance default speaker not honored.**
+  Operator: "Living Room 2 selected, but Master Bedroom is the one
+  that is playing whenever she speaks up right now." Root cause: the
+  WebUI's Speakers Save POSTs `default: <entity>` into `speakers.yaml`,
+  but the engine reads the maintenance speaker from HA's
+  `input_text.glados_maintenance_speaker` — which still held the prior
+  Master Bedroom value. Nothing connected the two. Fix:
+  `_sync_maintenance_speaker_to_ha()` in `tts_ui.py` POSTs the new
+  value to HA's `input_text/set_value` service whenever a Speakers
+  PUT lands. Same pattern as `_sync_glados_config_urls` for Ollama
+  URLs. 7 new tests covering empty/missing/whitespace defaults and
+  HA failure handling.
+- **6b — `a235ef3`. Hyphen / em-dash rendering in TTS.** Operator:
+  "TTS treats hyphens as no pause. The hyphens she generates are weird,
+  really long." Root cause: Piper TTS doesn't insert prosodic breaks
+  on Unicode dashes (`-`, `–`, `—`); the persona rewriter (qwen3:14b)
+  loves em-dashes stylistically. Fix: `_normalize_dashes()` helper
+  added to BOTH `glados/api/tts.py:generate_speech` and
+  `glados/webui/tts_ui.py:_apply_pronunciation_to_text` (both
+  TTS-call sites). Replaces em-dashes, en-dashes, and spaced
+  hyphen-minus with `, ` so Piper gets a comma-shaped pause. Compound
+  hyphens (`tea-cup`, `long-running`) are preserved by word-boundary
+  logic. 14 parametrized tests. Helper is duplicated across the two
+  files intentionally — a shared util would create a circular import
+  (`tts_ui` already imports from `glados.api.tts`).
+
+### TTS Generator chat-thread refit (Chunk 8)
+
+- **8 — `91dc9ea`.** Operator-requested redesign. The TTS Generator
+  page now reads like the Chat tab: telemetry strip → mode toggle
+  (Script/Improv) → scrolling thread of user/GLaDOS bubble pairs →
+  docked input at the bottom. Each generation appends a User bubble
+  (the typed text + timestamp) and a GLaDOS bubble (the spoken text
+  + inline audio player + a metadata strip showing chars · synth time
+  · file size + 3 icon-button actions: Download / Save-to-library /
+  Delete). Page-load pre-populates the thread from existing audio
+  files (oldest at top, newest just above the dock). The standalone
+  player card and the file-list table are gone — the thread is the
+  history. Save-to-library inline form expands under the bubble on
+  save-action click instead of a persistent card.
+
+  Note: synth time is measured client-side via `performance.now()`
+  (round-trip latency including network). `/api/generate` doesn't
+  return server-side synth duration. Approximation only.
+
+### Auth-perf debug saga + hard SyntaxError fix
+
+After Phase 2 chunks 1-5 deployed, operator reported "the WebUI is
+broken even on a different system": refresh shows logged-out shell,
+"a few moments later" UI updates to logged in; chat input doesn't
+send. Hours of theorizing went the wrong direction
+(Secure-cookie-on-self-signed-cert, single-threaded server blocking,
+config reload thrash) before a screenshot of the operator's DevTools
+Console showed the actual cause: `Uncaught SyntaxError: Identifier
+'_PENCIL_SVG' has already been declared (at ui.js:1:1)`. Inline
+`<script>` blocks share global window scope with `/static/ui.js`;
+both Chunks 4 and 5 had added the same `const _PENCIL_SVG` declaration
+(one in ui.js for the Memory chunk, one in `pages/users_page.py`'s
+inline script). Duplicate `const` is a parse error that **aborts the
+entire script** — every function definition past that line never
+runs. checkAuth never fires, sign-in form's submit handler never
+binds, etc.
+
+The wrong-but-real-perf wins from the chase landed too:
+
+- **`bb5cbb4` — auth.db pragmas.** Every auth check ran an
+  `UPDATE auth_sessions SET last_used_at` + commit. On the host's
+  bind-mount filesystem each commit took ~300ms in default
+  `journal_mode=DELETE` + `synchronous=FULL`. Switched to WAL +
+  `synchronous=NORMAL` (set in `connect()` so each new connection
+  inherits both). 6× faster commits.
+- **`0585616` — verify() is now read-only.** The auth-status endpoint
+  no longer writes on every call. `last_used_at` updates coalesce in
+  a per-process dict and a daemon thread flushes them to the DB every
+  30s via `executemany`. Worst-case crash window: 30s of staleness in
+  the Account → Sessions panel, acceptable for bookkeeping.
+- **`823b8f7` — SyntaxError fix + Sessions card removal.** Each
+  shared icon SVG (`_PENCIL_SVG`, `_TRASH_SVG`, `_DISABLE_SVG`) is now
+  declared ONCE in `/static/ui.js`. The inline-script duplicate in
+  `pages/users_page.py` is replaced with a comment pointing to
+  `feedback_devtools_console_first.md`. Same commit removed the
+  Active Sessions card on the Account tab per operator instruction
+  ("session list is not necessary").
+
+After the SyntaxError fix landed, `/api/auth/status` is now ~50ms
+warm, ~60ms cold (from 700-1400ms before, in addition to the SPA
+actually working at all).
+
+### Pre-public-announcement repo scrub
+
+The operator announced the repo on Reddit during this session. Before
+the announcement:
+
+- **`160df62` — Sensitive-info HEAD scrub.** Replaced operator-personal
+  references in every tracked file: resident first names (`Chris` →
+  `ResidentA`, `Cindy` → `ResidentB`), pet names (`Frito` → `Pet1`,
+  `Blue` → `Pet2`, `Princess Fluffybutt`/`Prin Prin` → `Pet3`,
+  `Cuddlewumps`/`Wumpy`/`The Good Queen Cuddlewumps` → `Pet4`,
+  `Wobbles` → `Pet5`, `Mama Tips`/`Mama Kitty` → `Pet6`), the LAN IP
+  in the Phase 2 plan doc. 18 tracked files touched.
+- **History rewrite via `git-filter-repo`.** Two passes — first
+  case-sensitive, then case-insensitive — to scrub the same patterns
+  across every commit on every branch. Force-pushed all four branches
+  (`main`, `webui-polish`, `stage1/pure-middleware`, `webui-refactor`).
+  `git log --all -p` post-rewrite returns zero matches for the scrubbed
+  patterns; only `.gitleaks.toml` retains the patterns as REGEX
+  DEFINITIONS so future leaks are still caught. Cost: two ~593MB LFS
+  uploads on force-push.
+- **`93cf16b` — README + compose + .env.example rewrite.** Reflects the
+  self-contained state. One container, two ports, three essential env
+  vars (`OLLAMA_URL`, `HA_URL`, `HA_TOKEN`). `docker/compose.yml`
+  shrank from 100 to 57 lines; `.env.example` from 62 to 40 lines.
+  Speaches references gone (TTS = local Piper, STT = local Parakeet,
+  embeddings = local BGE, ChromaDB = embedded). The README's Deploy
+  section now duplicates the compose YAML inline so readers see what
+  they're getting before pulling. Default image is `ghcr.io/synssins/glados-docker:latest`;
+  `build:` block kept commented for source-builds.
+
+### Operational helpers (committed)
+
+- **`scripts/_local_deploy.py`** (`41a5c35`) — operational fallback when
+  GHA is unavailable. Tars the worktree (excluding caches/`.git`/
+  `.worktrees`/etc), SCPs to the host, runs `docker build` directly
+  there using whatever LFS files are checked out locally, then
+  recreates the glados container via the existing host compose. Used
+  heavily this session because the GHA LFS bandwidth quota burned
+  out twice during the history rewrites. Required env vars match
+  `scripts/deploy_ghcr.py`.
+- **`scripts/_inject_verbatim_rule.py`** (committed during scrub at
+  `160df62`) — one-shot helper to inject or revert a "VERBATIM
+  REPETITION" rule into the persona preprompt for TTS testing. Used
+  for an operator-driven test mid-session and reverted the same
+  session.
+
+### Tests
+
+1388 passed / 5 skipped (was 1355 pre-Phase-2). New coverage:
+- 5 `_build_health_aggregate` tests (Phase 1 Task 3, prior session)
+- 3 TTS pronunciation tests (Phase 1 Task 7, prior session)
+- 7 maintenance speaker sync tests (Chunk 6a)
+- 14 dash normalization parametrized tests (Chunk 6b)
+- + minor adjustments in webui nav restructure tests across Chunks 1A/1B/2
+
+### Live state at session end
+
+- Image SHA: `sha256:e2d209975b6fb49c7723748b92f930505509f3dac3ae815f196c69a76cd3088c`
+- Branch: `webui-polish` HEAD `91dc9ea`
+- All Phase 2 work shipped. `webui-polish` has not been merged to `main`
+  yet — operator wanted to live-review before merging.
+- Public Reddit announcement made; repo at
+  `https://github.com/synssins/glados-docker` is open.
+
+---
+
+## Change 26 — Autonomy triage split + service slot rename to `llm_*` (2026-04-27 → 2026-04-28)
+
+The 2026-04-27 chat investigation traced the empty-WebUI-bubble symptom
+to two compounding issues: (1) URL mangling that pointed the engine at
+`/v1/chat/completions/api/chat`, and (2) LM Studio's 4096-token context
+window overflowing on every request because the autonomy lane sent
+~5 KB of memory_context + ~1500-token persona prompt + 40-message
+conversation history. The URL fix shipped in `cbd971b`. This Change
+addresses (2) — autonomy will no longer overflow ctx because (a) its
+classification/summarization callers route through a small fast model
+(Llama-3.2-1B-Instruct) on a new `llm_triage` service slot, and (b) the
+`llm_call` helper enforces an 8000-char user_prompt budget with
+truncation + WARNING log so any remaining oversize prompt fails soft
+instead of crashing LM Studio.
+
+Concurrent OpenAI-compliance cleanup: the `services.yaml` schema slots
+got renamed from `ollama_*` to `llm_*` to match the operator's mandate
+that GLaDOS speaks OpenAI everywhere internally. Pydantic
+`AliasChoices` keeps existing operators' `services.yaml` parsing for
+one release; on next save the file is rewritten with the new names.
+
+### Plan + execution
+- Plan: `docs/superpowers/plans/2026-04-28-autonomy-triage-split.md`
+- Companion task tracker: `docs/superpowers/plans/2026-04-28-autonomy-triage-split.md.tasks.json`
+- Executed via `superpowers-extended-cc:subagent-driven-development`
+  in a single session (each task: implementer → spec reviewer → code
+  quality reviewer → optional fix-commit).
+
+### Commits
+| Commit | Effect |
+|---|---|
+| `d388b1e` | `ServicesConfig` schema rename: `ollama_*` → `llm_*` slots, new `llm_triage` slot defaulting to `llama-3.2-1b-instruct`. AliasChoices keep legacy yaml parsing. (+4 tests; full suite intentionally red until next commit.) |
+| `186a076` | Migrate consumer call sites (engine.py, webui/tts_ui.py, autonomy/llm_client.py, server.py, doorbell/screener.py, webui/static/ui.js) and 3 existing tests to `services.llm_*`. Browser-side dict keys flipped to stay in sync with server. Suite back to green. |
+| `49183c1` | `ui.js` follow-up: 3 string-prefix predicates (`_svcDiscoverKind`, `_isLLM`, `_svcHealthKind`) flipped from `'ollama'` to `'llm_'` so LLM rows render correctly on Services / Integrations pages. Pytest can't catch this — JS-only. |
+| `1f11e03` | `LLMConfig.for_slot(slot, *, timeout=30.0)` classmethod. Callers ask for slot by name; unknown slot raises ValueError. (+5 tests.) |
+| `6b12329` | `MAX_AUTONOMY_USER_PROMPT_CHARS = 8000` budget enforced inside `llm_call`. Truncates oldest content with `[…truncated…]` sentinel; emits WARNING log. (+6 tests.) |
+| `e5d4d49` | `summarization.summarize_messages` and `extract_facts` resolve `LLMConfig.for_slot("llm_triage")` internally; `compaction_agent.py` caller updated; `memory_writer.classify_and_extract` builds a triage config and routes both classifier + extractor calls through it. (+4 tests.) |
+| `e3eae90` | Drop the now-dead `llm_config` parameter from `classify_and_extract` (was kept for "API compat" but silently ignored — symmetry cleanup with summarization.py). |
+| `53147f6` | Tier 2 disambiguator construction in `glados/server.py:_init_ha_client` switches to `LLMConfig.for_slot("llm_triage")`. Boot-log message reads `Tier 2 disambiguator ready; … (slot=llm_triage)`. |
+| `7c6abb5` | Trailing-slash normalization + model fallback safety on Tier 2 triage resolution (preserves the OLD `cfg.service_url` / `cfg.service_model("…", fallback=…)` behavior when the slot is partially configured). |
+| `12b7af3` | WebUI Services tab `SERVICE_NAMES` labels flip from `"Ollama X"` to `"LLM (X)"`. Adds `llm_triage: "LLM (Triage)"` entry. Renderer produces a fourth card for `llm_triage` with status dot + URL input + model dropdown. |
+
+### What's verified live (2026-04-28)
+- Container deploy clean. Engine boot log says
+  `Tier 2 disambiguator ready; ollama=http://192.168.1.75:11434/v1/chat/completions model=llama-3.2-1b-instruct (slot=llm_triage) semantic=True`
+  — Task 5's routing landed.
+- Engine reconciler reads from `services.llm_interactive.model` and
+  `services.llm_autonomy.model` (Task 1's flip live).
+- Autonomy retry storm of `Context size has been exceeded` errors —
+  GONE. Container logs over 5 minutes show only `LLM call: user_prompt
+  truncated` WARNINGs from Task 3's budget firing on the
+  expected-large autonomy summarization calls.
+- Streaming chat through the WebUI delivers content delta events
+  with full GLaDOS persona ("I am Glad oh ess..."). Operator can
+  use the Chat tab.
+- LM Studio side: `qwen3-30b-a3b` (hybrid, ctx=12288, parallel=2)
+  routing chat + autonomy at 14.58 GB; `llama-3.2-1b-instruct`
+  (ctx=4096, parallel=2) handling triage at 1.32 GB. Total VRAM
+  ~22 GB on the 24 GB B60 with safe margin. Vision unloaded;
+  operator opts in when ready.
+- Test suite: **1447 passed / 5 skipped**. +25 tests vs.
+  pre-Change-26 baseline.
+
+### Known minor follow-ups (tracked in SESSION_STATE.md)
+- `MAX_AUTONOMY_USER_PROMPT_CHARS` truncation log uses `%d`
+  placeholders that loguru doesn't expand — appears in container
+  logs as the literal string `"truncated from %d to %d chars"`.
+  Pre-existing file-wide style issue (other `logger.warning` lines
+  in the same file have the same format-string-not-expanded behavior).
+  Cosmetic; functional truncation works correctly.
+- `test_config_save_writes_llm_keys` exercises `model_dump(exclude_none=True)`
+  not the production `update_section()` save path. Narrow regression
+  risk if a future change adds `serialization_alias` to the schema.
+  Tighten with an on-disk round-trip when the next config-save
+  refactor lands.
+- No regression test for the disambiguator's slot-resolution path
+  inside `_init_ha_client`. Existing 125 disambiguator tests cover
+  the class with explicit constructor-args injection but don't
+  exercise the slot lookup.
+- Vision model (`qwen2.5-vl-3b-instruct`) is unloaded per operator
+  direction during the prior session's chat investigation. With
+  Llama-3.2-1B at 1.3 GB now resident, three-model VRAM math is
+  tight (14.58 + 3.27 + 1.32 = ~19.2 GB weights + ~7 GB KV =
+  ~26 GB total; over cap). Reload requires either dropping chat
+  ctx to 8K or vision parallel to 2.
+
+### Public-repo discipline notes
+No new secrets shipped this Change; all credential-bearing values
+live in `C:\src\SESSION_STATE.md` (gitignored). The only LAN IP in
+the diff is `192.168.1.75` which lives in operator-side
+`services.yaml` (also gitignored under `configs/`). Pre-commit
+gitleaks rules ran clean on every commit.
+
+---
+
+## Change 27 — WebUI LLM-config UX repair + URL UX simplification (2026-04-28)
+
+Same-day follow-up to Change 26. Three issues operator-flagged after
+deploy verification:
+
+1. **Watchtower silently overwriting deploys.** The `_local_deploy.py`
+   build wrote a fresh image and tagged it `latest`, but
+   `containrrr/watchtower` (running on the docker host) auto-pulls
+   `ghcr.io/synssins/glados-docker:latest` from GHCR every hour and
+   reverts the local tag to GHCR's published image (still the
+   2026-04-25 base because we haven't pushed there since the LFS
+   scrub). The session's first build was clobbered ~5 hours later
+   without any visible failure — `docker compose up` succeeded, the
+   build log showed a fresh image SHA, but the running container ran
+   the stale registry image. Container's `/app/glados/webui/static/ui.js`
+   was 3 days old when we verified.
+
+2. **Phase 2 Chunk 2 left System → Services with one hardcoded LLM
+   card.** Commit `73f253a` (2026-04-25 prior session) consolidated
+   the previously-separate Interactive / Autonomy / Vision cards
+   into a single hand-rolled card hardcoded to `llm_interactive` and
+   forced its URL+model onto `llm_autonomy` on save, ignoring
+   `llm_vision`. After Change 26 added `llm_triage`, all four
+   non-Interactive slots became unconfigurable via the WebUI —
+   operators could only edit raw YAML.
+
+3. **Operators forced to type full chat-completion URL** as
+   `http://host:port/v1/chat/completions`. The path is an OpenAI
+   protocol detail (`/v1/chat/completions` is canonical per
+   `platform.openai.com/docs/api-reference/chat`); first-time setup
+   shouldn't require operators to know it. Same for `/v1/models` on
+   discover, `/v1/audio/transcriptions` on STT, etc.
+
+### Commits
+
+| Commit | Effect |
+|---|---|
+| `24b9938` | `loadSystemServices` replaces the hand-rolled single LLM card with the existing `cfgRenderServices(filtered, scope='llm')` 4-card grid; `_cfgSaveSystemServices` iterates all `llm_*` keys in SERVICE_NAMES and writes each slot independently. Operator can now configure Interactive / Autonomy / Triage / Vision URL+model independently. Removed the orphan `_systemLlmDiscover`. |
+| `387f859` | New `glados/core/url_utils.py` with `strip_url_path()` + `compose_endpoint()` helpers. URL field accepts and stores bare `http://host:port` (no path). Engine + every consumer (api_wrapper, llm_processor, llm_client, llm_decision, persona/rewriter, persona/llm_composer, intent/disambiguator, doorbell/screener) appends `/v1/chat/completions` at dispatch time. Dropped `_ollama_mode` flag, `_is_ollama_endpoint()`, `_sanitize_messages_for_ollama()` from `llm_processor.py` — always speaks OpenAI now. WebUI placeholder `http://host:port`, hint "Server URL — paths added automatically (e.g. /v1/chat/completions)". 21 new url_utils tests + 2 test files rewritten for bare-URL semantics. |
+| `84a5a4b` | `_validate_llm_urls` enforces port-required (`http://host` REJECTED with error mentioning port). Defensive try/except for `urlparse`/`.port` ValueError so malformed inputs return a clean error string. 11 new validator tests. |
+
+### Operational fix: watchtower exclusion
+
+Added `com.centurylinklabs.watchtower.enable=false` label to the
+glados service in the operator's host-side `docker-compose.yml`
+(`/srv/.../data/docker/compose/docker-compose.yml`). Watchtower
+now skips glados entirely; future `_local_deploy.py` builds aren't
+clobbered. The label change lives only on the host (compose.yml is
+not in this repo), so it's noted here for the operator's records.
+
+### Live-verified state (2026-04-28 ~05:30 UTC)
+
+- Container running image SHA `857d8d434264…` from this session's
+  build. Watchtower exclusion label applied; subsequent automatic
+  pulls skipped.
+- Served `ui.js` (302,855 bytes, post-deploy fetch from
+  `glados.denofsyn.com:8052/static/ui.js`) confirms:
+  - 4-card LLM grid renderer present
+  - `http://host:port` placeholder present (2 occurrences — input
+    + description)
+  - Hint "paths added automatically" present
+  - No `system-llm-url` orphan IDs
+- Engine boot log: `Tier 2 disambiguator ready; ollama=… model=llama-3.2-1b-instruct (slot=llm_triage)`
+  — Change 26 routing intact through this round of changes.
+- Test suite: **1483 pass / 5 skip / 0 fail** (was 1447 → 1470 → 1483
+  across the three Change 27 commits).
+
+### Test count delta
+
+- Change 26 baseline: 1447
+- After `24b9938` (LLM-cards fix): 1447 (no new tests; fix verified
+  via served-JS markers + manual)
+- After `387f859` (URL UX): 1470 (+23 from `tests/test_url_utils.py`)
+- After `84a5a4b` (port-required validator): 1483 (+13 from new
+  `TestValidateLlmUrls` class)
+
+### Follow-ups (carried to SESSION_STATE.md)
+
+- The simpler 1-URL-N-models card layout (one URL + four model
+  dropdowns + Advanced toggle that exposes the 4-card view) is the
+  next logical UX iteration — Change 27's 4-card grid is full
+  flexibility, but the typical operator with one LLM server wants to
+  type one URL and pick four models. Plan owed.
+- Chat speed investigation — chitchat round-trips ~30-90 s when
+  `/no_think` should give <5 s. Verify directive flows through to
+  LM Studio and that autonomy isn't slot-starving chat.
+- The `%d`-log-placeholder bug in `glados/autonomy/llm_client.py`
+  (truncation log line uses printf format that loguru doesn't
+  expand) — pre-existing file-wide style issue.
+- Tighten `test_config_save_writes_llm_keys` to exercise
+  `update_section()` save path.
+- Add regression test for disambiguator slot-resolution inside
+  `_init_ha_client`.
+- HA token regen (operator-side, carried).
+- Vision model reload — VRAM math still tight; need chat ctx drop or
+  parallel reduction.
+
+---
+
+## Change 28 — Chat-speed remediation: %s loguru fix + LM Studio JIT disable (2026-04-28 PM)
+
+**Symptom**: WebUI chitchat round-trips at ~30–90 s TTFT despite the prior
+session showing /no_think directive injection working at the api_wrapper
+layer. Operator's screenshots: "Who are you and what do you do" — TTFT
+14.7 s; previous sessions reported the 30–90 s range.
+
+**Investigation** (Phase 1, evidence before fixes):
+
+1. Probed LM Studio (192.168.1.75:11434) directly with five payload
+   variations to bisect the directive layer:
+   - A: plain "hello", no directive → 1.42 s, 284 reasoning_content tokens.
+   - B: `/no_think` on user → **0.49 s**, 2 reasoning tokens.
+   - C: `/no_think` on system + persona → **0.53 s**, 2 reasoning tokens.
+   - D: `chat_template_kwargs.enable_thinking=false` (LM Studio kwarg) →
+     4.61 s, 348 reasoning tokens. **NOT honored** by qwen3-30b-a3b on
+     this build.
+   - E: kwarg + `/no_think` → 0.36 s, 2 reasoning tokens.
+   - Conclusion: `/no_think` works at LM Studio + qwen3-30b-a3b. The
+     directive injection at `api_wrapper.py:1825` was correct.
+
+2. Probed the api_wrapper SSE chitchat path from inside the docker network
+   (no auth needed at port 8015): TTFB **0.15–0.38 s**, full GLaDOS reply
+   delivered in 42 chunks. So the SSE path itself isn't slow either.
+
+3. Found the actual bottleneck: `lms ps` and `/api/v0/models` both reported
+   `qwen3-30b-a3b` loaded with `loaded_context_length=4096` despite session
+   state expecting **12288**. With the post-compaction history at
+   ~28 messages (~5–10 K tokens) being sent on every chat, prompts
+   regularly exceeded 4096 ctx → LM Studio re-prefilled / truncated /
+   context-shifted on every request.
+
+4. Reloaded model with `lms load qwen3-30b-a3b -c 12288 --parallel 4 --gpu
+   max --ttl 3600 -y` → ctx=12288 confirmed via `/api/v0/models` →
+   first chitchat fired → ctx **back to 4096**. **LM Studio's JIT
+   loader was reverting the CLI-set ctx whenever a request hit a
+   JIT-managed model**, falling back to the model-bundled default
+   (4096). LM Studio has no `lms preset save` CLI subcommand and
+   `~/.lmstudio/config-presets/` was empty; per-model defaults are
+   GUI-only — and the GUI is unreachable on this Windows Server
+   install.
+
+5. The autonomy `LLM call failed: %s` warnings flooding container logs
+   every 5 min were also load-bearing: the actual exception text was
+   being silently dropped by loguru (printf-style placeholder bug),
+   hiding the autonomy-side ctx overflow that was the upstream cause
+   of the conversation_store accumulating 11 K-char prompts before
+   the truncation cap kicked in.
+
+**Fixes shipped:**
+
+1. **`glados/autonomy/llm_client.py`** (commit `19eaddb`, image SHA
+   `69ec8e5f4a61`): switched three `logger.warning(...)` calls from
+   printf-style `%s`/`%d` to loguru `{}` placeholders.
+   - Line 100–103: `LLM call: user_prompt truncated from %d to %d chars`
+   - Line 175: `LLM call failed: %s`
+   - Line 178: `LLM call: failed to parse response: %s`
+   Test suite: 1483 pass / 5 skip / 0 fail. Post-deploy verification:
+   the truncation log immediately reported real values
+   (`truncated from 11585 to 8015 chars`); the autonomy compaction
+   call that had been failing every 5 min on the old ctx=4096 build
+   succeeded after deploy, compacting history `6863 → 4342 tokens`
+   and saving 24 facts to ChromaDB.
+
+2. **`~/.lmstudio/settings.json` on AIBox** (operator-approved,
+   AIBox-side change, NOT in repo): set
+   `developer.jitModelTTL.enabled: false`. JIT auto-load and
+   per-request preset re-evaluation are now disabled; manual
+   `lms load` is authoritative. Backup at
+   `~/.lmstudio/settings.json.bak.20260428T154426`. Bounced
+   `lms server` and reloaded both models without `--ttl`:
+   - `qwen3-30b-a3b`: ctx=12288, parallel=4
+   - `llama-3.2-1b-instruct`: ctx=4096, parallel=2
+   Verified ctx persists across an api_wrapper chitchat.
+
+3. **AIBox-side autoload** (host-only, not in repo):
+   `~/.lmstudio/lms_autoload.bat` + `~/.lmstudio/NSSM_INSTALL.md`.
+   Boot-time NSSM service `LMStudioAutoload` ensures both models are
+   loaded with the right params after every reboot. Idempotent;
+   keepalive loop keeps NSSM happy.
+
+**Live verification (post-fix-2):**
+
+- Operator's "What is the forecast today?" — TTFT **3.2 s**, LLM 6.2 s,
+  TTS 6.5 s, **Total 10.6 s**. Down from 30–90 s.
+- Previous chat at TTFT 14.7 s was the cold-prefill of the very first
+  chat after the reload + JIT-revert; the subsequent chats reuse KV
+  prefix and stay around 3 s.
+
+**Open observations (deferred / not fixed in this Change):**
+
+- **Home-command path slow**: operator's "Turn off the office lights" —
+  TTFT **19.3 s**, LLM 20.1 s, **no rendered reply**. With
+  `is_home_command=True` the api_wrapper loads the MCP tool catalog
+  (~10 K tokens) and reinforcement system message; comment at
+  `api_wrapper.py:1513` already notes "~3 s → ~80 s latency" for this
+  path. Empty rendered reply may be related to MCP `home_assistant`
+  401 errors (every 2 s) — the planner may be falling silent when its
+  tool calls fail. Carried for a future session.
+- **`looks_like_home_command("good morning")` → True** via
+  `activity_phrase`. Greetings hit the heavy home-command path.
+  `glados/intent/rules.py:264`. Trivial fix: drop `good morning` from
+  the activity-phrase list.
+- **~30 other `%s`/`%d` loguru placeholder bugs** scattered across
+  `glados/autonomy/agents/*` (camera_watcher, weather, hacker_news,
+  emotion_agent), `subagent_manager.py`, `subagent.py`,
+  `subagent_memory.py`, `task_manager.py`, `jobs.py`,
+  `core/knowledge_store.py`. Same bug class; one sweep commit would
+  clear it. None are firing as visibly as the autonomy/llm_client.py
+  ones were.
+- **`tokens_per_second` always None in metrics** because LM Studio's
+  OpenAI-compat endpoint doesn't emit Ollama's `eval_count`/
+  `eval_duration` fields. Adding `stream_options:{include_usage:true}`
+  to the outbound payload (`api_wrapper.py:1836`) would surface the
+  OpenAI-style `usage` field; the ollama_metrics parser at line
+  2019–2031 would need a corresponding branch to read it, and
+  `tok_per_sec` would compute from `completion_tokens / generation_time`.
+  ~10 lines of code; carried.
+- **Vision model unloaded** — three-model VRAM math still tight,
+  unchanged from prior session.
+- **HA token regen** — operator-side; flagged as "should not be needed
+  for HA" by operator, so root cause is something else (stale token
+  in services.yaml, HA-side wrong token, MCP path). Carried.
+
+**Files touched (committed):**
+
+- `glados/autonomy/llm_client.py` (3 log-format edits).
+
+**AIBox host changes (not in repo, documented in SESSION_STATE.md):**
+
+- `~/.lmstudio/settings.json` (jitModelTTL.enabled false).
+- `~/.lmstudio/lms_autoload.bat` (new).
+- `~/.lmstudio/NSSM_INSTALL.md` (new).
+- LM Studio: bounced server, reloaded both models with explicit ctx.
+
+## Change 28b — NSSM autoload service installed + duplicate-load fix (2026-04-28 evening)
+
+Follow-up to Change 28. Three things landed after the Change 28 commit
+was pushed; documented here so the chronological log stays accurate.
+
+**What happened:**
+
+1. **`LMStudioAutoload` NSSM service installed and started.** Per the
+   procedure in `~/.lmstudio/NSSM_INSTALL.md`:
+   - `nssm install LMStudioAutoload "%USERPROFILE%\.lmstudio\lms_autoload.bat"`
+   - `AppDirectory`, `Start=SERVICE_AUTO_START`, log routing,
+     `AppExit Default Restart`, `AppRestartDelay 10000`, run as
+     `.\Administrator`.
+   - `nssm start LMStudioAutoload` → `SERVICE_RUNNING`.
+
+2. **Duplicate-instance bug discovered post-install.** First
+   verification revealed `lms ps` reporting both `qwen3-30b-a3b` at
+   ctx=4096 (the pre-existing instance from earlier in the session)
+   AND `qwen3-30b-a3b:2` at ctx=12288 (loaded by the autoload script).
+   `lms load` does **not** replace an existing instance — it suffixes
+   `:2`, `:3`, etc. The autoload script as originally written would
+   have accumulated duplicates on every service restart, eating VRAM
+   and leaving the wrong-ctx instance available for inbound requests.
+
+3. **Script corrected and state cleaned.** Added an unload pass to
+   `~/.lmstudio/lms_autoload.bat` covering `qwen3-30b-a3b`,
+   `qwen3-30b-a3b:2`, `qwen3-30b-a3b:3`,
+   `llama-3.2-1b-instruct`, `llama-3.2-1b-instruct:2` (errors swallowed
+   so "nothing to unload" is fine). Stopped the service, unloaded all
+   instances by hand, restarted the service. Final state: one
+   `qwen3-30b-a3b` at ctx=12288 + one `llama-3.2-1b-instruct` at
+   ctx=4096. Service running, auto-start enabled.
+
+**Operational lesson recorded:** during the install / verify cycle,
+exploratory `nssm dump LMStudioAutoload` was run — that command (with
+no args) silently opens a modal GUI dialog on Windows that the operator
+has to dismiss. Saved as memory `feedback_no_probe_commands.md`:
+execute the action, read the exit code; do not pre-probe with
+`nssm dump` / `nssm list` / repeated `lms ps` / `whoami` / `sc query`.
+
+**AIBox host changes (not in repo):**
+
+- `~/.lmstudio/lms_autoload.bat` — added unload-before-load step.
+- NSSM: installed + started `LMStudioAutoload` service, set
+  `SERVICE_AUTO_START`, run-as `.\Administrator`, restart-on-exit.
+
+**Carried to next session:**
+
+- First-reboot verification of `LMStudioAutoload` still owed. Confirm
+  service auto-starts, log shows fresh banner, `lms ps` shows clean
+  state (one instance per model, no `:2` suffixes).
+
+## Change 29 — tokens/sec on OpenAI-compat SSE + README/models doc refresh + main merge (2026-04-28 evening)
+
+Three things landed together as the trailing commits on `webui-polish`
+before merging the branch into `main`.
+
+**1. `tokens/sec` metric on the OpenAI-compat SSE path** (commit
+`74f7f6a`). LM Studio's `/v1/chat/completions` doesn't emit Ollama's
+`eval_count` / `eval_duration` fields, so the WebUI chat-stats bar's
+`tok/s` cell was always blank when the container talked to LM Studio.
+Three minimal edits in `glados/core/api_wrapper.py`:
+
+- Set `stream_options: {include_usage: true}` on the outbound payload,
+  gated on `/v1/` in the upstream path so Ollama-native (`/api/chat`)
+  is unaffected.
+- Capture the terminal `usage` chunk's `prompt_tokens` and
+  `completion_tokens` into the same `ollama_metrics` keys the metrics
+  emitter already reads.
+- Fall back to wall-clock first-token → stream-end time for tok/s when
+  per-token timing isn't reported (OpenAI-compat case). Prompt-prefill
+  time correctly excluded from the throughput denominator.
+
+WebUI side already renders `timing.tokens_per_second` when present
+(`glados/webui/static/ui.js:5233`). Live-verified post-deploy: a
+bare-prompt chitchat returned `tokens_per_second: 70.2` against
+qwen3-30b-a3b on LM Studio, with `eval_duration_ms: 0.0` confirming
+the wall-clock fallback is what fired.
+
+**2. README + new `docs/models.md`** to make the OpenAI compatibility
+contract explicit:
+
+- README preamble + dependency table now leads with "any
+  OpenAI-compatible LLM endpoint" instead of Ollama-specifically.
+- New "OpenAI API Compatibility" section enumerates the `/v1`
+  endpoints exposed on port 8015, the streaming features
+  (`stream_options.include_usage`, tool-call deltas, `/no_think`
+  injection), and the bare-`scheme://host:port` URL UX.
+- "Models" section rewritten around the four LLM slots
+  (`llm_interactive`, `llm_autonomy`, `llm_triage`, `llm_vision`)
+  with both `qwen3:14b` and `qwen3-30b-a3b` named as tested-good
+  options.
+- New `docs/models.md` covers VRAM math, throughput numbers, the LM
+  Studio JIT-loader gotcha, and trade-offs between the 14B and 30B
+  chat options. Also covers the triage and vision slots.
+
+**3. `webui-polish` → `main` merge.** ~70 commits accumulated on the
+polish branch since the LFS scrub re-baseline; the trunk is now caught
+up. Merge was `--no-ff` to preserve the topical commit history.
+
+

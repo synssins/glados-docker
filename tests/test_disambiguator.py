@@ -197,7 +197,7 @@ class TestExtractQualifiers:
     def test_keeps_multiple_qualifiers_in_order(self) -> None:
         assert _extract_qualifiers(
             "Turn on the reading lamp in ResidentB's office"
-        ) == ["reading", "ResidentB's", "office"]
+        ) == ["reading", "residentb's", "office"]
 
     def test_deduplicates_repeats(self) -> None:
         # Even if the user repeats a qualifier, it appears once in
@@ -216,7 +216,7 @@ class TestExtractQualifiers:
         assert _extract_qualifiers("turn on the lights") == []
 
     def test_preserves_apostrophes(self) -> None:
-        assert "ResidentB's" in _extract_qualifiers("ResidentB's office lamp")
+        assert "residentb's" in _extract_qualifiers("ResidentB's office lamp")
 
 
 class TestFilterByQualifiers:
@@ -289,7 +289,7 @@ class TestFilterByQualifiers:
         c = CandidateMatch(entity=e, matched_name="Plug 1", score=90.0, sensitive=False)
         text = _candidate_search_text(c)
         assert "reading" in text
-        assert "ResidentA's" in text
+        assert "residenta's" in text
 
 
 class TestQualifierFilterIntegration:
