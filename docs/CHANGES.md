@@ -3386,3 +3386,102 @@ the diff is `192.168.1.75` which lives in operator-side
 gitleaks rules ran clean on every commit.
 
 ---
+
+## Change 27 — WebUI LLM-config UX repair + URL UX simplification (2026-04-28)
+
+Same-day follow-up to Change 26. Three issues operator-flagged after
+deploy verification:
+
+1. **Watchtower silently overwriting deploys.** The `_local_deploy.py`
+   build wrote a fresh image and tagged it `latest`, but
+   `containrrr/watchtower` (running on the docker host) auto-pulls
+   `ghcr.io/synssins/glados-docker:latest` from GHCR every hour and
+   reverts the local tag to GHCR's published image (still the
+   2026-04-25 base because we haven't pushed there since the LFS
+   scrub). The session's first build was clobbered ~5 hours later
+   without any visible failure — `docker compose up` succeeded, the
+   build log showed a fresh image SHA, but the running container ran
+   the stale registry image. Container's `/app/glados/webui/static/ui.js`
+   was 3 days old when we verified.
+
+2. **Phase 2 Chunk 2 left System → Services with one hardcoded LLM
+   card.** Commit `73f253a` (2026-04-25 prior session) consolidated
+   the previously-separate Interactive / Autonomy / Vision cards
+   into a single hand-rolled card hardcoded to `llm_interactive` and
+   forced its URL+model onto `llm_autonomy` on save, ignoring
+   `llm_vision`. After Change 26 added `llm_triage`, all four
+   non-Interactive slots became unconfigurable via the WebUI —
+   operators could only edit raw YAML.
+
+3. **Operators forced to type full chat-completion URL** as
+   `http://host:port/v1/chat/completions`. The path is an OpenAI
+   protocol detail (`/v1/chat/completions` is canonical per
+   `platform.openai.com/docs/api-reference/chat`); first-time setup
+   shouldn't require operators to know it. Same for `/v1/models` on
+   discover, `/v1/audio/transcriptions` on STT, etc.
+
+### Commits
+
+| Commit | Effect |
+|---|---|
+| `24b9938` | `loadSystemServices` replaces the hand-rolled single LLM card with the existing `cfgRenderServices(filtered, scope='llm')` 4-card grid; `_cfgSaveSystemServices` iterates all `llm_*` keys in SERVICE_NAMES and writes each slot independently. Operator can now configure Interactive / Autonomy / Triage / Vision URL+model independently. Removed the orphan `_systemLlmDiscover`. |
+| `387f859` | New `glados/core/url_utils.py` with `strip_url_path()` + `compose_endpoint()` helpers. URL field accepts and stores bare `http://host:port` (no path). Engine + every consumer (api_wrapper, llm_processor, llm_client, llm_decision, persona/rewriter, persona/llm_composer, intent/disambiguator, doorbell/screener) appends `/v1/chat/completions` at dispatch time. Dropped `_ollama_mode` flag, `_is_ollama_endpoint()`, `_sanitize_messages_for_ollama()` from `llm_processor.py` — always speaks OpenAI now. WebUI placeholder `http://host:port`, hint "Server URL — paths added automatically (e.g. /v1/chat/completions)". 21 new url_utils tests + 2 test files rewritten for bare-URL semantics. |
+| `84a5a4b` | `_validate_llm_urls` enforces port-required (`http://host` REJECTED with error mentioning port). Defensive try/except for `urlparse`/`.port` ValueError so malformed inputs return a clean error string. 11 new validator tests. |
+
+### Operational fix: watchtower exclusion
+
+Added `com.centurylinklabs.watchtower.enable=false` label to the
+glados service in the operator's host-side `docker-compose.yml`
+(`/srv/.../data/docker/compose/docker-compose.yml`). Watchtower
+now skips glados entirely; future `_local_deploy.py` builds aren't
+clobbered. The label change lives only on the host (compose.yml is
+not in this repo), so it's noted here for the operator's records.
+
+### Live-verified state (2026-04-28 ~05:30 UTC)
+
+- Container running image SHA `857d8d434264…` from this session's
+  build. Watchtower exclusion label applied; subsequent automatic
+  pulls skipped.
+- Served `ui.js` (302,855 bytes, post-deploy fetch from
+  `glados.denofsyn.com:8052/static/ui.js`) confirms:
+  - 4-card LLM grid renderer present
+  - `http://host:port` placeholder present (2 occurrences — input
+    + description)
+  - Hint "paths added automatically" present
+  - No `system-llm-url` orphan IDs
+- Engine boot log: `Tier 2 disambiguator ready; ollama=… model=llama-3.2-1b-instruct (slot=llm_triage)`
+  — Change 26 routing intact through this round of changes.
+- Test suite: **1483 pass / 5 skip / 0 fail** (was 1447 → 1470 → 1483
+  across the three Change 27 commits).
+
+### Test count delta
+
+- Change 26 baseline: 1447
+- After `24b9938` (LLM-cards fix): 1447 (no new tests; fix verified
+  via served-JS markers + manual)
+- After `387f859` (URL UX): 1470 (+23 from `tests/test_url_utils.py`)
+- After `84a5a4b` (port-required validator): 1483 (+13 from new
+  `TestValidateLlmUrls` class)
+
+### Follow-ups (carried to SESSION_STATE.md)
+
+- The simpler 1-URL-N-models card layout (one URL + four model
+  dropdowns + Advanced toggle that exposes the 4-card view) is the
+  next logical UX iteration — Change 27's 4-card grid is full
+  flexibility, but the typical operator with one LLM server wants to
+  type one URL and pick four models. Plan owed.
+- Chat speed investigation — chitchat round-trips ~30-90 s when
+  `/no_think` should give <5 s. Verify directive flows through to
+  LM Studio and that autonomy isn't slot-starving chat.
+- The `%d`-log-placeholder bug in `glados/autonomy/llm_client.py`
+  (truncation log line uses printf format that loguru doesn't
+  expand) — pre-existing file-wide style issue.
+- Tighten `test_config_save_writes_llm_keys` to exercise
+  `update_section()` save path.
+- Add regression test for disambiguator slot-resolution inside
+  `_init_ha_client`.
+- HA token regen (operator-side, carried).
+- Vision model reload — VRAM math still tight; need chat ctx drop or
+  parallel reduction.
+
+---
