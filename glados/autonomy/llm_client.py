@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import ClassVar
 
 import requests
 from loguru import logger
@@ -29,12 +30,38 @@ class LLMConfig:
     api_key: str | None = None
     timeout: float = 30.0
 
+    _ALLOWED_SLOTS: ClassVar[tuple[str, ...]] = (
+        "llm_interactive",
+        "llm_autonomy",
+        "llm_triage",
+        "llm_vision",
+    )
+
     @property
     def headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+    @classmethod
+    def for_slot(cls, slot: str, *, timeout: float = 30.0) -> "LLMConfig":
+        """Resolve an ``LLMConfig`` from one of the four well-known
+        service slots in ``cfg.services``. Slot must be one of
+        ``llm_interactive``, ``llm_autonomy``, ``llm_triage``,
+        ``llm_vision``."""
+        if slot not in cls._ALLOWED_SLOTS:
+            raise ValueError(
+                f"Unknown service slot {slot!r}; "
+                f"expected one of {cls._ALLOWED_SLOTS}"
+            )
+        # Local import: cfg loads on first access and pulls in much of
+        # the engine. Keeping it inside the method avoids a circular
+        # import at llm_client module load time, matching the pattern
+        # already used in apply_model_family_directives below.
+        from glados.core.config_store import cfg
+        endpoint = getattr(cfg.services, slot)
+        return cls(url=endpoint.url, model=endpoint.model, timeout=timeout)
 
 
 def llm_call(
