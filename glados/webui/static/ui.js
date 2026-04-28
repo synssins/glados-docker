@@ -2457,6 +2457,12 @@ function cfgRenderServices(data, scope) {
     const discoverKind = _svcDiscoverKind(key);
     const hasVoice = (key === 'tts' && svc.voice !== undefined);
     const hasModel = (svc.model !== undefined) || (discoverKind === 'ollama');
+    // LLM cards get an explicit ``http://host:port`` placeholder + a
+    // hint that protocol-internal paths (``/v1/chat/completions`` etc.)
+    // are appended automatically at dispatch — operators only ever type
+    // the bare base URL. Other service kinds keep the legacy unhinted
+    // input because their URL shapes differ (TTS, STT, vision).
+    const _urlPlaceholder = _isLLM(key) ? 'http://host:port' : '';
     html += '<div class="service-card">'
       + '<div class="service-card-header">'
       + '<span class="svc-health-dot" id="svc-dot-' + key + '"></span>'
@@ -2466,14 +2472,18 @@ function cfgRenderServices(data, scope) {
       + '<label class="cfg-field-label">URL</label>'
       + '<div class="svc-url-row">'
       +   '<input id="' + urlId + '" data-path="' + key + '.url" data-type="string" value="' + escAttr(svc.url || '') + '"'
+      +     (_urlPlaceholder ? ' placeholder="' + escAttr(_urlPlaceholder) + '"' : '')
       +     (discoverKind ? ' onblur="svcUrlBlur(\'' + escAttr(key) + '\')"' : '')
       +   '>';
     if (discoverKind) {
       html += '<button type="button" class="svc-discover-btn" title="Discover from upstream" onclick="svcDiscover(\'' + escAttr(key) + '\')">&#x21bb; Discover</button>';
     }
     html +=   '<span class="svc-discover-status" id="svc-status-' + key + '"></span>'
-      + '</div>'
       + '</div>';
+    if (_isLLM(key)) {
+      html += '<div class="cfg-field-hint">Server URL — paths added automatically (e.g. /v1/chat/completions)</div>';
+    }
+    html += '</div>';
     if (hasVoice) {
       html += '<div class="cfg-field" style="margin-bottom:6px;">'
         + '<label class="cfg-field-label">Voice</label>'

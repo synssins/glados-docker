@@ -1710,10 +1710,15 @@ def _stream_chat_sse_impl(
     except Exception as _emo_exc:
         logger.debug("[{}] Emotion directive skipped: {}", request_id, _emo_exc)
 
-    # Determine endpoint
-    completion_url = str(glados.completion_url)
+    # Determine endpoint. The system stores ``glados.completion_url`` as the
+    # bare ``scheme://host:port``; ``/v1/chat/completions`` is appended only
+    # at dispatch time so the operator never has to type or know about
+    # protocol-internal paths. ``compose_endpoint`` is forgiving — if a
+    # legacy installation still has ``/api/chat`` baked into the stored URL,
+    # the path component is stripped before the OpenAI suffix is appended.
+    from glados.core.url_utils import compose_endpoint
+    completion_url = compose_endpoint(str(glados.completion_url), "/v1/chat/completions")
     parsed_url = urlparse(completion_url)
-    ollama_mode = parsed_url.path.rstrip("/").endswith("/api/chat")
 
     # ── Entity name resolver ─────────────────────────────────────────
     # Pre-resolve fuzzy device names against HA's actual entity list

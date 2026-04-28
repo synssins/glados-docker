@@ -132,29 +132,18 @@ class HAAudioConfig(BaseModel):
 
 
 def _ollama_as_chat_url(u: str | None) -> str:
-    """Normalize a chat-completion URL stored in services.yaml to the
-    form Glados.completion_url expects. Mirrors _ollama_chat_url in
-    glados/webui/tts_ui.py — duplicated deliberately to avoid an inbound
-    import from webui into core. Both should behave identically.
+    """Normalize a URL stored in services.yaml to the bare
+    ``scheme://host:port`` form the engine stores in
+    ``Glados.completion_url``.
 
-    URLs that already end in a known chat suffix (``/v1/chat/completions``
-    OpenAI, ``/api/chat`` Ollama-native) pass through unchanged. Bare
-    URLs and other ``/api/...`` paths default to ``/api/chat`` for legacy
-    Ollama compatibility — the OpenAI-default Item #3 cleanup is a
-    larger follow-up."""
-    s = (u or "").strip().rstrip("/")
-    if not s:
-        return ""
-    # Already an OpenAI chat-completions URL — pass through. Auto-rewriting
-    # would yield the malformed ``/v1/chat/completions/api/chat`` that
-    # broke chat through the middleware on 2026-04-27.
-    if s.endswith("/v1/chat/completions"):
-        return s
-    if s.endswith("/api/chat"):
-        return s
-    if "/api/" in s:
-        s = s.rsplit("/api/", 1)[0]
-    return s + "/api/chat"
+    Mirrors ``_ollama_chat_url`` in ``glados/webui/tts_ui.py`` — same
+    contract, duplicated deliberately to avoid an inbound import from
+    webui into core. Stale path components on input (``/api/chat``,
+    ``/v1/chat/completions``, ``/api/tags``, ``/v1/models``, anything
+    else) are stripped; dispatch sites compose the right path at request
+    time via ``glados.core.url_utils.compose_endpoint``."""
+    from .url_utils import strip_url_path
+    return strip_url_path(u)
 
 
 def _reconcile_glados_with_services(glados_raw: Any) -> Any:
@@ -204,7 +193,7 @@ def _reconcile_glados_with_services(glados_raw: Any) -> Any:
         glados_raw["llm_model"] = chat_model
 
     if chat_url:
-        current_chat = (glados_raw.get("completion_url") or "").strip().rstrip("/")
+        current_chat = _ollama_as_chat_url(glados_raw.get("completion_url") or "")
         if current_chat != chat_url:
             logger.warning(
                 "Config drift: Glados.completion_url={!r} overridden by "
@@ -223,7 +212,7 @@ def _reconcile_glados_with_services(glados_raw: Any) -> Any:
             )
             auton["llm_model"] = auton_model
         if auton_url:
-            current_auton = (auton.get("completion_url") or "").strip().rstrip("/")
+            current_auton = _ollama_as_chat_url(auton.get("completion_url") or "")
             if current_auton != auton_url:
                 logger.warning(
                     "Config drift: Glados.autonomy.completion_url={!r} overridden by "

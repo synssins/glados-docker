@@ -7,7 +7,6 @@ import re
 import threading
 import time
 from typing import Any, ClassVar
-from urllib.parse import urlparse
 import uuid
 
 from loguru import logger
@@ -209,7 +208,6 @@ class LanguageModelProcessor:
         self._observability_bus = observability_bus
         self._lane = lane
         self._inflight_counter = inflight_counter
-        self._ollama_mode = self._is_ollama_endpoint()
         self._last_timeout_tts: float = 0.0  # cooldown for timeout TTS messages
         # When streaming TTS is enabled, flush smaller text chunks for faster first-audio.
         # None → use class default MIN_TTS_FLUSH_CHARS (150).
@@ -240,39 +238,6 @@ class LanguageModelProcessor:
             self.prompt_headers["Authorization"] = f"Bearer {api_key}"
         if extra_headers:
             self.prompt_headers.update(extra_headers)
-
-    def _is_ollama_endpoint(self) -> bool:
-        try:
-            parsed = urlparse(str(self.completion_url))
-        except Exception:
-            return False
-        path = (parsed.path or "").rstrip("/")
-        return path.endswith("/api/chat")
-
-    @staticmethod
-    def _sanitize_messages_for_ollama(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        allowed_keys = {"role", "content", "name", "tool_calls", "tool_call_id", "images", "function_call"}
-        sanitized: list[dict[str, Any]] = []
-        for message in messages:
-            cleaned = {key: value for key, value in message.items() if key in allowed_keys}
-            tool_calls = cleaned.get("tool_calls")
-            if isinstance(tool_calls, list):
-                normalized_calls: list[dict[str, Any]] = []
-                for tool_call in tool_calls:
-                    if not isinstance(tool_call, dict):
-                        continue
-                    function = tool_call.get("function", {}) if isinstance(tool_call.get("function"), dict) else {}
-                    arguments = function.get("arguments")
-                    if isinstance(arguments, str):
-                        try:
-                            function["arguments"] = json.loads(arguments)
-                        except json.JSONDecodeError:
-                            function["arguments"] = {}
-                    tool_call["function"] = function
-                    normalized_calls.append(tool_call)
-                cleaned["tool_calls"] = normalized_calls
-            sanitized.append(cleaned)
-        return sanitized
 
     @staticmethod
     def _sanitize_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -943,19 +908,16 @@ class LanguageModelProcessor:
                 first_flush_done = False
                 try:
                     http_error_detail: tuple[str | int, str] | None = None
-                    request_urls = [str(self.completion_url)]
-                    if self._ollama_mode:
-                        fallback_url = str(self.completion_url).replace("/api/chat", "/v1/chat/completions")
-                        if fallback_url != request_urls[0]:
-                            request_urls.append(fallback_url)
+                    # ``completion_url`` is stored as the bare
+                    # ``scheme://host:port``; the OpenAI chat-completions path
+                    # is appended only at dispatch time. ``compose_endpoint``
+                    # tolerates a legacy stored URL that still carries a path
+                    # component by stripping it before appending.
+                    from glados.core.url_utils import compose_endpoint
+                    request_urls = [compose_endpoint(str(self.completion_url), "/v1/chat/completions")]
 
                     for attempt, request_url in enumerate(request_urls):
-                        if request_url.endswith("/v1/chat/completions"):
-                            data["messages"] = self._sanitize_messages_for_openai(base_messages)
-                        elif self._ollama_mode:
-                            data["messages"] = self._sanitize_messages_for_ollama(base_messages)
-                        else:
-                            data["messages"] = self._sanitize_messages_for_openai(base_messages)
+                        data["messages"] = self._sanitize_messages_for_openai(base_messages)
                         try:
                             t_request_sent = time.time()
                             with requests.post(

@@ -615,7 +615,10 @@ class DoorbellScreener:
             },
         }
 
-        url = f"{ollama_url}/api/chat"
+        # ``ollama_url`` is the bare ``scheme://host:port`` from the LLM &
+        # Services WebUI; append the OpenAI chat-completions path at dispatch.
+        from glados.core.url_utils import compose_endpoint
+        url = compose_endpoint(ollama_url, "/v1/chat/completions")
         import re as _re
         _THINK_RE = _re.compile(r"<think>.*?</think>", _re.DOTALL | _re.IGNORECASE)
 

@@ -110,10 +110,14 @@ async def llm_decide(
         "response_format": {"type": "json_object"},
     }
 
+    # ``config.url`` is the bare ``scheme://host:port`` from the LLM &
+    # Services WebUI; append the OpenAI chat-completions path at dispatch.
+    from glados.core.url_utils import compose_endpoint
+    endpoint = compose_endpoint(config.url, "/v1/chat/completions")
     try:
         async with httpx.AsyncClient(timeout=config.timeout) as client:
             response = await client.post(
-                config.url,
+                endpoint,
                 headers=config.headers,
                 json=data,
             )

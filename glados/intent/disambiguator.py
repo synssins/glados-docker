@@ -1989,8 +1989,13 @@ class Disambiguator:
                 "num_predict": 512,
             },
         }).encode("utf-8")
+        # ``_ollama_url`` is the bare ``scheme://host:port`` from the LLM &
+        # Services WebUI; the OpenAI chat-completions path is appended only
+        # at dispatch time. ``compose_endpoint`` handles legacy stored URLs
+        # that still carry a path component.
+        from glados.core.url_utils import compose_endpoint
         req = urllib.request.Request(
-            self._ollama_url + "/api/chat",
+            compose_endpoint(self._ollama_url, "/v1/chat/completions"),
             data=body,
             headers={"Content-Type": "application/json"},
         )

@@ -124,9 +124,14 @@ def llm_call(
     if json_response:
         data["response_format"] = {"type": "json_object"}
 
+    # ``config.url`` is the bare ``scheme://host:port`` operators paste into
+    # the LLM & Services WebUI URL field; the OpenAI chat-completions path
+    # is appended only at dispatch time so the user never has to type it.
+    from glados.core.url_utils import compose_endpoint
+    endpoint = compose_endpoint(config.url, "/v1/chat/completions")
     try:
         response = requests.post(
-            config.url,
+            endpoint,
             headers=config.headers,
             json=data,
             timeout=config.timeout,

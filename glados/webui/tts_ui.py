@@ -1192,32 +1192,58 @@ def _strip_chat_suffix(url: str) -> str:
     return s
 
 
-def _ollama_chat_url(base_or_chat_url: str) -> str:
-    """Given a chat-completion URL stored in the LLM & Services field,
-    return the form the engine's GladosConfig.completion_url expects.
-    Tolerant of trailing slashes and of operators who paste either
-    variant.
+def _validate_llm_urls(services_payload: Any) -> str | None:
+    """Minimal sanity check for LLM URL fields on Save.
 
-    URLs that already end in a known chat suffix
-    (``/v1/chat/completions`` OpenAI, ``/api/chat`` Ollama-native) pass
-    through unchanged. Bare URLs and other ``/api/...`` paths default
-    to ``/api/chat`` for legacy Ollama compatibility — the
-    OpenAI-default Item #3 cleanup is a larger follow-up."""
-    url = (base_or_chat_url or "").strip().rstrip("/")
-    if not url:
-        return url
-    # Already an OpenAI chat-completions URL — pass through. Auto-rewriting
-    # would yield the malformed ``/v1/chat/completions/api/chat`` that
-    # broke chat through the middleware on 2026-04-27.
-    if url.endswith("/v1/chat/completions"):
-        return url
-    if url.endswith("/api/chat"):
-        return url
-    # Strip any other trailing /api/... path the operator might have set
-    # (e.g. /api/tags from testing), then append the canonical suffix.
-    if "/api/" in url:
-        url = url.rsplit("/api/", 1)[0]
-    return url + "/api/chat"
+    Operators paste ``http(s)://host[:port]``; we accept anything with a
+    scheme + host. Empty values are allowed (skip / clear the slot).
+    Reachability is not checked here — that's Discover's job.
+
+    Returns an error message on failure, ``None`` on success. Only fires
+    on the four LLM slots; non-LLM service URLs (TTS, STT, vision, etc.)
+    have their own validation paths and are left alone.
+    """
+    if not isinstance(services_payload, dict):
+        return None
+    from urllib.parse import urlparse
+    _llm_slots = ("llm_interactive", "llm_autonomy", "llm_triage", "llm_vision")
+    for slot in _llm_slots:
+        ep = services_payload.get(slot)
+        if not isinstance(ep, dict):
+            continue
+        u = (ep.get("url") or "").strip()
+        if not u:
+            continue
+        parsed = urlparse(u)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return (
+                f"Invalid {slot} URL {u!r}: expected scheme://host[:port] "
+                f"(e.g. http://host:port). Paths are added automatically."
+            )
+    return None
+
+
+def _ollama_chat_url(base_or_chat_url: str) -> str:
+    """Normalize an operator-pasted LLM URL to the bare ``scheme://host:port``
+    form the system stores everywhere.
+
+    The engine appends ``/v1/chat/completions`` (or ``/v1/models`` etc.)
+    at dispatch time — paths are protocol-internal and never leak to the
+    user. This helper is forgiving on input: an operator who follows old
+    docs or copies a full chat URL still ends up with the bare form
+    after Save:
+
+      - ``http://host:port`` → ``http://host:port`` (already bare)
+      - ``http://host:port/`` → ``http://host:port`` (trailing slash stripped)
+      - ``http://host:port/v1/chat/completions`` → ``http://host:port``
+      - ``http://host:port/api/chat`` → ``http://host:port``
+      - ``http://host:port/api/tags`` → ``http://host:port``
+      - ``http://host:port/v1/models`` → ``http://host:port``
+
+    Empty / whitespace-only input → empty string.
+    """
+    from glados.core.url_utils import strip_url_path
+    return strip_url_path(base_or_chat_url)
 
 
 def discover_ollama(url: str) -> tuple[int, dict]:
@@ -4529,6 +4555,16 @@ class Handler(BaseHTTPRequestHandler):
             data.pop("password_is_set", None)
             if not data.get("password"):
                 data["password"] = _cfg.mqtt.password
+        # LLM URL minimal sanity check. Operators must supply
+        # ``http(s)://host[:port]`` — no auto-add of scheme or port, no
+        # reachability probe (Discover does that), but a typo / missing
+        # scheme should surface here instead of failing silently at the
+        # next dispatch.
+        if section == "services":
+            _err = _validate_llm_urls(data)
+            if _err:
+                self._send_error(400, _err)
+                return
         try:
             # Phase 2 Chunk 3: extract personality_preprompt before validation
             # so the Pydantic model doesn't reject an unknown field, then sync
