@@ -2197,7 +2197,7 @@ function cfgBuildForm(obj, section, prefix, skipKeys) {
 // Ollama URLs go through /api/tags; TTS URLs through /v1/voices.
 function _svcDiscoverKind(key) {
   if (key === 'tts') return 'voices';
-  if (key.indexOf('ollama') === 0) return 'ollama';
+  if (key.indexOf('llm_') === 0) return 'ollama';
   return null;
 }
 
@@ -2466,7 +2466,7 @@ function cfgRenderServices(data, scope) {
   //   scope === 'llm'    -> Ollama endpoints only (Integrations page)
   //   scope === 'system' -> TTS / STT / Vision / api_wrapper (System page)
   //   scope === null     -> full grid (legacy behavior)
-  const _isLLM = k => k.indexOf('ollama') === 0;
+  const _isLLM = k => k.indexOf('llm_') === 0;
   let html = '<div class="service-grid">';
   for (const [key, svc] of Object.entries(data)) {
     if (SERVICES_HIDDEN.has(key)) continue;
@@ -2523,7 +2523,7 @@ function cfgRenderServices(data, scope) {
 // /health, GLaDOS-own services use /health. Without this hint,
 // every Ollama / TTS dot is false-red because /health returns 404.
 function _svcHealthKind(key) {
-  if (key.indexOf('ollama') === 0) return 'ollama';
+  if (key.indexOf('llm_') === 0) return 'ollama';
   if (key === 'tts') return 'tts';
   if (key === 'stt') return 'stt';
   if (key === 'api_wrapper' || key === 'vision') return key;
