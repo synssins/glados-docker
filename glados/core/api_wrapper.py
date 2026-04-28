@@ -2582,14 +2582,19 @@ class APIHandler(BaseHTTPRequestHandler):
 
         try:
             import soundfile as sf
-            from glados.TTS import get_speech_synthesizer
-            synth = get_speech_synthesizer(voice)
-            audio = synth.generate_speech_audio(text, **kwargs)
+            # Delegate to glados.api.tts.generate_speech so input runs
+            # through text_to_spoken (numbers → words, °F/mph expansion,
+            # operator pronunciation overrides). Pre-fix this handler
+            # called synth.generate_speech_audio directly with raw text,
+            # which caused Piper to silently drop digits — operator
+            # heard "It will be degrees" instead of "fifty-five degrees".
+            from glados.api.tts import generate_speech as _do_synth
+            audio, sample_rate = _do_synth(text, voice=voice, **kwargs)
             if audio.size == 0:
                 self._send_json({"error": {"message": "synthesis produced empty audio"}}, 500)
                 return
             buf = io.BytesIO()
-            sf.write(buf, audio, synth.sample_rate, format=fmt.upper())
+            sf.write(buf, audio, sample_rate, format=fmt.upper())
             buf.seek(0)
             data = buf.read()
         except FileNotFoundError as exc:
