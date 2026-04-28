@@ -3291,3 +3291,98 @@ the announcement:
   `https://github.com/synssins/glados-docker` is open.
 
 ---
+
+## Change 26 — Autonomy triage split + service slot rename to `llm_*` (2026-04-27 → 2026-04-28)
+
+The 2026-04-27 chat investigation traced the empty-WebUI-bubble symptom
+to two compounding issues: (1) URL mangling that pointed the engine at
+`/v1/chat/completions/api/chat`, and (2) LM Studio's 4096-token context
+window overflowing on every request because the autonomy lane sent
+~5 KB of memory_context + ~1500-token persona prompt + 40-message
+conversation history. The URL fix shipped in `cbd971b`. This Change
+addresses (2) — autonomy will no longer overflow ctx because (a) its
+classification/summarization callers route through a small fast model
+(Llama-3.2-1B-Instruct) on a new `llm_triage` service slot, and (b) the
+`llm_call` helper enforces an 8000-char user_prompt budget with
+truncation + WARNING log so any remaining oversize prompt fails soft
+instead of crashing LM Studio.
+
+Concurrent OpenAI-compliance cleanup: the `services.yaml` schema slots
+got renamed from `ollama_*` to `llm_*` to match the operator's mandate
+that GLaDOS speaks OpenAI everywhere internally. Pydantic
+`AliasChoices` keeps existing operators' `services.yaml` parsing for
+one release; on next save the file is rewritten with the new names.
+
+### Plan + execution
+- Plan: `docs/superpowers/plans/2026-04-28-autonomy-triage-split.md`
+- Companion task tracker: `docs/superpowers/plans/2026-04-28-autonomy-triage-split.md.tasks.json`
+- Executed via `superpowers-extended-cc:subagent-driven-development`
+  in a single session (each task: implementer → spec reviewer → code
+  quality reviewer → optional fix-commit).
+
+### Commits
+| Commit | Effect |
+|---|---|
+| `d388b1e` | `ServicesConfig` schema rename: `ollama_*` → `llm_*` slots, new `llm_triage` slot defaulting to `llama-3.2-1b-instruct`. AliasChoices keep legacy yaml parsing. (+4 tests; full suite intentionally red until next commit.) |
+| `186a076` | Migrate consumer call sites (engine.py, webui/tts_ui.py, autonomy/llm_client.py, server.py, doorbell/screener.py, webui/static/ui.js) and 3 existing tests to `services.llm_*`. Browser-side dict keys flipped to stay in sync with server. Suite back to green. |
+| `49183c1` | `ui.js` follow-up: 3 string-prefix predicates (`_svcDiscoverKind`, `_isLLM`, `_svcHealthKind`) flipped from `'ollama'` to `'llm_'` so LLM rows render correctly on Services / Integrations pages. Pytest can't catch this — JS-only. |
+| `1f11e03` | `LLMConfig.for_slot(slot, *, timeout=30.0)` classmethod. Callers ask for slot by name; unknown slot raises ValueError. (+5 tests.) |
+| `6b12329` | `MAX_AUTONOMY_USER_PROMPT_CHARS = 8000` budget enforced inside `llm_call`. Truncates oldest content with `[…truncated…]` sentinel; emits WARNING log. (+6 tests.) |
+| `e5d4d49` | `summarization.summarize_messages` and `extract_facts` resolve `LLMConfig.for_slot("llm_triage")` internally; `compaction_agent.py` caller updated; `memory_writer.classify_and_extract` builds a triage config and routes both classifier + extractor calls through it. (+4 tests.) |
+| `e3eae90` | Drop the now-dead `llm_config` parameter from `classify_and_extract` (was kept for "API compat" but silently ignored — symmetry cleanup with summarization.py). |
+| `53147f6` | Tier 2 disambiguator construction in `glados/server.py:_init_ha_client` switches to `LLMConfig.for_slot("llm_triage")`. Boot-log message reads `Tier 2 disambiguator ready; … (slot=llm_triage)`. |
+| `7c6abb5` | Trailing-slash normalization + model fallback safety on Tier 2 triage resolution (preserves the OLD `cfg.service_url` / `cfg.service_model("…", fallback=…)` behavior when the slot is partially configured). |
+| `12b7af3` | WebUI Services tab `SERVICE_NAMES` labels flip from `"Ollama X"` to `"LLM (X)"`. Adds `llm_triage: "LLM (Triage)"` entry. Renderer produces a fourth card for `llm_triage` with status dot + URL input + model dropdown. |
+
+### What's verified live (2026-04-28)
+- Container deploy clean. Engine boot log says
+  `Tier 2 disambiguator ready; ollama=http://192.168.1.75:11434/v1/chat/completions model=llama-3.2-1b-instruct (slot=llm_triage) semantic=True`
+  — Task 5's routing landed.
+- Engine reconciler reads from `services.llm_interactive.model` and
+  `services.llm_autonomy.model` (Task 1's flip live).
+- Autonomy retry storm of `Context size has been exceeded` errors —
+  GONE. Container logs over 5 minutes show only `LLM call: user_prompt
+  truncated` WARNINGs from Task 3's budget firing on the
+  expected-large autonomy summarization calls.
+- Streaming chat through the WebUI delivers content delta events
+  with full GLaDOS persona ("I am Glad oh ess..."). Operator can
+  use the Chat tab.
+- LM Studio side: `qwen3-30b-a3b` (hybrid, ctx=12288, parallel=2)
+  routing chat + autonomy at 14.58 GB; `llama-3.2-1b-instruct`
+  (ctx=4096, parallel=2) handling triage at 1.32 GB. Total VRAM
+  ~22 GB on the 24 GB B60 with safe margin. Vision unloaded;
+  operator opts in when ready.
+- Test suite: **1447 passed / 5 skipped**. +25 tests vs.
+  pre-Change-26 baseline.
+
+### Known minor follow-ups (tracked in SESSION_STATE.md)
+- `MAX_AUTONOMY_USER_PROMPT_CHARS` truncation log uses `%d`
+  placeholders that loguru doesn't expand — appears in container
+  logs as the literal string `"truncated from %d to %d chars"`.
+  Pre-existing file-wide style issue (other `logger.warning` lines
+  in the same file have the same format-string-not-expanded behavior).
+  Cosmetic; functional truncation works correctly.
+- `test_config_save_writes_llm_keys` exercises `model_dump(exclude_none=True)`
+  not the production `update_section()` save path. Narrow regression
+  risk if a future change adds `serialization_alias` to the schema.
+  Tighten with an on-disk round-trip when the next config-save
+  refactor lands.
+- No regression test for the disambiguator's slot-resolution path
+  inside `_init_ha_client`. Existing 125 disambiguator tests cover
+  the class with explicit constructor-args injection but don't
+  exercise the slot lookup.
+- Vision model (`qwen2.5-vl-3b-instruct`) is unloaded per operator
+  direction during the prior session's chat investigation. With
+  Llama-3.2-1B at 1.3 GB now resident, three-model VRAM math is
+  tight (14.58 + 3.27 + 1.32 = ~19.2 GB weights + ~7 GB KV =
+  ~26 GB total; over cap). Reload requires either dropping chat
+  ctx to 8K or vision parallel to 2.
+
+### Public-repo discipline notes
+No new secrets shipped this Change; all credential-bearing values
+live in `C:\src\SESSION_STATE.md` (gitignored). The only LAN IP in
+the diff is `192.168.1.75` which lives in operator-side
+`services.yaml` (also gitignored under `configs/`). Pre-commit
+gitleaks rules ran clean on every commit.
+
+---
