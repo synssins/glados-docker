@@ -15,6 +15,21 @@ import requests
 from loguru import logger
 
 
+MAX_AUTONOMY_USER_PROMPT_CHARS = 8000
+_TRUNCATION_SENTINEL = "[…truncated…]\n\n"
+
+
+def _truncate_user_prompt(
+    prompt: str, budget: int = MAX_AUTONOMY_USER_PROMPT_CHARS,
+) -> tuple[str, bool]:
+    """If ``prompt`` exceeds ``budget`` characters, drop the oldest
+    content and prepend a sentinel so the model sees something
+    explanatory. Returns ``(text, truncated)``."""
+    if len(prompt) <= budget:
+        return prompt, False
+    return _TRUNCATION_SENTINEL + prompt[-budget:], True
+
+
 @dataclass
 class LLMConfig:
     """Configuration for LLM API calls.
@@ -75,6 +90,18 @@ def llm_call(
 
     Returns the assistant's response text, or None on error.
     """
+    # Budget enforcement — autonomy callers occasionally pass a
+    # decade of conversation history. Truncate to the most-recent
+    # MAX_AUTONOMY_USER_PROMPT_CHARS chars so LM Studio's ctx
+    # window is never the bottleneck.
+    original_len = len(user_prompt)
+    user_prompt, truncated = _truncate_user_prompt(user_prompt)
+    if truncated:
+        logger.warning(
+            "LLM call: user_prompt truncated from %d to %d chars",
+            original_len, len(user_prompt),
+        )
+
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
