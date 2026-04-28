@@ -1839,6 +1839,12 @@ def _stream_chat_sse_impl(
         "messages": messages,
         "options": _streaming_options,
     }
+    # OpenAI-compat servers (LM Studio, vLLM) emit a final `usage` chunk
+    # only when stream_options.include_usage=true. Ollama-native (`/api/chat`)
+    # reports the same counters in its own `done` chunk and may reject
+    # unknown top-level fields, so gate on path.
+    if "/v1/" in parsed_url.path:
+        payload["stream_options"] = {"include_usage": True}
     if tools:
         payload["tools"] = tools
     logger.success(
@@ -2003,12 +2009,24 @@ def _stream_chat_sse_impl(
                 else:
                     try:
                         parsed = json.loads(json_str)
-                        delta = parsed.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content")
-                        _tc = delta.get("tool_calls")
-                        if _tc:
-                            pending_tool_calls.extend(_tc)
-                    except (json.JSONDecodeError, IndexError):
+                        # OpenAI-compat sends `usage` in a terminal chunk
+                        # with choices=[] when stream_options.include_usage
+                        # is set. Map onto the same keys the metrics block
+                        # below already reads from `ollama_metrics`.
+                        _usage = parsed.get("usage")
+                        if isinstance(_usage, dict):
+                            if "prompt_tokens" in _usage:
+                                ollama_metrics["prompt_eval_count"] = _usage["prompt_tokens"]
+                            if "completion_tokens" in _usage:
+                                ollama_metrics["eval_count"] = _usage["completion_tokens"]
+                        _choices = parsed.get("choices") or []
+                        if _choices:
+                            delta = _choices[0].get("delta", {})
+                            content = delta.get("content")
+                            _tc = delta.get("tool_calls")
+                            if _tc:
+                                pending_tool_calls.extend(_tc)
+                    except json.JSONDecodeError:
                         pass
             else:
                 try:
@@ -2215,7 +2233,18 @@ def _stream_chat_sse_impl(
             round((t_first_token - t_request_sent) * 1000, 1) if t_first_token else None
         )
         gen_ms = round((t_stream_end - t_request_sent) * 1000, 1)
-        tok_per_sec = round(completion_tokens / (eval_dur_ms / 1000), 1) if eval_dur_ms > 0 else None
+        # tok/sec: prefer Ollama's eval_duration (authoritative). For
+        # OpenAI-compat servers that report counts via the usage chunk but
+        # no per-token timing, fall back to wall-clock generation-only time
+        # (first-token → stream-end), since prompt-prefill shouldn't count
+        # against generation throughput.
+        if eval_dur_ms > 0:
+            tok_per_sec = round(completion_tokens / (eval_dur_ms / 1000), 1)
+        elif completion_tokens > 0 and t_first_token is not None:
+            gen_only_s = max(t_stream_end - t_first_token, 0.001)
+            tok_per_sec = round(completion_tokens / gen_only_s, 1)
+        else:
+            tok_per_sec = None
 
         metrics_payload = {
             "prompt_tokens": prompt_tokens,
