@@ -52,9 +52,13 @@ backend and optionally Home Assistant.
 
 | Dependency | Required? | Purpose |
 |------------|-----------|---------|
-| **Ollama** (or any OpenAI-compatible LLM) at `OLLAMA_URL` | Required | Chat, Tier 2 disambiguator, persona rewriter |
+| Any **OpenAI-compatible LLM endpoint** (Ollama, LM Studio, vLLM, llama.cpp `llama-server`, …) | Required | Chat, Tier 2 disambiguator, persona rewriter, autonomy |
 | **Home Assistant** at `HA_URL` + `HA_TOKEN` | Recommended | Device control, state queries, autonomy |
-| Vision service at `VISION_URL` | Optional | Camera/image analysis; nothing breaks if absent |
+| Vision-capable LLM endpoint | Optional | Camera/image analysis; nothing breaks if absent |
+
+URLs are configured as bare `scheme://host:port` — the container appends
+`/v1/chat/completions`, `/api/chat`, `/v1/audio/speech`, etc. at dispatch
+time. See `docs/models.md` for recommended models and a sample VRAM budget.
 
 ## Hardware Requirements
 
@@ -73,8 +77,12 @@ curl -O https://raw.githubusercontent.com/synssins/glados-docker/main/.env.examp
 cp .env.example .env
 # Edit .env — set OLLAMA_URL (required) and HA_URL+HA_TOKEN (recommended)
 
-# 2. Pull the LLM model your Ollama instance will serve
-ollama pull qwen3:14b
+# 2. Make a chat-capable model available on your inference endpoint.
+#    Either of these is a tested-good baseline; see docs/models.md for
+#    full recommendations including a triage and vision model.
+ollama pull qwen3:14b                          # original recommendation (Ollama)
+# or, with LM Studio:
+# lms load qwen3-30b-a3b -c 12288 --parallel 4 --gpu max
 
 # 3. Pull and start GLaDOS
 curl -O https://raw.githubusercontent.com/synssins/glados-docker/main/docker/compose.yml
@@ -172,7 +180,7 @@ at the first hit:
 | Tier | Path | Typical latency | Used for |
 |------|------|-----------------|----------|
 | **1** | HA's WebSocket `conversation/process` + persona rewriter | ~0.6–1 s | "turn off the kitchen lights", "what time is it", state queries |
-| **2** | LLM disambiguator (qwen3:14b) with cache-grounded candidates + intent allowlist | ~5–11 s | "bedroom lights" (ambiguous), "all lights" (universal), "I want to read in the living room" (activity → scene inference) |
+| **2** | LLM disambiguator on the `llm_triage` slot (recommended: `llama-3.2-1b-instruct`; falls back to `llm_interactive`) with cache-grounded candidates + intent allowlist | ~1–11 s depending on model | "bedroom lights" (ambiguous), "all lights" (universal), "I want to read in the living room" (activity → scene inference) |
 | **3** | Existing full LLM agentic loop with HA MCP tools | 10–30 s | Conversation, multi-step reasoning, anything Tier 1/2 can't resolve |
 
 Key properties:
@@ -294,42 +302,78 @@ battery analysis and the remediation plan (complete).
 
 | Port | Exposed | Purpose |
 |------|---------|---------|
-| 8015 | LAN     | OpenAI-compatible persona API (`/v1/chat/completions`, `/v1/audio/speech`, custom endpoints) |
+| 8015 | LAN     | OpenAI-compatible persona API (`/v1/chat/completions`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`, `/v1/voices`) |
 | 8052 | LAN     | Admin WebUI (config editor, health panel, TTS generator, chat) — HTTPS when SSL enabled |
 
 The container is designed for LAN deployment. If you expose port 8052
 to the public internet, put it behind a reverse proxy (Cloudflare Access,
 Authelia, etc.) for an additional perimeter layer.
 
+## OpenAI API Compatibility
+
+Port 8015 speaks the OpenAI HTTP protocol. Drop-in clients (the
+official `openai` SDK, LangChain, LlamaIndex, Open WebUI, …) work
+without modification — point them at `http://<host>:8015` and pass
+any model name; the persona pipeline overrides the upstream model
+identifier anyway.
+
+| Endpoint | Behavior |
+|----------|----------|
+| `POST /v1/chat/completions` | Streaming + non-streaming. Persona-rewritten, emotion-tinted, three-tier matched. Returns OpenAI delta chunks; tool calls stream through `delta.tool_calls`. |
+| `POST /v1/audio/speech`      | TTS via local Piper. Returns `audio/wav` or `audio/mpeg`. |
+| `POST /v1/audio/transcriptions` | STT via local Parakeet + Silero VAD. Returns the OpenAI `{text}` shape. |
+| `GET /v1/models`             | Lists the persona-overlaid `glados` virtual model. |
+| `GET /v1/voices` and `/v1/audio/voices` | Lists available Piper voices. |
+
+**Streaming features:**
+
+- **`stream_options.include_usage=true`** — when set on the upstream
+  request, the terminal usage chunk's `prompt_tokens` /
+  `completion_tokens` populate the `tokens_per_second` field in the
+  WebUI metrics bar. This means Ollama-native and OpenAI-compat backends
+  (LM Studio, vLLM) both surface throughput, even when the upstream
+  doesn't emit Ollama's `eval_count` / `eval_duration`.
+- **Tool-call deltas** stream alongside content deltas; the three-tier
+  matcher dispatches to HA MCP and the follow-up tokens stream back.
+- **`/no_think` injection** at the system layer for chitchat on
+  Qwen3-family models drops TTFT from ~30 s to ~3 s with no client
+  change.
+
+**Backend URLs are bare `scheme://host:port`.** The container appends
+the right path (`/v1/chat/completions`, `/api/chat`, etc.) at dispatch
+time, so operators don't need to know which protocol path their backend
+expects.
+
+The container itself uses stdlib `http.client` against the upstream —
+no OpenAI SDK is imported. Anything emitting canonical OpenAI SSE
+chunks works as a backend; production runs to date use Ollama and LM
+Studio.
+
 ## Models
 
-A single Ollama instance at `OLLAMA_URL` hosts everything by default
-(chat, Tier 2 disambiguator, persona rewriter, vision). Pull all
-models onto it:
+The container is **backend-agnostic** — anything that speaks
+`/v1/chat/completions` works. Each LLM role has its own slot in
+`services.yaml`, configured independently in **System → Services**:
 
-| Model | Size | Used by | Tunable via |
-|-------|------|---------|-------------|
-| `qwen3:14b`                   | 9.3 GB | chat + Tier 2 disambiguator + persona rewriter | WebUI LLM & Services page, or `DISAMBIGUATOR_MODEL` / `REWRITER_MODEL` env |
-| `qwen2.5vl:7b`                | 6.0 GB | vision queries (optional)   | WebUI LLM & Services page |
+| Slot | Used by | Recommended model |
+|------|---------|-------------------|
+| `llm_interactive` | Tier 3 chat, persona rewrites, tool-call planning | `qwen3:14b` (Ollama) or `qwen3-30b-a3b` (LM Studio) |
+| `llm_autonomy`    | Background autonomy loops (sensor watcher, weather, camera, news) | Same as `llm_interactive`, or split onto a dedicated GPU |
+| `llm_triage`      | Tier 2 disambiguator, autonomy compaction, memory classifier | `llama-3.2-1b-instruct` (small + fast) or `qwen3:8b` |
+| `llm_vision`      | Camera / image analysis (optional) | `qwen2.5vl:7b` or `qwen2.5-vl-3b-instruct` |
 
-A smaller 8B model (`qwen3:8b`) works as a fallback on hosts without
-enough VRAM for 14B. The persona rewriter can also be pointed at a
-smaller dedicated model if latency matters more than consistency.
+A single endpoint can host all four; operators with a dedicated GPU
+per role can split them onto separate URLs. Unset slots fall back to
+`llm_interactive`.
 
-Operators who want hardware isolation (e.g. a dedicated GPU for
-background autonomy) can set `OLLAMA_AUTONOMY_URL` and/or
-`OLLAMA_VISION_URL` to point at separate Ollama instances; unset,
-both fall back to `OLLAMA_URL`.
+See [docs/models.md](docs/models.md) for VRAM math, throughput
+numbers, and the trade-offs between the 14B and 30B chat options
+including an LM Studio JIT-loader gotcha that can silently revert
+context size.
 
-The chat model defaults to whatever `glados.llm_model` is in
-`configs/global.yaml`. A base instruct model (qwen3, qwen2.5, llama3.1,
-mistral-nemo, etc.) gets the GLaDOS persona injected via the
-container's `personality_preprompt` — no Modelfile needed. See
-"Model Independence" in `docs/roadmap.md` for context.
-
-If none of the models are available the container still starts, but
-Tier 1 / Tier 2 fall through to the slow Tier 3 path and responses
-come back without persona rewrite.
+If no LLM is available the container still starts, but Tier 1 / Tier 2
+fall through to the slow Tier 3 path and responses come back without
+persona rewrite.
 
 ## Configuration
 

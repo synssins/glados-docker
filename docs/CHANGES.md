@@ -3673,3 +3673,52 @@ execute the action, read the exit code; do not pre-probe with
   service auto-starts, log shows fresh banner, `lms ps` shows clean
   state (one instance per model, no `:2` suffixes).
 
+## Change 29 — tokens/sec on OpenAI-compat SSE + README/models doc refresh + main merge (2026-04-28 evening)
+
+Three things landed together as the trailing commits on `webui-polish`
+before merging the branch into `main`.
+
+**1. `tokens/sec` metric on the OpenAI-compat SSE path** (commit
+`74f7f6a`). LM Studio's `/v1/chat/completions` doesn't emit Ollama's
+`eval_count` / `eval_duration` fields, so the WebUI chat-stats bar's
+`tok/s` cell was always blank when the container talked to LM Studio.
+Three minimal edits in `glados/core/api_wrapper.py`:
+
+- Set `stream_options: {include_usage: true}` on the outbound payload,
+  gated on `/v1/` in the upstream path so Ollama-native (`/api/chat`)
+  is unaffected.
+- Capture the terminal `usage` chunk's `prompt_tokens` and
+  `completion_tokens` into the same `ollama_metrics` keys the metrics
+  emitter already reads.
+- Fall back to wall-clock first-token → stream-end time for tok/s when
+  per-token timing isn't reported (OpenAI-compat case). Prompt-prefill
+  time correctly excluded from the throughput denominator.
+
+WebUI side already renders `timing.tokens_per_second` when present
+(`glados/webui/static/ui.js:5233`). Live-verified post-deploy: a
+bare-prompt chitchat returned `tokens_per_second: 70.2` against
+qwen3-30b-a3b on LM Studio, with `eval_duration_ms: 0.0` confirming
+the wall-clock fallback is what fired.
+
+**2. README + new `docs/models.md`** to make the OpenAI compatibility
+contract explicit:
+
+- README preamble + dependency table now leads with "any
+  OpenAI-compatible LLM endpoint" instead of Ollama-specifically.
+- New "OpenAI API Compatibility" section enumerates the `/v1`
+  endpoints exposed on port 8015, the streaming features
+  (`stream_options.include_usage`, tool-call deltas, `/no_think`
+  injection), and the bare-`scheme://host:port` URL UX.
+- "Models" section rewritten around the four LLM slots
+  (`llm_interactive`, `llm_autonomy`, `llm_triage`, `llm_vision`)
+  with both `qwen3:14b` and `qwen3-30b-a3b` named as tested-good
+  options.
+- New `docs/models.md` covers VRAM math, throughput numbers, the LM
+  Studio JIT-loader gotcha, and trade-offs between the 14B and 30B
+  chat options. Also covers the triage and vision slots.
+
+**3. `webui-polish` → `main` merge.** ~70 commits accumulated on the
+polish branch since the LFS scrub re-baseline; the trunk is now caught
+up. Merge was `--no-ff` to preserve the topical commit history.
+
+
