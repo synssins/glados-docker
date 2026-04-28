@@ -3485,3 +3485,139 @@ not in this repo), so it's noted here for the operator's records.
   parallel reduction.
 
 ---
+
+## Change 28 — Chat-speed remediation: %s loguru fix + LM Studio JIT disable (2026-04-28 PM)
+
+**Symptom**: WebUI chitchat round-trips at ~30–90 s TTFT despite the prior
+session showing /no_think directive injection working at the api_wrapper
+layer. Operator's screenshots: "Who are you and what do you do" — TTFT
+14.7 s; previous sessions reported the 30–90 s range.
+
+**Investigation** (Phase 1, evidence before fixes):
+
+1. Probed LM Studio (192.168.1.75:11434) directly with five payload
+   variations to bisect the directive layer:
+   - A: plain "hello", no directive → 1.42 s, 284 reasoning_content tokens.
+   - B: `/no_think` on user → **0.49 s**, 2 reasoning tokens.
+   - C: `/no_think` on system + persona → **0.53 s**, 2 reasoning tokens.
+   - D: `chat_template_kwargs.enable_thinking=false` (LM Studio kwarg) →
+     4.61 s, 348 reasoning tokens. **NOT honored** by qwen3-30b-a3b on
+     this build.
+   - E: kwarg + `/no_think` → 0.36 s, 2 reasoning tokens.
+   - Conclusion: `/no_think` works at LM Studio + qwen3-30b-a3b. The
+     directive injection at `api_wrapper.py:1825` was correct.
+
+2. Probed the api_wrapper SSE chitchat path from inside the docker network
+   (no auth needed at port 8015): TTFB **0.15–0.38 s**, full GLaDOS reply
+   delivered in 42 chunks. So the SSE path itself isn't slow either.
+
+3. Found the actual bottleneck: `lms ps` and `/api/v0/models` both reported
+   `qwen3-30b-a3b` loaded with `loaded_context_length=4096` despite session
+   state expecting **12288**. With the post-compaction history at
+   ~28 messages (~5–10 K tokens) being sent on every chat, prompts
+   regularly exceeded 4096 ctx → LM Studio re-prefilled / truncated /
+   context-shifted on every request.
+
+4. Reloaded model with `lms load qwen3-30b-a3b -c 12288 --parallel 4 --gpu
+   max --ttl 3600 -y` → ctx=12288 confirmed via `/api/v0/models` →
+   first chitchat fired → ctx **back to 4096**. **LM Studio's JIT
+   loader was reverting the CLI-set ctx whenever a request hit a
+   JIT-managed model**, falling back to the model-bundled default
+   (4096). LM Studio has no `lms preset save` CLI subcommand and
+   `~/.lmstudio/config-presets/` was empty; per-model defaults are
+   GUI-only — and the GUI is unreachable on this Windows Server
+   install.
+
+5. The autonomy `LLM call failed: %s` warnings flooding container logs
+   every 5 min were also load-bearing: the actual exception text was
+   being silently dropped by loguru (printf-style placeholder bug),
+   hiding the autonomy-side ctx overflow that was the upstream cause
+   of the conversation_store accumulating 11 K-char prompts before
+   the truncation cap kicked in.
+
+**Fixes shipped:**
+
+1. **`glados/autonomy/llm_client.py`** (commit `19eaddb`, image SHA
+   `69ec8e5f4a61`): switched three `logger.warning(...)` calls from
+   printf-style `%s`/`%d` to loguru `{}` placeholders.
+   - Line 100–103: `LLM call: user_prompt truncated from %d to %d chars`
+   - Line 175: `LLM call failed: %s`
+   - Line 178: `LLM call: failed to parse response: %s`
+   Test suite: 1483 pass / 5 skip / 0 fail. Post-deploy verification:
+   the truncation log immediately reported real values
+   (`truncated from 11585 to 8015 chars`); the autonomy compaction
+   call that had been failing every 5 min on the old ctx=4096 build
+   succeeded after deploy, compacting history `6863 → 4342 tokens`
+   and saving 24 facts to ChromaDB.
+
+2. **`~/.lmstudio/settings.json` on AIBox** (operator-approved,
+   AIBox-side change, NOT in repo): set
+   `developer.jitModelTTL.enabled: false`. JIT auto-load and
+   per-request preset re-evaluation are now disabled; manual
+   `lms load` is authoritative. Backup at
+   `~/.lmstudio/settings.json.bak.20260428T154426`. Bounced
+   `lms server` and reloaded both models without `--ttl`:
+   - `qwen3-30b-a3b`: ctx=12288, parallel=4
+   - `llama-3.2-1b-instruct`: ctx=4096, parallel=2
+   Verified ctx persists across an api_wrapper chitchat.
+
+3. **AIBox-side autoload** (host-only, not in repo):
+   `~/.lmstudio/lms_autoload.bat` + `~/.lmstudio/NSSM_INSTALL.md`.
+   Boot-time NSSM service `LMStudioAutoload` ensures both models are
+   loaded with the right params after every reboot. Idempotent;
+   keepalive loop keeps NSSM happy.
+
+**Live verification (post-fix-2):**
+
+- Operator's "What is the forecast today?" — TTFT **3.2 s**, LLM 6.2 s,
+  TTS 6.5 s, **Total 10.6 s**. Down from 30–90 s.
+- Previous chat at TTFT 14.7 s was the cold-prefill of the very first
+  chat after the reload + JIT-revert; the subsequent chats reuse KV
+  prefix and stay around 3 s.
+
+**Open observations (deferred / not fixed in this Change):**
+
+- **Home-command path slow**: operator's "Turn off the office lights" —
+  TTFT **19.3 s**, LLM 20.1 s, **no rendered reply**. With
+  `is_home_command=True` the api_wrapper loads the MCP tool catalog
+  (~10 K tokens) and reinforcement system message; comment at
+  `api_wrapper.py:1513` already notes "~3 s → ~80 s latency" for this
+  path. Empty rendered reply may be related to MCP `home_assistant`
+  401 errors (every 2 s) — the planner may be falling silent when its
+  tool calls fail. Carried for a future session.
+- **`looks_like_home_command("good morning")` → True** via
+  `activity_phrase`. Greetings hit the heavy home-command path.
+  `glados/intent/rules.py:264`. Trivial fix: drop `good morning` from
+  the activity-phrase list.
+- **~30 other `%s`/`%d` loguru placeholder bugs** scattered across
+  `glados/autonomy/agents/*` (camera_watcher, weather, hacker_news,
+  emotion_agent), `subagent_manager.py`, `subagent.py`,
+  `subagent_memory.py`, `task_manager.py`, `jobs.py`,
+  `core/knowledge_store.py`. Same bug class; one sweep commit would
+  clear it. None are firing as visibly as the autonomy/llm_client.py
+  ones were.
+- **`tokens_per_second` always None in metrics** because LM Studio's
+  OpenAI-compat endpoint doesn't emit Ollama's `eval_count`/
+  `eval_duration` fields. Adding `stream_options:{include_usage:true}`
+  to the outbound payload (`api_wrapper.py:1836`) would surface the
+  OpenAI-style `usage` field; the ollama_metrics parser at line
+  2019–2031 would need a corresponding branch to read it, and
+  `tok_per_sec` would compute from `completion_tokens / generation_time`.
+  ~10 lines of code; carried.
+- **Vision model unloaded** — three-model VRAM math still tight,
+  unchanged from prior session.
+- **HA token regen** — operator-side; flagged as "should not be needed
+  for HA" by operator, so root cause is something else (stale token
+  in services.yaml, HA-side wrong token, MCP path). Carried.
+
+**Files touched (committed):**
+
+- `glados/autonomy/llm_client.py` (3 log-format edits).
+
+**AIBox host changes (not in repo, documented in SESSION_STATE.md):**
+
+- `~/.lmstudio/settings.json` (jitModelTTL.enabled false).
+- `~/.lmstudio/lms_autoload.bat` (new).
+- `~/.lmstudio/NSSM_INSTALL.md` (new).
+- LM Studio: bounced server, reloaded both models with explicit ctx.
+
