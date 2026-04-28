@@ -2283,12 +2283,11 @@ def _stream_chat_sse_impl(
             try:
                 from glados.core.memory_writer import classify_and_extract
                 _mem_store = getattr(glados, "memory_store", None)
-                _llm_cfg = getattr(glados, "_autonomy_llm_config", None)
-                if _mem_store and _llm_cfg:
+                if _mem_store:
                     import threading as _t
                     _t.Thread(
                         target=classify_and_extract,
-                        args=(user_message, _llm_cfg, _mem_store),
+                        args=(user_message, _mem_store),
                         daemon=True,
                     ).start()
             except Exception as _pe:

@@ -85,24 +85,11 @@ class _StubMemoryStore:
         return True
 
 
-def _autonomy_llm_config():
-    """Build an LLMConfig pointing at the WRONG (autonomy) URL — the
-    parameter that callers historically pass. Routing through llm_triage
-    must override this, sending the actual POST to the triage URL."""
-    from glados.autonomy.llm_client import LLMConfig
-    return LLMConfig(
-        url="http://wrong-autonomy:11434/v1/chat/completions",
-        model="should-not-be-used",
-        timeout=5.0,
-    )
-
-
 def test_classify_and_extract_hits_triage_url(monkeypatch, tmp_path) -> None:
     """Both the classifier and the extractor POST must hit the triage URL.
 
-    The caller (api_wrapper) historically passes an llm_autonomy-shaped
-    LLMConfig; classify_and_extract must NOT use it for the actual call —
-    it must resolve llm_triage internally.
+    Even though llm_autonomy is configured to a different URL,
+    classify_and_extract must resolve llm_triage internally.
     """
     _write_split_services_yaml(tmp_path)
     _enable_passive(monkeypatch)
@@ -122,7 +109,6 @@ def test_classify_and_extract_hits_triage_url(monkeypatch, tmp_path) -> None:
     with patch("requests.post", side_effect=_capture):
         classify_and_extract(
             "I really prefer tea over coffee in the morning",
-            _autonomy_llm_config(),
             _StubMemoryStore(),
         )
 
@@ -149,7 +135,6 @@ def test_classify_only_hits_triage_when_classifier_says_no(monkeypatch, tmp_path
     with patch("requests.post", side_effect=_capture):
         classify_and_extract(
             "I really prefer tea over coffee in the morning",
-            _autonomy_llm_config(),
             _StubMemoryStore(),
         )
 

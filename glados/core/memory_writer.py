@@ -324,7 +324,6 @@ def should_classify_message(message: str) -> bool:
 
 def classify_and_extract(
     message: str,
-    llm_config: Any,
     memory_store: Any,
 ) -> bool:
     """
@@ -334,13 +333,12 @@ def classify_and_extract(
       1. Classifier: "Does this contain a storable personal fact? yes/no"
       2. Extractor: "Extract the fact as a single sentence"
 
+    Both calls route through the ``llm_triage`` service slot (small fast
+    classifier model). Pure classification work; persona/quality belongs
+    on llm_autonomy / llm_interactive.
+
     Args:
         message: User message to evaluate
-        llm_config: Historical parameter — kept for API compatibility, but
-            no longer used. Both LLM calls now route through the
-            ``llm_triage`` service slot (small fast classifier model)
-            regardless of what the caller passes here. Pure classification
-            work; persona/quality belongs on llm_autonomy / llm_interactive.
         memory_store: MemoryStore for writing
 
     Returns:
