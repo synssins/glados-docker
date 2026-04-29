@@ -878,3 +878,85 @@ sidecar that terminates TLS (defeats the self-contained design promise).
   points at in each case.
 - README "Ports" — note that `0.0.0.0:5051` joins the TLS-on-cert set.
 - `docs/CHANGES.md` — Change 30 entry.
+
+---
+
+## Plugin system — extensible MCP-server catalog (2026-04-29)
+
+Operator-driven research session 2026-04-29 settled on a plugin
+architecture for tying arbitrary services (Sonarr, Radarr, Spotify,
+Tautulli, GitHub, etc.) into GLaDOS without per-plugin code in this
+repo. **Plugins are MCP servers conforming to the official
+`server.json` manifest format (current schema `2025-12-11`)** —
+the same format the MCP Registry uses for publishing. GLaDOS reads
+the manifest generically; the WebUI auto-renders the install form
+from `environmentVariables[]` and `remotes[].headers[]`.
+
+Full design: [`docs/plugins-architecture.md`](plugins-architecture.md).
+
+### Phasing
+
+- **Phase 1 — Wire HA's `mcp_server` into `MCPManager`.** Smallest unit,
+  biggest payoff. HA exposes everything it has at `/api/mcp` (HA 2025.2+).
+  GLaDOS connects via streamable-HTTP, gets the full HA tool catalog
+  for free.
+- **Phase 2a — Scaffolding (Change 31, 2026-04-29).** `glados/plugins/`
+  package: manifest parser (`manifest.py`), loader (`loader.py`),
+  runner that converts to existing `MCPServerConfig` (`runner.py`),
+  storage (`store.py`). Engine consumes plugins at startup. Storage
+  layout `/app/data/plugins/<name>/{server.json,runtime.yaml,secrets.env}`.
+  **No WebUI in this phase. No stdio spawn yet — `remotes[]` plugins
+  (like HA) work end-to-end; `packages[]` plugins parse cleanly but
+  defer subprocess spawn to Phase 2b.**
+- **Phase 2b — WebUI + runtime spawn.** System → Services → Plugins
+  panel: form auto-rendered from `server.json`, list installed plugins
+  with enable/disable/update/remove. `uvx`/`npx` subprocess spawn
+  for stdio plugins. Hot-reload — no container restart on
+  install/remove.
+- **Phase 3 — Curated `synssins/glados-plugins` GitHub repo.**
+  `index.json` at top, one directory per curated plugin containing a
+  hand-written `server.json` (since most upstream MCP servers don't
+  yet ship one). "Browse Plugins" tab in the WebUI fetches the index.
+  Initial seed: mcp-arr, mcp-spotify, mcp-tautulli, mcp-github,
+  mcp-fetch.
+- **Phase 4 — GLaDOS as MCP server.** Streamable-HTTP MCP server
+  endpoint on port 8017 (TLS-wrapped via existing helper), exposes
+  GLaDOS-specific tools: `play_audio(category, speaker)`,
+  `query_memory(text)`, `set_persona_emotion(...)`. Lets external
+  clients (Claude Desktop, Cursor, HA's own `mcp` client integration)
+  call GLaDOS-specific capabilities.
+- **Phase 5 — Sidecar/external escape hatch.** Documented compose
+  pattern for running plugins in isolated containers when in-container
+  trust posture is insufficient. Streamable-HTTP across the bridge
+  network. Not the primary path.
+
+### Decisions locked 2026-04-29
+
+1. Plugin manifest format = `server.json` (official MCP Registry schema,
+   `2025-12-11` floor). No invented format.
+2. Storage = `/app/data/plugins/<name>/`. Survives image rebuild.
+3. Trust posture matches HA `custom_components`: no sandbox in v1, run
+   as container user, document the risk on "Custom plugin" form.
+4. Runtimes shipped in v1: Python only (`runtimeHint: "uvx"`). Node
+   (`npx`) and .NET (`dnx`) deferred until a curated plugin needs them.
+5. Curated catalog repo: `synssins/glados-plugins` (GitHub).
+6. `_meta` extensions live under `com.synssins.glados/*` reverse-DNS
+   namespace per spec.
+
+### What's NOT in scope
+
+- Re-inventing a non-MCP plugin format. Locks GLaDOS out of the
+  ecosystem; rejected.
+- Sandbox/V8-isolate code execution (Cloudflare's "Code Mode"
+  pattern). Sound argument at multi-tenant scale; complexity doesn't
+  pay off for a single-user self-hosted assistant.
+
+### Migration of existing in-container MCP servers
+
+The container ships 8 in-process FastMCP servers under `glados/mcp/`
+(time_info, system_info, disk_info, network_info, power_info,
+process_info, memory_server, slow_clap_server). These keep their
+current shape — they're consumed by the existing `MCPManager` directly
+and don't need the plugin layer. Optionally in Phase 3 they can be
+exposed as their own `server.json` plugins for consistency, but
+that's cosmetic.

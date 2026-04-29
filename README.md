@@ -374,6 +374,40 @@ WebUI's streaming-chat connection) hit a separate plain-HTTP listener
 on `127.0.0.1:18015` (env `GLADOS_INTERNAL_API_PORT`) so they're never
 asked to validate the public cert against `localhost`.
 
+## Plugins
+
+GLaDOS extends through MCP-server plugins. A plugin is any [Model Context
+Protocol](https://modelcontextprotocol.io) server that conforms to the
+official `server.json` manifest format (current schema `2025-12-11`).
+The container reads the manifest generically — no per-plugin code lives
+in this repo, and the WebUI form for installing a plugin is auto-rendered
+from the manifest's `environmentVariables[]` and `remotes[].headers[]`.
+
+**Storage layout** (under `/app/data/plugins/`, survives image rebuilds):
+
+```
+/app/data/plugins/<plugin-name>/
+├── server.json    # manifest (schema + install method + form fields)
+├── runtime.yaml   # operator-resolved values + enabled flag
+├── secrets.env    # mode 0600, secret env values (API keys etc.)
+└── .uvx-cache/    # per-plugin runtime cache, when applicable
+```
+
+**Plugin discovery** runs at engine startup and merges with any MCP
+servers configured via `services.yaml`. The existing `MCPManager`
+consumes the merged list — plugins add to the catalog, they don't
+replace it.
+
+The full architecture, `_meta` extension namespace
+(`com.synssins.glados/*`), runtime spawn rules for `uvx`/`npx`/`dnx`,
+trust posture, and phasing live in
+[`docs/plugins-architecture.md`](docs/plugins-architecture.md).
+
+WebUI surface ("Browse Plugins" gallery + install form) is the
+follow-up phase; today plugins are added by writing the three files
+under `/app/data/plugins/<name>/` directly. Curated catalog repo
+forthcoming at [`synssins/glados-plugins`](https://github.com/synssins/glados-plugins).
+
 ## Models
 
 The container is **backend-agnostic** — anything that speaks
