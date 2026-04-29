@@ -203,3 +203,91 @@ def serialize_plugin_detail(plugin: Plugin) -> dict:
         "secrets": secrets_masked,
         "is_remote": plugin.is_remote(),
     }
+
+
+# ── Browse-catalog helpers (GET /api/plugins/browse) ──────────────────
+
+INDEX_REQUIRED_KEYS = {"name", "title", "category", "server_json_url"}
+
+
+def fetch_index(url: str) -> list[dict]:
+    """Fetch a single index.json with the same SSRF + size guards as
+    ``fetch_manifest``. Returns the validated entries (each tagged with
+    ``source_index = url``). Raises InstallError on any failure.
+
+    Mirrors fetch_manifest's defenses on purpose — index URLs are
+    operator-controlled but still touched by an admin click, so the
+    redirect-bypass / private-IP / oversized-payload threats apply
+    identically.
+    """
+    if not url.lower().startswith("https://"):
+        raise InstallError("index URL must use https://")
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise InstallError("index URL has no host")
+    if not _resolve_safe_host(parsed.hostname):
+        raise InstallError(
+            "index host resolves to a loopback / private / link-local "
+            "address; refusing for SSRF safety"
+        )
+    try:
+        r = httpx.get(url, timeout=FETCH_TIMEOUT_S, follow_redirects=False)
+    except httpx.HTTPError as exc:
+        raise InstallError(f"index fetch failed: {exc}") from exc
+    if 300 <= r.status_code < 400:
+        raise InstallError(
+            f"index URL returned redirect {r.status_code} (Location: "
+            f"{r.headers.get('location', '<missing>')!r}); refusing to follow "
+            "for SSRF safety — adjust the source URL"
+        )
+    if r.status_code != 200:
+        raise InstallError(f"index fetch returned HTTP {r.status_code}")
+    content_length = r.headers.get("content-length")
+    if content_length and int(content_length) > MAX_MANIFEST_BYTES:
+        raise InstallError(
+            f"index too large per Content-Length ({content_length} bytes; "
+            f"max {MAX_MANIFEST_BYTES})"
+        )
+    text = r.text
+    if len(text.encode("utf-8")) > MAX_MANIFEST_BYTES:
+        raise InstallError(f"index too large (>{MAX_MANIFEST_BYTES} bytes)")
+    try:
+        raw = json.loads(text)
+    except Exception as exc:
+        raise InstallError(f"index is not valid JSON: {exc}") from exc
+
+    plugins = raw.get("plugins") if isinstance(raw, dict) else None
+    if not isinstance(plugins, list):
+        raise InstallError("index missing 'plugins' array")
+
+    out: list[dict] = []
+    for entry in plugins:
+        # Silently drop malformed entries inside an otherwise-valid index;
+        # one bad row shouldn't hide an index's good ones from the catalog.
+        if not isinstance(entry, dict):
+            continue
+        if not INDEX_REQUIRED_KEYS.issubset(entry.keys()):
+            continue
+        if not str(entry["server_json_url"]).lower().startswith("https://"):
+            continue
+        e = dict(entry)
+        e["source_index"] = url
+        out.append(e)
+    return out
+
+
+def merge_browse_catalog(index_urls: list[str]) -> dict:
+    """Walk every index URL; return ``{entries: [...], errors: [...]}``.
+    One failed index does NOT fail the whole call. Entries deduped by
+    ``name`` (last-index-wins so operators can override an upstream
+    entry by adding their own index after it)."""
+    by_name: dict[str, dict] = {}
+    errors: list[dict] = []
+    for url in index_urls:
+        try:
+            for entry in fetch_index(url):
+                by_name[entry["name"]] = entry
+        except InstallError as exc:
+            errors.append({"url": url, "error": str(exc)})
+    return {"entries": list(by_name.values()), "errors": errors}

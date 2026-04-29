@@ -5990,6 +5990,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/plugins":
             self._list_plugins()
             return
+        if path == "/api/plugins/indexes":
+            self._get_plugin_indexes()
+            return
+        if path == "/api/plugins/browse":
+            self._browse_plugins()
+            return
 
         rest = path[len("/api/plugins/"):]
         if "/" in rest:
@@ -6011,6 +6017,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/plugins/install":
             self._install_plugin()
             return
+        if path == "/api/plugins/indexes":
+            self._set_plugin_indexes()
+            return
 
         rest = path[len("/api/plugins/"):]
         if rest.endswith("/enable"):
@@ -6020,6 +6029,38 @@ class Handler(BaseHTTPRequestHandler):
             self._set_plugin_enabled(rest[:-len("/disable")], False)
             return
         self._save_plugin_runtime(rest)
+
+    def _get_plugin_indexes(self) -> None:
+        urls = list(_cfg.services.plugin_indexes)
+        self._send_json(200, {"urls": urls})
+
+    def _set_plugin_indexes(self) -> None:
+        body = self._read_plugin_body()
+        urls = body.get("urls", [])
+        if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
+            self._send_json(400, {"error": "urls must be a list of strings"})
+            return
+        # Validate scheme at the handler so we can return a precise 400
+        # before touching the config writer (which would also reject but
+        # with a less actionable message).
+        for url in urls:
+            if not url.lower().startswith("https://"):
+                self._send_json(400, {"error": f"non-https URL rejected: {url!r}"})
+                return
+        try:
+            _cfg.update_section("services", {"plugin_indexes": urls})
+        except Exception as exc:
+            self._send_json(500, {"error": f"persist failed: {exc}"})
+            return
+        self._send_json(200, {"urls": urls})
+
+    def _browse_plugins(self) -> None:
+        urls = list(_cfg.services.plugin_indexes)
+        if not urls:
+            self._send_json(200, {"entries": [], "errors": []})
+            return
+        result = _plugins.merge_browse_catalog(urls)
+        self._send_json(200, result)
 
     def _list_plugins(self) -> None:
         enabled_globally = os.environ.get(

@@ -76,6 +76,9 @@ def _admin_handler(method: str, path: str, body: dict | None = None):
     h._set_plugin_enabled = types.MethodType(Handler._set_plugin_enabled, h)
     h._delete_plugin = types.MethodType(Handler._delete_plugin, h)
     h._plugin_logs = types.MethodType(Handler._plugin_logs, h)
+    h._get_plugin_indexes = types.MethodType(Handler._get_plugin_indexes, h)
+    h._set_plugin_indexes = types.MethodType(Handler._set_plugin_indexes, h)
+    h._browse_plugins = types.MethodType(Handler._browse_plugins, h)
     return h
 
 
@@ -391,3 +394,101 @@ def test_logs_returns_stdio_tail_and_events(auth_off, tmp_path, monkeypatch):
     assert code == 200
     assert "startup line" in body["stdio_log"][0]
     assert body["events"][0]["kind"] == "connect"
+
+
+# ── Browse / indexes endpoints ──────────────────────────────────────
+
+
+def test_browse_indexes_get_returns_configured_urls(auth_off, monkeypatch):
+    from glados.core.config_store import cfg
+    monkeypatch.setattr(cfg.services, "plugin_indexes", ["https://x.test/i.json"])
+    h = _admin_handler("GET", "/api/plugins/indexes")
+    h.do_GET()
+    code, body = h._json_response
+    assert code == 200
+    assert body == {"urls": ["https://x.test/i.json"]}
+
+
+def test_browse_indexes_post_https_only(auth_off):
+    h = _admin_handler(
+        "POST", "/api/plugins/indexes",
+        body={"urls": ["http://x.test/i.json"]},
+    )
+    h.do_POST()
+    code, body = h._json_response
+    assert code == 400
+    assert "https" in body["error"].lower()
+
+
+def test_browse_endpoint_merges_indexes(auth_off, monkeypatch):
+    from glados.core.config_store import cfg
+    monkeypatch.setattr(cfg.services, "plugin_indexes", [
+        "https://a.test/i.json", "https://b.test/i.json",
+    ])
+
+    def fake_fetch(url):
+        if url == "https://a.test/i.json":
+            return [{"name": "p1", "title": "P One", "category": "media",
+                     "server_json_url": "https://a.test/p1.json", "source_index": url}]
+        return [{"name": "p2", "title": "P Two", "category": "dev",
+                 "server_json_url": "https://b.test/p2.json", "source_index": url}]
+
+    with patch("glados.webui.plugin_endpoints.fetch_index", side_effect=fake_fetch):
+        h = _admin_handler("GET", "/api/plugins/browse")
+        h.do_GET()
+    code, body = h._json_response
+    assert code == 200
+    assert {e["name"] for e in body["entries"]} == {"p1", "p2"}
+    assert body["errors"] == []
+
+
+def test_browse_endpoint_partial_on_one_failure(auth_off, monkeypatch):
+    from glados.core.config_store import cfg
+    from glados.plugins.errors import InstallError
+    monkeypatch.setattr(cfg.services, "plugin_indexes", [
+        "https://a.test/i.json", "https://b.test/i.json",
+    ])
+
+    def fake_fetch(url):
+        if url == "https://a.test/i.json":
+            return [{"name": "p1", "title": "P One", "category": "media",
+                     "server_json_url": "https://a.test/p1.json", "source_index": url}]
+        raise InstallError("boom")
+
+    with patch("glados.webui.plugin_endpoints.fetch_index", side_effect=fake_fetch):
+        h = _admin_handler("GET", "/api/plugins/browse")
+        h.do_GET()
+    code, body = h._json_response
+    assert code == 200
+    assert len(body["entries"]) == 1
+    assert len(body["errors"]) == 1
+    assert "boom" in body["errors"][0]["error"]
+
+
+def test_browse_dedupe_last_index_wins(auth_off, monkeypatch):
+    from glados.core.config_store import cfg
+    monkeypatch.setattr(cfg.services, "plugin_indexes", [
+        "https://a.test/i.json", "https://b.test/i.json",
+    ])
+
+    def fake_fetch(url):
+        return [{"name": "p1", "title": f"From {url}", "category": "x",
+                 "server_json_url": f"{url}/p1.json", "source_index": url}]
+
+    with patch("glados.webui.plugin_endpoints.fetch_index", side_effect=fake_fetch):
+        h = _admin_handler("GET", "/api/plugins/browse")
+        h.do_GET()
+    code, body = h._json_response
+    assert code == 200
+    assert len(body["entries"]) == 1
+    assert body["entries"][0]["title"] == "From https://b.test/i.json"
+
+
+def test_browse_empty_when_no_indexes(auth_off, monkeypatch):
+    from glados.core.config_store import cfg
+    monkeypatch.setattr(cfg.services, "plugin_indexes", [])
+    h = _admin_handler("GET", "/api/plugins/browse")
+    h.do_GET()
+    code, body = h._json_response
+    assert code == 200
+    assert body == {"entries": [], "errors": []}
