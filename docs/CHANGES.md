@@ -4072,3 +4072,201 @@ Suite: 1519 → 1575 (+56).
 - `README.md` (Plugins section extended with operator install +
   browse + logs walkthrough)
 
+## Change 33 — Plugin system v2: zip bundle format + Upload (2026-04-29 evening)
+
+**Goal**
+
+Operator review of the live Phase 2b panel surfaced two structural
+problems with the v1 install path: developer terminology leaked into
+the operator UI (`slug`, `manifest`, `runtime.yaml`, env-var keys
+like `SONARR_API_KEY` shown verbatim as form labels), and Add-by-URL
+required upstream cooperation (a published `server.json`) that most
+GitHub MCP servers don't ship. The fix pivots the install format to
+a self-contained zip bundle along the lines of HA `custom_components`
+and the VS Code `.vsix` family — operators can repackage any GitHub
+MCP server with a GLaDOS-side `plugin.json`, drag-drop the zip into
+the WebUI, and configure operator-friendly settings without touching
+upstream code.
+
+**What changed**
+
+*New bundle format (`glados/plugins/bundle.py`)*
+
+- `PluginJSON` Pydantic model. Required fields: `schema_version`
+  (`1`), `name`, `description`, `version`, `category`, `runtime`.
+  Optional: `icon`, `persona_role`, `homepage`, `settings[]`.
+- Three runtime-mode discriminated submodels:
+  - `RegistryRuntime` (`mode: "registry"`, `package: "uvx:pkg@ver"`
+    or `npx:pkg@ver`). Spawns via uvx/npx fetching at runtime.
+  - `BundledRuntime` (`mode: "bundled"`, `command`, `args`). Spawns
+    from inside the unpacked zip with `GLADOS_PLUGIN_DIR` exposed.
+  - `RemoteRuntime` (`mode: "remote"`, `url` https-only, optional
+    `headers`). Connects via streamable-HTTP, no subprocess.
+- Six `Setting.type` widgets: `text`, `url`, `number`, `boolean`,
+  `select` (requires `choices`), `secret`. Operators see
+  `setting.label`; the env-var key is internal.
+- `v1_to_v2(server_json, package_index, remote_index) -> PluginJSON`
+  synthesises a v2 view from the v1 schema so the runner and form
+  renderer can consume a single shape regardless of bundle vintage.
+
+*Loader fallback (`glados/plugins/loader.py`)*
+
+- `load_plugin(plugin_dir)` checks for `plugin.json` first; parses
+  as `PluginJSON` and builds the `Plugin` directly. If absent, falls
+  back to the existing v1 path (`server.json` + `runtime.yaml`) and
+  feeds the result through `v1_to_v2`. The `Plugin` dataclass now
+  carries `manifest_v2: PluginJSON` (always present) alongside the
+  legacy `manifest: ServerJSON | None` (v1 installs only).
+
+*Runner (`glados/plugins/runner.py`)*
+
+- Rewritten to dispatch on `plugin.manifest_v2.runtime.mode`:
+  `_build_remote_v2`, `_build_registry_v2`, `_build_bundled_v2`.
+  Cache routing for uvx (`--cache-dir`) and npx (`npm_config_cache`)
+  carried forward unchanged. `_resolve_settings` merges
+  `runtime.yaml.env_values` and `secrets.env`, applies defaults,
+  and surfaces missing-required errors using `setting.label`.
+
+*Zip install pipeline (`glados/plugins/store.py`)*
+
+- `install_from_zip(zip_bytes, plugins_dir) -> Path`. Caps: 50 MB
+  compressed, 200 MB uncompressed, 50 MB per entry. Rejects
+  symlinks (POSIX file-type `0o120000`), absolute paths, path
+  traversal. Validates `plugin.json` via `PluginJSON.model_validate`
+  before extraction. Atomic via `<internal-name>.installing/` →
+  `<internal-name>/` rename. Collisions append `-2`, `-3` suffix.
+
+*Endpoint surface (`glados/webui/tts_ui.py` + `plugin_endpoints.py`)*
+
+- New `POST /api/plugins/upload` accepts multipart upload with file
+  field `bundle`. Reads bytes (50 MB content-length cap), invokes
+  `install_from_zip`, returns `{name, internal_name, plugin}` for
+  the WebUI to switch to the new tab.
+- `POST /api/plugins/install` (the v1 URL-fetch endpoint) is removed
+  from the dispatcher. The helper stays in the module unexported.
+- The remaining 10 admin-only `/api/plugins/*` endpoints (list /
+  get / save / enable / disable / delete / logs / indexes ×2 /
+  browse) unchanged.
+- Serializers updated to read from `manifest_v2`.
+
+*WebUI rework (`glados/webui/static/ui.js` + `style.css`)*
+
+Design-system conformance pass — Phase 2b's bespoke classes diverged
+from the rest of the Configuration sub-page system. v2 grounds the
+page in the established conventions:
+
+- Page wrapper now uses `.page-shell > .container > .page-header`
+  with `h2.page-title` + `.page-title-desc`, matching Memory / SSL /
+  Logs / Raw YAML. Bespoke `.plugins-page` outer class dropped.
+- Per-plugin pane header rebuilt with `.card` + `.section-title`.
+  Bespoke `.plugin-header-card` / `.plugin-header-*` /
+  `.plugin-icon-large` / `.plugin-meta-*` / `.plugin-status-text`
+  classes removed.
+- Browse + Upload cards are flat `.card` sections, not collapsible
+  details. `.plugin-collapsible*` CSS removed.
+- Save button adopts the standard `.cfg-save-btn` / `.cfg-result`
+  classes from elsewhere.
+- `.page-tabs` strip retained — system-wide convention for tabbed
+  Configuration pages.
+
+Install flow rework:
+
+- Add-by-URL inline section gone (`renderAddByUrlCard` /
+  `wireAddByUrlHandlers` removed). Upload card takes its place
+  (`renderUploadCard` / `wireUploadHandlers`): drag-drop zone +
+  file picker, `.zip` only, 50 MB client-side cap, multipart POST
+  to `/api/plugins/upload`. New CSS: `.upload-dropzone` +
+  `.upload-prompt`.
+- Browse-gallery Install button changed from POST
+  `/api/plugins/install` to a two-step fetch + multipart upload.
+  Catalog entries now read `bundle_url` (preferred) with
+  `server_json_url` legacy fallback.
+- Reinstall-from-source button removed from the per-plugin About
+  pane (its endpoint is gone; operators re-upload).
+
+Form rendering pivots to the v2 shape:
+
+- `renderConfigForm` / `renderFormField` iterate
+  `detail.manifest.settings[]` (the v2 array, synthesised
+  identically for v1-on-disk and v2-native installs).
+- Every form label sources from `setting.label`, not the env-var
+  key. The key is invisible to operators.
+- Six setting types render correctly: `text`, `url`, `number`,
+  `boolean`, `select` (with choices), `secret` (password input;
+  the `***` sentinel preserves the existing value on partial save).
+
+Terminology sweep:
+
+- "slug", "Slug", "slugified", "optional slug" placeholder removed
+  from operator-visible strings. Internal JS identifier
+  `_pluginActiveSlug` retained — it's a tab key, never rendered.
+- Empty-state in `renderPluginsList` no longer references "Add by
+  URL"; points operators at Upload + Browse.
+- Category badges (tab strip, installed list, browse gallery)
+  render via `pluginCategoryLabel(cat)` against
+  `_PLUGIN_CATEGORY_LABELS` (`media → Media`, `home → Home`,
+  `integrations → Integrations`, `system → System`, `dev →
+  Developer`, `utility → Utility`), with literal-string fallback
+  for unknown categories.
+
+**Tests**: 1575 → 1592 (+17 net).
+
+- `tests/test_plugins_bundle.py` (new) — `PluginJSON` schema,
+  three runtime modes, six setting types, `v1_to_v2` conversion
+  for both registry and remote v1 sources. +25 tests.
+- `tests/test_plugins_zip_install.py` (new) — `install_from_zip`
+  safety + atomicity: traversal, absolute path, symlink, oversize
+  compressed / uncompressed, missing `plugin.json`, invalid JSON,
+  staging cleanup, collision suffix. +10 tests.
+- `tests/test_webui_plugins.py` updated — install-by-URL routing
+  tests removed (the endpoint is gone) and the file consolidated
+  around the upload pipeline. −6 routing tests, plus the rest of
+  the consolidation lands the file at the +17-net mark.
+
+Suite: 1575 → 1592 (+25 new bundle, +10 new zip-install, −6
+removed install-by-URL routing tests, plus consolidation in
+`test_webui_plugins.py` = +17 net).
+
+**Files touched**
+
+*Backend*
+
+- `glados/plugins/bundle.py` (new — `PluginJSON`, `Setting`, three
+  `*Runtime` models, `v1_to_v2`)
+- `glados/plugins/loader.py` (`plugin.json`-first; v1 fallback)
+- `glados/plugins/runner.py` (three-mode dispatch)
+- `glados/plugins/store.py` (`install_from_zip` + safety guards)
+- `glados/plugins/__init__.py` (re-export `install_from_zip`)
+- `glados/webui/plugin_endpoints.py` (serializers read
+  `manifest_v2`; `install_from_url` no longer exported)
+- `glados/webui/tts_ui.py` (`POST /api/plugins/upload`; install
+  route removed from dispatcher)
+
+*WebUI*
+
+- `glados/webui/static/ui.js` (page wrapper, Upload card,
+  Browse-gallery upload pipeline, v2 form rendering, terminology
+  sweep, category label map)
+- `glados/webui/static/style.css` (page-conformance pass:
+  bespoke `.plugins-page` / `.plugin-header-*` /
+  `.plugin-collapsible*` removed; `.upload-dropzone` +
+  `.upload-prompt` added)
+
+*Tests*
+
+- `tests/test_plugins_bundle.py` (new)
+- `tests/test_plugins_zip_install.py` (new)
+- `tests/test_webui_plugins.py` (upload tests; install-by-URL
+  routing removed)
+
+*Docs*
+
+- `docs/plugin-bundle-format.md` (new — operator-facing schema
+  reference + "wrap any MCP server in 5 minutes" tutorial)
+- `docs/plugins-architecture.md` (v2 bundle-format section;
+  Phase 2c row in phasing table; v1 history retained)
+- `docs/CHANGES.md` (this entry)
+- `README.md` (Plugins install walkthrough updated to Browse +
+  Upload; Add-by-URL section removed; link to bundle-format doc)
+
+

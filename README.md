@@ -417,21 +417,27 @@ from NodeSource) so stdio plugins can spawn without a host-side
 toolchain. Per-plugin caches live under
 `/app/data/plugins/<name>/.uvx-cache/` and survive image rebuilds.
 
-### Installing a plugin (Add-by-URL)
+### Installing a plugin
 
-1. Navigate to **System → Services**, scroll to the **Plugins**
-   card.
-2. Use **Add by URL**: paste a `server.json` URL (https-only;
-   private-network targets are rejected by the SSRF guard),
-   optionally edit the slug, click **Install**. The configuration
-   modal opens automatically.
-3. Fill in the **Configuration** tab — the form auto-renders from
-   the manifest's `environmentVariables[]`, `remotes[].headers[]`,
-   and `packageArguments[]`. Required fields are marked, secrets
-   render as password inputs and are masked on subsequent reads
-   (`***` sentinel preserves them server-side on partial saves).
+1. Navigate to **Configuration → Plugins** after signing in.
+2. On the **Manage** tab, either:
+   - **Upload**: drag a plugin bundle (`.zip`) onto the Upload
+     card, or click *choose file* and pick one. The form switches
+     to the new plugin's tab on success.
+   - **Browse**: click *Install* on any entry from a configured
+     catalog. The Browse tab fetches the bundle and pipes it
+     through the same upload pipeline.
+3. Fill in the **Configuration** tab — the form is auto-rendered
+   from the bundle's `plugin.json`. Required fields are marked,
+   secrets render as password inputs and are masked on subsequent
+   reads (`***` sentinel preserves them server-side on partial
+   saves).
 4. Save, then flip the **Enabled** toggle. The plugin's tools
    become available to the LLM immediately — no container restart.
+
+To author a bundle (a single `plugin.json` zipped with optional
+README, icon, and source), see
+[`docs/plugin-bundle-format.md`](docs/plugin-bundle-format.md).
 
 ### Browsing curated catalogs
 
@@ -439,12 +445,10 @@ toolchain. Per-plugin caches live under
    **Browse** card's *Index URLs* editor. The list persists to
    `services.yaml` under `plugin_indexes`.
 2. Click **Browse**. Each catalog entry has an **Install** button
-   that pre-populates the Add-by-URL form with the entry's
-   `server_json_url`.
+   that fetches the bundle and runs it through the upload pipeline.
 
-The curated `synssins/glados-plugins` repo (initial seed of
-mcp-arr, mcp-spotify, mcp-tautulli, mcp-github, mcp-fetch) ships
-in a future release; in the meantime, point at any compliant
+The curated `synssins/glados-plugins` repo ships an initial seed of
+bundles in a future release; in the meantime, point at any compliant
 index.
 
 ### Per-plugin logs
