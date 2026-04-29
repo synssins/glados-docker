@@ -2336,70 +2336,23 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   margin-left: var(--sp-1);
 }
 
-/* Header card on a per-plugin pane: identity left, switch + actions
-   right. Keeps the most-used controls (Enabled toggle) on the trailing
-   edge so the operator's eye lands on it after reading the title. */
-.plugin-header-card {
-  display: flex; justify-content: space-between; align-items: flex-start;
-  gap: var(--sp-3);
-  flex-wrap: wrap;
+/* Upload drop-zone on the Manage tab — bordered area accepting a .zip
+   bundle via drag-drop or file picker. Active drag state highlights the
+   border in the brand orange. */
+.upload-dropzone {
+  border: 2px dashed var(--border-default);
+  border-radius: var(--r-card);
+  padding: var(--sp-5);
+  text-align: center;
+  background: var(--bg-input);
+  transition: background 0.15s, border-color 0.15s;
 }
-.plugin-header-left {
-  display: flex; gap: var(--sp-3); align-items: flex-start;
-  min-width: 0; flex: 1 1 320px;
+.upload-dropzone.dragover {
+  background: var(--bg-card);
+  border-color: var(--orange);
 }
-.plugin-icon-large {
+.upload-prompt {
   color: var(--fg-secondary);
-  display: inline-flex; width: 24px; height: 24px;
-  margin-top: 4px;
+  font-size: 0.9rem;
 }
-.plugin-icon-large svg { width: 24px; height: 24px; }
-.plugin-header-text { min-width: 0; }
-.plugin-header-text h3 {
-  margin: 0; font-size: 1rem; color: var(--fg-primary); font-weight: 600;
-  display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap;
-}
-.plugin-header-text .plugin-meta {
-  margin-top: 4px; display: flex; align-items: center; gap: var(--sp-2);
-  flex-wrap: wrap;
-  font-size: 0.82rem; color: var(--fg-secondary);
-}
-.plugin-header-text .plugin-meta a {
-  color: var(--orange); text-decoration: none; word-break: break-all;
-}
-.plugin-header-text .plugin-meta a:hover { text-decoration: underline; }
-.plugin-meta-installed { color: var(--fg-muted); }
-.plugin-meta-desc {
-  margin-top: var(--sp-1); font-size: 0.85rem; color: var(--fg-secondary);
-}
-.plugin-header-right {
-  display: flex; align-items: center; gap: var(--sp-2);
-  flex-wrap: wrap;
-}
-.plugin-status-text {
-  font-size: 0.82rem; color: var(--fg-secondary);
-  min-width: 60px;
-}
-
-/* Inline collapsibles on the Manage tab (Add by URL, Browse). The
-   summary doubles as a section title so it sits at section-title
-   weight, with the disclosure caret tucked at the leading edge. */
-.plugin-collapsible > summary.plugin-collapsible-summary {
-  cursor: pointer;
-  list-style: none;
-}
-.plugin-collapsible > summary.plugin-collapsible-summary::-webkit-details-marker {
-  display: none;
-}
-.plugin-collapsible > summary.plugin-collapsible-summary::before {
-  content: "\25B8";
-  display: inline-block; width: 1em;
-  color: var(--fg-secondary);
-  transition: transform 0.15s;
-}
-.plugin-collapsible[open] > summary.plugin-collapsible-summary::before {
-  content: "\25BE";
-}
-.plugin-collapsible[open] > summary.plugin-collapsible-summary {
-  margin-bottom: var(--sp-2);
-}
+.upload-prompt .btn-secondary { margin-left: var(--sp-1); }

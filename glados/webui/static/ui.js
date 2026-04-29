@@ -2468,6 +2468,23 @@ const _PLUGIN_CATEGORY_ORDER = [
   'home', 'media', 'integrations', 'system', 'dev', 'utility',
 ];
 
+// Operator-friendly category labels — keeps the canonical key in API
+// responses while the UI shows title-case strings.
+const _PLUGIN_CATEGORY_LABELS = {
+  'media': 'Media',
+  'home': 'Home',
+  'integrations': 'Integrations',
+  'system': 'System',
+  'dev': 'Developer',
+  'utility': 'Utility',
+};
+
+function pluginCategoryLabel(cat) {
+  if (!cat) return 'Other';
+  const k = String(cat).toLowerCase();
+  return _PLUGIN_CATEGORY_LABELS[k] || (cat.charAt(0).toUpperCase() + cat.slice(1));
+}
+
 function _pluginCategoryRank(cat) {
   const i = _PLUGIN_CATEGORY_ORDER.indexOf((cat || '').toLowerCase());
   return i === -1 ? _PLUGIN_CATEGORY_ORDER.length : i;
@@ -2569,15 +2586,15 @@ async function loadPluginsPage() {
 
   panel.innerHTML = _renderPluginsPageShell(plugins, initialTab);
 
-  // Manage pane — installed list + Add-by-URL + Browse, all inline.
+  // Manage pane — installed list + Upload + Browse, all inline.
   const managePane = panel.querySelector('[data-pane="manage"]');
   if (managePane) {
     managePane.innerHTML =
       renderPluginsList(plugins) +
-      renderAddByUrlCard() +
+      renderUploadCard() +
       renderBrowseCard();
     wirePluginRowHandlers(panel);
-    wireAddByUrlHandlers(panel);
+    wireUploadHandlers(panel);
     wireBrowseHandlers(panel);
   }
 
@@ -2604,10 +2621,14 @@ async function loadPluginsPage() {
 }
 
 function _renderPluginsPageShell(plugins, activeTabId) {
-  let h = '<div class="page-shell"><div class="container plugins-page">';
-  h += '<div class="page-header"><h2 class="page-title">Plugins</h2>'
+  // Match the existing Configuration sub-page convention: page-shell >
+  // container > page-header (h2.page-title + .page-title-desc) > page-tabs
+  // (same as Integrations / Audio / System pages).
+  let h = '<div class="page-shell"><div class="container">';
+  h += '<div class="page-header"><div>'
+    +  '<h2 class="page-title">Plugins</h2>'
     +  '<div class="page-title-desc">Install MCP servers as plugins. Each enabled plugin exposes its tools to GLaDOS at runtime.</div>'
-    +  '</div>';
+    +  '</div></div>';
 
   // Tab strip: Manage first, then one tab per plugin (already sorted
   // by category then title at the call site).
@@ -2620,7 +2641,7 @@ function _renderPluginsPageShell(plugins, activeTabId) {
     h += '<button class="' + cls + '" role="tab" data-plugins-tab="' + escAttr(p.slug) + '"' +
          ' title="' + escAttr(p.title || p.name || p.slug) + '">' +
          escAttr(p.title || p.name || p.slug) +
-         ' <span class="plugin-cat-badge">' + escAttr(p.category || '') + '</span>' +
+         ' <span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(p.category)) + '</span>' +
          '</button>';
   }
   h += '</nav>';
@@ -2685,47 +2706,43 @@ async function _loadPluginPane(slug, pane) {
 }
 
 function renderPluginPane(slug, detail) {
+  // detail shape (v2): {slug, manifest: PluginJSON, runtime, secrets, is_remote}
   const m = detail.manifest || {};
   const rt = detail.runtime || {};
-  const meta = m._meta || {};
-  const cat = meta['com.synssins.glados/category'] || 'utility';
-  const repo = m.repository ? m.repository.url : null;
-  const sourceUrl = meta['com.synssins.glados/source_url'] || null;
+  const cat = m.category || 'utility';
+  const homepage = m.homepage || null;
   const enabled = !!rt.enabled;
-  const title = m.title || m.name || slug;
+  const title = m.name || slug;
 
   let h = '';
 
-  // Header card.
-  h += '<div class="card plugin-header-card">';
-  h +=   '<div class="plugin-header-left">';
-  h +=     '<span class="plugin-icon-large">' + _PLUGIN_ICO_PLUG + '</span>';
-  h +=     '<div class="plugin-header-text">';
-  h +=       '<h3>' + escAttr(title) + ' <span class="plugin-version">v' + escAttr(m.version || '') + '</span></h3>';
-  h +=       '<div class="plugin-meta">';
-  h +=         '<span class="plugin-cat-badge">' + escAttr(cat) + '</span>';
-  if (repo) {
-    h +=       ' <a href="' + escAttr(repo) + '" target="_blank" rel="noopener">' + escAttr(repo) + '</a>';
-  }
-  if (sourceUrl) {
-    h +=       ' <span class="plugin-meta-installed">Installed from <a href="' +
-                escAttr(sourceUrl) + '" target="_blank" rel="noopener">' +
-                escAttr(sourceUrl) + '</a></span>';
-  }
-  if (m.description) {
-    h +=       '<div class="plugin-meta-desc">' + escAttr(m.description) + '</div>';
+  // Header card — same .card / .section-title chrome as Memory / Logs /
+  // SSL pages, with a right-aligned controls row inside the card body.
+  h += '<div class="card">';
+  h +=   '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--sp-3);flex-wrap:wrap;">';
+  h +=     '<div style="min-width:0;flex:1 1 320px;">';
+  h +=       '<div class="section-title" style="margin-bottom:4px;">'
+    +          escAttr(title)
+    +          ' <span style="color:var(--fg-secondary);font-weight:400;">v' + escAttr(m.version || '') + '</span>'
+    +        '</div>';
+  h +=       '<div style="display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;font-size:0.82rem;color:var(--fg-secondary);">';
+  h +=         '<span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(cat)) + '</span>';
+  if (homepage) {
+    h +=         ' <a href="' + escAttr(homepage) + '" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none;word-break:break-all;">'
+      +            escAttr(homepage) + '</a>';
   }
   h +=       '</div>';
-  h +=     '</div>';
-  h +=   '</div>';
-  h +=   '<div class="plugin-header-right">';
-  h +=     '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' +
-            (enabled ? ' checked' : '') + '><span class="plugin-slider"></span></label>';
-  h +=     '<span class="plugin-status-text">' + (enabled ? 'Enabled' : 'Disabled') + '</span>';
-  if (sourceUrl) {
-    h +=     '<button class="btn-secondary" data-action="reinstall">Reinstall from source</button>';
+  if (m.description) {
+    h +=       '<div class="mode-desc" style="margin-top:var(--sp-2);">' + escAttr(m.description) + '</div>';
   }
-  h +=     '<button class="btn-secondary btn-danger" data-action="delete">Delete</button>';
+  h +=     '</div>';
+  h +=     '<div style="display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;">';
+  h +=       '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' +
+              (enabled ? ' checked' : '') + '><span class="plugin-slider"></span></label>';
+  h +=       '<span style="font-size:0.82rem;color:var(--fg-secondary);min-width:60px;">'
+    +          (enabled ? 'Enabled' : 'Disabled') + '</span>';
+  h +=       '<button class="btn-secondary btn-danger" data-action="delete">Delete</button>';
+  h +=     '</div>';
   h +=   '</div>';
   h += '</div>';
 
@@ -2734,8 +2751,8 @@ function renderPluginPane(slug, detail) {
   h +=   '<div class="section-title">Configuration</div>';
   h +=   renderConfigForm(detail);
   h +=   '<div class="cfg-save-row" style="margin-top:var(--sp-3);">';
-  h +=     '<button class="btn btn-primary" data-action="save">Save</button>';
-  h +=     '<span class="save-result" data-role="save-result"></span>';
+  h +=     '<button class="cfg-save-btn" data-action="save">Save</button>';
+  h +=     '<span class="cfg-result" data-role="save-result"></span>';
   h +=   '</div>';
   h += '</div>';
 
@@ -2778,50 +2795,14 @@ function wirePluginPaneHandlers(slug, pane, detail) {
         });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         showToast(newState ? 'Plugin enabled' : 'Plugin disabled', 'success');
-        const statusText = pane.querySelector('.plugin-status-text');
-        if (statusText) statusText.textContent = newState ? 'Enabled' : 'Disabled';
-        // Refresh the page so the tab strip reflects the muted state.
+        // Refresh the page so the tab strip reflects the muted state
+        // and the header card's enabled label updates.
         await loadPluginsPage();
       } catch (e) {
         ev.target.checked = !newState;
         showToast('Toggle failed: ' + e.message, 'error');
       } finally {
         ev.target.disabled = false;
-      }
-    });
-  }
-
-  // Reinstall from source.
-  const reinstallBtn = pane.querySelector('button[data-action="reinstall"]');
-  if (reinstallBtn) {
-    reinstallBtn.addEventListener('click', async () => {
-      const meta = (detail.manifest && detail.manifest._meta) || {};
-      const sourceUrl = meta['com.synssins.glados/source_url'];
-      if (!sourceUrl) return;
-      const ok = window.confirm(
-        'Reinstall from source?\n\n' +
-        'This will delete the current plugin and re-install from:\n  ' +
-        sourceUrl + '\n\n' +
-        'Configuration values (env vars, headers, args, secrets) will be lost.'
-      );
-      if (!ok) return;
-      try {
-        const dr = await fetch('/api/plugins/' + encodeURIComponent(slug),
-                               { method: 'DELETE', credentials: 'same-origin' });
-        if (!dr.ok) throw new Error('delete: HTTP ' + dr.status);
-        const ir = await fetch('/api/plugins/install', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ url: sourceUrl, slug: slug }),
-        });
-        if (!ir.ok) throw new Error('install: HTTP ' + ir.status);
-        showToast('Plugin reinstalled', 'success');
-        // Stay on the same tab post-reinstall — the slug is unchanged.
-        _pluginActiveSlug = slug;
-        await loadPluginsPage();
-      } catch (e) {
-        showToast('Reinstall failed: ' + e.message, 'error');
       }
     });
   }
@@ -2917,17 +2898,21 @@ async function savePluginRuntime(slug, pane) {
   const result = pane.querySelector('[data-role="save-result"]');
   if (!form) return;
 
+  // v2 settings are flat — every non-secret setting routes through
+  // env_values; secrets through the secret bucket. The server-side
+  // _resolve_settings merges secrets over env_values at runtime.
   const env_values = {};
   const header_values = {};
   const arg_values = {};
   const secrets = {};
 
   form.querySelectorAll('input, select').forEach(el => {
-    const grp = el.dataset.group;
     const name = el.name;
-    const isSecret = el.dataset.secret === '1';
-    const v = el.value;
     if (!name) return;
+    const isSecret = el.dataset.secret === '1';
+    let v;
+    if (el.type === 'checkbox') v = el.checked ? 'true' : 'false';
+    else v = el.value;
     if (isSecret) {
       // '***' or empty → preserve the existing server value via the
       // sentinel; anything else is a real new secret.
@@ -2938,9 +2923,7 @@ async function savePluginRuntime(slug, pane) {
       }
       return;
     }
-    if (grp === 'env') env_values[name] = v;
-    else if (grp === 'header') header_values[name] = v;
-    else if (grp === 'arg') arg_values[name] = v;
+    env_values[name] = v;
   });
 
   if (result) {
@@ -2983,7 +2966,7 @@ function renderPluginsOffNotice() {
 function renderPluginsList(plugins) {
   if (!plugins || plugins.length === 0) {
     return '<div class="mode-desc" style="padding:18px 20px;">'
-      + 'No plugins installed yet. Use the "Add by URL" or "Browse" sections below to install one.'
+      + 'No plugins installed yet. Upload a bundle below or browse the configured catalogs.'
       + '</div>';
   }
   let h = '<div class="plugin-list">';
@@ -2994,7 +2977,7 @@ function renderPluginsList(plugins) {
     h +=   '<span class="plugin-icon">' + _PLUGIN_ICO_PLUG + '</span>';
     h +=   '<span class="plugin-name">' + escAttr(p.title || p.name) + '</span>';
     h +=   '<span class="plugin-version">v' + escAttr(p.version) + '</span>';
-    h +=   '<span class="plugin-cat-badge">' + escAttr(p.category) + '</span>';
+    h +=   '<span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(p.category)) + '</span>';
     h +=   '<span class="plugin-status-dot ' + dotClass + '"></span>';
     h +=   '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' + toggleAttr + '><span class="plugin-slider"></span></label>';
     h +=   '<button class="plugin-icon-btn plugin-icon-btn-danger" data-action="delete-plugin" title="Delete">' + _PLUGIN_ICO_TRASH + '</button>';
@@ -3067,192 +3050,172 @@ function schedulePluginsPoll() {
 }
 
 function renderConfigForm(detail) {
-  const m = detail.manifest || {};
-  const rt = detail.runtime || {};
+  // v2 shape: detail.manifest.settings[] is the operator-friendly array
+  // synthesized identically for v1-on-disk and v2-native installs.
+  const settings = (detail.manifest && detail.manifest.settings) || [];
+  if (!settings.length) {
+    return '<div class="mode-desc" style="color:var(--fg-muted);">'
+         + 'This plugin has no operator-configurable settings.'
+         + '</div>';
+  }
+  const runtime = detail.runtime || {};
   const secretMask = detail.secrets || {};
-
-  const packages = m.packages || [];
-  const remotes = m.remotes || [];
-  const pkg = (rt.package_index !== null && rt.package_index !== undefined && packages[rt.package_index])
-              ? packages[rt.package_index] : null;
-  const remote = (rt.remote_index !== null && rt.remote_index !== undefined && remotes[rt.remote_index])
-                 ? remotes[rt.remote_index] : null;
-
   let h = '<form class="plugin-config-form" data-role="config-form" onsubmit="return false;">';
-  let anySection = false;
-
-  if (pkg && pkg.environmentVariables && pkg.environmentVariables.length) {
-    h += '<div class="form-section">';
-    h += '<h4>Environment variables</h4>';
-    for (const ev of pkg.environmentVariables) {
-      h += renderFormField('env', ev, rt.env_values || {}, secretMask);
-    }
-    h += '</div>';
-    anySection = true;
+  for (const setting of settings) {
+    h += renderFormField(setting, runtime, secretMask);
   }
-
-  if (remote && remote.headers && remote.headers.length) {
-    h += '<div class="form-section">';
-    h += '<h4>Headers</h4>';
-    for (const hd of remote.headers) {
-      h += renderFormField('header', hd, rt.header_values || {}, secretMask);
-    }
-    h += '</div>';
-    anySection = true;
-  }
-
-  if (pkg && pkg.packageArguments && pkg.packageArguments.length) {
-    // Hard-coded literal-value args aren't operator-overridable; hide them.
-    const visible = pkg.packageArguments.filter(a => !a.value);
-    if (visible.length) {
-      h += '<div class="form-section">';
-      h += '<h4>Arguments</h4>';
-      for (const arg of visible) {
-        h += renderFormField('arg', arg, rt.arg_values || {}, secretMask);
-      }
-      h += '</div>';
-      anySection = true;
-    }
-  }
-
-  if (!anySection) {
-    h += '<div class="mode-desc" style="color:var(--fg-muted);">'
-       + 'This plugin has no operator-configurable values.'
-       + '</div>';
-  }
-
   h += '</form>';
   return h;
 }
 
-function renderFormField(group, spec, values, secretMask) {
-  // Positional / unnamed args fall back to valueHint as the storage key.
-  const name = spec.name || spec.valueHint || '';
-  if (!name) return '';
-  const value = values[name] !== undefined ? values[name] : '';
-  const requiredMark = spec.isRequired ? '<span class="required-mark">*</span>' : '';
-  const placeholder = spec.default ? ('default: ' + spec.default) : '';
-  const description = spec.description || '';
+function renderFormField(setting, runtime, secretMask) {
+  // Save side merges env/header/arg buckets back together — all three
+  // map by the setting's key, so we just probe each bucket in order.
+  const envVals = runtime.env_values || {};
+  const hdrVals = runtime.header_values || {};
+  const argVals = runtime.arg_values || {};
+  const value = (envVals[setting.key] !== undefined) ? envVals[setting.key]
+              : (hdrVals[setting.key] !== undefined) ? hdrVals[setting.key]
+              : (argVals[setting.key] !== undefined) ? argVals[setting.key]
+              : '';
+  const requiredMark = setting.required ? '<span class="required-mark">*</span>' : '';
+  const placeholder = (setting.default !== undefined && setting.default !== null)
+    ? ('default: ' + String(setting.default)) : '';
+  const description = setting.description || '';
+  const labelText = setting.label || setting.key;
 
   let inputHtml;
-  if (spec.isSecret) {
-    const mask = secretMask[name] !== undefined ? '***' : '';
-    inputHtml = '<input type="password" name="' + escAttr(name) +
-                '" data-group="' + group + '" data-secret="1" value="' +
-                escAttr(mask) + '" placeholder="' + escAttr(placeholder) + '">';
-  } else if (spec.choices && spec.choices.length) {
+  if (setting.type === 'secret') {
+    const masked = (secretMask[setting.key] !== undefined) ? '***' : '';
+    inputHtml = '<input type="password" name="' + escAttr(setting.key) +
+                '" data-secret="1" value="' + escAttr(masked) +
+                '" placeholder="' + escAttr(placeholder) + '">';
+  } else if (setting.type === 'select') {
     let opts = '<option value=""></option>';
-    for (const c of spec.choices) {
+    for (const c of (setting.choices || [])) {
       const sel = (String(c) === String(value)) ? ' selected' : '';
       opts += '<option' + sel + ' value="' + escAttr(c) + '">' + escAttr(c) + '</option>';
     }
-    inputHtml = '<select name="' + escAttr(name) + '" data-group="' + group + '">' + opts + '</select>';
-  } else if (spec.format === 'url') {
-    inputHtml = '<input type="url" name="' + escAttr(name) +
-                '" data-group="' + group + '" value="' + escAttr(value) +
+    inputHtml = '<select name="' + escAttr(setting.key) + '">' + opts + '</select>';
+  } else if (setting.type === 'url') {
+    inputHtml = '<input type="url" name="' + escAttr(setting.key) +
+                '" value="' + escAttr(value) +
                 '" placeholder="' + escAttr(placeholder) + '">';
+  } else if (setting.type === 'number') {
+    inputHtml = '<input type="number" name="' + escAttr(setting.key) +
+                '" value="' + escAttr(value) +
+                '" placeholder="' + escAttr(placeholder) + '">';
+  } else if (setting.type === 'boolean') {
+    const checked = (value === true || value === 'true') ? ' checked' : '';
+    inputHtml = '<input type="checkbox" name="' + escAttr(setting.key) + '"' + checked + '>';
   } else {
-    inputHtml = '<input type="text" name="' + escAttr(name) +
-                '" data-group="' + group + '" value="' + escAttr(value) +
+    inputHtml = '<input type="text" name="' + escAttr(setting.key) +
+                '" value="' + escAttr(value) +
                 '" placeholder="' + escAttr(placeholder) + '">';
   }
   return '<div class="form-field">' +
-         '  <label>' + escAttr(name) + requiredMark + '</label>' +
+         '  <label>' + escAttr(labelText) + requiredMark + '</label>' +
          '  ' + inputHtml +
-         '  ' + (description ? '<div class="field-desc">' + escAttr(description) + '</div>' : '') +
+         (description ? ('<div class="field-desc">' + escAttr(description) + '</div>') : '') +
          '</div>';
 }
 
-function renderAddByUrlCard() {
+function renderUploadCard() {
   return '' +
     '<div class="card" style="margin-top:var(--sp-3);">' +
-    '  <details class="plugin-collapsible">' +
-    '    <summary class="section-title plugin-collapsible-summary">Add by URL</summary>' +
-    '    <div class="mode-desc" style="margin-bottom:10px;">' +
-    '      Paste an MCP <code>server.json</code> URL (https) and optionally a slug. ' +
-    '      Slug defaults to the manifest name slugified.' +
-    '    </div>' +
-    '    <div class="add-url-form" style="display:grid;grid-template-columns:1fr 200px auto;gap:10px;">' +
-    '      <input type="url" data-role="install-url" placeholder="https://example.test/server.json">' +
-    '      <input type="text" data-role="install-slug" placeholder="optional slug">' +
-    '      <button class="btn-primary" data-role="install-btn">Install</button>' +
-    '    </div>' +
-    '    <div data-role="install-result" class="install-result" style="margin-top:8px;"></div>' +
-    '  </details>' +
+    '  <div class="section-title">Install plugin</div>' +
+    '  <div class="mode-desc" style="margin-bottom:10px;">' +
+    '    Upload a plugin bundle (.zip). The bundle must contain <code>plugin.json</code> at the top level.' +
+    '  </div>' +
+    '  <div class="upload-dropzone" data-role="upload-dropzone">' +
+    '    <div class="upload-prompt">Drop a .zip here, or <button class="btn-secondary" data-role="upload-pick">choose file</button></div>' +
+    '    <input type="file" data-role="upload-input" accept=".zip,application/zip" hidden>' +
+    '  </div>' +
+    '  <div data-role="upload-result" class="install-result" style="margin-top:8px;"></div>' +
     '</div>';
 }
 
-function wireAddByUrlHandlers(root) {
+function wireUploadHandlers(root) {
   const scope = root || document;
-  const urlEl = scope.querySelector('[data-role="install-url"]');
-  const slugEl = scope.querySelector('[data-role="install-slug"]');
-  const btnEl = scope.querySelector('[data-role="install-btn"]');
-  const resultEl = scope.querySelector('[data-role="install-result"]');
-  if (!urlEl || !slugEl || !btnEl) return;
+  const dropzone = scope.querySelector('[data-role="upload-dropzone"]');
+  const fileInput = scope.querySelector('[data-role="upload-input"]');
+  const pickBtn = scope.querySelector('[data-role="upload-pick"]');
+  const resultEl = scope.querySelector('[data-role="upload-result"]');
+  if (!dropzone || !fileInput || !pickBtn) return;
 
-  urlEl.addEventListener('blur', () => {
-    if (slugEl.value) return;
-    const v = urlEl.value;
-    const last = v.split('/').filter(Boolean).pop() || '';
-    const stripped = last.replace(/\.json$/i, '').toLowerCase();
-    slugEl.value = stripped.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  pickBtn.addEventListener('click', (ev) => { ev.preventDefault(); fileInput.click(); });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) handleUpload(fileInput.files[0]);
   });
 
-  btnEl.addEventListener('click', async () => {
-    const url = (urlEl.value || '').trim();
-    const slug = (slugEl.value || '').trim() || undefined;
-    if (!url) { resultEl.textContent = 'URL required'; return; }
-    btnEl.disabled = true;
-    resultEl.textContent = 'Installing…';
+  dropzone.addEventListener('dragover', (ev) => { ev.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    dropzone.classList.remove('dragover');
+    if (ev.dataTransfer.files.length) handleUpload(ev.dataTransfer.files[0]);
+  });
+
+  async function handleUpload(file) {
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      resultEl.textContent = 'File must be a .zip bundle';
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      resultEl.textContent = 'Bundle too large (max 50 MB)';
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    resultEl.textContent = 'Uploading…';
     resultEl.style.color = '';
+
+    const fd = new FormData();
+    fd.append('bundle', file);
     try {
-      const r = await fetch('/api/plugins/install', {
+      const r = await fetch('/api/plugins/upload', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify(slug ? { url, slug } : { url }),
+        body: fd,
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
       resultEl.textContent = '';
-      urlEl.value = ''; slugEl.value = '';
-      showToast('Plugin installed: ' + data.slug, 'success');
-      // Pre-set the active tab so loadPluginsPage drops the operator
-      // straight into the new plugin's pane.
-      _pluginActiveSlug = data.slug;
+      const installedName = data.manifest && data.manifest.name ? data.manifest.name : (data.name || 'plugin');
+      showToast('Plugin installed: ' + installedName, 'success');
+      // Backend response carries the internal directory name as `slug`
+      // (operator never sees this string — it's only used as the tab key
+      // so loadPluginsPage drops the operator straight into the new pane).
+      _pluginActiveSlug = data.slug || data.internal_name || null;
       await loadPluginsPage();
     } catch (e) {
       resultEl.textContent = 'Install failed: ' + e.message;
       resultEl.style.color = 'var(--red)';
-    } finally {
-      btnEl.disabled = false;
     }
-  });
+  }
 }
 
 function renderBrowseCard() {
   return '' +
     '<div class="card" style="margin-top:var(--sp-3);">' +
-    '  <details class="plugin-collapsible">' +
-    '    <summary class="section-title plugin-collapsible-summary">Browse plugins</summary>' +
-    '    <div class="mode-desc" style="margin-bottom:10px;">' +
-    '      Operator-managed list of <code>index.json</code> URLs. The Browse button ' +
-    '      merges all configured indexes into a catalog you can install from.' +
+    '  <div class="section-title">Browse plugins</div>' +
+    '  <div class="mode-desc" style="margin-bottom:10px;">' +
+    '    Operator-managed list of <code>index.json</code> URLs. The Browse button ' +
+    '    merges all configured indexes into a catalog you can install from.' +
+    '  </div>' +
+    '  <details class="indexes-section">' +
+    '    <summary>Index URLs</summary>' +
+    '    <div data-role="indexes-list" style="margin-top:var(--sp-2);"></div>' +
+    '    <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2);">' +
+    '      <input type="url" data-role="index-add" placeholder="https://example.test/index.json" style="flex:1;">' +
+    '      <button class="btn-secondary" data-role="index-add-btn">Add</button>' +
     '    </div>' +
-    '    <details class="indexes-section">' +
-    '      <summary>Index URLs</summary>' +
-    '      <div data-role="indexes-list" style="margin-top:var(--sp-2);"></div>' +
-    '      <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2);">' +
-    '        <input type="url" data-role="index-add" placeholder="https://example.test/index.json" style="flex:1;">' +
-    '        <button class="btn-secondary" data-role="index-add-btn">Add</button>' +
-    '      </div>' +
-    '      <div data-role="indexes-result" style="margin-top:6px;font-size:0.8rem;"></div>' +
-    '    </details>' +
-    '    <div style="margin-top:var(--sp-4);">' +
-    '      <button class="btn-primary" data-role="browse-btn">Browse</button>' +
-    '    </div>' +
-    '    <div data-role="browse-gallery" class="browse-gallery" style="margin-top:var(--sp-4);"></div>' +
+    '    <div data-role="indexes-result" style="margin-top:6px;font-size:0.8rem;"></div>' +
     '  </details>' +
+    '  <div style="margin-top:var(--sp-4);">' +
+    '    <button class="cfg-save-btn" data-role="browse-btn">Browse</button>' +
+    '  </div>' +
+    '  <div data-role="browse-gallery" class="browse-gallery" style="margin-top:var(--sp-4);"></div>' +
     '</div>';
 }
 
@@ -3368,41 +3331,48 @@ function renderBrowseGallery(host, data) {
   }
   h += '<div class="browse-grid">';
   for (const e of data.entries) {
+    // Catalog entries can carry either bundle_url (v2 zip) or
+    // server_json_url (legacy v1) — prefer bundle_url when present.
+    const bundleUrl = e.bundle_url || e.server_json_url || '';
     h += '<div class="browse-card">';
     h += '  <div class="browse-title"><strong>' + escAttr(e.title) + '</strong>' +
-         ' <span class="plugin-cat-badge">' + escAttr(e.category) + '</span></div>';
+         ' <span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(e.category)) + '</span></div>';
     if (e.description) {
       h += '  <div class="browse-desc">' + escAttr(e.description) + '</div>';
     }
     h += '  <div class="browse-source">from ' + escAttr(e.source_index) + '</div>';
-    h += '  <button class="btn-primary" data-server-json-url="' + escAttr(e.server_json_url) +
-         '" data-name="' + escAttr(e.name) + '">Install</button>';
+    h += '  <button class="cfg-save-btn" data-bundle-url="' + escAttr(bundleUrl) +
+         '" data-name="' + escAttr(e.name || e.title) + '">Install</button>';
     h += '</div>';
   }
   h += '</div>';
   host.innerHTML = h;
 
-  host.querySelectorAll('button[data-server-json-url]').forEach(btn => {
+  host.querySelectorAll('button[data-bundle-url]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const url = btn.getAttribute('data-server-json-url');
-      const name = btn.getAttribute('data-name');
+      const url = btn.getAttribute('data-bundle-url');
+      if (!url) {
+        showToast('Catalog entry has no installable bundle URL', 'error');
+        return;
+      }
       btn.disabled = true; btn.textContent = 'Installing…';
       try {
-        // Match the server-side slugify: last path segment, lowercase,
-        // non-alphanumeric runs collapsed to '-', strip leading/trailing.
-        const slugSeed = name.split('/').pop().toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '');
-        const r = await fetch('/api/plugins/install', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({ url: url, slug: slugSeed }),
+        // Two-step install: fetch the bundle bytes, then POST as
+        // multipart upload — the legacy /api/plugins/install endpoint
+        // is gone in v2.
+        const bundleResp = await fetch(url);
+        if (!bundleResp.ok) throw new Error('bundle fetch HTTP ' + bundleResp.status);
+        const blob = await bundleResp.blob();
+        const fd = new FormData();
+        fd.append('bundle', blob, 'bundle.zip');
+        const r = await fetch('/api/plugins/upload', {
+          method: 'POST', credentials: 'same-origin', body: fd,
         });
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-        showToast('Installed: ' + data.slug, 'success');
-        _pluginActiveSlug = data.slug;
+        const installedName = data.manifest && data.manifest.name ? data.manifest.name : (data.name || 'plugin');
+        showToast('Installed: ' + installedName, 'success');
+        _pluginActiveSlug = data.slug || data.internal_name || null;
         await loadPluginsPage();
       } catch (e) {
         showToast('Install failed: ' + e.message, 'error');
