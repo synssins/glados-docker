@@ -2336,8 +2336,18 @@ class APIHandler(BaseHTTPRequestHandler):
     """Handles OpenAI-compatible API requests."""
 
     def log_message(self, format: str, *args: Any) -> None:
-        # Suppress default stderr logging; we use loguru
-        pass
+        # Route stdlib BaseHTTPRequestHandler access logs through loguru so
+        # docker logs surface who's hitting the OpenAI-compat surface.
+        # Was previously suppressed, which made debugging integration-side
+        # issues (HA, external OpenAI clients) impossible — there was no
+        # record at all that an inbound request had arrived. One INFO line
+        # per request is fine for visibility; flip the level to DEBUG if
+        # the volume ever becomes a problem.
+        try:
+            msg = format % args if args else format
+        except Exception:
+            msg = format
+        logger.info("[http] {} - {}", self.address_string(), msg)
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         body = json.dumps(data).encode("utf-8")
