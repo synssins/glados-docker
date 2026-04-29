@@ -2340,14 +2340,17 @@ class APIHandler(BaseHTTPRequestHandler):
         # docker logs surface who's hitting the OpenAI-compat surface.
         # Was previously suppressed, which made debugging integration-side
         # issues (HA, external OpenAI clients) impossible — there was no
-        # record at all that an inbound request had arrived. One INFO line
-        # per request is fine for visibility; flip the level to DEBUG if
-        # the volume ever becomes a problem.
+        # record at all that an inbound request had arrived.
+        #
+        # Level: SUCCESS, not INFO. The engine raises the loguru threshold
+        # to SUCCESS at engine.py:58 to silence library noise; INFO would
+        # be dropped silently. Other "informational success" lines in this
+        # file (e.g. SSE start at line ~1850) follow the same convention.
         try:
             msg = format % args if args else format
         except Exception:
             msg = format
-        logger.info("[http] {} - {}", self.address_string(), msg)
+        logger.success("[http] {} - {}", self.address_string(), msg)
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         body = json.dumps(data).encode("utf-8")
