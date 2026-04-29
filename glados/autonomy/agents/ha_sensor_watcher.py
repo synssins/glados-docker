@@ -112,7 +112,7 @@ class HomeAssistantSensorSubagent(Subagent):
         tts_queue: queue.Queue[str] | None = None,
         vision_api_url: str = "http://localhost:8016",
         vision_entities: dict[str, str] | None = None,
-        announce_url: str = "http://localhost:8015/announce",
+        announce_url: str | None = None,
         announcements_yaml: str = str(Path(
             os.environ.get("GLADOS_CONFIG_DIR", "/app/configs")
         ) / "announcements.yaml"),
@@ -129,6 +129,12 @@ class HomeAssistantSensorSubagent(Subagent):
         self._min_importance = min_importance
         self._tts_queue = tts_queue  # Fallback TTS injection for entities not in announcements
         self._vision_api_url = vision_api_url.rstrip("/")
+        # Default announce_url to the loopback-only internal API port —
+        # always plain HTTP, no TLS-on-localhost mismatch. Operator can
+        # still pass an explicit URL to override for cross-host setups.
+        if announce_url is None:
+            from glados.core.tls import internal_api_url
+            announce_url = internal_api_url() + "/announce"
         self._announce_url = announce_url
         self._announcements_yaml = announcements_yaml
         # Map motion entity_id -> vision camera_id for triggering snapshot analysis
@@ -1193,7 +1199,9 @@ class HomeAssistantSensorSubagent(Subagent):
             self._serve_dir.mkdir(parents=True, exist_ok=True)
             dest = self._serve_dir / wav_name
             shutil.copy2(wav_path, dest)
-            media_url = f"http://{self._serve_host}:{self._serve_port}/{wav_name}"
+            from glados.core.tls import is_tls_active
+            _proto = "https" if is_tls_active() else "http"
+            media_url = f"{_proto}://{self._serve_host}:{self._serve_port}/{wav_name}"
 
             httpx.post(
                 f"{self._ha_url}/api/services/media_player/play_media",
@@ -1364,7 +1372,9 @@ class HomeAssistantSensorSubagent(Subagent):
                 dest.write_bytes(wav_data)
 
                 # Play on HA speaker
-                media_url = f"http://{self._serve_host}:{self._serve_port}/{wav_name}"
+                from glados.core.tls import is_tls_active
+                _proto = "https" if is_tls_active() else "http"
+                media_url = f"{_proto}://{self._serve_host}:{self._serve_port}/{wav_name}"
                 httpx.post(
                     f"{self._ha_url}/api/services/media_player/play_media",
                     headers={

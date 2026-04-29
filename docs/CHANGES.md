@@ -3721,4 +3721,96 @@ contract explicit:
 polish branch since the LFS scrub re-baseline; the trunk is now caught
 up. Merge was `--no-ff` to preserve the topical commit history.
 
+## Change 30 — TLS coverage on every external container port (2026-04-29)
+
+Operator surfaced 2026-04-29 while wiring HA's `openai_tts` integration:
+its default URL is `https://api.openai.com/v1/audio/speech` and many
+OpenAI-protocol clients won't tolerate manual scheme rewriting. Pre-fix,
+only the WebUI on 8052 honored the SSL cert; the OpenAI API on 8015
+and the HA audio file server on 5051 served plaintext-only regardless
+of cert state. The README's "OpenAI API Compatibility" section was
+implicitly over-promising.
+
+**What landed:**
+
+- **New `glados/core/tls.py`** — single source of truth for "should
+  this listener be TLS-wrapped?" Decision is on file presence
+  (`/app/certs/{cert,key}.pem` by default, or `SSL_CERT` / `SSL_KEY`
+  env override). Public surface:
+  - `get_ssl_context() -> ssl.SSLContext | None`
+  - `maybe_wrap_socket(server) -> str` (returns `"https"` or `"http"`)
+  - `is_tls_active() -> bool` (for URL builders)
+  - `internal_api_url()` / `internal_api_port()` (loopback caller helper)
+- **`api_wrapper.py:main()`** — public listener on `0.0.0.0:8015`
+  TLS-wraps via `maybe_wrap_socket`. New always-plain-HTTP listener
+  on `127.0.0.1:18015` (env `GLADOS_INTERNAL_API_PORT`) for in-
+  container callers. Avoids the cert-doesn't-cover-localhost
+  mismatch entirely without skip-verify hacks.
+- **`audio_io/homeassistant_io.py`** — file server on `0.0.0.0:5051`
+  TLS-wraps the same way. URL builders for `media_content_id` reflect
+  the listener's actual scheme. Sonos / Alexa / cast renderers fetch
+  the URL HA hands them — modern firmware handles HTTPS as long as
+  the cert chain validates (LE-via-DNS clean; self-signed needs CA
+  trust).
+- **Migrations** — four hardcoded `http://localhost:8015` callers
+  moved to the loopback internal port:
+  - `webui/tts_ui.py:2571` (streaming-chat connection)
+  - `autonomy/agents/ha_sensor_watcher.py:115` (announce_url default)
+  - `autonomy/agents/ha_sensor_watcher.py:1392` (already used the
+    config helper — auto-routes via the default change)
+  - `core/config_store.py:347-356` (`tts` / `stt` / `api_wrapper`
+    service URL defaults flipped to `http://127.0.0.1:18015`)
+- **`engine.py`** + **`doorbell/screener.py`** + two more
+  `ha_sensor_watcher.py` sites — URL builders for the audio file
+  server now consult `is_tls_active()` so the scheme matches the
+  listener.
+
+**Behavior matrix (post-fix):**
+
+| Operator setup | 8015 / 8052 / 5051 speak | OpenAI clients connect via |
+|---------------|---------------------------|----------------------------|
+| No cert mounted | plain HTTP | `http://<host>:8015/...` |
+| LE cert + DNS resolves on LAN | HTTPS, validates cleanly | `https://<cert-domain>:8015/...` |
+| Self-signed cert | HTTPS, client must trust CA or skip-verify | `https://<host>:8015/...` |
+| Bare IP, no cert | plain HTTP (universal floor) | `http://<ip>:8015/...` |
+
+**Tests added:**
+
+- `tests/test_tls_helper.py` — 8 tests covering `get_ssl_context`
+  (with and without cert files), `maybe_wrap_socket` (verifies the
+  socket actually becomes an `SSLSocket` when a cert is loaded),
+  internal port env-override + invalid-value fallback, and the
+  loopback URL shape.
+- `tests/test_config_defaults.py` — updated the two URL-pinning
+  assertions for the new internal-port defaults.
+
+Suite: 1497 pass / 5 skip / 0 fail.
+
+**Caveats:**
+
+- Self-signed cert + Sonos/Alexa: media renderer must trust the
+  self-signed CA or it'll refuse to fetch the audio URL. LE-with-DNS
+  setups (the operator's deployment) are unaffected.
+- The hostname HA points at must match the cert's CN/SAN for
+  validation to pass — `https://<bare-IP>:8015` against a domain
+  cert fails verification by design (TLS-side, not container-side).
+  Operators on bare IP without a domain stay on plain HTTP.
+
+**Files touched:**
+
+- `glados/core/tls.py` (new)
+- `glados/core/api_wrapper.py` (main: dual listener)
+- `glados/core/config_store.py` (default service URLs)
+- `glados/core/engine.py` (audio URL scheme)
+- `glados/audio_io/homeassistant_io.py` (TLS wrap + URL scheme)
+- `glados/doorbell/screener.py` (audio URL scheme)
+- `glados/autonomy/agents/ha_sensor_watcher.py` (announce_url default
+  + audio URL schemes)
+- `glados/webui/tts_ui.py` (streaming-chat conn → loopback)
+- `tests/test_tls_helper.py` (new)
+- `tests/test_config_defaults.py` (default URL assertions)
+- `README.md` (Ports table + new "TLS for OpenAI-compat clients"
+  subsection)
+- `docs/roadmap.md` (TLS-coverage entry tracking the work)
+
 

@@ -2565,10 +2565,13 @@ class Handler(BaseHTTPRequestHandler):
             "stream": True,
         }).encode("utf-8")
 
-        # Connect to API wrapper via http.client (no buffering)
+        # Connect to API wrapper via http.client (no buffering). Use the
+        # loopback-only internal port — always plain HTTP, no TLS cert
+        # mismatch on localhost. See glados.core.tls.internal_api_url.
+        from glados.core.tls import INTERNAL_API_HOST, internal_api_port
         conn = None
         try:
-            conn = _http.HTTPConnection("localhost", 8015, timeout=180)
+            conn = _http.HTTPConnection(INTERNAL_API_HOST, internal_api_port(), timeout=180)
             conn.request(
                 "POST", "/v1/chat/completions",
                 body=api_body,
