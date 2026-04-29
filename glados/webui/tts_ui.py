@@ -43,8 +43,24 @@ from glados.observability import AuditEvent, Origin, audit
 from glados.webui.setup.steps.admin_password import SetAdminPasswordStep
 from glados.webui.setup import wizard as _wizard
 from glados.webui.setup.shell import render_shell as _render_shell
+from glados.webui import plugin_endpoints as _plugins
 
 _WIZARD_STEPS = (SetAdminPasswordStep(),)
+
+
+def _mcp_manager():
+    """Return the live MCPManager from the engine, or None.
+
+    Resolved lazily because the WebUI process and the api_wrapper
+    process import each other circularly at startup; a top-level
+    import would deadlock.
+    """
+    try:
+        from glados.core import api_wrapper as _aw
+        engine = getattr(_aw, "_engine", None)
+        return getattr(engine, "mcp_manager", None) if engine else None
+    except Exception:
+        return None
 
 # Service URLs and models are read live via these helpers so that a
 # config save (LLM & Services page, etc.) takes effect without any
@@ -1948,6 +1964,13 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_get()
             return
 
+        if self.path == "/api/plugins" or self.path.startswith("/api/plugins/") \
+                or self.path.startswith("/api/plugins?"):
+            if not require_perm(self, "admin"):
+                return
+            self._dispatch_plugins_get()
+            return
+
         if not require_perm(self, "admin"):
             return
         self._dispatch_get()
@@ -1980,6 +2003,12 @@ class Handler(BaseHTTPRequestHandler):
             if not require_perm(self, "webui.view"):
                 return
             self._dispatch_post()
+            return
+
+        if self.path == "/api/plugins/install" or self.path.startswith("/api/plugins/"):
+            if not require_perm(self, "admin"):
+                return
+            self._dispatch_plugins_post()
             return
 
         if not require_perm(self, "admin"):
@@ -2183,6 +2212,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             _sessions.revoke(session_id)
             self._send_json(200, {"ok": True})
+            return
+
+        if self.path.startswith("/api/plugins/"):
+            if not require_perm(self, "admin"):
+                return
+            slug = self.path[len("/api/plugins/"):].rstrip("/")
+            self._delete_plugin(slug)
             return
 
         if not require_perm(self, "admin"):
@@ -5934,6 +5970,164 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "message": "No training process found"})
         except Exception as e:
             self._send_json(500, {"ok": False, "error": str(e)})
+
+    # ── Plugins ─────────────────────────────────────────────────────
+
+    def _read_plugin_body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError):
+            return {}
+
+    def _dispatch_plugins_get(self) -> None:
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/plugins":
+            self._list_plugins()
+            return
+
+        rest = path[len("/api/plugins/"):]
+        if "/" in rest:
+            slug, _, sub = rest.partition("/")
+            if sub == "logs":
+                try:
+                    lines = int(parse_qs(parsed.query).get("lines", ["200"])[0])
+                except (TypeError, ValueError):
+                    lines = 200
+                self._plugin_logs(slug, min(max(lines, 1), 5000))
+                return
+            self._send_error(404, "Not found")
+            return
+
+        self._plugin_detail(rest)
+
+    def _dispatch_plugins_post(self) -> None:
+        path = self.path
+        if path == "/api/plugins/install":
+            self._install_plugin()
+            return
+
+        rest = path[len("/api/plugins/"):]
+        if rest.endswith("/enable"):
+            self._set_plugin_enabled(rest[:-len("/enable")], True)
+            return
+        if rest.endswith("/disable"):
+            self._set_plugin_enabled(rest[:-len("/disable")], False)
+            return
+        self._save_plugin_runtime(rest)
+
+    def _list_plugins(self) -> None:
+        enabled_globally = os.environ.get(
+            "GLADOS_PLUGINS_ENABLED", "true",
+        ).lower() in ("1", "true", "yes", "on")
+        if not enabled_globally:
+            self._send_json(200, {"plugins": [], "enabled_globally": False})
+            return
+        plugins = _plugins.discover_plugins()
+        out = [_plugins.serialize_plugin_summary(p) for p in plugins]
+        self._send_json(200, {"plugins": out, "enabled_globally": True})
+
+    def _plugin_detail(self, slug: str) -> None:
+        plugins_dir = _plugins.default_plugins_dir()
+        target = plugins_dir / slug
+        try:
+            plugin = _plugins.load_plugin(target)
+        except (_plugins.ManifestError, FileNotFoundError) as exc:
+            self._send_json(404, {"error": str(exc)})
+            return
+        self._send_json(200, _plugins.serialize_plugin_detail(plugin))
+
+    def _install_plugin(self) -> None:
+        body = self._read_plugin_body()
+        url = (body.get("url") or "").strip()
+        slug_hint = body.get("slug")
+        try:
+            result = _plugins.install_from_url(url, slug_hint or None)
+        except _plugins.InstallError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _save_plugin_runtime(self, slug: str) -> None:
+        body = self._read_plugin_body()
+        plugins_dir = _plugins.default_plugins_dir()
+        target = plugins_dir / slug
+        if not target.exists():
+            self._send_json(404, {"error": f"plugin {slug!r} not installed"})
+            return
+        try:
+            _plugins.merge_runtime_save(
+                target,
+                env_values=body.get("env_values"),
+                header_values=body.get("header_values"),
+                arg_values=body.get("arg_values"),
+                secrets=body.get("secrets"),
+            )
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"saved": True})
+
+    def _set_plugin_enabled(self, slug: str, enabled: bool) -> None:
+        plugins_dir = _plugins.default_plugins_dir()
+        target = plugins_dir / slug
+        if not target.exists():
+            self._send_json(404, {"error": f"plugin {slug!r} not installed"})
+            return
+        _plugins.set_enabled(target, enabled)
+
+        manager = _mcp_manager()
+        if manager is None:
+            self._send_json(200, {"enabled": enabled, "session": "manager-unavailable"})
+            return
+
+        try:
+            if enabled:
+                plugin = _plugins.load_plugin(target)
+                cfg = _plugins.plugin_to_mcp_config(plugin)
+                manager.add_server(cfg)
+            else:
+                manager.remove_server(slug)
+        except Exception as exc:
+            logger.warning("hot-rotate {!s} enabled={}: {}", slug, enabled, exc)
+            self._send_json(200, {"enabled": enabled, "session_error": str(exc)})
+            return
+        self._send_json(200, {"enabled": enabled})
+
+    def _delete_plugin(self, slug: str) -> None:
+        plugins_dir = _plugins.default_plugins_dir()
+        manager = _mcp_manager()
+        if manager is not None:
+            try:
+                manager.remove_server(slug)
+            except Exception:
+                pass
+        try:
+            _plugins.remove_plugin(plugins_dir, slug)
+        except _plugins.InstallError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"removed": True})
+
+    def _plugin_logs(self, slug: str, lines: int) -> None:
+        log_dir = os.environ.get("GLADOS_PLUGIN_LOG_DIR", "/app/logs/plugins")
+        log_path = Path(log_dir) / f"{slug}.log"
+        stdio_log: list[str] = []
+        if log_path.exists():
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+                    stdio_log = fh.readlines()[-lines:]
+            except OSError:
+                pass
+
+        manager = _mcp_manager()
+        events = manager.get_plugin_events(slug, limit=lines) if manager else []
+        self._send_json(200, {"stdio_log": stdio_log, "events": events})
 
     # â”€â”€ Response helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
