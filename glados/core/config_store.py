@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 import yaml
 from loguru import logger
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from glados.robots.config import RobotsConfig
 
@@ -394,6 +394,18 @@ class ServicesConfig(BaseModel):
         default=ServiceEndpoint(url="http://localhost:8020"),
         deprecated=True,
     )
+    plugin_indexes: list[str] = Field(
+        default_factory=list,
+        description="HTTPS URLs to plugin index.json files. WebUI Browse tab merges these into the catalog.",
+    )
+
+    @field_validator("plugin_indexes")
+    @classmethod
+    def _plugin_indexes_https_only(cls, v: list[str]) -> list[str]:
+        for url in v:
+            if not url.lower().startswith("https://"):
+                raise ValueError(f"plugin index URL must be https://: {url!r}")
+        return v
 
     @model_validator(mode="after")
     def _warn_deprecated(self) -> "ServicesConfig":
