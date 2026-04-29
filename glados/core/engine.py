@@ -695,10 +695,32 @@ class Glados:
             self.tts_queue: queue.Queue[str] = queue.Queue()  # Text from LLMProcessor to TTSynthesizer
         self.audio_queue: queue.Queue[AudioMessage] = queue.Queue()  # AudioMessages from TTSSynthesizer to AudioPlayer
 
+        # Merge config-driven MCP servers (services.yaml etc.) with
+        # plugin-discovered MCP servers from /app/data/plugins/. Plugins
+        # add to the catalog rather than replacing it — operators can
+        # mix YAML-configured MCP servers with installed plugins.
+        # See docs/plugins-architecture.md for the plugin design.
+        plugin_mcp_configs: list[MCPServerConfig] = []
+        try:
+            from glados.plugins import discover_plugins, plugin_to_mcp_config
+            for plugin in discover_plugins():
+                try:
+                    plugin_mcp_configs.append(plugin_to_mcp_config(plugin))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Plugin {!s} failed to materialize MCP config; skipping: {}",
+                        plugin.name, exc,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            # Plugin layer must never block engine startup.
+            logger.warning("Plugin discovery failed: {}", exc)
+
+        all_mcp = list(self.mcp_servers or []) + plugin_mcp_configs
+
         self.mcp_manager: MCPManager | None = None
-        if self.mcp_servers:
+        if all_mcp:
             self.mcp_manager = MCPManager(
-                self.mcp_servers,
+                all_mcp,
                 tool_timeout=self.tool_timeout,
                 observability_bus=self.observability_bus,
             )

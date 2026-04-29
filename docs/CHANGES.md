@@ -3813,4 +3813,121 @@ Suite: 1497 pass / 5 skip / 0 fail.
   subsection)
 - `docs/roadmap.md` (TLS-coverage entry tracking the work)
 
+## Change 31 — Plugin system scaffolding (Phase 2a) (2026-04-29)
+
+Operator-driven research session 2026-04-29 settled on a plugin
+architecture for tying arbitrary services (Sonarr, Radarr, Spotify,
+Tautulli, GitHub, etc.) into GLaDOS without per-plugin code in this
+repo. Plugins are MCP servers conforming to the official `server.json`
+manifest format (current schema `2025-12-11`) — the same format the
+official MCP Registry uses for publishing. GLaDOS reads the manifest
+generically; the WebUI auto-renders the install form from
+`environmentVariables[]` and `remotes[].headers[]`.
+
+**This change ships the scaffolding only** — the on-disk format,
+manifest parser, loader, runner, and engine wire-in. The WebUI panel,
+runtime subprocess spawn (uvx/npx), curated catalog repo, and HA
+mcp_server wiring are follow-up phases tracked in `docs/roadmap.md`.
+
+**New module: `glados/plugins/`**
+
+- `manifest.py` — Pydantic models for `server.json` (`ServerJSON`,
+  `Package`, `Remote`, `EnvironmentVariable`, `RemoteHeader`,
+  `InputArgument`, `Variable`) + `RuntimeConfig` for the GLaDOS-side
+  runtime state. Strict at the top level (extra fields rejected) but
+  open under `_meta` per spec. GLaDOS-namespace `_meta` accessors
+  expose `category`, `icon`, `min_glados_version`,
+  `recommended_persona_role`.
+- `loader.py` — `discover_plugins()` walks `/app/data/plugins/*/`,
+  parses each `server.json` + `runtime.yaml` + `secrets.env`. Broken
+  plugins are logged and skipped — never raised — so one malformed
+  manifest doesn't block the others. Disabled plugins
+  (`runtime.yaml.enabled: false`) are filtered out. Plugins dir is
+  env-driven via `GLADOS_PLUGINS_DIR`.
+- `runner.py` — `plugin_to_mcp_config()` translates a loaded `Plugin`
+  to the existing `glados.mcp.config.MCPServerConfig`, so the existing
+  `MCPManager` consumes plugins without changes. Resolves env values
+  by merging defaults from the manifest, `runtime.yaml.env_values`,
+  and `secrets.env` (secrets win on collision). Same path for remote
+  headers. Required envs/headers raise `ManifestError` with a clear
+  message about which key is missing.
+- `store.py` — atomic read/write helpers for `runtime.yaml` and
+  `secrets.env`. `secrets.env` is written with mode 0600 (best-effort
+  on non-POSIX).
+- `errors.py` — `PluginError`, `ManifestError`, `InstallError`.
+
+**Engine wire-in**: `glados/core/engine.py` now calls
+`discover_plugins()` at startup and merges results with any
+`mcp_servers` passed in via config (`services.yaml`). Failure of the
+plugin layer NEVER blocks engine startup — exceptions are caught and
+logged. `mcp_servers` config + plugin-discovered configs are unioned;
+plugins add to the catalog rather than replacing it.
+
+**Storage layout** (under `/app/data/plugins/`, survives image rebuilds):
+
+```
+/app/data/plugins/<plugin-name>/
+├── server.json    # manifest, drives WebUI form rendering
+├── runtime.yaml   # operator's resolved values + enabled flag + package_index/remote_index
+├── secrets.env    # mode 0600, isSecret:true env values
+└── .uvx-cache/    # runtime spawn cache (Phase 2b)
+```
+
+**Tests**: 22 new across two files.
+- `tests/test_plugins_manifest.py` — full server.json shapes (minimal,
+  mcp-arr-style local stdio, HA-style remote streamable-HTTP),
+  GLaDOS-namespace `_meta` accessors with default-when-missing,
+  invalid-fields rejection, `RuntimeConfig` YAML round-trip.
+- `tests/test_plugins_loader.py` — discovery / load_plugin / runner
+  end-to-end on tmp_path fixtures: remote plugin → http
+  MCPServerConfig with templated URL, stdio plugin → uvx command +
+  resolved env, disabled plugin skipped, broken plugin logged but
+  not raised, runtime/manifest name-mismatch and out-of-range
+  index rejected, dot-directory skip, env-driven plugins-dir
+  override.
+
+Suite: 1519 pass / 5 skip / 0 fail (was 1497).
+
+**Architecture document**: `docs/plugins-architecture.md` is the
+canonical reference — all the design decisions, `_meta` extensions,
+storage layout, runtime mapping, trust posture, and phasing.
+
+**What works end-to-end today**:
+- Drop a fully-prepared plugin folder into `/app/data/plugins/<name>/`
+- Restart the container
+- Plugin's tools become available to the LLM via the existing
+  `MCPManager` chat-tool path
+- Remote plugins (`remotes[]`, e.g. HA's `mcp_server`) work fully
+- Local stdio plugins (`packages[]`) parse cleanly but the
+  subprocess spawn (uvx/npx) hasn't been wired into `MCPManager`
+  yet — that's Phase 2b
+
+**What's deferred to Phase 2b (next session)**:
+- WebUI Plugins panel (System → Services → Plugins)
+- Runtime subprocess spawn for stdio plugins via uvx/npx
+- Hot-reload (file watcher on /app/data/plugins/, no restart needed
+  on install/remove)
+
+**What's deferred to Phase 3+**:
+- Curated `synssins/glados-plugins` GitHub repo with `index.json` +
+  hand-written `server.json` files for plugins whose upstream
+  doesn't yet ship one
+- "Browse Plugins" gallery in the WebUI
+- HA `mcp_server` as the first cataloged plugin
+
+**Files touched**:
+
+- `glados/plugins/__init__.py` (new)
+- `glados/plugins/errors.py` (new)
+- `glados/plugins/manifest.py` (new)
+- `glados/plugins/loader.py` (new)
+- `glados/plugins/runner.py` (new)
+- `glados/plugins/store.py` (new)
+- `glados/core/engine.py` (plugin discovery merged into MCPManager init)
+- `tests/test_plugins_manifest.py` (new)
+- `tests/test_plugins_loader.py` (new)
+- `docs/plugins-architecture.md` (new — full design reference)
+- `docs/roadmap.md` (Plugin system entry with phasing)
+- `README.md` (Plugins section pointing at architecture doc)
+
 
