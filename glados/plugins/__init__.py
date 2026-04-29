@@ -28,6 +28,7 @@ from .manifest import (
 )
 from .loader import Plugin, discover_plugins, load_plugin
 from .runner import plugin_to_mcp_config
+from .store import install_plugin, remove_plugin, set_enabled, slugify
 
 __all__ = [
     "EnvironmentVariable",
@@ -43,6 +44,10 @@ __all__ = [
     "ServerJSON",
     "Transport",
     "discover_plugins",
+    "install_plugin",
     "load_plugin",
     "plugin_to_mcp_config",
+    "remove_plugin",
+    "set_enabled",
+    "slugify",
 ]
