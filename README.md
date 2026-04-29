@@ -403,10 +403,61 @@ The full architecture, `_meta` extension namespace
 trust posture, and phasing live in
 [`docs/plugins-architecture.md`](docs/plugins-architecture.md).
 
-WebUI surface ("Browse Plugins" gallery + install form) is the
-follow-up phase; today plugins are added by writing the three files
-under `/app/data/plugins/<name>/` directly. Curated catalog repo
-forthcoming at [`synssins/glados-plugins`](https://github.com/synssins/glados-plugins).
+### Enabling the plugin runtime
+
+`GLADOS_PLUGINS_ENABLED=true` (default) in your `docker-compose.yml`
+service env activates the plugin runtime. To neutralize it entirely,
+set it to `false` and restart the container — the engine skips
+`discover_plugins()` at startup and the WebUI panel renders an
+off-state notice. Read once at startup; flipping requires a
+restart.
+
+The image ships `uvx` (via `pip install uv`) and `npx` (Node 20
+from NodeSource) so stdio plugins can spawn without a host-side
+toolchain. Per-plugin caches live under
+`/app/data/plugins/<name>/.uvx-cache/` and survive image rebuilds.
+
+### Installing a plugin (Add-by-URL)
+
+1. Navigate to **System → Services**, scroll to the **Plugins**
+   card.
+2. Use **Add by URL**: paste a `server.json` URL (https-only;
+   private-network targets are rejected by the SSRF guard),
+   optionally edit the slug, click **Install**. The configuration
+   modal opens automatically.
+3. Fill in the **Configuration** tab — the form auto-renders from
+   the manifest's `environmentVariables[]`, `remotes[].headers[]`,
+   and `packageArguments[]`. Required fields are marked, secrets
+   render as password inputs and are masked on subsequent reads
+   (`***` sentinel preserves them server-side on partial saves).
+4. Save, then flip the **Enabled** toggle. The plugin's tools
+   become available to the LLM immediately — no container restart.
+
+### Browsing curated catalogs
+
+1. Add one or more `index.json` URLs (https-only) to the
+   **Browse** card's *Index URLs* editor. The list persists to
+   `services.yaml` under `plugin_indexes`.
+2. Click **Browse**. Each catalog entry has an **Install** button
+   that pre-populates the Add-by-URL form with the entry's
+   `server_json_url`.
+
+The curated `synssins/glados-plugins` repo (initial seed of
+mcp-arr, mcp-spotify, mcp-tautulli, mcp-github, mcp-fetch) ships
+in a future release; in the meantime, point at any compliant
+index.
+
+### Per-plugin logs
+
+Click the gear icon (⚙) on any installed plugin row, then the
+**Logs** tab. Shows the plugin subprocess's stderr (rotated at
+1 MB to `<name>.log.1`, one backup) plus the in-memory event ring
+(connect / disconnect / tools-refresh / error). Choose 100 / 500
+/ 2000 lines, click **Refresh**, or enable 5 s auto-refresh.
+
+The **About** tab shows name / version / category / persona role
+/ repository / source index, with a **Reinstall from source**
+button that re-fetches the manifest at the original URL.
 
 ## Models
 

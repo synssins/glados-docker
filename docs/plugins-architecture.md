@@ -1,8 +1,11 @@
 # GLaDOS Plugin Architecture
 
-**Status:** Phase 2 — scaffolding landing 2026-04-29 (this document); WebUI surface +
-runtime spawn follow up next session. The manifest layer, loader, and `MCPServerConfig`
-conversion ship as part of Change 31.
+**Status:** Phase 2 — fully shipped 2026-04-29. Phase 2a (Change 31)
+landed scaffolding (manifest, loader, runner, store, engine wire-in).
+Phase 2b (Change 32) landed the WebUI panel, stdio subprocess spawn
+(uvx/npx) with per-plugin caches, install-from-URL flow, browse flow
+pulled forward from Phase 3, per-plugin event ring + log file
+rotation, and the `GLADOS_PLUGINS_ENABLED` runtime gate.
 
 **Audience:** anyone touching plugin code or planning new plugins.
 Operators read the README's "Plugins" section instead.
@@ -175,6 +178,44 @@ Not in this commit. Next session adds:
   the container
 - File-watcher on `/app/data/plugins/` for drop-in additions
 
+### Phase 2b shipped (Change 32, 2026-04-29)
+
+- **Runtime gate.** `GLADOS_PLUGINS_ENABLED` (default `true`) read once
+  at engine startup. Setting it to `false`/`0`/`no`/`off` skips
+  `discover_plugins()` and the WebUI panel renders an off-state notice;
+  flipping requires a container restart.
+- **Stdio spawn.** Image now ships `uvx` (via `pip install uv`) and
+  `npx` (NodeSource `setup_20.x` + `nodejs`). Runner injects
+  `--cache-dir <plugin>/.uvx-cache` for uvx and
+  `npm_config_cache=<plugin>/.uvx-cache` for npx, so caches survive
+  image rebuilds under `/app/data/plugins/<name>/`.
+- **Per-plugin lifecycle.** `MCPManager.add_server(cfg)` /
+  `remove_server(name)` rotate sessions live; per-plugin event ring
+  (`deque maxlen=256`) records connect / disconnect / error / tools
+  events; stdio stderr routes to `/app/logs/plugins/<name>.log` with
+  lazy size-cap rotation at 1 MB.
+- **WebUI panel** under **System → Services → Plugins**. Three cards:
+  Installed (`[icon] name vX.Y.Z [cat] ●  [⏻ toggle] [⚙] [🗑]`),
+  Add-by-URL, Browse. The gear-icon modal has three tabs:
+  Configuration (auto-rendered from `server.json` —
+  `environmentVariables[]` / `remotes[].headers[]` /
+  `packageArguments[]` with typed inputs and a `***` masked-secret
+  sentinel), Logs (stdio tail + event ring, 100/500/2000 lines, 5 s
+  auto-refresh), About (name / version / category / persona role /
+  source index / Reinstall-from-source).
+- **Install-from-URL.** `POST /api/plugins/install` enforces
+  https-only, rejects RFC1918 / loopback / link-local resolutions
+  (SSRF guard), 256 KB manifest cap, 5 s fetch timeout, atomic
+  `<slug>.installing/` → `<slug>/` directory rename.
+- **Browse pulled forward.** Phase 3's "Browse Plugins" tab landed
+  here, driven by a new `services.yaml` field
+  `plugin_indexes: list[str]` (https-only validator). Phase 3 now
+  ships only the curated repo *content* — the consumer (Browse) is
+  already in Phase 2b.
+- **Endpoint surface.** 11 admin-only endpoints under
+  `/api/plugins/*`: list / get / install / save / enable / disable /
+  delete / logs / indexes (GET, POST) / browse.
+
 ## Curated catalog
 
 Lives at `synssins/glados-plugins` (GitHub repo, to be created in
@@ -218,9 +259,9 @@ network. Strong isolation, more compose surface to manage.
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Wire HA's `/api/mcp` server into existing `MCPManager` | Not started |
-| **2 (scaffolding)** | **`glados/plugins/` package: manifest, loader, runner, store. Engine consumes plugins at startup. No WebUI yet, no stdio spawn yet.** | **2026-04-29 (Change 31)** |
-| 2 (full) | WebUI Plugins panel, `uvx` / `npx` runtime spawn, hot-reload | Next |
-| 3 | Curated `synssins/glados-plugins` repo + "Browse Plugins" tab | Next-after-next |
+| 2a (scaffolding) | `glados/plugins/` package: manifest, loader, runner, store. Engine consumes plugins at startup. No WebUI yet, no stdio spawn yet. | 2026-04-29 (Change 31) |
+| **2b (full)** | **WebUI Plugins panel, `uvx` / `npx` runtime spawn, hot-reload, Browse pulled forward from Phase 3** | **2026-04-29 (Change 32)** |
+| 3 | Curated `synssins/glados-plugins` repo *content* (initial seed plugins). Browse consumer already shipped in 2b. | Next |
 | 4 | GLaDOS as MCP server (port 8017, streamable-HTTP, TLS-wrapped via existing helper) | Deferred |
 | 5 | Sidecar/external escape hatch | Deferred |
 

@@ -3931,3 +3931,144 @@ storage layout, runtime mapping, trust posture, and phasing.
 - `README.md` (Plugins section pointing at architecture doc)
 
 
+## Change 32 — Plugin system Phase 2b: WebUI panel + stdio spawn + Browse (2026-04-29)
+
+**Goal**
+
+Phase 2a (Change 31) shipped the on-disk format, manifest parser,
+loader, and runner. Phase 2b makes plugins useful end-to-end: stdio
+plugins now spawn via `uvx` / `npx` with per-plugin caches; the WebUI
+exposes install / configure / enable-toggle / logs / browse via a
+gear-icon-modal UX; operators can register multiple `index.json` URLs
+and browse catalogs from inside the panel. Browse was pulled forward
+from Phase 3 — Phase 3 now ships only the curated repo *content*.
+
+**What changed**
+
+*Image (Dockerfile)*
+
+- `pip install uv` brings `uvx` onto PATH (~25 MB).
+- NodeSource `setup_20.x` + `apt-get install nodejs` brings `npx` onto
+  PATH (~30 MB).
+- `mkdir -p /app/logs/plugins` for stdio stderr capture.
+
+*`GLADOS_PLUGINS_ENABLED` gate (`glados/core/engine.py`)*
+
+- Default `true`. When set to `false` / `0` / `no` / `off`, engine
+  logs `Plugins disabled by GLADOS_PLUGINS_ENABLED env` and skips
+  `discover_plugins()`. WebUI panel renders an "off" notice. Read
+  once at startup; flipping requires a container restart.
+
+*Runner cache routing (`glados/plugins/runner.py`)*
+
+- uvx packages: `--cache-dir <plugin>/.uvx-cache` injected into args
+  immediately after `<pkg>@<ver>`.
+- npx packages: `npm_config_cache=<plugin>/.uvx-cache` env injected.
+- `.uvx-cache/` lives under `/app/data/plugins/<name>/`, survives
+  image rebuilds.
+
+*MCPManager per-plugin lifecycle (`glados/mcp/manager.py`)*
+
+- `add_server(cfg)` schedules `_session_runner` for one plugin and
+  registers in `_servers` + `_session_tasks`. Raises `MCPError` on
+  duplicate name.
+- `remove_server(name)` cancels the task, awaits up to 5 s, drops
+  from internal state. No-op if missing.
+- Per-plugin event ring (`deque maxlen=256`) records connect /
+  disconnect / error / tools events; `get_plugin_events(name, limit)`
+  surfaces them to the WebUI Logs tab.
+- stdio errlog routes to `/app/logs/plugins/<name>.log` instead of
+  `DEVNULL`. Lazy size-cap rotation (>1 MB → `.log.1`).
+
+*Plugin store helpers (`glados/plugins/store.py`)*
+
+- `install_plugin(plugins_dir, slug, manifest)` — atomic dir create
+  via `<slug>.installing/` rename. Stub `runtime.yaml` written
+  disabled.
+- `remove_plugin(plugins_dir, slug)` — `rmtree` with `..` safety.
+- `set_enabled(plugin_dir, enabled)` — `runtime.yaml` flip.
+- `slugify(name, existing)` — last segment, lowercased,
+  non-alphanumeric → `-`, collisions resolved via `-2`..`-100`
+  suffixes.
+
+*Endpoint surface (`glados/webui/tts_ui.py` + `plugin_endpoints.py`)*
+
+11 new endpoints under `/api/plugins/*`, all admin-only:
+
+- `GET /api/plugins`, `GET /api/plugins/<slug>`,
+  `POST /api/plugins/install`, `POST /api/plugins/<slug>`,
+  `POST /api/plugins/<slug>/enable`,
+  `POST /api/plugins/<slug>/disable`,
+  `DELETE /api/plugins/<slug>`, `GET /api/plugins/<slug>/logs`,
+  `GET /api/plugins/indexes`, `POST /api/plugins/indexes`,
+  `GET /api/plugins/browse`.
+
+Install flow enforces https-only, rejects RFC1918 / loopback /
+link-local resolutions (SSRF guard), 256 KB manifest cap, 5 s
+fetch timeout. Save-runtime supports a `***` sentinel: secrets
+unchanged at the client preserve via the server-side merge.
+
+*WebUI panel (`glados/webui/static/ui.js`)*
+
+- Three cards under **System → Services**: Installed plugins
+  (per-row layout `[icon] name vX.Y.Z [cat] ●  [⏻ toggle]  [⚙]
+  [🗑]`), Add-by-URL, Browse.
+- Gear icon opens a centered modal with three tabs:
+  Configuration / Logs / About. Configuration auto-renders from
+  `server.json` (env vars / headers / arguments) with typed
+  inputs: password for secrets, select for choices, url for
+  format=url, required-asterisk for `isRequired`, default →
+  placeholder.
+- Logs tab: 100 / 500 / 2000 lines, Refresh button, 5 s
+  auto-refresh, both stdio tail + event ring.
+- About tab: name, version, category, persona role, repository,
+  source index, Reinstall-from-source button.
+- Browse card: collapsible Index URLs editor + Browse button → gallery.
+- Polls `/api/plugins` every 30 s while System tab is visible.
+
+*`ServicesConfig.plugin_indexes`*
+
+New `list[str]` field on `services.yaml` for the Browse card's
+catalog URLs. https-only validator at load time. Default empty.
+
+**Tests**: +56 across new files.
+
+- `tests/test_engine_plugin_gate.py` — `GLADOS_PLUGINS_ENABLED`
+  parsing + skip-discovery behaviour.
+- `tests/test_plugins_runner.py` — uvx `--cache-dir` injection +
+  npx `npm_config_cache` env routing.
+- `tests/test_mcp_manager_lifecycle.py` — `add_server` /
+  `remove_server` / event ring / log-file rotation.
+- `tests/test_plugins_store.py` — `install_plugin` /
+  `remove_plugin` / `set_enabled` / `slugify`.
+- `tests/test_webui_plugins.py` — 11-endpoint surface,
+  https-only + SSRF guards, `***` secret-preserve sentinel.
+- `tests/test_services_config_plugin_indexes.py` — schema +
+  https-only validator.
+
+Suite: 1519 → 1575 (+56).
+
+**Files touched**
+
+- `Dockerfile` (uvx + Node 20 + plugin log dir)
+- `glados/core/engine.py` (`GLADOS_PLUGINS_ENABLED` gate)
+- `glados/plugins/runner.py` (cache routing)
+- `glados/plugins/store.py` (`install_plugin` / `remove_plugin` /
+  `set_enabled` / `slugify`)
+- `glados/mcp/manager.py` (`add_server` / `remove_server` /
+  event ring / log rotation)
+- `glados/webui/plugin_endpoints.py` (new — 11 endpoints)
+- `glados/webui/tts_ui.py` (route registration)
+- `glados/webui/static/ui.js` (Plugins panel + modal + browse)
+- `glados/config/services.py` (`plugin_indexes` field)
+- `tests/test_engine_plugin_gate.py` (new)
+- `tests/test_plugins_runner.py` (new)
+- `tests/test_mcp_manager_lifecycle.py` (new)
+- `tests/test_plugins_store.py` (new)
+- `tests/test_webui_plugins.py` (new)
+- `tests/test_services_config_plugin_indexes.py` (new)
+- `docs/plugins-architecture.md` (Phase 2b status flipped to live;
+  Browse-pulled-forward note; phasing table updated)
+- `README.md` (Plugins section extended with operator install +
+  browse + logs walkthrough)
+
