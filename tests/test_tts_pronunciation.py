@@ -32,6 +32,45 @@ def test_defaults_cover_operator_flagged_cases() -> None:
     assert cfg.symbol_expansions.get("%") == " percent"
 
 
+def test_defaults_include_common_acronym_starter_set() -> None:
+    """Regression: starter set added 2026-04-28 — without these,
+    Piper renders ``NASA`` / ``CPU`` / ``FBI`` etc. as slurred
+    letter-by-letter sounds via the all-caps splitter."""
+    cfg = TtsPronunciationConfig()
+    # Pronounced as words
+    for k in ("NASA", "NATO", "HVAC", "JSON"):
+        assert k in cfg.word_expansions, f"missing word-form acronym {k}"
+    # Civic / org initialisms
+    for k in ("FBI", "CIA", "NSA", "IRS"):
+        assert k in cfg.word_expansions, f"missing civic acronym {k}"
+    # Computing fundamentals
+    for k in ("CPU", "GPU", "RAM", "USB", "URL", "API"):
+        assert k in cfg.word_expansions, f"missing computing acronym {k}"
+    # Container domain
+    for k in ("LLM", "TTS", "STT", "MQTT", "MCP"):
+        assert k in cfg.word_expansions, f"missing container-domain acronym {k}"
+
+
+def test_starter_set_renders_through_converter() -> None:
+    """End-to-end: defaults flow into the converter and produce
+    expanded output for representative cases."""
+    cfg = TtsPronunciationConfig()
+    stc = SpokenTextConverter(
+        symbol_expansions=dict(cfg.symbol_expansions),
+        word_expansions=dict(cfg.word_expansions),
+    )
+    cases = [
+        ("NASA launched a probe.", "nassa"),
+        ("My CPU is hot.", "see pee you"),
+        ("Check the URL.", "you are ell"),
+        ("FBI agent.", "eff bee eye"),
+        ("HVAC is broken.", "h vack"),
+    ]
+    for src, expected in cases:
+        out = stc.text_to_spoken(src).lower()
+        assert expected in out, f"{src!r} → {out!r} missing {expected!r}"
+
+
 def test_defaults_allow_empty_maps() -> None:
     cfg = TtsPronunciationConfig(
         symbol_expansions={}, word_expansions={},
