@@ -2126,3 +2126,61 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   font-family: var(--font-mono);
   font-size: 0.78rem;
 }
+
+/* ── Plugins panel (Phase 2b) ─────────────────────────────────────
+   Row layout: [icon] Name vX.Y.Z [cat]  ●  [⏻ toggle]  [⚙]  [🗑]
+   Lives inside System → Services → Plugins card. Tokens reuse the
+   existing palette — no new color values introduced. */
+.plugin-list { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); }
+.plugin-row {
+  display: grid;
+  grid-template-columns: 24px 1fr auto auto 12px 36px 28px 28px;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-input);
+  background: var(--bg-input);
+}
+.plugin-icon { color: var(--fg-secondary); display: inline-flex; width: 16px; height: 16px; }
+.plugin-icon svg { width: 16px; height: 16px; }
+.plugin-name { font-weight: 500; color: var(--fg-primary); font-size: 0.88rem; }
+.plugin-version { color: var(--fg-muted); font-family: var(--font-mono); font-size: 0.78rem; }
+.plugin-cat-badge {
+  background: var(--bg-card); color: var(--fg-secondary);
+  padding: 2px 8px; border-radius: 10px;
+  font-size: 0.72rem; font-family: var(--font-mono);
+  border: 1px solid var(--border-subtle);
+}
+.plugin-status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.plugin-status-dot.dot-on  { background: var(--green); }
+.plugin-status-dot.dot-off { background: var(--fg-muted); }
+.plugin-status-dot.dot-err { background: var(--red); }
+
+/* Compact pill toggle — matches the instrument-panel feel without
+   adopting iOS slider chrome. Plain checkbox is hidden; the slider
+   span is the visible affordance. */
+.plugin-switch { position: relative; display: inline-block; width: 36px; height: 18px; }
+.plugin-switch input { opacity: 0; width: 0; height: 0; }
+.plugin-slider {
+  position: absolute; cursor: pointer; inset: 0;
+  background: var(--bg-card); border: 1px solid var(--border-default);
+  border-radius: 9px; transition: background 0.15s;
+}
+.plugin-slider::before {
+  content: ""; position: absolute; left: 2px; top: 2px;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--fg-tertiary); transition: transform 0.15s, background 0.15s;
+}
+.plugin-switch input:checked + .plugin-slider { background: rgba(76, 175, 80, 0.25); border-color: var(--green); }
+.plugin-switch input:checked + .plugin-slider::before { transform: translateX(18px); background: var(--green); }
+.plugin-switch input:disabled + .plugin-slider { opacity: 0.5; cursor: wait; }
+
+.plugin-icon-btn {
+  background: none; border: none; cursor: pointer; padding: 4px;
+  color: var(--fg-secondary); border-radius: var(--r-sharp);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.plugin-icon-btn svg { width: 16px; height: 16px; }
+.plugin-icon-btn:hover { background: var(--bg-card); color: var(--fg-primary); }
+.plugin-icon-btn-danger:hover { color: var(--red); }

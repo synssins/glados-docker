@@ -2338,10 +2338,21 @@ async function loadSystemServices() {
 
   html += '</div>'; // end Card 2
 
+  // ── Card 3: Plugins (Phase 2b) — installed list, toggle, trash. ──
+  // Renders below the LLM Endpoints card. Off-state notice when
+  // GLADOS_PLUGINS_ENABLED=false. Async-populated by loadPluginsPanel().
+  html += '<div class="card" style="margin-top:var(--sp-3);" id="plugins-card-host">';
+  html +=   '<div class="section-title">Plugins</div>';
+  html +=   '<div id="plugins-panel-body"><div class="mode-desc">Loading…</div></div>';
+  html += '</div>';
+
   body.innerHTML = html;
 
   // Ping in-container services via health aggregate.
   _systemServicesPingStatus(svc);
+
+  // Plugins panel — kick off async load.
+  loadPluginsPanel();
 }
 
 function _systemLlmToggleAdvanced(btn) {
@@ -2440,6 +2451,154 @@ async function _cfgSaveSystemServices() {
 
   if (resultEl) { resultEl.textContent = 'Saved'; resultEl.className = 'cfg-result cfg-result-ok'; }
 }
+
+// ── Plugins panel (Phase 2b) ───────────────────────────────────────
+// Renders the installed-plugins list inside the Plugins card on
+// System → Services. Hot-rotates via /api/plugins/<slug>/enable|disable.
+// Off-state notice when GLADOS_PLUGINS_ENABLED=false. Polling pauses
+// when the System tab isn't active or document.hidden is true.
+
+let _pluginsPollTimer = null;
+
+const _PLUGIN_ICO_PLUG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+  + '<path d="M6 2 L6 5 M10 2 L10 5 M4 5 L12 5 L12 8 A4 4 0 0 1 4 8 Z M8 12 L8 14"/></svg>';
+const _PLUGIN_ICO_GEAR = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+  + '<circle cx="8" cy="8" r="2.2"/>'
+  + '<path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/></svg>';
+const _PLUGIN_ICO_TRASH = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+  + '<path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+
+async function loadPluginsPanel() {
+  const host = document.getElementById('plugins-panel-body');
+  if (!host) return;
+  try {
+    const r = await fetch('/api/plugins', { credentials: 'same-origin' });
+    if (!r.ok) {
+      host.innerHTML = '<div class="mode-desc" style="color:var(--fg-muted);">'
+        + 'Failed to load plugins (' + r.status + ')</div>';
+      return;
+    }
+    const data = await r.json();
+    if (!data.enabled_globally) {
+      host.innerHTML = renderPluginsOffNotice();
+      return;
+    }
+    host.innerHTML = renderPluginsList(data.plugins) + renderAddByUrlCard() + renderBrowseCard();
+    wirePluginRowHandlers();
+    wireAddByUrlHandlers();
+    wireBrowseHandlers();
+    schedulePluginsPoll();
+  } catch (e) {
+    host.innerHTML = '<div class="mode-desc">Plugins panel error: '
+      + (e && e.message ? e.message : String(e)) + '</div>';
+  }
+}
+
+function renderPluginsOffNotice() {
+  return '<div class="mode-desc" style="padding:18px 20px;border:1px dashed var(--border-default);">'
+    + '<strong>Plugins disabled.</strong> Set <code>GLADOS_PLUGINS_ENABLED=true</code> in '
+    + 'docker-compose.yml and restart the container to enable.'
+    + '</div>';
+}
+
+function renderPluginsList(plugins) {
+  if (!plugins || plugins.length === 0) {
+    return '<div class="mode-desc" style="padding:18px 20px;">'
+      + 'No plugins installed yet. Use the "Add by URL" card below or "Browse" to install one.'
+      + '</div>';
+  }
+  let h = '<div class="plugin-list">';
+  for (const p of plugins) {
+    const dotClass = p.enabled ? 'dot-on' : 'dot-off';
+    const toggleAttr = p.enabled ? ' checked' : '';
+    h += '<div class="plugin-row" data-slug="' + escAttr(p.slug) + '">';
+    h +=   '<span class="plugin-icon">' + _PLUGIN_ICO_PLUG + '</span>';
+    h +=   '<span class="plugin-name">' + escAttr(p.title || p.name) + '</span>';
+    h +=   '<span class="plugin-version">v' + escAttr(p.version) + '</span>';
+    h +=   '<span class="plugin-cat-badge">' + escAttr(p.category) + '</span>';
+    h +=   '<span class="plugin-status-dot ' + dotClass + '"></span>';
+    h +=   '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' + toggleAttr + '><span class="plugin-slider"></span></label>';
+    h +=   '<button class="plugin-icon-btn" data-action="open-config" title="Configure">' + _PLUGIN_ICO_GEAR + '</button>';
+    h +=   '<button class="plugin-icon-btn plugin-icon-btn-danger" data-action="delete-plugin" title="Delete">' + _PLUGIN_ICO_TRASH + '</button>';
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function wirePluginRowHandlers() {
+  document.querySelectorAll('.plugin-row').forEach(row => {
+    const slug = row.getAttribute('data-slug');
+    const nameEl = row.querySelector('.plugin-name');
+    const displayName = nameEl ? nameEl.textContent : slug;
+
+    // Enable/disable toggle — optimistic UI with revert on failure.
+    const toggle = row.querySelector('input[data-action="toggle-enabled"]');
+    if (toggle) {
+      toggle.addEventListener('change', async (ev) => {
+        const newState = ev.target.checked;
+        const path = newState ? 'enable' : 'disable';
+        ev.target.disabled = true;
+        try {
+          const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/' + path, {
+            method: 'POST', credentials: 'same-origin',
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          showToast(newState ? 'Plugin enabled' : 'Plugin disabled', 'success');
+          // Refresh status dot from server.
+          await loadPluginsPanel();
+        } catch (e) {
+          ev.target.checked = !newState;  // revert
+          showToast('Toggle failed: ' + e.message, 'error');
+        } finally {
+          ev.target.disabled = false;
+        }
+      });
+    }
+
+    // Gear → open config modal (T8). Stub for now.
+    const gear = row.querySelector('button[data-action="open-config"]');
+    if (gear) {
+      gear.addEventListener('click', () => openPluginConfigModal(slug));
+    }
+
+    // Trash → confirm + DELETE.
+    const trash = row.querySelector('button[data-action="delete-plugin"]');
+    if (trash) {
+      trash.addEventListener('click', async () => {
+        const ok = confirm('Delete plugin ' + displayName + '? This will remove its configuration permanently.');
+        if (!ok) return;
+        try {
+          const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
+            method: 'DELETE', credentials: 'same-origin',
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          showToast('Plugin deleted', 'success');
+          await loadPluginsPanel();
+        } catch (e) {
+          showToast('Delete failed: ' + e.message, 'error');
+        }
+      });
+    }
+  });
+}
+
+function schedulePluginsPoll() {
+  if (_pluginsPollTimer) clearInterval(_pluginsPollTimer);
+  _pluginsPollTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (_activeNavKey !== 'config.system') return;  // only when System is visible
+    loadPluginsPanel();
+  }, 30000);
+}
+
+// Stubs filled in by T8/T10/T11. Defined here so wire-up doesn't
+// throw before those tasks land.
+function openPluginConfigModal(slug) { /* T8 */ }
+function renderAddByUrlCard() { return ''; /* T10 */ }
+function wireAddByUrlHandlers() { /* T10 */ }
+function renderBrowseCard() { return ''; /* T11 */ }
+function wireBrowseHandlers() { /* T11 */ }
 
 function cfgRenderServices(data, scope) {
   // Phase 6.2 (2026-04-22): scope filters the service grid.
