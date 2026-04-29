@@ -2453,8 +2453,30 @@ let _pluginsPollTimer = null;
 // Active per-plugin pane's slug + auto-refresh timer for its Logs
 // card. Lives at module scope so switching tabs (or leaving the
 // Plugins page entirely) can tear down the previous interval.
+// Persisted to localStorage so a page reload returns to the same
+// per-plugin tab instead of bouncing back to Manage.
 let _pluginActiveSlug = null;
 let _pluginLogsAutoTimer = null;
+
+const _PLUGIN_ACTIVE_SLUG_KEY = 'glados_plugins_active_tab';
+
+function _setPluginActiveSlug(slug) {
+  _pluginActiveSlug = slug || null;
+  try {
+    if (_pluginActiveSlug) {
+      localStorage.setItem(_PLUGIN_ACTIVE_SLUG_KEY, _pluginActiveSlug);
+    } else {
+      localStorage.removeItem(_PLUGIN_ACTIVE_SLUG_KEY);
+    }
+  } catch (_e) { /* private mode etc. — ignore */ }
+}
+
+function _restorePluginActiveSlug() {
+  try {
+    const v = localStorage.getItem(_PLUGIN_ACTIVE_SLUG_KEY);
+    if (v) _pluginActiveSlug = v;
+  } catch (_e) { /* ignore */ }
+}
 
 const _PLUGIN_ICO_PLUG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
   + '<path d="M6 2 L6 5 M10 2 L10 5 M4 5 L12 5 L12 8 A4 4 0 0 1 4 8 Z M8 12 L8 14"/></svg>';
@@ -2528,6 +2550,10 @@ function _ensurePluginsNavEntry() {
 async function loadPluginsPage() {
   const panel = _ensurePluginsPagePanel();
   if (!panel) return;
+  // Restore the previously-active per-plugin tab on first entry of this
+  // page-load (e.g. after a browser refresh). No-op if module state
+  // already has a slug from an earlier in-session navigation.
+  if (_pluginActiveSlug === null) _restorePluginActiveSlug();
   // Promote the freshly-injected panel to the active tab — navigateTo()
   // ran *before* _ensurePluginsPagePanel created the node, so the
   // class flip there missed it.
@@ -2677,7 +2703,7 @@ function switchPluginsPaneTab(tabId) {
     p.classList.toggle('active', p.dataset.pane === tabId);
   });
 
-  _pluginActiveSlug = (tabId === 'manage') ? null : tabId;
+  _setPluginActiveSlug((tabId === 'manage') ? null : tabId);
 
   if (tabId !== 'manage') {
     const pane = panel.querySelector('[data-pane="' + CSS.escape(tabId) + '"]');
@@ -2820,7 +2846,7 @@ function wirePluginPaneHandlers(slug, pane, detail) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         showToast('Plugin deleted', 'success');
         // Bounce back to the Manage tab — the per-plugin tab is gone.
-        _pluginActiveSlug = null;
+        _setPluginActiveSlug(null);
         await loadPluginsPage();
       } catch (e) {
         showToast('Delete failed: ' + e.message, 'error');
@@ -3086,10 +3112,13 @@ function renderFormField(setting, runtime, secretMask) {
 
   let inputHtml;
   if (setting.type === 'secret') {
-    const masked = (secretMask[setting.key] !== undefined) ? '***' : '';
+    // Empty value + placeholder avoids the misleading "..." render of a
+    // 3-char mask in a password field, AND avoids leaking the stored
+    // length. Save handler treats blank as "preserve".
+    const hasStored = (secretMask[setting.key] !== undefined);
+    const secretPlaceholder = hasStored ? 'stored — leave blank to keep' : placeholder;
     inputHtml = '<input type="password" name="' + escAttr(setting.key) +
-                '" data-secret="1" value="' + escAttr(masked) +
-                '" placeholder="' + escAttr(placeholder) + '">';
+                '" data-secret="1" value="" placeholder="' + escAttr(secretPlaceholder) + '">';
   } else if (setting.type === 'select') {
     let opts = '<option value=""></option>';
     for (const c of (setting.choices || [])) {
@@ -3186,7 +3215,7 @@ function wireUploadHandlers(root) {
       // Backend response carries the internal directory name as `slug`
       // (operator never sees this string — it's only used as the tab key
       // so loadPluginsPage drops the operator straight into the new pane).
-      _pluginActiveSlug = data.slug || data.internal_name || null;
+      _setPluginActiveSlug(data.slug || data.internal_name || null);
       await loadPluginsPage();
     } catch (e) {
       resultEl.textContent = 'Install failed: ' + e.message;
@@ -3372,7 +3401,7 @@ function renderBrowseGallery(host, data) {
         if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
         const installedName = data.manifest && data.manifest.name ? data.manifest.name : (data.name || 'plugin');
         showToast('Installed: ' + installedName, 'success');
-        _pluginActiveSlug = data.slug || data.internal_name || null;
+        _setPluginActiveSlug(data.slug || data.internal_name || null);
         await loadPluginsPage();
       } catch (e) {
         showToast('Install failed: ' + e.message, 'error');
