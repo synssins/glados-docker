@@ -2344,3 +2344,29 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   border-radius: 6px; cursor: pointer;
 }
 .btn-secondary:hover { color: var(--fg-primary); border-color: var(--border-strong); }
+
+/* Plugins Browse card (T11) — gallery grid + per-entry card. */
+.browse-gallery .browse-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--sp-3);
+}
+.browse-card {
+  border: 1px solid var(--border-default); border-radius: var(--r-card);
+  padding: var(--sp-3) var(--sp-4); background: var(--bg-card);
+  display: flex; flex-direction: column; gap: var(--sp-2);
+}
+.browse-title { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); }
+.browse-desc  { font-size: 0.85rem; color: var(--fg-secondary); flex-grow: 1; }
+.browse-source { font-size: 0.75rem; color: var(--fg-muted); font-style: italic; }
+.indexes-section summary {
+  cursor: pointer; font-size: 0.85rem; color: var(--fg-secondary);
+  padding: var(--sp-1) 0;
+}
+.indexes-section summary:hover { color: var(--fg-primary); }
+.indexes-section input[type="url"] {
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border-default); border-radius: var(--r-input);
+  background: var(--bg-input); color: var(--fg-primary);
+  font-size: 0.85rem;
+}

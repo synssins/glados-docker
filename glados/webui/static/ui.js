@@ -3120,8 +3120,188 @@ function wireAddByUrlHandlers() {
   });
 }
 
-function renderBrowseCard() { return ''; /* T11 */ }
-function wireBrowseHandlers() { /* T11 */ }
+function renderBrowseCard() {
+  return '' +
+    '<div class="card" style="margin-top:var(--sp-3);">' +
+    '  <div class="section-title">Browse plugins</div>' +
+    '  <div class="mode-desc" style="margin-bottom:10px;">' +
+    '    Operator-managed list of <code>index.json</code> URLs. The Browse button ' +
+    '    merges all configured indexes into a catalog you can install from.' +
+    '  </div>' +
+    '  <details class="indexes-section">' +
+    '    <summary>Index URLs</summary>' +
+    '    <div data-role="indexes-list" style="margin-top:var(--sp-2);"></div>' +
+    '    <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2);">' +
+    '      <input type="url" data-role="index-add" placeholder="https://example.test/index.json" style="flex:1;">' +
+    '      <button class="btn-secondary" data-role="index-add-btn">Add</button>' +
+    '    </div>' +
+    '    <div data-role="indexes-result" style="margin-top:6px;font-size:0.8rem;"></div>' +
+    '  </details>' +
+    '  <div style="margin-top:var(--sp-4);">' +
+    '    <button class="btn-primary" data-role="browse-btn">Browse</button>' +
+    '  </div>' +
+    '  <div data-role="browse-gallery" class="browse-gallery" style="margin-top:var(--sp-4);"></div>' +
+    '</div>';
+}
+
+async function wireBrowseHandlers() {
+  const listEl = document.querySelector('[data-role="indexes-list"]');
+  const addInput = document.querySelector('[data-role="index-add"]');
+  const addBtn = document.querySelector('[data-role="index-add-btn"]');
+  const browseBtn = document.querySelector('[data-role="browse-btn"]');
+  const gallery = document.querySelector('[data-role="browse-gallery"]');
+  if (!listEl || !browseBtn) return;
+
+  let urls = [];
+
+  async function refreshIndexes() {
+    try {
+      const r = await fetch('/api/plugins/indexes', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      urls = (await r.json()).urls || [];
+    } catch (e) {
+      listEl.innerHTML = '<div class="mode-desc">Failed to load: ' + escAttr(e.message) + '</div>';
+      return;
+    }
+    if (!urls.length) {
+      // Empty state: tell the operator the Browse button is gated on at
+      // least one configured index URL.
+      listEl.innerHTML = '<div class="mode-desc" style="font-style:italic;">'
+        + 'No index URLs configured. Add one to browse plugins.</div>';
+      return;
+    }
+    listEl.innerHTML = urls.map((u, i) =>
+      '<div class="index-row" style="display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2);padding:4px 0;">' +
+      '  <code style="font-size:0.85rem;word-break:break-all;">' + escAttr(u) + '</code>' +
+      '  <button class="plugin-icon-btn plugin-icon-btn-danger" data-index-idx="' + i + '" title="Remove">&times;</button>' +
+      '</div>'
+    ).join('');
+    listEl.querySelectorAll('button[data-index-idx]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.getAttribute('data-index-idx'), 10);
+        const next = urls.slice(0, idx).concat(urls.slice(idx + 1));
+        await saveIndexes(next);
+      });
+    });
+  }
+
+  async function saveIndexes(newUrls) {
+    const resultEl = document.querySelector('[data-role="indexes-result"]');
+    resultEl.textContent = 'Saving…';
+    resultEl.style.color = '';
+    try {
+      const r = await fetch('/api/plugins/indexes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ urls: newUrls }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      urls = data.urls || newUrls;
+      resultEl.textContent = '';
+      await refreshIndexes();
+    } catch (e) {
+      resultEl.textContent = 'Save failed: ' + e.message;
+      resultEl.style.color = 'var(--red)';
+    }
+  }
+
+  addBtn.addEventListener('click', async () => {
+    const v = (addInput.value || '').trim();
+    if (!v) return;
+    if (!v.toLowerCase().startsWith('https://')) {
+      // Server enforces https-only too; this is just the fast-path UX.
+      const resultEl = document.querySelector('[data-role="indexes-result"]');
+      resultEl.textContent = 'URL must use https://';
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    addInput.value = '';
+    await saveIndexes(urls.concat([v]));
+  });
+
+  browseBtn.addEventListener('click', async () => {
+    gallery.innerHTML = '<div class="mode-desc">Loading catalog…</div>';
+    try {
+      const r = await fetch('/api/plugins/browse', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      renderBrowseGallery(gallery, data);
+    } catch (e) {
+      gallery.innerHTML = '<div class="mode-desc">Browse failed: ' + escAttr(e.message) + '</div>';
+    }
+  });
+
+  await refreshIndexes();
+}
+
+function renderBrowseGallery(host, data) {
+  if (!data.entries || !data.entries.length) {
+    let h = '';
+    if (data.errors && data.errors.length) {
+      h += '<div class="mode-desc" style="color:var(--red);margin-bottom:var(--sp-2);">' +
+           'Some indexes failed: ' +
+           escAttr(data.errors.map(e => e.url + ' — ' + e.error).join('; ')) +
+           '</div>';
+    }
+    h += '<div class="mode-desc">No plugins found in any configured index.</div>';
+    host.innerHTML = h;
+    return;
+  }
+  let h = '';
+  if (data.errors && data.errors.length) {
+    h += '<div class="mode-desc" style="color:var(--red);margin-bottom:var(--sp-2);">' +
+         'Some indexes failed: ' +
+         escAttr(data.errors.map(e => e.url + ' — ' + e.error).join('; ')) +
+         '</div>';
+  }
+  h += '<div class="browse-grid">';
+  for (const e of data.entries) {
+    h += '<div class="browse-card">';
+    h += '  <div class="browse-title"><strong>' + escAttr(e.title) + '</strong>' +
+         ' <span class="plugin-cat-badge">' + escAttr(e.category) + '</span></div>';
+    if (e.description) {
+      h += '  <div class="browse-desc">' + escAttr(e.description) + '</div>';
+    }
+    h += '  <div class="browse-source">from ' + escAttr(e.source_index) + '</div>';
+    h += '  <button class="btn-primary" data-server-json-url="' + escAttr(e.server_json_url) +
+         '" data-name="' + escAttr(e.name) + '">Install</button>';
+    h += '</div>';
+  }
+  h += '</div>';
+  host.innerHTML = h;
+
+  host.querySelectorAll('button[data-server-json-url]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const url = btn.getAttribute('data-server-json-url');
+      const name = btn.getAttribute('data-name');
+      btn.disabled = true; btn.textContent = 'Installing…';
+      try {
+        // Match server-side slugify: last path segment, lowercase,
+        // non-alphanumeric runs to '-', trim leading/trailing '-'.
+        const slugSeed = name.split('/').pop().toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '');
+        const r = await fetch('/api/plugins/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ url: url, slug: slugSeed }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        showToast('Installed: ' + data.slug, 'success');
+        await loadPluginsPanel();
+        openPluginConfigModal(data.slug);
+      } catch (e) {
+        showToast('Install failed: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Install';
+      }
+    });
+  });
+}
 
 function cfgRenderServices(data, scope) {
   // Phase 6.2 (2026-04-22): scope filters the service grid.
