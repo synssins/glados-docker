@@ -309,6 +309,33 @@ class GladosConfig(BaseModel):
         return [prompt.to_chat_message() for prompt in self.personality_preprompt]
 
 
+def _maybe_discover_plugin_configs() -> list[MCPServerConfig]:
+    """Discover plugins iff GLADOS_PLUGINS_ENABLED is truthy.
+
+    Returns an empty list when disabled or when the discovery layer
+    raises. Never propagates plugin-layer errors to the engine init.
+    """
+    enabled = os.environ.get("GLADOS_PLUGINS_ENABLED", "true").lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logger.info("Plugins disabled by GLADOS_PLUGINS_ENABLED env")
+        return []
+
+    plugin_mcp_configs: list[MCPServerConfig] = []
+    try:
+        from glados.plugins import discover_plugins, plugin_to_mcp_config
+        for plugin in discover_plugins():
+            try:
+                plugin_mcp_configs.append(plugin_to_mcp_config(plugin))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Plugin {!s} failed to materialize MCP config; skipping: {}",
+                    plugin.name, exc,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Plugin discovery layer failed; skipping: {}", exc)
+    return plugin_mcp_configs
+
+
 class Glados:
     """
     Glados voice assistant orchestrator.
@@ -700,20 +727,7 @@ class Glados:
         # add to the catalog rather than replacing it — operators can
         # mix YAML-configured MCP servers with installed plugins.
         # See docs/plugins-architecture.md for the plugin design.
-        plugin_mcp_configs: list[MCPServerConfig] = []
-        try:
-            from glados.plugins import discover_plugins, plugin_to_mcp_config
-            for plugin in discover_plugins():
-                try:
-                    plugin_mcp_configs.append(plugin_to_mcp_config(plugin))
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Plugin {!s} failed to materialize MCP config; skipping: {}",
-                        plugin.name, exc,
-                    )
-        except Exception as exc:  # noqa: BLE001
-            # Plugin layer must never block engine startup.
-            logger.warning("Plugin discovery failed: {}", exc)
+        plugin_mcp_configs = _maybe_discover_plugin_configs()
 
         all_mcp = list(self.mcp_servers or []) + plugin_mcp_configs
 
