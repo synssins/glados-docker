@@ -6014,8 +6014,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch_plugins_post(self) -> None:
         path = self.path
-        if path == "/api/plugins/install":
-            self._install_plugin()
+        if path == "/api/plugins/upload":
+            self._upload_plugin()
             return
         if path == "/api/plugins/indexes":
             self._set_plugin_indexes()
@@ -6083,16 +6083,68 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, _plugins.serialize_plugin_detail(plugin))
 
-    def _install_plugin(self) -> None:
-        body = self._read_plugin_body()
-        url = (body.get("url") or "").strip()
-        slug_hint = body.get("slug")
+    def _upload_plugin(self) -> None:
+        """Multipart upload of a v2 plugin zip bundle.
+
+        Replaces the v1 install-by-URL flow. Operators upload a self-
+        contained .zip; the v2 schema in plugin.json is the source of
+        truth and the bundle pipeline applies the safety guards (size /
+        traversal / symlink) before extraction.
+        """
         try:
-            result = _plugins.install_from_url(url, slug_hint or None)
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            self._send_json(400, {"error": "invalid Content-Length"})
+            return
+        if content_length > 50 * 1024 * 1024:
+            self._send_json(400, {"error": "bundle too large (max 50 MB)"})
+            return
+        if content_length == 0:
+            self._send_json(400, {"error": "empty upload"})
+            return
+
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.startswith("multipart/form-data"):
+            self._send_json(400, {"error": "expected multipart/form-data"})
+            return
+
+        # cgi.FieldStorage is deprecated in Python 3.13 but still available
+        # in 3.12 (the container's Python). The replacement (third-party
+        # python-multipart) is a separate task -- keep this here for now.
+        import cgi
+        fs = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
+        )
+        if "bundle" not in fs:
+            self._send_json(400, {"error": "missing 'bundle' file field"})
+            return
+        bundle_field = fs["bundle"]
+        if not getattr(bundle_field, "file", None):
+            self._send_json(400, {"error": "'bundle' must be a file upload"})
+            return
+        zip_bytes = bundle_field.file.read()
+
+        plugins_dir = _plugins.default_plugins_dir()
+        try:
+            final_dir = _plugins.install_from_zip(zip_bytes, plugins_dir)
         except _plugins.InstallError as exc:
             self._send_json(400, {"error": str(exc)})
             return
-        self._send_json(200, result)
+        except Exception as exc:
+            logger.warning("plugin upload failed: {}", exc)
+            self._send_json(500, {"error": "upload failed"})
+            return
+
+        # Re-load the freshly installed plugin so the WebUI can render it
+        # without doing a second list call.
+        try:
+            plugin = _plugins.load_plugin(final_dir)
+        except Exception as exc:
+            self._send_json(500, {"error": f"installed but cannot load: {exc}"})
+            return
+        self._send_json(200, _plugins.serialize_plugin_detail(plugin))
 
     def _save_plugin_runtime(self, slug: str) -> None:
         body = self._read_plugin_body()

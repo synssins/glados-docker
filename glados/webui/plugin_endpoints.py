@@ -26,6 +26,7 @@ from loguru import logger
 from glados.plugins import (
     Plugin,
     discover_plugins,
+    install_from_zip,
     install_plugin,
     load_plugin,
     plugin_to_mcp_config,
@@ -182,16 +183,17 @@ def merge_runtime_save(
 
 
 def serialize_plugin_summary(plugin: Plugin) -> dict:
-    """Used by GET /api/plugins list view."""
-    m = plugin.manifest
+    """Used by GET /api/plugins list view. Reads from the v2 manifest
+    so v1-on-disk and v2-native plugins serialize identically."""
+    m = plugin.manifest_v2
     return {
         "slug": plugin.directory.name,
         "name": m.name,
-        "title": m.title or m.name,
+        "title": m.name,
         "version": m.version,
         "description": m.description,
-        "category": m.glados_category,
-        "icon": m.glados_icon,
+        "category": m.category,
+        "icon": m.icon or "plug",
         "enabled": plugin.enabled,
         "is_remote": plugin.is_remote(),
     }
@@ -199,11 +201,11 @@ def serialize_plugin_summary(plugin: Plugin) -> dict:
 
 def serialize_plugin_detail(plugin: Plugin) -> dict:
     """Used by GET /api/plugins/<slug>. Secrets returned as '***'."""
-    m = plugin.manifest
+    m = plugin.manifest_v2
     secrets_masked = {k: SECRET_PLACEHOLDER for k in plugin.secrets}
     return {
         "slug": plugin.directory.name,
-        "manifest": m.model_dump(by_alias=True, exclude_none=True, mode="json"),
+        "manifest": m.model_dump(mode="json"),
         "runtime": plugin.runtime.model_dump(mode="json"),
         "secrets": secrets_masked,
         "is_remote": plugin.is_remote(),

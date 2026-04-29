@@ -15,6 +15,7 @@ Public API:
 """
 from __future__ import annotations
 
+from .bundle import PluginJSON, Setting, v1_to_v2
 from .errors import PluginError, ManifestError, InstallError
 from .manifest import (
     EnvironmentVariable,
@@ -28,7 +29,7 @@ from .manifest import (
 )
 from .loader import Plugin, discover_plugins, load_plugin
 from .runner import plugin_to_mcp_config
-from .store import install_plugin, remove_plugin, set_enabled, slugify
+from .store import install_from_zip, install_plugin, remove_plugin, set_enabled, slugify
 
 __all__ = [
     "EnvironmentVariable",
@@ -38,16 +39,20 @@ __all__ = [
     "Package",
     "Plugin",
     "PluginError",
+    "PluginJSON",
     "Remote",
     "RemoteHeader",
     "RuntimeConfig",
     "ServerJSON",
+    "Setting",
     "Transport",
     "discover_plugins",
+    "install_from_zip",
     "install_plugin",
     "load_plugin",
     "plugin_to_mcp_config",
     "remove_plugin",
     "set_enabled",
     "slugify",
+    "v1_to_v2",
 ]

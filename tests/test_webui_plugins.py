@@ -71,7 +71,7 @@ def _admin_handler(method: str, path: str, body: dict | None = None):
     h._read_plugin_body = types.MethodType(Handler._read_plugin_body, h)
     h._list_plugins = types.MethodType(Handler._list_plugins, h)
     h._plugin_detail = types.MethodType(Handler._plugin_detail, h)
-    h._install_plugin = types.MethodType(Handler._install_plugin, h)
+    h._upload_plugin = types.MethodType(Handler._upload_plugin, h)
     h._save_plugin_runtime = types.MethodType(Handler._save_plugin_runtime, h)
     h._set_plugin_enabled = types.MethodType(Handler._set_plugin_enabled, h)
     h._delete_plugin = types.MethodType(Handler._delete_plugin, h)
@@ -129,85 +129,7 @@ def test_list_when_enabled_returns_discovered(auth_off, tmp_path: Path, monkeypa
     assert body["plugins"][0]["enabled"] is True
 
 
-# ── Install endpoint guards ──────────────────────────────────────────
-
-
-def test_install_https_only(auth_off):
-    h = _admin_handler(
-        "POST", "/api/plugins/install",
-        body={"url": "http://example.test/server.json"},
-    )
-    h.do_POST()
-    code, body = h._json_response
-    assert code == 400
-    assert "https" in body["error"].lower()
-
-
-def test_install_rejects_loopback(auth_off):
-    h = _admin_handler(
-        "POST", "/api/plugins/install",
-        body={"url": "https://127.0.0.1/server.json"},
-    )
-    h.do_POST()
-    code, body = h._json_response
-    assert code == 400
-    err = body["error"].lower()
-    assert "loopback" in err or "private" in err or "ssrf" in err
-
-
-def test_install_rejects_rfc1918(auth_off):
-    h = _admin_handler(
-        "POST", "/api/plugins/install",
-        body={"url": "https://10.0.0.5/server.json"},
-    )
-    h.do_POST()
-    code, _ = h._json_response
-    assert code == 400
-
-
-def test_install_oversize_response_rejected(auth_off, monkeypatch):
-    big = "x" * (256 * 1024 + 1)
-    fake_resp = MagicMock(status_code=200, text=big, headers={"content-length": str(len(big))})
-    fake_resp.content = big.encode()
-    with patch("glados.webui.plugin_endpoints.httpx.get", return_value=fake_resp), \
-         patch(
-             "glados.webui.plugin_endpoints._resolve_safe_host",
-             return_value=True,
-         ):
-        h = _admin_handler(
-            "POST", "/api/plugins/install",
-            body={"url": "https://example.test/server.json"},
-        )
-        h.do_POST()
-    code, body = h._json_response
-    assert code == 400
-    assert "too large" in body["error"].lower()
-
-
-def test_install_happy_path_writes_disabled_stub(
-    auth_off, tmp_path: Path, monkeypatch,
-):
-    monkeypatch.setenv("GLADOS_PLUGINS_DIR", str(tmp_path))
-    fake_resp = MagicMock(status_code=200, text=_good_manifest_json())
-    fake_resp.content = _good_manifest_json().encode()
-    with patch("glados.webui.plugin_endpoints.httpx.get", return_value=fake_resp), \
-         patch(
-             "glados.webui.plugin_endpoints._resolve_safe_host",
-             return_value=True,
-         ):
-        h = _admin_handler(
-            "POST", "/api/plugins/install",
-            body={"url": "https://example.test/server.json"},
-        )
-        h.do_POST()
-    code, body = h._json_response
-    assert code == 200, body
-    assert body["slug"] == "demo-python"
-    plugin_dir = tmp_path / "demo-python"
-    assert (plugin_dir / "server.json").exists()
-    assert (plugin_dir / "runtime.yaml").exists()
-    rt_yaml = (plugin_dir / "runtime.yaml").read_text()
-    assert "enabled: false" in rt_yaml
+# ── Install-by-URL helper (route is gone in v2; helper stays for Browse) ──
 
 
 def test_install_from_url_records_source_url_in_meta(
@@ -390,9 +312,10 @@ def test_chat_role_blocked_from_get(auth_on):
 
 
 def test_chat_role_blocked_from_post(auth_on):
+    # /upload replaced /install in the v2 dispatcher.
     handler = _chat_handler(
-        "POST", "/api/plugins/install",
-        body={"url": "https://example.test/server.json"},
+        "POST", "/api/plugins/upload",
+        body={},
     )
     handler.do_POST()
     code, _ = handler._json_response
