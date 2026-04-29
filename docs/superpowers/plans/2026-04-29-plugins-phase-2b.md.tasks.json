@@ -1,0 +1,103 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-29-plugins-phase-2b.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 0: Dockerfile + GLADOS_PLUGINS_ENABLED gate",
+      "status": "pending",
+      "description": "**Goal:** Image ships uvx + Node 20 + plugin log directory. Engine reads `GLADOS_PLUGINS_ENABLED` (default `true`) and skips `discover_plugins` when off.\n\n**Files:**\n- Modify: Dockerfile:20-31\n- Modify: glados/core/engine.py:700-715\n- Create: tests/test_engine_plugin_gate.py\n\n**Acceptance Criteria:**\n- uvx + npx on PATH after image build\n- /app/logs/plugins/ exists\n- GLADOS_PLUGINS_ENABLED=false skips discover_plugins\n- 3 new tests pass\n\n**Verify:** `python -m pytest tests/test_engine_plugin_gate.py -v` → 3 passed\n\n```json:metadata\n{\"files\": [\"Dockerfile\", \"glados/core/engine.py\", \"tests/test_engine_plugin_gate.py\"], \"verifyCommand\": \"python -m pytest tests/test_engine_plugin_gate.py -v\", \"acceptanceCriteria\": [\"uvx + npx on PATH\", \"/app/logs/plugins exists\", \"flag-off skips discovery\", \"3 new tests pass\"]}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 1: Runner cache injection (uvx + npx)",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** `runner.py` injects `--cache-dir <plugin>/.uvx-cache` for uvx and `npm_config_cache=<plugin>/.uvx-cache` env for npx.\n\n**Files:**\n- Modify: glados/plugins/runner.py:128-148, 174-189\n- Create: tests/test_plugins_runner.py\n\n**Acceptance Criteria:**\n- uvx args contain --cache-dir + path AFTER package@version token\n- npx env contains npm_config_cache\n- remote plugins unaffected\n- 4 new tests pass\n\n**Verify:** `python -m pytest tests/test_plugins_runner.py tests/test_plugins_loader.py -v`\n\n```json:metadata\n{\"files\": [\"glados/plugins/runner.py\", \"tests/test_plugins_runner.py\"], \"verifyCommand\": \"python -m pytest tests/test_plugins_runner.py tests/test_plugins_loader.py -v\", \"acceptanceCriteria\": [\"uvx --cache-dir injected after package@version\", \"npx npm_config_cache env injected\", \"remote unaffected\", \"4 new tests pass\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: MCPManager add_server / remove_server / event ring / per-plugin log",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** Per-plugin task lifecycle on MCPManager + per-plugin event ring + stdio errlog routed to `/app/logs/plugins/<name>.log` with size-cap rotation.\n\n**Files:**\n- Modify: glados/mcp/manager.py:62-76, 187-244\n- Create: tests/test_mcp_manager_lifecycle.py\n\n**Acceptance Criteria:**\n- add_server registers in _servers + _session_tasks; raises if duplicate\n- remove_server cancels task, awaits ≤5s, drops state\n- get_plugin_events returns ring contents (cap 256)\n- stdio sessions write to /app/logs/plugins/<name>.log; >1 MB → .log.1\n- 6 new tests pass\n\n**Verify:** `python -m pytest tests/test_mcp_manager_lifecycle.py -v`\n\n```json:metadata\n{\"files\": [\"glados/mcp/manager.py\", \"tests/test_mcp_manager_lifecycle.py\"], \"verifyCommand\": \"python -m pytest tests/test_mcp_manager_lifecycle.py -v\", \"acceptanceCriteria\": [\"add_server / remove_server lifecycle\", \"event ring per plugin (cap 256)\", \"per-plugin log file with rotation\", \"6 new tests pass\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Plugin store install / remove / set_enabled / slugify",
+      "status": "pending",
+      "blockedBy": [2],
+      "description": "**Goal:** `store.py` grows install/remove/set_enabled/slugify helpers. Atomic write via `<slug>.installing/` rename. Stub runtime.yaml is `enabled: false`.\n\n**Files:**\n- Modify: glados/plugins/store.py\n- Modify: glados/plugins/__init__.py\n- Create: tests/test_plugins_store.py\n\n**Acceptance Criteria:**\n- slugify last-segment lowercased, non-alphanumeric → '-', collisions -2..-100\n- install_plugin atomic via .installing rename\n- remove_plugin rmtrees with .. safety\n- set_enabled flips runtime.yaml.enabled\n- 8 new tests pass\n\n**Verify:** `python -m pytest tests/test_plugins_store.py -v`\n\n```json:metadata\n{\"files\": [\"glados/plugins/store.py\", \"glados/plugins/__init__.py\", \"tests/test_plugins_store.py\"], \"verifyCommand\": \"python -m pytest tests/test_plugins_store.py -v\", \"acceptanceCriteria\": [\"slugify with collision suffix\", \"atomic install via staging dir\", \"remove with .. safety\", \"set_enabled round-trip\", \"8 new tests pass\"]}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: Core 8 /api/plugins/* endpoints",
+      "status": "pending",
+      "blockedBy": [3],
+      "description": "**Goal:** WebUI handlers for list / detail / install / save / enable / disable / delete / logs. Install enforces https-only + SSRF + size + timeout. Save preserves '***' secret placeholders.\n\n**Files:**\n- Create: glados/webui/plugin_endpoints.py\n- Modify: glados/webui/tts_ui.py:1880, 1955, end of class\n- Create: tests/test_webui_plugins.py\n\n**Acceptance Criteria:**\n- 8 endpoints reachable, admin-only\n- install rejects http://, RFC1918, loopback, link-local, oversize\n- save with secrets={K: '***'} preserves prior secret\n- enable calls add_server; disable + delete call remove_server\n- 12 new tests pass\n\n**Verify:** `python -m pytest tests/test_webui_plugins.py -v`\n\n```json:metadata\n{\"files\": [\"glados/webui/plugin_endpoints.py\", \"glados/webui/tts_ui.py\", \"tests/test_webui_plugins.py\"], \"verifyCommand\": \"python -m pytest tests/test_webui_plugins.py -v\", \"acceptanceCriteria\": [\"8 endpoints admin-only\", \"install SSRF + size guards\", \"secret-placeholder preserved\", \"hot-rotate on enable/disable\", \"12 new tests pass\"]}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: ServicesConfig.plugin_indexes field",
+      "status": "pending",
+      "blockedBy": [4],
+      "description": "**Goal:** `cfg.services.plugin_indexes: list[str]` round-trips via services.yaml with https-only validation.\n\n**Files:**\n- Modify: glados/core/config_store.py\n- Create: tests/test_services_config_plugin_indexes.py\n\n**Acceptance Criteria:**\n- Default empty list\n- Validator rejects non-https\n- Round-trip via YAML preserves the list\n- 4 new tests pass\n\n**Verify:** `python -m pytest tests/test_services_config_plugin_indexes.py -v`\n\n```json:metadata\n{\"files\": [\"glados/core/config_store.py\", \"tests/test_services_config_plugin_indexes.py\"], \"verifyCommand\": \"python -m pytest tests/test_services_config_plugin_indexes.py -v\", \"acceptanceCriteria\": [\"default empty\", \"https validator\", \"YAML round-trip\", \"4 new tests pass\"]}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: Browse endpoints (/api/plugins/indexes + /api/plugins/browse)",
+      "status": "pending",
+      "blockedBy": [5],
+      "description": "**Goal:** GET/POST /api/plugins/indexes (manage URL list) + GET /api/plugins/browse (fetch + merge all configured indexes).\n\n**Files:**\n- Modify: glados/webui/plugin_endpoints.py\n- Modify: glados/webui/tts_ui.py\n- Modify: tests/test_webui_plugins.py\n\n**Acceptance Criteria:**\n- GET indexes returns persisted list\n- POST indexes validates https-only, persists via _put_config_section\n- GET browse merges by name (last-index-wins), partial on per-index failure\n- Each entry tagged with source_index\n- 6 new tests pass\n\n**Verify:** `python -m pytest tests/test_webui_plugins.py -k browse -v`\n\n```json:metadata\n{\"files\": [\"glados/webui/plugin_endpoints.py\", \"glados/webui/tts_ui.py\", \"tests/test_webui_plugins.py\"], \"verifyCommand\": \"python -m pytest tests/test_webui_plugins.py -k browse -v\", \"acceptanceCriteria\": [\"indexes GET/POST round-trip\", \"browse merges multiple indexes\", \"partial on per-index failure\", \"6 new tests pass\"]}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: WebUI panel skeleton — installed list + toggle + trash + off-state",
+      "status": "pending",
+      "blockedBy": [6],
+      "description": "**Goal:** Plugins sub-section under System → Services with installed list, off-state, toggle, trash. Modal opening stubbed for T8.\n\n**Files:**\n- Modify: glados/webui/static/ui.js (add ~120 lines)\n- Modify: glados/webui/static/style.css\n\n**Acceptance Criteria:**\n- Card renders below LLM Endpoints on System → Services\n- Off-state notice when enabled_globally=false\n- Per-row layout: icon, name, version, category badge, status dot, toggle, gear, trash\n- Toggle hot-rotates via /enable|/disable; revert on failure\n- Trash → confirm dialog → DELETE\n- Polls /api/plugins every 30 s while System tab visible\n\n**Verify:** Manual UI inspection on deploy (T13).\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\", \"glados/webui/static/style.css\"], \"verifyCommand\": \"\", \"acceptanceCriteria\": [\"panel below LLM Endpoints\", \"off-state notice\", \"row layout matches spec\", \"toggle hot-rotates\", \"trash confirm + delete\", \"30s poll\"]}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 8: Configuration modal — Configuration tab",
+      "status": "pending",
+      "blockedBy": [7],
+      "description": "**Goal:** Gear icon opens centered modal with three tabs (Configuration / Logs / About). Configuration tab auto-renders the form from server.json + current runtime values; saves via POST /api/plugins/<slug> with secret-placeholder preservation.\n\n**Files:**\n- Modify: glados/webui/static/ui.js (~200 lines)\n- Modify: glados/webui/static/style.css\n\n**Acceptance Criteria:**\n- Modal opens with backdrop, Esc + click-outside + Cancel close it\n- Three tab buttons; active tab visually marked\n- Three form sections: Environment vars, Headers, Arguments — only those that apply\n- Typed inputs: password (secret), select (choices), url (format=url), text (other)\n- Required marker, default-as-placeholder\n- Save posts JSON; secrets unchanged ('***') preserve\n- Save success → toast + close + refresh\n\n**Verify:** Manual UI test on deploy (T13).\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\", \"glados/webui/static/style.css\"], \"verifyCommand\": \"\", \"acceptanceCriteria\": [\"modal w/ 3 tabs\", \"form auto-renders from manifest\", \"typed inputs per spec\", \"secret placeholder preservation\", \"save flow works\"]}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 9: Modal — Logs tab + About tab",
+      "status": "pending",
+      "blockedBy": [8],
+      "description": "**Goal:** Logs tab (lines selector + Refresh + 5 s auto-refresh + stdio tail + event ring). About tab (metadata + Reinstall-from-source). Install flow records source URL in _meta.\n\n**Files:**\n- Modify: glados/webui/static/ui.js\n- Modify: glados/webui/plugin_endpoints.py\n\n**Acceptance Criteria:**\n- Logs tab: 100/500/2000 selector, Refresh, 5s auto-refresh\n- Auto-refresh tears down on close / tab switch\n- About tab: name, version, category, persona role, repo URL, source URL, Reinstall button\n- Install flow stores source URL under _meta['com.synssins.glados/source_url']\n- Reinstall = confirm → DELETE + POST install with saved URL\n\n**Verify:** Manual UI test on deploy (T13).\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\", \"glados/webui/plugin_endpoints.py\"], \"verifyCommand\": \"\", \"acceptanceCriteria\": [\"logs tab w/ controls\", \"auto-refresh teardown\", \"about tab metadata\", \"reinstall flow\", \"source URL recorded in _meta\"]}\n```"
+    },
+    {
+      "id": 10,
+      "subject": "Task 10: Add by URL card",
+      "status": "pending",
+      "blockedBy": [9],
+      "description": "**Goal:** Card under the Plugins panel with URL + slug inputs and Install button. Slug auto-fills from URL on blur. Success → opens config modal so operator can fill values + enable.\n\n**Files:**\n- Modify: glados/webui/static/ui.js\n\n**Acceptance Criteria:**\n- URL + slug inputs + Install button rendered\n- Slug auto-fills from URL on blur (slugified)\n- Install button calls POST /api/plugins/install\n- Success: toast + refresh + open config modal\n- 4xx/5xx: inline error\n\n**Verify:** Manual UI test on deploy (T13).\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\"], \"verifyCommand\": \"\", \"acceptanceCriteria\": [\"two inputs + install\", \"slug auto-fill on blur\", \"success opens modal\", \"inline error path\"]}\n```"
+    },
+    {
+      "id": 11,
+      "subject": "Task 11: Browse card",
+      "status": "pending",
+      "blockedBy": [10],
+      "description": "**Goal:** Browse card with collapsible Index URLs editor (add/remove/save) and Browse button → fetches /api/plugins/browse and renders gallery. Each gallery card has an Install button reusing the install endpoint.\n\n**Files:**\n- Modify: glados/webui/static/ui.js\n- Modify: glados/webui/static/style.css\n\n**Acceptance Criteria:**\n- Card renders. Index URLs section is collapsible.\n- Add URL: validates https-only client-side, persists via POST /api/plugins/indexes\n- Remove URL: per-row × button removes + saves\n- Browse button: GET /api/plugins/browse, renders gallery\n- Each gallery card: title, category badge, description, source-index footer, Install button\n- Install button: POST install with entry's server_json_url + slugified name\n- Empty state when no URLs configured\n\n**Verify:** Manual UI test on deploy (T13).\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\", \"glados/webui/static/style.css\"], \"verifyCommand\": \"\", \"acceptanceCriteria\": [\"index URL editor add/remove/save\", \"browse button + gallery\", \"per-card install\", \"empty state\"]}\n```"
+    },
+    {
+      "id": 12,
+      "subject": "Task 12: Docs (architecture + CHANGES + README)",
+      "status": "pending",
+      "blockedBy": [11],
+      "description": "**Goal:** plugins-architecture.md Phase 2b row flipped to live; CHANGES.md Change 32 entry; README operator-facing install + browse + logs walkthrough.\n\n**Files:**\n- Modify: docs/plugins-architecture.md\n- Modify: docs/CHANGES.md\n- Modify: README.md\n\n**Acceptance Criteria:**\n- Architecture phasing table updated\n- Change 32 follows Change 31's structure\n- README Plugins section walks through install + browse + logs\n\n**Verify:** `git diff --stat` shows only those 3 doc files\n\n```json:metadata\n{\"files\": [\"docs/plugins-architecture.md\", \"docs/CHANGES.md\", \"README.md\"], \"verifyCommand\": \"git diff --stat\", \"acceptanceCriteria\": [\"architecture phasing live\", \"Change 32 entry\", \"README operator walkthrough\"]}\n```"
+    },
+    {
+      "id": 13,
+      "subject": "Task 13: Deploy + smoke test",
+      "status": "pending",
+      "blockedBy": [12],
+      "description": "**Goal:** Build + deploy via scripts/_local_deploy.py, verify uvx + npx in image, manually smoke-test 3 flows (install + enable remote, install + enable stdio, off-state).\n\n**Files:** none — deploy step.\n\n**Acceptance Criteria:**\n- Deploy succeeds, /health green on 8015 + 8052\n- which uvx + which npx return paths inside container\n- Remote-plugin install + enable flow works end-to-end\n- Stdio-plugin install + enable spawns subprocess (visible in `ps -ef`)\n- GLADOS_PLUGINS_ENABLED=false → off-state notice + no subprocesses\n- No regressions on chat / TTS / STT / HA Tier 1 + Tier 3\n- SESSION_STATE.md Active Handoff updated with new image SHA\n\n**Verify:** Operator confirms manual smoke checks pass.\n\n```json:metadata\n{\"files\": [\"C:/src/SESSION_STATE.md\"], \"verifyCommand\": \"\", \"acceptanceCriteria\": [\"deploy + healthcheck green\", \"uvx + npx on PATH inside container\", \"remote-plugin smoke\", \"stdio-plugin smoke\", \"off-state smoke\", \"no regressions\", \"SESSION_STATE updated\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-04-29T00:00:00Z"
+}
