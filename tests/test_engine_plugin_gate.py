@@ -17,8 +17,8 @@ def test_plugins_enabled_default_true(monkeypatch):
     discover_mock.assert_called_once()
 
 
-def test_plugins_disabled_env_skips_discovery(monkeypatch, caplog):
-    """GLADOS_PLUGINS_ENABLED=false → discover_plugins not called, info log emitted."""
+def test_plugins_disabled_env_skips_discovery(monkeypatch):
+    """GLADOS_PLUGINS_ENABLED=false → discover_plugins not called, helper returns []."""
     monkeypatch.setenv("GLADOS_PLUGINS_ENABLED", "false")
     discover_mock = MagicMock(return_value=[])
     with patch("glados.plugins.discover_plugins", discover_mock):
