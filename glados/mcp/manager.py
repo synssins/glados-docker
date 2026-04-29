@@ -84,6 +84,8 @@ class MCPManager:
         self._shutdown_async: asyncio.Event | None = None
         self._observability_bus = observability_bus
 
+        self._servers_lock = threading.Lock()
+
         self._tool_lock = threading.Lock()
         self._tool_registry: dict[str, MCPToolEntry] = {}
 
@@ -134,10 +136,11 @@ class MCPManager:
         name is already registered."""
         if self._loop is None:
             raise MCPError("MCP manager is not running.")
-        if config.name in self._servers:
-            raise MCPError(f"MCP server '{config.name}' is already registered.")
+        with self._servers_lock:
+            if config.name in self._servers:
+                raise MCPError(f"MCP server '{config.name}' is already registered.")
+            self._servers[config.name] = config
 
-        self._servers[config.name] = config
         spawned = threading.Event()
 
         def _spawn() -> None:
@@ -177,15 +180,20 @@ class MCPManager:
                     self._await_task(task), self._loop,
                 )
                 future.result(timeout=timeout)
-            except (FuturesTimeoutError, Exception) as exc:
+            except FuturesTimeoutError:
                 logger.warning(
-                    "MCP: remove_server('{!s}') cleanup did not complete in {} s: {}",
-                    name, timeout, exc,
+                    "MCP: remove_server({!r}) cancellation did not finish in {} s; orphaning",
+                    name, timeout,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "MCP: remove_server({!r}) cleanup raised: {}", name, exc,
                 )
 
         self._sessions.pop(name, None)
         self._session_tasks.pop(name, None)
-        self._servers.pop(name, None)
+        with self._servers_lock:
+            self._servers.pop(name, None)
         self._remove_tools_for_server(name)
         self._clear_resource_cache(name)
 
@@ -193,8 +201,10 @@ class MCPManager:
     async def _await_task(task: asyncio.Task) -> None:
         try:
             await task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception as exc:
+            logger.warning("MCP: task cleanup raised: {}", exc)
 
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         with self._tool_lock:
@@ -273,9 +283,8 @@ class MCPManager:
                       level: str = "info", meta: dict | None = None) -> None:
         """Append an event to the per-plugin ring. Also bridges to the
         ObservabilityBus when one is configured."""
-        import time as _time
         entry = {
-            "ts": _time.time(),
+            "ts": time.time(),
             "kind": kind,
             "level": level,
             "message": message,
