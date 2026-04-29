@@ -653,9 +653,12 @@ class TtsPronunciationConfig(BaseModel):
 
     Keys in either map may be edited / removed / added via the Audio
     & Speakers WebUI card. Defaults cover the operator-reported
-    cases from the 2026-04-20 pronunciation audit. Adding more (for
-    instance, "SSL" → "S S L" if Piper stumbles on that) is a text
-    edit, not a deploy.
+    cases from the 2026-04-20 pronunciation audit plus a starter set
+    of common acronyms (NASA, FBI, CPU, …) added 2026-04-28 after
+    operator-flagged "weird ways of speaking acronyms" — Piper's
+    all-caps splitter produces slurred letter-by-letter output; the
+    phonetic-word convention ("Eff Bee Eye" rather than "F B I")
+    Piper renders cleanly. Adding more is a text edit, not a deploy.
     """
 
     symbol_expansions: dict[str, str] = {
@@ -665,10 +668,38 @@ class TtsPronunciationConfig(BaseModel):
     }
 
     word_expansions: dict[str, str] = {
+        # ── Conversational ──
         "AI": "Aye Eye",
         "HA": "Home Assistant",
         "TV": "Tee Vee",
-        "IoT": "I o T",
+        "IoT": "Eye Oh Tee",
+
+        # ── Pronounced as words ──
+        "NASA": "Nassa",
+        "NATO": "Nayto",
+        "HVAC": "H Vack",
+        "JSON": "Jay son",
+
+        # ── Civic / org initialisms ──
+        "FBI": "Eff Bee Eye",
+        "CIA": "See Eye Ay",
+        "NSA": "En Ess Ay",
+        "IRS": "Eye Are Ess",
+
+        # ── Computing fundamentals ──
+        "CPU": "See Pee You",
+        "GPU": "Gee Pee You",
+        "RAM": "ram",
+        "USB": "You Ess Bee",
+        "URL": "You Are Ell",
+        "API": "Ay Pee Eye",
+
+        # ── Container-domain ──
+        "LLM": "Ell Ell Em",
+        "TTS": "Tee Tee Ess",
+        "STT": "Ess Tee Tee",
+        "MQTT": "Em Cue Tee Tee",
+        "MCP": "Em See Pee",
     }
 
 
