@@ -126,18 +126,24 @@ def _build_local_config(plugin: Plugin) -> MCPServerConfig:
 
 
 def _build_stdio_args(package: Package, plugin: Plugin) -> list[str]:
-    """Build the argv list for an stdio plugin. For ``uvx`` /
-    ``npx``: ``[<package_identifier>@<version>, ...packageArguments]``.
+    """Build the argv list for an stdio plugin.
+
+    For uvx: ``[<pkg>@<ver>, --cache-dir, <plugin>/.uvx-cache, ...packageArguments]``
+    For npx: ``[<pkg>@<ver>, ...packageArguments]`` (cache via env, see _resolve_env)
 
     Runtime arguments (e.g. Docker mounts) are skipped here — they only
     apply when the package is actually a Docker image (registryType=oci),
     which we don't run in-process today."""
-    args: list[str] = []
-
     # The package identifier with version — runtime selects the right tool.
     # uvx accepts ``--from <pkg>==<version> <entrypoint>`` style; the
     # simpler ``<pkg>@<version>`` form works for most cases.
-    args.append(f"{package.identifier}@{package.version}")
+    args: list[str] = [f"{package.identifier}@{package.version}"]
+
+    # Per-plugin cache routing. Phase 2b: uvx accepts --cache-dir as a CLI flag.
+    # npx ignores it and uses the npm_config_cache env var instead (see _resolve_env).
+    if package.runtime_hint == "uvx":
+        cache_dir = plugin.directory / ".uvx-cache"
+        args.extend(["--cache-dir", str(cache_dir)])
 
     for arg in package.package_arguments:
         rendered = _render_argument(arg, plugin)
@@ -186,6 +192,12 @@ def _resolve_env(package: Package, plugin: Plugin) -> dict[str, str]:
             )
         if value is not None:
             env[ev.name] = value
+
+    # Phase 2b: npx honors npm_config_cache to redirect its cache dir.
+    # uvx uses --cache-dir CLI flag instead (see _build_stdio_args).
+    if package.runtime_hint == "npx":
+        env["npm_config_cache"] = str(plugin.directory / ".uvx-cache")
+
     return env
 
 
