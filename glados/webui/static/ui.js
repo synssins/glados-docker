@@ -3057,8 +3057,69 @@ function renderAboutPane(detail) {
   return h;
 }
 
-function renderAddByUrlCard() { return ''; /* T10 */ }
-function wireAddByUrlHandlers() { /* T10 */ }
+function renderAddByUrlCard() {
+  return '' +
+    '<div class="card" style="margin-top:var(--sp-3);">' +
+    '  <div class="section-title">Add by URL</div>' +
+    '  <div class="mode-desc" style="margin-bottom:10px;">' +
+    '    Paste an MCP <code>server.json</code> URL (https) and optionally a slug. ' +
+    '    Slug defaults to the manifest name slugified.' +
+    '  </div>' +
+    '  <div class="add-url-form" style="display:grid;grid-template-columns:1fr 200px auto;gap:10px;">' +
+    '    <input type="url" data-role="install-url" placeholder="https://example.test/server.json">' +
+    '    <input type="text" data-role="install-slug" placeholder="optional slug">' +
+    '    <button class="btn-primary" data-role="install-btn">Install</button>' +
+    '  </div>' +
+    '  <div data-role="install-result" class="install-result" style="margin-top:8px;"></div>' +
+    '</div>';
+}
+
+function wireAddByUrlHandlers() {
+  const urlEl = document.querySelector('[data-role="install-url"]');
+  const slugEl = document.querySelector('[data-role="install-slug"]');
+  const btnEl = document.querySelector('[data-role="install-btn"]');
+  const resultEl = document.querySelector('[data-role="install-result"]');
+  if (!urlEl || !slugEl || !btnEl) return;
+
+  urlEl.addEventListener('blur', () => {
+    if (slugEl.value) return;
+    const v = urlEl.value;
+    const last = v.split('/').filter(Boolean).pop() || '';
+    const stripped = last.replace(/\.json$/i, '').toLowerCase();
+    slugEl.value = stripped.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  });
+
+  btnEl.addEventListener('click', async () => {
+    const url = (urlEl.value || '').trim();
+    const slug = (slugEl.value || '').trim() || undefined;
+    if (!url) { resultEl.textContent = 'URL required'; return; }
+    btnEl.disabled = true;
+    resultEl.textContent = 'Installing…';
+    resultEl.style.color = '';
+    try {
+      const r = await fetch('/api/plugins/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(slug ? { url, slug } : { url }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      resultEl.textContent = '';
+      urlEl.value = ''; slugEl.value = '';
+      showToast('Plugin installed: ' + data.slug, 'success');
+      await loadPluginsPanel();
+      // Auto-open the modal so operator fills in values + enables.
+      openPluginConfigModal(data.slug);
+    } catch (e) {
+      resultEl.textContent = 'Install failed: ' + e.message;
+      resultEl.style.color = 'var(--red)';
+    } finally {
+      btnEl.disabled = false;
+    }
+  });
+}
+
 function renderBrowseCard() { return ''; /* T11 */ }
 function wireBrowseHandlers() { /* T11 */ }
 
