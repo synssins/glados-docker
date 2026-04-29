@@ -137,6 +137,11 @@ def install_from_url(url: str, slug_hint: str | None = None) -> dict:
     slug = slug_hint or slugify(manifest.name, existing)
     if slug in existing:
         raise InstallError(f"slug {slug!r} is already installed")
+    # Stash the source URL in _meta so the WebUI About tab can offer
+    # "Reinstall from source" later. Reverse-DNS namespace per spec.
+    meta = dict(manifest.meta or {})
+    meta["com.synssins.glados/source_url"] = url
+    manifest = manifest.model_copy(update={"meta": meta})
     install_plugin(plugins_dir, slug, manifest)
     return {
         "slug": slug,

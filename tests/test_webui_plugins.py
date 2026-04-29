@@ -210,6 +210,35 @@ def test_install_happy_path_writes_disabled_stub(
     assert "enabled: false" in rt_yaml
 
 
+def test_install_from_url_records_source_url_in_meta(
+    auth_off, tmp_path: Path, monkeypatch,
+):
+    """install_from_url stashes the install URL in
+    manifest._meta['com.synssins.glados/source_url'] so the WebUI About
+    tab can offer "Reinstall from source" later. Direct unit test of
+    the helper — isolates the new behavior from the handler routing."""
+    from glados.webui.plugin_endpoints import install_from_url
+
+    monkeypatch.setenv("GLADOS_PLUGINS_DIR", str(tmp_path))
+    fake_resp = MagicMock(status_code=200, text=_good_manifest_json())
+    fake_resp.content = _good_manifest_json().encode()
+    install_url = "https://example.test/server.json"
+    with patch("glados.webui.plugin_endpoints.httpx.get", return_value=fake_resp), \
+         patch(
+             "glados.webui.plugin_endpoints._resolve_safe_host",
+             return_value=True,
+         ):
+        result = install_from_url(install_url)
+
+    # The returned manifest dict already has the stashed URL.
+    assert result["manifest"]["_meta"]["com.synssins.glados/source_url"] == install_url
+
+    # And so does the on-disk server.json — that's what survives a restart.
+    plugin_dir = tmp_path / result["slug"]
+    on_disk = json.loads((plugin_dir / "server.json").read_text(encoding="utf-8"))
+    assert on_disk["_meta"]["com.synssins.glados/source_url"] == install_url
+
+
 # ── Save runtime config ──────────────────────────────────────────────
 
 

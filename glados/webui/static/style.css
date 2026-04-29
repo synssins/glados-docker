@@ -2230,6 +2230,73 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 .modal-tab.active { color: var(--fg-primary); border-bottom-color: var(--orange); }
 .modal-pane { display: none; }
 
+/* Plugin modal — Logs tab (T9). */
+.logs-controls {
+  display: flex; gap: var(--sp-3); align-items: center;
+  margin-bottom: var(--sp-3); flex-wrap: wrap;
+  font-size: 0.85rem; color: var(--fg-secondary);
+}
+.logs-controls select {
+  background: var(--bg-input); color: var(--fg-primary);
+  border: 1px solid var(--border-default); border-radius: var(--r-input);
+  padding: 3px 6px; font-size: 0.85rem;
+}
+.logs-auto-label { display: inline-flex; align-items: center; gap: 6px; }
+.logs-output h4 {
+  margin: var(--sp-3) 0 var(--sp-1);
+  font-size: 0.75rem; color: var(--fg-secondary);
+  text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+}
+.logs-pre {
+  background: var(--bg-card); color: var(--fg-primary);
+  border: 1px solid var(--border-default); border-radius: var(--r-input);
+  padding: var(--sp-2); margin: 0;
+  font-family: ui-monospace, Consolas, monospace; font-size: 0.78rem;
+  max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+}
+.logs-events {
+  border: 1px solid var(--border-default); border-radius: var(--r-input);
+  background: var(--bg-card); padding: var(--sp-1);
+  max-height: 200px; overflow: auto;
+}
+.event-row {
+  display: grid; grid-template-columns: auto auto 1fr; gap: var(--sp-2);
+  padding: 3px var(--sp-2); font-size: 0.78rem;
+  font-family: ui-monospace, Consolas, monospace;
+  border-bottom: 1px solid var(--border-default);
+}
+.event-row:last-child { border-bottom: none; }
+.event-ts { color: var(--fg-muted); }
+.event-kind { color: var(--orange); font-weight: 600; text-transform: uppercase; }
+.event-msg { color: var(--fg-primary); word-break: break-word; }
+.event-row.event-spawn .event-kind,
+.event-row.event-ready .event-kind { color: var(--orange); }
+.event-row.event-exit .event-kind,
+.event-row.event-error .event-kind,
+.event-row.event-crash .event-kind { color: var(--red); }
+
+/* Plugin modal — About tab (T9). */
+.about-pane .about-list {
+  display: grid; grid-template-columns: 140px 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0 0 var(--sp-3);
+  font-size: 0.85rem;
+}
+.about-pane .about-list dt {
+  color: var(--fg-secondary); font-weight: 600;
+}
+.about-pane .about-list dd {
+  margin: 0; color: var(--fg-primary); word-break: break-word;
+}
+.about-pane .about-list dd code {
+  background: var(--bg-input); border: 1px solid var(--border-default);
+  border-radius: var(--r-input); padding: 1px 6px; font-size: 0.8rem;
+}
+.about-pane .about-list dd a {
+  color: var(--orange); text-decoration: none;
+}
+.about-pane .about-list dd a:hover { text-decoration: underline; }
+
 /* Auto-rendered config form for the Configuration tab. */
 .plugin-config-form .form-section { margin-bottom: var(--sp-5); }
 .plugin-config-form .form-section h4 {

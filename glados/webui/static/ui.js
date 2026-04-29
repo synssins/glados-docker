@@ -2622,6 +2622,11 @@ async function openPluginConfigModal(slug) {
     confirmIfDirty: true,
   });
 
+  // Stash the slug on the modal body so the Logs tab fetch loop and the
+  // Reinstall button can read it without threading the slug through every
+  // helper signature.
+  modal.body.dataset.pluginSlug = slug;
+
   // Wire tab switching.
   modal.body.querySelectorAll('[data-tab]').forEach(btn => {
     btn.addEventListener('click', () => switchPluginTab(modal, btn.dataset.tab));
@@ -2631,6 +2636,46 @@ async function openPluginConfigModal(slug) {
   const saveBtn = modal.body.querySelector('[data-action="save-plugin"]');
   if (saveBtn) {
     saveBtn.addEventListener('click', () => savePluginRuntime(slug, modal));
+  }
+
+  // Wire Reinstall (About tab). Only present when manifest._meta has
+  // a source URL — pre-T9 installs won't show the button.
+  const reinstallBtn = modal.body.querySelector('[data-action="reinstall-from-source"]');
+  if (reinstallBtn) {
+    reinstallBtn.addEventListener('click', async () => {
+      const meta = (detail.manifest && detail.manifest._meta) || {};
+      const sourceUrl = meta['com.synssins.glados/source_url'];
+      if (!sourceUrl) return;
+      // Native confirm — confirmIfDirty wraps Esc/Cancel only; this
+      // is a separate destructive action that needs its own prompt.
+      // Configuration values are intentionally lost on reinstall; surface
+      // that in the prompt so the operator knows what they're agreeing to.
+      const ok = window.confirm(
+        'Reinstall from source?\n\n' +
+        'This will delete the current plugin and re-install from:\n  ' +
+        sourceUrl + '\n\n' +
+        'Configuration values (env vars, headers, args, secrets) will be lost.'
+      );
+      if (!ok) return;
+      try {
+        const dr = await fetch('/api/plugins/' + encodeURIComponent(slug),
+                               { method: 'DELETE', credentials: 'same-origin' });
+        if (!dr.ok) throw new Error('delete: HTTP ' + dr.status);
+        const ir = await fetch('/api/plugins/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ url: sourceUrl, slug: slug }),
+        });
+        if (!ir.ok) throw new Error('install: HTTP ' + ir.status);
+        showToast('Plugin reinstalled', 'success');
+        modal.clearDirty();
+        modal.close();
+        loadPluginsPanel();
+      } catch (e) {
+        showToast('Reinstall failed: ' + e.message, 'error');
+      }
+    });
   }
 
   // Track dirty state — any input/select change marks the modal as dirty
@@ -2893,11 +2938,123 @@ function createModal({ title, body, width, confirmIfDirty }) {
   };
 }
 
-// T9 stubs — keep call sites working before T9 lands.
-function loadPluginLogs(_modal) { /* T9 */ }
-function renderAboutPane(_detail) {
-  // T9 will replace this with a real About pane.
-  return '<div class="mode-desc" style="color:var(--fg-muted);">About details coming soon.</div>';
+// Auto-refresh timer for the Logs tab. Module-scope so a new modal
+// instance can clear a leftover timer from a previous one. The interval
+// callback also self-clears when the modal body is no longer in the DOM
+// (covers backdrop close + Esc + Cancel paths without extra wiring).
+let _pluginLogsAutoTimer = null;
+
+async function loadPluginLogs(modal) {
+  const pane = modal.body.querySelector('[data-pane="logs"]');
+  if (!pane) return;
+  // Build controls + output skeleton once; subsequent tab clicks just
+  // re-fetch into the same nodes.
+  if (!pane.dataset.built) {
+    pane.innerHTML =
+      '<div class="logs-controls">' +
+      '  <label>Lines: <select data-role="logs-lines">' +
+      '    <option value="100">100</option>' +
+      '    <option value="500" selected>500</option>' +
+      '    <option value="2000">2000</option>' +
+      '  </select></label>' +
+      '  <button class="btn-secondary" data-role="logs-refresh">Refresh</button>' +
+      '  <label class="logs-auto-label"><input type="checkbox" data-role="logs-auto"> Auto-refresh (5 s)</label>' +
+      '</div>' +
+      '<div class="logs-output">' +
+      '  <h4>stderr</h4>' +
+      '  <pre data-role="logs-stdio" class="logs-pre"></pre>' +
+      '  <h4>events</h4>' +
+      '  <div data-role="logs-events" class="logs-events"></div>' +
+      '</div>';
+    pane.dataset.built = '1';
+
+    pane.querySelector('[data-role="logs-refresh"]').addEventListener('click',
+      () => fetchPluginLogsInto(modal));
+    pane.querySelector('[data-role="logs-auto"]').addEventListener('change', (ev) => {
+      if (_pluginLogsAutoTimer) { clearInterval(_pluginLogsAutoTimer); _pluginLogsAutoTimer = null; }
+      if (ev.target.checked) {
+        _pluginLogsAutoTimer = setInterval(() => {
+          // Self-teardown: when the modal closes (backdrop / Esc / Cancel /
+          // tab switch removes the body) the interval clears itself on its
+          // next tick rather than needing the close-handler to know about it.
+          if (!document.body.contains(modal.body)) {
+            clearInterval(_pluginLogsAutoTimer); _pluginLogsAutoTimer = null;
+            return;
+          }
+          fetchPluginLogsInto(modal);
+        }, 5000);
+      }
+    });
+  }
+  await fetchPluginLogsInto(modal);
+}
+
+async function fetchPluginLogsInto(modal) {
+  // Slug stashed on modal.body.dataset by openPluginConfigModal.
+  const slug = modal.body.dataset.pluginSlug;
+  if (!slug) return;
+  const linesEl = modal.body.querySelector('[data-role="logs-lines"]');
+  const lines = linesEl ? linesEl.value : '500';
+  try {
+    const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/logs?lines=' + lines,
+                          { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const pre = modal.body.querySelector('[data-role="logs-stdio"]');
+    if (pre) pre.textContent = (data.stdio_log || []).join('');
+    const evDiv = modal.body.querySelector('[data-role="logs-events"]');
+    if (evDiv) {
+      evDiv.innerHTML = (data.events || []).map(e =>
+        '<div class="event-row event-' + escAttr(e.kind) + '">' +
+        '<span class="event-ts">' + escAttr(new Date(e.ts * 1000).toISOString()) + '</span> ' +
+        '<span class="event-kind">' + escAttr(e.kind) + '</span> ' +
+        '<span class="event-msg">' + escAttr(e.message || '') + '</span>' +
+        '</div>'
+      ).join('');
+    }
+  } catch (e) {
+    const pre = modal.body.querySelector('[data-role="logs-stdio"]');
+    if (pre) pre.textContent = 'Failed to load logs: ' + e.message;
+  }
+}
+
+function renderAboutPane(detail) {
+  const m = detail.manifest || {};
+  const rt = detail.runtime || {};
+  const meta = m._meta || {};
+  const role = meta['com.synssins.glados/recommended_persona_role'] || 'both';
+  const cat = meta['com.synssins.glados/category'] || 'utility';
+  const repo = m.repository ? m.repository.url : null;
+  const sourceUrl = meta['com.synssins.glados/source_url'] || null;
+
+  let h = '<div class="about-pane">';
+  h += '<dl class="about-list">';
+  h += '<dt>Name</dt><dd>' + escAttr(m.name || '') + '</dd>';
+  h += '<dt>Title</dt><dd>' + escAttr(m.title || m.name || '') + '</dd>';
+  h += '<dt>Version</dt><dd><code>' + escAttr(m.version || '') + '</code></dd>';
+  h += '<dt>Description</dt><dd>' + escAttr(m.description || '') + '</dd>';
+  h += '<dt>Category</dt><dd>' + escAttr(cat) + '</dd>';
+  h += '<dt>Persona role</dt><dd>' + escAttr(role) + '</dd>';
+  if (repo) {
+    h += '<dt>Repository</dt><dd><a href="' + escAttr(repo) +
+         '" target="_blank" rel="noopener">' + escAttr(repo) + '</a></dd>';
+  }
+  if (sourceUrl) {
+    h += '<dt>Installed from</dt><dd><a href="' + escAttr(sourceUrl) +
+         '" target="_blank" rel="noopener">' + escAttr(sourceUrl) + '</a></dd>';
+  }
+  h += '<dt>Transport</dt><dd>' + ((rt.remote_index !== null && rt.remote_index !== undefined) ? 'remote' : 'local') + '</dd>';
+  h += '</dl>';
+  if (sourceUrl) {
+    // Reinstall is only offered when we know where to fetch the manifest
+    // from. Plugins installed before T9 (no _meta source_url stash) won't
+    // show this button — that's intentional, the operator can re-add by
+    // URL manually.
+    h += '<button type="button" class="btn-secondary" data-action="reinstall-from-source">' +
+         'Reinstall from source</button>';
+  }
+  h += '</div>';
+  return h;
 }
 
 function renderAddByUrlCard() { return ''; /* T10 */ }
