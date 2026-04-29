@@ -96,6 +96,10 @@ class PluginJSON(BaseModel):
     homepage: str | None = None
     runtime: Runtime = Field(discriminator="mode")
     settings: list[Setting] = Field(default_factory=list)
+    # Lower-cased on validation so the chat-time matcher doesn't have
+    # to re-normalize on every turn. Empty list = plugin opts out of
+    # the keyword pre-filter (triage LLM still considers it).
+    intent_keywords: list[str] = Field(default_factory=list)
 
     @field_validator("schema_version")
     @classmethod
@@ -103,6 +107,11 @@ class PluginJSON(BaseModel):
         if v != 1:
             raise ValueError(f"unsupported schema_version {v}; this build only handles v1")
         return v
+
+    @field_validator("intent_keywords")
+    @classmethod
+    def _lower_keywords(cls, v: list[str]) -> list[str]:
+        return [kw.strip().lower() for kw in v if kw and kw.strip()]
 
 
 def v1_to_v2(server_json: dict, *, package_index: int | None, remote_index: int | None) -> PluginJSON:

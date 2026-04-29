@@ -115,6 +115,21 @@ def test_v1_server_json_to_v2_conversion_remote():
     assert p.settings[0].type == "secret"
 
 
+def test_intent_keywords_default_empty():
+    from glados.plugins.bundle import PluginJSON
+    p = PluginJSON.model_validate(_minimal())
+    assert p.intent_keywords == []
+
+
+def test_intent_keywords_lowercased_and_stripped():
+    from glados.plugins.bundle import PluginJSON
+    p = PluginJSON.model_validate(_minimal(
+        intent_keywords=["Movie", "  TV  ", "TORRENT", ""]
+    ))
+    # Empty / whitespace-only entries are dropped; survivors lower-cased.
+    assert p.intent_keywords == ["movie", "tv", "torrent"]
+
+
 def test_v1_server_json_to_v2_conversion_registry():
     """v1 server.json with packages[uvx] -> synthetic plugin.json with mode=registry."""
     from glados.plugins.bundle import v1_to_v2

@@ -1782,13 +1782,52 @@ def _stream_chat_sse_impl(
     # Build tool definitions - MCP/HA tools only (static tools like do_nothing,
     # robot_move etc. are for the engine autonomy loop, not WebUI chat).
     # Chitchat turns get an empty tool list — nothing to call, nothing to
-    # bloat the prompt with.
+    # bloat the prompt with — UNLESS the Phase 2c plugin intent gates fire.
     tools: list[dict[str, Any]] = []
     if glados.mcp_manager and is_home_command:
         try:
             tools = glados.mcp_manager.get_tool_definitions()
         except Exception:
             pass
+    elif glados.mcp_manager and not is_home_command:
+        # Phase 2c — plugin intent routing on the chitchat path. The
+        # legacy is_home_command gate is HA-shaped and silently skips
+        # plugin tools (e.g. *arr Stack) on queries like "what movies
+        # do I have." Two-stage match: zero-latency keyword pre-filter,
+        # then small-fast triage LLM if the keyword pass missed.
+        try:
+            from glados.plugins import discover_plugins
+            from glados.plugins.intent import match_plugins
+            from glados.plugins.triage import triage_plugins
+            _enabled_plugins = discover_plugins()
+            _matched = match_plugins(user_message, _enabled_plugins)
+            if _matched:
+                _names = [p.name for p in _matched]
+                logger.info(
+                    "[{}] plugin intent: keyword matched: {}",
+                    request_id, _names,
+                )
+            else:
+                _triaged = triage_plugins(user_message, _enabled_plugins)
+                if _triaged:
+                    _names = list(_triaged)
+                    _matched = [p for p in _enabled_plugins if p.name in _triaged]
+                    logger.info(
+                        "[{}] plugin intent: triage matched: {}",
+                        request_id, _names,
+                    )
+                else:
+                    _names = []
+                    logger.info("[{}] plugin intent: no match", request_id)
+            if _matched:
+                tools = glados.mcp_manager.get_tool_definitions(
+                    server_filter={p.name for p in _matched},
+                )
+        except Exception as _intent_exc:
+            logger.debug(
+                "[{}] plugin intent gate skipped: {}",
+                request_id, _intent_exc,
+            )
     # Phase 8.3.4b — append the in-process built-in tools
     # (search_entities, get_entity_details). Always available when
     # we're on the home-command path, regardless of whether any

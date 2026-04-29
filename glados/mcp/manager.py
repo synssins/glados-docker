@@ -206,10 +206,20 @@ class MCPManager:
         except Exception as exc:
             logger.warning("MCP: task cleanup raised: {}", exc)
 
-    def get_tool_definitions(self) -> list[dict[str, Any]]:
+    def get_tool_definitions(
+        self,
+        server_filter: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        # server_filter lets the chitchat-path plugin gate advertise
+        # only matched plugins' tools (Phase 2c) instead of dumping the
+        # whole catalog into every prompt. Default None preserves the
+        # existing legacy HA-gate behavior of returning every tool.
         with self._tool_lock:
             entries = list(self._tool_registry.items())
         entries.sort(key=lambda item: item[0])
+        if server_filter is not None:
+            allow = set(server_filter)
+            entries = [(name, e) for (name, e) in entries if e.server in allow]
         return [self._tool_entry_to_definition(tool_name, entry) for tool_name, entry in entries]
 
     def get_context_messages(self, timeout: float = 5.0, block: bool = True) -> list[dict[str, str]]:
