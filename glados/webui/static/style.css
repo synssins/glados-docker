@@ -2127,14 +2127,16 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   font-size: 0.78rem;
 }
 
-/* ── Plugins panel (Phase 2b) ─────────────────────────────────────
-   Row layout: [icon] Name vX.Y.Z [cat]  ●  [⏻ toggle]  [⚙]  [🗑]
-   Lives inside System → Services → Plugins card. Tokens reuse the
-   existing palette — no new color values introduced. */
+/* ── Plugins page (Configuration → Plugins) ──────────────────────
+   Operator-flagged after Phase 2b live review: plugins are not
+   services. Lives at its own sidebar entry now, with a tab strip —
+   Manage tab + one tab per installed plugin. Manage row layout:
+   [icon] Name vX.Y.Z [cat]  ●  [⏻ toggle]  [🗑]
+   Tokens reuse the existing palette — no new color values introduced. */
 .plugin-list { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); }
 .plugin-row {
   display: grid;
-  grid-template-columns: 24px 1fr auto auto 12px 36px 28px 28px;
+  grid-template-columns: 24px 1fr auto auto 12px 36px 28px;
   align-items: center;
   gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
@@ -2185,15 +2187,10 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 .plugin-icon-btn:hover { background: var(--bg-card); color: var(--fg-primary); }
 .plugin-icon-btn-danger:hover { color: var(--red); }
 
-/* ── Generic centered modal (T8) ─────────────────────────────────
-   Used by the plugin configuration modal. Tokens reuse the existing
-   palette — backdrop dimmed to 0.5 opacity, card sits on --bg-card
-   with --border-default hairlines. No new color values introduced. */
-.modal-overlay {
-  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 1000;
-}
+/* ── Shared modal chrome ─────────────────────────────────────────
+   Used by the Users management modals (Add User / Edit User / Reset
+   Password). Tokens reuse the existing palette — card sits on
+   --bg-card with --border-default hairlines. */
 .modal-box {
   background: var(--bg-card); border: 1px solid var(--border-default);
   border-radius: var(--r-card); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
@@ -2214,23 +2211,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 .modal-close:hover { color: var(--fg-primary); background: var(--bg-input); }
 .modal-body { padding: var(--sp-4) var(--sp-5); overflow-y: auto; }
 
-.modal-tabs {
-  display: flex; gap: var(--sp-1);
-  border-bottom: 1px solid var(--border-default);
-  margin-bottom: var(--sp-4);
-}
-.modal-tab {
-  background: none; border: none; cursor: pointer;
-  padding: var(--sp-2) var(--sp-4);
-  color: var(--fg-secondary); font-size: 0.85rem;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;  /* overlap the tabs border */
-}
-.modal-tab:hover { color: var(--fg-primary); }
-.modal-tab.active { color: var(--fg-primary); border-bottom-color: var(--orange); }
-.modal-pane { display: none; }
-
-/* Plugin modal — Logs tab (T9). */
+/* Plugin per-plugin pane — Logs card. */
 .logs-controls {
   display: flex; gap: var(--sp-3); align-items: center;
   margin-bottom: var(--sp-3); flex-wrap: wrap;
@@ -2275,29 +2256,7 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 .event-row.event-error .event-kind,
 .event-row.event-crash .event-kind { color: var(--red); }
 
-/* Plugin modal — About tab (T9). */
-.about-pane .about-list {
-  display: grid; grid-template-columns: 140px 1fr;
-  gap: var(--sp-1) var(--sp-3);
-  margin: 0 0 var(--sp-3);
-  font-size: 0.85rem;
-}
-.about-pane .about-list dt {
-  color: var(--fg-secondary); font-weight: 600;
-}
-.about-pane .about-list dd {
-  margin: 0; color: var(--fg-primary); word-break: break-word;
-}
-.about-pane .about-list dd code {
-  background: var(--bg-input); border: 1px solid var(--border-default);
-  border-radius: var(--r-input); padding: 1px 6px; font-size: 0.8rem;
-}
-.about-pane .about-list dd a {
-  color: var(--orange); text-decoration: none;
-}
-.about-pane .about-list dd a:hover { text-decoration: underline; }
-
-/* Auto-rendered config form for the Configuration tab. */
+/* Auto-rendered config form for the per-plugin Configuration card. */
 .plugin-config-form .form-section { margin-bottom: var(--sp-5); }
 .plugin-config-form .form-section h4 {
   margin: 0 0 var(--sp-2);
@@ -2329,14 +2288,6 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 }
 .plugin-config-form .required-mark { color: var(--red); margin-left: 3px; }
 
-.modal-actions {
-  display: flex; justify-content: flex-end; align-items: center;
-  gap: var(--sp-2); padding-top: var(--sp-3);
-  border-top: 1px solid var(--border-default); margin-top: var(--sp-4);
-}
-.modal-actions .save-result {
-  margin-right: auto; font-size: 0.82rem; color: var(--fg-secondary);
-}
 .btn-secondary {
   background: transparent; color: var(--fg-secondary);
   border: 1px solid var(--border-default);
@@ -2369,4 +2320,86 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   border: 1px solid var(--border-default); border-radius: var(--r-input);
   background: var(--bg-input); color: var(--fg-primary);
   font-size: 0.85rem;
+}
+
+/* ── Plugins page — tab strip + per-plugin pane ─────────────────── */
+
+/* Disabled-plugin tabs are visually muted but still clickable so the
+   operator can land on the pane to inspect config / logs / re-enable. */
+.page-tab.plugin-tab-muted {
+  opacity: 0.55;
+}
+.page-tab.plugin-tab-muted .plugin-cat-badge {
+  opacity: 0.75;
+}
+.page-tab .plugin-cat-badge {
+  margin-left: var(--sp-1);
+}
+
+/* Header card on a per-plugin pane: identity left, switch + actions
+   right. Keeps the most-used controls (Enabled toggle) on the trailing
+   edge so the operator's eye lands on it after reading the title. */
+.plugin-header-card {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.plugin-header-left {
+  display: flex; gap: var(--sp-3); align-items: flex-start;
+  min-width: 0; flex: 1 1 320px;
+}
+.plugin-icon-large {
+  color: var(--fg-secondary);
+  display: inline-flex; width: 24px; height: 24px;
+  margin-top: 4px;
+}
+.plugin-icon-large svg { width: 24px; height: 24px; }
+.plugin-header-text { min-width: 0; }
+.plugin-header-text h3 {
+  margin: 0; font-size: 1rem; color: var(--fg-primary); font-weight: 600;
+  display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap;
+}
+.plugin-header-text .plugin-meta {
+  margin-top: 4px; display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap;
+  font-size: 0.82rem; color: var(--fg-secondary);
+}
+.plugin-header-text .plugin-meta a {
+  color: var(--orange); text-decoration: none; word-break: break-all;
+}
+.plugin-header-text .plugin-meta a:hover { text-decoration: underline; }
+.plugin-meta-installed { color: var(--fg-muted); }
+.plugin-meta-desc {
+  margin-top: var(--sp-1); font-size: 0.85rem; color: var(--fg-secondary);
+}
+.plugin-header-right {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.plugin-status-text {
+  font-size: 0.82rem; color: var(--fg-secondary);
+  min-width: 60px;
+}
+
+/* Inline collapsibles on the Manage tab (Add by URL, Browse). The
+   summary doubles as a section title so it sits at section-title
+   weight, with the disclosure caret tucked at the leading edge. */
+.plugin-collapsible > summary.plugin-collapsible-summary {
+  cursor: pointer;
+  list-style: none;
+}
+.plugin-collapsible > summary.plugin-collapsible-summary::-webkit-details-marker {
+  display: none;
+}
+.plugin-collapsible > summary.plugin-collapsible-summary::before {
+  content: "\25B8";
+  display: inline-block; width: 1em;
+  color: var(--fg-secondary);
+  transition: transform 0.15s;
+}
+.plugin-collapsible[open] > summary.plugin-collapsible-summary::before {
+  content: "\25BE";
+}
+.plugin-collapsible[open] > summary.plugin-collapsible-summary {
+  margin-bottom: var(--sp-2);
 }

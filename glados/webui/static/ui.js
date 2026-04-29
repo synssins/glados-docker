@@ -2338,21 +2338,10 @@ async function loadSystemServices() {
 
   html += '</div>'; // end Card 2
 
-  // ── Card 3: Plugins (Phase 2b) — installed list, toggle, trash. ──
-  // Renders below the LLM Endpoints card. Off-state notice when
-  // GLADOS_PLUGINS_ENABLED=false. Async-populated by loadPluginsPanel().
-  html += '<div class="card" style="margin-top:var(--sp-3);" id="plugins-card-host">';
-  html +=   '<div class="section-title">Plugins</div>';
-  html +=   '<div id="plugins-panel-body"><div class="mode-desc">Loading…</div></div>';
-  html += '</div>';
-
   body.innerHTML = html;
 
   // Ping in-container services via health aggregate.
   _systemServicesPingStatus(svc);
-
-  // Plugins panel — kick off async load.
-  loadPluginsPanel();
 }
 
 function _systemLlmToggleAdvanced(btn) {
@@ -2452,155 +2441,233 @@ async function _cfgSaveSystemServices() {
   if (resultEl) { resultEl.textContent = 'Saved'; resultEl.className = 'cfg-result cfg-result-ok'; }
 }
 
-// ── Plugins panel (Phase 2b) ───────────────────────────────────────
-// Renders the installed-plugins list inside the Plugins card on
-// System → Services. Hot-rotates via /api/plugins/<slug>/enable|disable.
-// Off-state notice when GLADOS_PLUGINS_ENABLED=false. Polling pauses
-// when the System tab isn't active or document.hidden is true.
+// ── Plugins page (Configuration → Plugins) ────────────────────────
+// Operator-flagged after Phase 2b live review: plugins are not
+// services, so they don't belong under System → Services. New shape:
+// a dedicated Configuration sub-page with a tab strip — Manage tab
+// (default) hosts the installed list + inline Add by URL + inline
+// Browse, and one tab per installed plugin opens that plugin's
+// header / Configuration / Logs cards.
 
 let _pluginsPollTimer = null;
+// Active per-plugin pane's slug + auto-refresh timer for its Logs
+// card. Lives at module scope so switching tabs (or leaving the
+// Plugins page entirely) can tear down the previous interval.
+let _pluginActiveSlug = null;
+let _pluginLogsAutoTimer = null;
 
 const _PLUGIN_ICO_PLUG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
   + '<path d="M6 2 L6 5 M10 2 L10 5 M4 5 L12 5 L12 8 A4 4 0 0 1 4 8 Z M8 12 L8 14"/></svg>';
-const _PLUGIN_ICO_GEAR = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
-  + '<circle cx="8" cy="8" r="2.2"/>'
-  + '<path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/></svg>';
 const _PLUGIN_ICO_TRASH = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
   + '<path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
 
-async function loadPluginsPanel() {
-  const host = document.getElementById('plugins-panel-body');
-  if (!host) return;
+// Category ordering for the tab strip. Anything outside this list
+// (or missing) sorts to the end. Within a category, alphabetical by
+// title. Manage is always first regardless.
+const _PLUGIN_CATEGORY_ORDER = [
+  'home', 'media', 'integrations', 'system', 'dev', 'utility',
+];
+
+function _pluginCategoryRank(cat) {
+  const i = _PLUGIN_CATEGORY_ORDER.indexOf((cat || '').toLowerCase());
+  return i === -1 ? _PLUGIN_CATEGORY_ORDER.length : i;
+}
+
+function _pluginSortKey(p) {
+  const cat = (p.category || '').toLowerCase();
+  const title = (p.title || p.name || p.slug || '').toLowerCase();
+  return [_pluginCategoryRank(cat), title];
+}
+
+function _ensurePluginsPagePanel() {
+  // Plugins doesn't ship a static tab-content panel — keep the brief's
+  // "no new HTML files" rule. Inject the panel host on first use into
+  // <main class="main-content">. Idempotent: subsequent calls no-op.
+  let panel = document.getElementById('tab-config-plugins');
+  if (panel) return panel;
+  panel = document.createElement('div');
+  panel.id = 'tab-config-plugins';
+  panel.className = 'tab-content';
+  const main = document.querySelector('main.main-content');
+  if (main) main.appendChild(panel);
+  return panel;
+}
+
+function _ensurePluginsNavEntry() {
+  // Same rationale as the panel host above — inject the sidebar entry
+  // dynamically rather than touching pages/_shell.py. Sibling of
+  // Memory / Logs under the Configuration submenu.
+  if (document.querySelector('.nav-item[data-nav-key="config.plugins"]')) return;
+  const logsLink = document.querySelector('.nav-children .nav-item[data-nav-key="config.logs"]');
+  if (!logsLink || !logsLink.parentNode) return;
+  const a = document.createElement('a');
+  a.className = 'nav-item';
+  a.setAttribute('data-nav-key', 'config.plugins');
+  a.setAttribute('onclick', "navigateTo('config.plugins')");
+  a.textContent = 'Plugins';
+  logsLink.parentNode.insertBefore(a, logsLink);
+}
+
+async function loadPluginsPage() {
+  const panel = _ensurePluginsPagePanel();
+  if (!panel) return;
+  // Promote the freshly-injected panel to the active tab — navigateTo()
+  // ran *before* _ensurePluginsPagePanel created the node, so the
+  // class flip there missed it.
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  panel.classList.add('active');
+
+  // Loading skeleton on first paint so the page header appears before
+  // the network round-trip resolves.
+  panel.innerHTML =
+    '<div class="page-shell"><div class="container">' +
+    '  <div class="page-header"><h2 class="page-title">Plugins</h2>' +
+    '    <div class="page-title-desc">Install MCP servers as plugins. Each enabled plugin exposes its tools to GLaDOS at runtime.</div>' +
+    '  </div>' +
+    '  <div class="mode-desc" style="padding:18px 20px;">Loading…</div>' +
+    '</div></div>';
+
+  let data;
   try {
     const r = await fetch('/api/plugins', { credentials: 'same-origin' });
     if (!r.ok) {
-      host.innerHTML = '<div class="mode-desc" style="color:var(--fg-muted);">'
-        + 'Failed to load plugins (' + r.status + ')</div>';
+      panel.querySelector('.mode-desc').innerHTML =
+        '<span style="color:var(--fg-muted);">Failed to load plugins (' + r.status + ')</span>';
       return;
     }
-    const data = await r.json();
-    if (!data.enabled_globally) {
-      host.innerHTML = renderPluginsOffNotice();
-      return;
-    }
-    host.innerHTML = renderPluginsList(data.plugins) + renderAddByUrlCard() + renderBrowseCard();
-    wirePluginRowHandlers();
-    wireAddByUrlHandlers();
-    wireBrowseHandlers();
-    schedulePluginsPoll();
+    data = await r.json();
   } catch (e) {
-    host.innerHTML = '<div class="mode-desc">Plugins panel error: '
-      + (e && e.message ? e.message : String(e)) + '</div>';
+    panel.querySelector('.mode-desc').textContent =
+      'Plugins page error: ' + (e && e.message ? e.message : String(e));
+    return;
   }
-}
 
-function renderPluginsOffNotice() {
-  return '<div class="mode-desc" style="padding:18px 20px;border:1px dashed var(--border-default);">'
-    + '<strong>Plugins disabled.</strong> Set <code>GLADOS_PLUGINS_ENABLED=true</code> in '
-    + 'docker-compose.yml and restart the container to enable.'
-    + '</div>';
-}
-
-function renderPluginsList(plugins) {
-  if (!plugins || plugins.length === 0) {
-    return '<div class="mode-desc" style="padding:18px 20px;">'
-      + 'No plugins installed yet. Use the "Add by URL" card below or "Browse" to install one.'
-      + '</div>';
+  if (!data.enabled_globally) {
+    // Off-state: just render the page header + notice on the Manage
+    // tab. No plugin tabs, no install / browse cards.
+    panel.innerHTML = _renderPluginsPageShell([], 'manage') +
+      '';  // shell already includes the Manage pane container
+    const managePane = panel.querySelector('[data-pane="manage"]');
+    if (managePane) managePane.innerHTML = renderPluginsOffNotice();
+    schedulePluginsPoll();
+    return;
   }
-  let h = '<div class="plugin-list">';
+
+  const plugins = (data.plugins || []).slice().sort((a, b) => {
+    const ka = _pluginSortKey(a), kb = _pluginSortKey(b);
+    if (ka[0] !== kb[0]) return ka[0] - kb[0];
+    return ka[1] < kb[1] ? -1 : ka[1] > kb[1] ? 1 : 0;
+  });
+
+  // Preserve the active tab across refreshes when possible — operator
+  // shouldn't get bounced back to Manage every time the 30 s poll
+  // re-renders. Falls back to Manage if the previously-active slug
+  // is no longer installed.
+  const previousActive = _pluginActiveSlug;
+  const slugSet = new Set(plugins.map(p => p.slug));
+  const initialTab = (previousActive && slugSet.has(previousActive)) ? previousActive : 'manage';
+
+  panel.innerHTML = _renderPluginsPageShell(plugins, initialTab);
+
+  // Manage pane — installed list + Add-by-URL + Browse, all inline.
+  const managePane = panel.querySelector('[data-pane="manage"]');
+  if (managePane) {
+    managePane.innerHTML =
+      renderPluginsList(plugins) +
+      renderAddByUrlCard() +
+      renderBrowseCard();
+    wirePluginRowHandlers(panel);
+    wireAddByUrlHandlers(panel);
+    wireBrowseHandlers(panel);
+  }
+
+  // Per-plugin panes — header / Configuration / Logs cards.
   for (const p of plugins) {
-    const dotClass = p.enabled ? 'dot-on' : 'dot-off';
-    const toggleAttr = p.enabled ? ' checked' : '';
-    h += '<div class="plugin-row" data-slug="' + escAttr(p.slug) + '">';
-    h +=   '<span class="plugin-icon">' + _PLUGIN_ICO_PLUG + '</span>';
-    h +=   '<span class="plugin-name">' + escAttr(p.title || p.name) + '</span>';
-    h +=   '<span class="plugin-version">v' + escAttr(p.version) + '</span>';
-    h +=   '<span class="plugin-cat-badge">' + escAttr(p.category) + '</span>';
-    h +=   '<span class="plugin-status-dot ' + dotClass + '"></span>';
-    h +=   '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' + toggleAttr + '><span class="plugin-slider"></span></label>';
-    h +=   '<button class="plugin-icon-btn" data-action="open-config" title="Configure">' + _PLUGIN_ICO_GEAR + '</button>';
-    h +=   '<button class="plugin-icon-btn plugin-icon-btn-danger" data-action="delete-plugin" title="Delete">' + _PLUGIN_ICO_TRASH + '</button>';
-    h += '</div>';
+    const pane = panel.querySelector('[data-pane="' + CSS.escape(p.slug) + '"]');
+    if (!pane) continue;
+    // Detail fetched lazily on first tab activation to avoid 1+N
+    // requests when the page loads with N plugins. Manage tab is the
+    // default so most operators never trigger any of them.
+    pane.dataset.loaded = '';
+  }
+
+  // Wire tab switching across the whole strip.
+  panel.querySelectorAll('.page-tab[data-plugins-tab]').forEach(btn => {
+    btn.addEventListener('click', () => switchPluginsPaneTab(btn.dataset.pluginsTab));
+  });
+
+  // Activate the initial tab. switchPluginsPaneTab handles lazy-loading
+  // the per-plugin pane on first activation.
+  switchPluginsPaneTab(initialTab);
+
+  schedulePluginsPoll();
+}
+
+function _renderPluginsPageShell(plugins, activeTabId) {
+  let h = '<div class="page-shell"><div class="container plugins-page">';
+  h += '<div class="page-header"><h2 class="page-title">Plugins</h2>'
+    +  '<div class="page-title-desc">Install MCP servers as plugins. Each enabled plugin exposes its tools to GLaDOS at runtime.</div>'
+    +  '</div>';
+
+  // Tab strip: Manage first, then one tab per plugin (already sorted
+  // by category then title at the call site).
+  h += '<nav class="page-tabs" role="tablist" data-role="plugins-tabs">';
+  const manageCls = activeTabId === 'manage' ? 'page-tab active' : 'page-tab';
+  h += '<button class="' + manageCls + '" role="tab" data-plugins-tab="manage">Manage</button>';
+  for (const p of plugins) {
+    const cls = (p.slug === activeTabId ? 'page-tab active' : 'page-tab') +
+                (p.enabled ? '' : ' plugin-tab-muted');
+    h += '<button class="' + cls + '" role="tab" data-plugins-tab="' + escAttr(p.slug) + '"' +
+         ' title="' + escAttr(p.title || p.name || p.slug) + '">' +
+         escAttr(p.title || p.name || p.slug) +
+         ' <span class="plugin-cat-badge">' + escAttr(p.category || '') + '</span>' +
+         '</button>';
+  }
+  h += '</nav>';
+
+  // Panes container — Manage + one per plugin.
+  h += '<div class="page-tab-panels">';
+  const managePaneCls = activeTabId === 'manage' ? 'page-tab-panel active' : 'page-tab-panel';
+  h += '<div class="' + managePaneCls + '" data-pane="manage"></div>';
+  for (const p of plugins) {
+    const cls = p.slug === activeTabId ? 'page-tab-panel active' : 'page-tab-panel';
+    h += '<div class="' + cls + '" data-pane="' + escAttr(p.slug) + '" data-slug="' + escAttr(p.slug) + '"></div>';
   }
   h += '</div>';
+
+  h += '</div></div>';
   return h;
 }
 
-function wirePluginRowHandlers() {
-  document.querySelectorAll('.plugin-row').forEach(row => {
-    const slug = row.getAttribute('data-slug');
-    const nameEl = row.querySelector('.plugin-name');
-    const displayName = nameEl ? nameEl.textContent : slug;
+function switchPluginsPaneTab(tabId) {
+  const panel = document.getElementById('tab-config-plugins');
+  if (!panel) return;
+  // Stop any prior plugin's logs auto-refresh — it's tied to the pane
+  // being active, not the page being open.
+  if (_pluginLogsAutoTimer) {
+    clearInterval(_pluginLogsAutoTimer);
+    _pluginLogsAutoTimer = null;
+  }
 
-    // Enable/disable toggle — optimistic UI with revert on failure.
-    const toggle = row.querySelector('input[data-action="toggle-enabled"]');
-    if (toggle) {
-      toggle.addEventListener('change', async (ev) => {
-        const newState = ev.target.checked;
-        const path = newState ? 'enable' : 'disable';
-        ev.target.disabled = true;
-        try {
-          const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/' + path, {
-            method: 'POST', credentials: 'same-origin',
-          });
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          showToast(newState ? 'Plugin enabled' : 'Plugin disabled', 'success');
-          // Refresh status dot from server.
-          await loadPluginsPanel();
-        } catch (e) {
-          ev.target.checked = !newState;  // revert
-          showToast('Toggle failed: ' + e.message, 'error');
-        } finally {
-          ev.target.disabled = false;
-        }
-      });
-    }
-
-    // Gear → open config modal (T8). Stub for now.
-    const gear = row.querySelector('button[data-action="open-config"]');
-    if (gear) {
-      gear.addEventListener('click', () => openPluginConfigModal(slug));
-    }
-
-    // Trash → confirm + DELETE.
-    const trash = row.querySelector('button[data-action="delete-plugin"]');
-    if (trash) {
-      trash.addEventListener('click', async () => {
-        const ok = confirm('Delete plugin ' + displayName + '? This will remove its configuration permanently.');
-        if (!ok) return;
-        try {
-          const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
-            method: 'DELETE', credentials: 'same-origin',
-          });
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          showToast('Plugin deleted', 'success');
-          await loadPluginsPanel();
-        } catch (e) {
-          showToast('Delete failed: ' + e.message, 'error');
-        }
-      });
-    }
+  panel.querySelectorAll('.page-tab[data-plugins-tab]').forEach(b => {
+    b.classList.toggle('active', b.dataset.pluginsTab === tabId);
   });
+  panel.querySelectorAll('.page-tab-panel[data-pane]').forEach(p => {
+    p.classList.toggle('active', p.dataset.pane === tabId);
+  });
+
+  _pluginActiveSlug = (tabId === 'manage') ? null : tabId;
+
+  if (tabId !== 'manage') {
+    const pane = panel.querySelector('[data-pane="' + CSS.escape(tabId) + '"]');
+    if (pane && !pane.dataset.loaded) {
+      _loadPluginPane(tabId, pane);
+    }
+  }
 }
 
-function schedulePluginsPoll() {
-  if (_pluginsPollTimer) clearInterval(_pluginsPollTimer);
-  _pluginsPollTimer = setInterval(() => {
-    if (document.hidden) return;
-    if (_activeNavKey !== 'config.system') return;  // only when System is visible
-    loadPluginsPanel();
-  }, 30000);
-}
-
-// ── Plugin configuration modal (T8) ───────────────────────────────
-// Gear icon → centered modal with three tabs (Configuration / Logs /
-// About). Configuration tab auto-renders the install form from the
-// manifest + current runtime values. Secrets are masked as '***' on
-// read; unchanged secrets post back as '***' so the server-side merge
-// (T4) preserves the original value.
-
-async function openPluginConfigModal(slug) {
-  // Fetch detail.
+async function _loadPluginPane(slug, pane) {
+  pane.innerHTML = '<div class="mode-desc" style="padding:18px 20px;">Loading plugin…</div>';
   let detail;
   try {
     const r = await fetch('/api/plugins/' + encodeURIComponent(slug),
@@ -2608,48 +2675,129 @@ async function openPluginConfigModal(slug) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     detail = await r.json();
   } catch (e) {
-    showToast('Failed to load plugin: ' + e.message, 'error');
+    pane.innerHTML = '<div class="mode-desc" style="color:var(--red);">'
+      + 'Failed to load plugin: ' + escAttr(e.message) + '</div>';
     return;
   }
+  pane.innerHTML = renderPluginPane(slug, detail);
+  pane.dataset.loaded = '1';
+  wirePluginPaneHandlers(slug, pane, detail);
+}
 
+function renderPluginPane(slug, detail) {
   const m = detail.manifest || {};
+  const rt = detail.runtime || {};
+  const meta = m._meta || {};
+  const cat = meta['com.synssins.glados/category'] || 'utility';
+  const repo = m.repository ? m.repository.url : null;
+  const sourceUrl = meta['com.synssins.glados/source_url'] || null;
+  const enabled = !!rt.enabled;
   const title = m.title || m.name || slug;
 
-  const modal = createModal({
-    title: title,
-    body: renderPluginModalBody(detail),
-    width: 720,
-    confirmIfDirty: true,
-  });
+  let h = '';
 
-  // Stash the slug on the modal body so the Logs tab fetch loop and the
-  // Reinstall button can read it without threading the slug through every
-  // helper signature.
-  modal.body.dataset.pluginSlug = slug;
+  // Header card.
+  h += '<div class="card plugin-header-card">';
+  h +=   '<div class="plugin-header-left">';
+  h +=     '<span class="plugin-icon-large">' + _PLUGIN_ICO_PLUG + '</span>';
+  h +=     '<div class="plugin-header-text">';
+  h +=       '<h3>' + escAttr(title) + ' <span class="plugin-version">v' + escAttr(m.version || '') + '</span></h3>';
+  h +=       '<div class="plugin-meta">';
+  h +=         '<span class="plugin-cat-badge">' + escAttr(cat) + '</span>';
+  if (repo) {
+    h +=       ' <a href="' + escAttr(repo) + '" target="_blank" rel="noopener">' + escAttr(repo) + '</a>';
+  }
+  if (sourceUrl) {
+    h +=       ' <span class="plugin-meta-installed">Installed from <a href="' +
+                escAttr(sourceUrl) + '" target="_blank" rel="noopener">' +
+                escAttr(sourceUrl) + '</a></span>';
+  }
+  if (m.description) {
+    h +=       '<div class="plugin-meta-desc">' + escAttr(m.description) + '</div>';
+  }
+  h +=       '</div>';
+  h +=     '</div>';
+  h +=   '</div>';
+  h +=   '<div class="plugin-header-right">';
+  h +=     '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' +
+            (enabled ? ' checked' : '') + '><span class="plugin-slider"></span></label>';
+  h +=     '<span class="plugin-status-text">' + (enabled ? 'Enabled' : 'Disabled') + '</span>';
+  if (sourceUrl) {
+    h +=     '<button class="btn-secondary" data-action="reinstall">Reinstall from source</button>';
+  }
+  h +=     '<button class="btn-secondary btn-danger" data-action="delete">Delete</button>';
+  h +=   '</div>';
+  h += '</div>';
 
-  // Wire tab switching.
-  modal.body.querySelectorAll('[data-tab]').forEach(btn => {
-    btn.addEventListener('click', () => switchPluginTab(modal, btn.dataset.tab));
-  });
+  // Configuration card.
+  h += '<div class="card" style="margin-top:var(--sp-3);">';
+  h +=   '<div class="section-title">Configuration</div>';
+  h +=   renderConfigForm(detail);
+  h +=   '<div class="cfg-save-row" style="margin-top:var(--sp-3);">';
+  h +=     '<button class="btn btn-primary" data-action="save">Save</button>';
+  h +=     '<span class="save-result" data-role="save-result"></span>';
+  h +=   '</div>';
+  h += '</div>';
 
-  // Wire Save.
-  const saveBtn = modal.body.querySelector('[data-action="save-plugin"]');
-  if (saveBtn) {
-    saveBtn.addEventListener('click', () => savePluginRuntime(slug, modal));
+  // Logs card.
+  h += '<div class="card" style="margin-top:var(--sp-3);">';
+  h +=   '<div class="section-title">Logs</div>';
+  h +=   '<div class="logs-controls">';
+  h +=     '<label>Lines: <select data-role="logs-lines">' +
+           '  <option value="100">100</option>' +
+           '  <option value="500" selected>500</option>' +
+           '  <option value="2000">2000</option>' +
+           '</select></label>';
+  h +=     '<button class="btn-secondary" data-role="logs-refresh">Refresh</button>';
+  h +=     '<label class="logs-auto-label"><input type="checkbox" data-role="logs-auto"> Auto-refresh (5 s)</label>';
+  h +=   '</div>';
+  h +=   '<div class="logs-output">';
+  h +=     '<h4>stderr</h4>';
+  h +=     '<pre data-role="logs-stdio" class="logs-pre"></pre>';
+  h +=     '<h4>events</h4>';
+  h +=     '<div data-role="logs-events" class="logs-events"></div>';
+  h +=   '</div>';
+  h += '</div>';
+
+  return h;
+}
+
+function wirePluginPaneHandlers(slug, pane, detail) {
+  const titleText = (detail.manifest && (detail.manifest.title || detail.manifest.name)) || slug;
+
+  // Enabled toggle — same flow as the Manage list rows.
+  const toggle = pane.querySelector('input[data-action="toggle-enabled"]');
+  if (toggle) {
+    toggle.addEventListener('change', async (ev) => {
+      const newState = ev.target.checked;
+      const path = newState ? 'enable' : 'disable';
+      ev.target.disabled = true;
+      try {
+        const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/' + path, {
+          method: 'POST', credentials: 'same-origin',
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        showToast(newState ? 'Plugin enabled' : 'Plugin disabled', 'success');
+        const statusText = pane.querySelector('.plugin-status-text');
+        if (statusText) statusText.textContent = newState ? 'Enabled' : 'Disabled';
+        // Refresh the page so the tab strip reflects the muted state.
+        await loadPluginsPage();
+      } catch (e) {
+        ev.target.checked = !newState;
+        showToast('Toggle failed: ' + e.message, 'error');
+      } finally {
+        ev.target.disabled = false;
+      }
+    });
   }
 
-  // Wire Reinstall (About tab). Only present when manifest._meta has
-  // a source URL — pre-T9 installs won't show the button.
-  const reinstallBtn = modal.body.querySelector('[data-action="reinstall-from-source"]');
+  // Reinstall from source.
+  const reinstallBtn = pane.querySelector('button[data-action="reinstall"]');
   if (reinstallBtn) {
     reinstallBtn.addEventListener('click', async () => {
       const meta = (detail.manifest && detail.manifest._meta) || {};
       const sourceUrl = meta['com.synssins.glados/source_url'];
       if (!sourceUrl) return;
-      // Native confirm — confirmIfDirty wraps Esc/Cancel only; this
-      // is a separate destructive action that needs its own prompt.
-      // Configuration values are intentionally lost on reinstall; surface
-      // that in the prompt so the operator knows what they're agreeing to.
       const ok = window.confirm(
         'Reinstall from source?\n\n' +
         'This will delete the current plugin and re-install from:\n  ' +
@@ -2669,51 +2817,253 @@ async function openPluginConfigModal(slug) {
         });
         if (!ir.ok) throw new Error('install: HTTP ' + ir.status);
         showToast('Plugin reinstalled', 'success');
-        modal.clearDirty();
-        modal.close();
-        loadPluginsPanel();
+        // Stay on the same tab post-reinstall — the slug is unchanged.
+        _pluginActiveSlug = slug;
+        await loadPluginsPage();
       } catch (e) {
         showToast('Reinstall failed: ' + e.message, 'error');
       }
     });
   }
 
-  // Track dirty state — any input/select change marks the modal as dirty
-  // so click-outside / Esc / Cancel asks for confirmation.
-  modal.body.querySelectorAll('[data-role="config-form"] input, [data-role="config-form"] select').forEach(el => {
-    el.addEventListener('input', () => { modal.markDirty(); });
-    el.addEventListener('change', () => { modal.markDirty(); });
-  });
+  // Delete from header card.
+  const deleteBtn = pane.querySelector('button[data-action="delete"]');
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', async () => {
+      const ok = confirm('Delete plugin ' + titleText + '? This will remove its configuration permanently.');
+      if (!ok) return;
+      try {
+        const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        showToast('Plugin deleted', 'success');
+        // Bounce back to the Manage tab — the per-plugin tab is gone.
+        _pluginActiveSlug = null;
+        await loadPluginsPage();
+      } catch (e) {
+        showToast('Delete failed: ' + e.message, 'error');
+      }
+    });
+  }
 
-  // Default tab.
-  switchPluginTab(modal, 'config');
+  // Save (Configuration card).
+  const saveBtn = pane.querySelector('button[data-action="save"]');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => savePluginRuntime(slug, pane));
+  }
 
-  modal.show();
+  // Logs controls.
+  const refreshBtn = pane.querySelector('[data-role="logs-refresh"]');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => fetchPluginLogsInto(slug, pane));
+  }
+  const autoEl = pane.querySelector('[data-role="logs-auto"]');
+  if (autoEl) {
+    autoEl.addEventListener('change', (ev) => {
+      if (_pluginLogsAutoTimer) {
+        clearInterval(_pluginLogsAutoTimer);
+        _pluginLogsAutoTimer = null;
+      }
+      if (ev.target.checked) {
+        _pluginLogsAutoTimer = setInterval(() => {
+          // Self-teardown when the operator switches to a different
+          // pane (or leaves the page entirely).
+          if (!pane.classList.contains('active') ||
+              !document.body.contains(pane) ||
+              _activeNavKey !== 'config.plugins') {
+            clearInterval(_pluginLogsAutoTimer);
+            _pluginLogsAutoTimer = null;
+            return;
+          }
+          fetchPluginLogsInto(slug, pane);
+        }, 5000);
+      }
+    });
+  }
+
+  // Initial logs fetch so the tab isn't empty on first open.
+  fetchPluginLogsInto(slug, pane);
 }
 
-function renderPluginModalBody(detail) {
-  let h = '';
-  // Tabs.
-  h += '<div class="modal-tabs">';
-  h += '  <button type="button" class="modal-tab" data-tab="config">Configuration</button>';
-  h += '  <button type="button" class="modal-tab" data-tab="logs">Logs</button>';
-  h += '  <button type="button" class="modal-tab" data-tab="about">About</button>';
-  h += '</div>';
+async function fetchPluginLogsInto(slug, pane) {
+  const linesEl = pane.querySelector('[data-role="logs-lines"]');
+  const lines = linesEl ? linesEl.value : '500';
+  try {
+    const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/logs?lines=' + lines,
+                          { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const pre = pane.querySelector('[data-role="logs-stdio"]');
+    if (pre) pre.textContent = (data.stdio_log || []).join('');
+    const evDiv = pane.querySelector('[data-role="logs-events"]');
+    if (evDiv) {
+      evDiv.innerHTML = (data.events || []).map(e =>
+        '<div class="event-row event-' + escAttr(e.kind) + '">' +
+        '<span class="event-ts">' + escAttr(new Date(e.ts * 1000).toISOString()) + '</span> ' +
+        '<span class="event-kind">' + escAttr(e.kind) + '</span> ' +
+        '<span class="event-msg">' + escAttr(e.message || '') + '</span>' +
+        '</div>'
+      ).join('');
+    }
+  } catch (e) {
+    const pre = pane.querySelector('[data-role="logs-stdio"]');
+    if (pre) pre.textContent = 'Failed to load logs: ' + e.message;
+  }
+}
 
-  // Configuration tab pane.
-  h += '<div class="modal-pane" data-pane="config">';
-  h += renderConfigForm(detail);
-  h += '<div class="modal-actions">';
-  h += '  <span class="save-result" data-role="save-result"></span>';
-  h += '  <button type="button" class="btn btn-secondary" data-action="close-modal">Cancel</button>';
-  h += '  <button type="button" class="btn btn-primary" data-action="save-plugin">Save</button>';
-  h += '</div>';
-  h += '</div>';
+async function savePluginRuntime(slug, pane) {
+  const form = pane.querySelector('[data-role="config-form"]');
+  const result = pane.querySelector('[data-role="save-result"]');
+  if (!form) return;
 
-  // Logs + About panes — populated in T9.
-  h += '<div class="modal-pane" data-pane="logs"><div class="mode-desc">Loading logs…</div></div>';
-  h += '<div class="modal-pane" data-pane="about">' + renderAboutPane(detail) + '</div>';
+  const env_values = {};
+  const header_values = {};
+  const arg_values = {};
+  const secrets = {};
+
+  form.querySelectorAll('input, select').forEach(el => {
+    const grp = el.dataset.group;
+    const name = el.name;
+    const isSecret = el.dataset.secret === '1';
+    const v = el.value;
+    if (!name) return;
+    if (isSecret) {
+      // '***' or empty → preserve the existing server value via the
+      // sentinel; anything else is a real new secret.
+      if (v === '***' || v === '') {
+        secrets[name] = '***';
+      } else {
+        secrets[name] = v;
+      }
+      return;
+    }
+    if (grp === 'env') env_values[name] = v;
+    else if (grp === 'header') header_values[name] = v;
+    else if (grp === 'arg') arg_values[name] = v;
+  });
+
+  if (result) {
+    result.textContent = 'Saving…';
+    result.style.color = 'var(--fg-secondary)';
+  }
+  try {
+    const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ env_values, header_values, arg_values, secrets }),
+    });
+    if (!r.ok) {
+      let msg;
+      try { msg = (await r.json()).error || ('HTTP ' + r.status); }
+      catch (_) { msg = 'HTTP ' + r.status; }
+      throw new Error(msg);
+    }
+    if (result) {
+      result.textContent = 'Saved';
+      result.style.color = '';
+    }
+    showToast('Plugin saved', 'success');
+  } catch (e) {
+    if (result) {
+      result.textContent = 'Save failed: ' + e.message;
+      result.style.color = 'var(--red)';
+    }
+  }
+}
+
+function renderPluginsOffNotice() {
+  return '<div class="mode-desc" style="padding:18px 20px;border:1px dashed var(--border-default);">'
+    + '<strong>Plugins disabled.</strong> Set <code>GLADOS_PLUGINS_ENABLED=true</code> in '
+    + 'docker-compose.yml and restart the container to enable.'
+    + '</div>';
+}
+
+function renderPluginsList(plugins) {
+  if (!plugins || plugins.length === 0) {
+    return '<div class="mode-desc" style="padding:18px 20px;">'
+      + 'No plugins installed yet. Use the "Add by URL" or "Browse" sections below to install one.'
+      + '</div>';
+  }
+  let h = '<div class="plugin-list">';
+  for (const p of plugins) {
+    const dotClass = p.enabled ? 'dot-on' : 'dot-off';
+    const toggleAttr = p.enabled ? ' checked' : '';
+    h += '<div class="plugin-row" data-slug="' + escAttr(p.slug) + '">';
+    h +=   '<span class="plugin-icon">' + _PLUGIN_ICO_PLUG + '</span>';
+    h +=   '<span class="plugin-name">' + escAttr(p.title || p.name) + '</span>';
+    h +=   '<span class="plugin-version">v' + escAttr(p.version) + '</span>';
+    h +=   '<span class="plugin-cat-badge">' + escAttr(p.category) + '</span>';
+    h +=   '<span class="plugin-status-dot ' + dotClass + '"></span>';
+    h +=   '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' + toggleAttr + '><span class="plugin-slider"></span></label>';
+    h +=   '<button class="plugin-icon-btn plugin-icon-btn-danger" data-action="delete-plugin" title="Delete">' + _PLUGIN_ICO_TRASH + '</button>';
+    h += '</div>';
+  }
+  h += '</div>';
   return h;
+}
+
+function wirePluginRowHandlers(root) {
+  const scope = root || document;
+  scope.querySelectorAll('.plugin-row').forEach(row => {
+    const slug = row.getAttribute('data-slug');
+    const nameEl = row.querySelector('.plugin-name');
+    const displayName = nameEl ? nameEl.textContent : slug;
+
+    const toggle = row.querySelector('input[data-action="toggle-enabled"]');
+    if (toggle) {
+      toggle.addEventListener('change', async (ev) => {
+        const newState = ev.target.checked;
+        const path = newState ? 'enable' : 'disable';
+        ev.target.disabled = true;
+        try {
+          const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/' + path, {
+            method: 'POST', credentials: 'same-origin',
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          showToast(newState ? 'Plugin enabled' : 'Plugin disabled', 'success');
+          await loadPluginsPage();
+        } catch (e) {
+          ev.target.checked = !newState;
+          showToast('Toggle failed: ' + e.message, 'error');
+        } finally {
+          ev.target.disabled = false;
+        }
+      });
+    }
+
+    const trash = row.querySelector('button[data-action="delete-plugin"]');
+    if (trash) {
+      trash.addEventListener('click', async () => {
+        const ok = confirm('Delete plugin ' + displayName + '? This will remove its configuration permanently.');
+        if (!ok) return;
+        try {
+          const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
+            method: 'DELETE', credentials: 'same-origin',
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          showToast('Plugin deleted', 'success');
+          await loadPluginsPage();
+        } catch (e) {
+          showToast('Delete failed: ' + e.message, 'error');
+        }
+      });
+    }
+  });
+}
+
+function schedulePluginsPoll() {
+  if (_pluginsPollTimer) clearInterval(_pluginsPollTimer);
+  _pluginsPollTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (_activeNavKey !== 'config.plugins') return;
+    // Only refresh while the Manage tab is active — otherwise a poll
+    // would clobber the operator's in-progress edits on the per-plugin
+    // Configuration form.
+    if (_pluginActiveSlug !== null) return;
+    loadPluginsPage();
+  }, 30000);
 }
 
 function renderConfigForm(detail) {
@@ -2721,7 +3071,6 @@ function renderConfigForm(detail) {
   const rt = detail.runtime || {};
   const secretMask = detail.secrets || {};
 
-  // Pick the active package or remote based on runtime indices.
   const packages = m.packages || [];
   const remotes = m.remotes || [];
   const pkg = (rt.package_index !== null && rt.package_index !== undefined && packages[rt.package_index])
@@ -2753,8 +3102,7 @@ function renderConfigForm(detail) {
   }
 
   if (pkg && pkg.packageArguments && pkg.packageArguments.length) {
-    // Hide arguments where a literal value is hard-coded — operator
-    // can't override those.
+    // Hard-coded literal-value args aren't operator-overridable; hide them.
     const visible = pkg.packageArguments.filter(a => !a.value);
     if (visible.length) {
       h += '<div class="form-section">';
@@ -2778,8 +3126,7 @@ function renderConfigForm(detail) {
 }
 
 function renderFormField(group, spec, values, secretMask) {
-  // For arguments, prefer name; fall back to valueHint when the arg is
-  // positional + unnamed (then valueHint is the storage key).
+  // Positional / unnamed args fall back to valueHint as the storage key.
   const name = spec.name || spec.valueHint || '';
   if (!name) return '';
   const value = values[name] !== undefined ? values[name] : '';
@@ -2816,269 +3163,31 @@ function renderFormField(group, spec, values, secretMask) {
          '</div>';
 }
 
-function switchPluginTab(modal, tabName) {
-  modal.body.querySelectorAll('.modal-tab').forEach(b => {
-    b.classList.toggle('active', b.dataset.tab === tabName);
-  });
-  modal.body.querySelectorAll('.modal-pane').forEach(p => {
-    p.style.display = (p.dataset.pane === tabName) ? 'block' : 'none';
-  });
-  if (tabName === 'logs') {
-    loadPluginLogs(modal);  // T9
-  }
-}
-
-async function savePluginRuntime(slug, modal) {
-  const form = modal.body.querySelector('[data-role="config-form"]');
-  const result = modal.body.querySelector('[data-role="save-result"]');
-  if (!form) return;
-
-  const env_values = {};
-  const header_values = {};
-  const arg_values = {};
-  const secrets = {};
-
-  form.querySelectorAll('input, select').forEach(el => {
-    const grp = el.dataset.group;
-    const name = el.name;
-    const isSecret = el.dataset.secret === '1';
-    const v = el.value;
-    if (!name) return;
-    if (isSecret) {
-      // Empty + masked → leave alone. Operator typed real new value → send.
-      if (v === '***' || v === '') {
-        secrets[name] = '***';  // sentinel: server preserves the original
-      } else {
-        secrets[name] = v;
-      }
-      return;
-    }
-    if (grp === 'env') env_values[name] = v;
-    else if (grp === 'header') header_values[name] = v;
-    else if (grp === 'arg') arg_values[name] = v;
-  });
-
-  if (result) {
-    result.textContent = 'Saving…';
-    result.style.color = 'var(--fg-secondary)';
-  }
-  try {
-    const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ env_values, header_values, arg_values, secrets }),
-    });
-    if (!r.ok) {
-      let msg;
-      try { msg = (await r.json()).error || ('HTTP ' + r.status); }
-      catch (_) { msg = 'HTTP ' + r.status; }
-      throw new Error(msg);
-    }
-    if (result) result.textContent = '';
-    showToast('Plugin saved', 'success');
-    modal.clearDirty();
-    modal.close();
-    loadPluginsPanel();
-  } catch (e) {
-    if (result) {
-      result.textContent = 'Save failed: ' + e.message;
-      result.style.color = 'var(--red)';
-    }
-  }
-}
-
-// ── Generic centered-modal helper ─────────────────────────────────
-// Used by the plugin config modal (T8). May grow other consumers
-// later; keep the API minimal for now.
-function createModal({ title, body, width, confirmIfDirty }) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML =
-    '<div class="modal-box" style="width:' + (width || 600) + 'px;">' +
-    '  <div class="modal-header">' +
-    '    <h3 class="modal-title">' + escAttr(title || '') + '</h3>' +
-    '    <button type="button" class="modal-close" data-action="close-modal" aria-label="Close">×</button>' +
-    '  </div>' +
-    '  <div class="modal-body">' + body + '</div>' +
-    '</div>';
-
-  let dirty = false;
-  const wantsConfirm = !!confirmIfDirty;
-
-  const tryClose = () => {
-    if (dirty && wantsConfirm) {
-      const ok = confirm('You have unsaved changes. Discard them?');
-      if (!ok) return;
-    }
-    close();
-  };
-  const close = () => {
-    document.removeEventListener('keydown', escHandler);
-    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-  };
-  const escHandler = (ev) => { if (ev.key === 'Escape') tryClose(); };
-
-  overlay.addEventListener('click', (ev) => {
-    // Close on backdrop click or any element with data-action="close-modal".
-    const t = ev.target;
-    if (t === overlay) { tryClose(); return; }
-    if (t && t.closest && t.closest('[data-action="close-modal"]')) { tryClose(); return; }
-  });
-
-  return {
-    body: overlay,
-    show() {
-      document.body.appendChild(overlay);
-      document.addEventListener('keydown', escHandler);
-    },
-    close,
-    markDirty() { dirty = true; },
-    clearDirty() { dirty = false; },
-  };
-}
-
-// Auto-refresh timer for the Logs tab. Module-scope so a new modal
-// instance can clear a leftover timer from a previous one. The interval
-// callback also self-clears when the modal body is no longer in the DOM
-// (covers backdrop close + Esc + Cancel paths without extra wiring).
-let _pluginLogsAutoTimer = null;
-
-async function loadPluginLogs(modal) {
-  const pane = modal.body.querySelector('[data-pane="logs"]');
-  if (!pane) return;
-  // Build controls + output skeleton once; subsequent tab clicks just
-  // re-fetch into the same nodes.
-  if (!pane.dataset.built) {
-    pane.innerHTML =
-      '<div class="logs-controls">' +
-      '  <label>Lines: <select data-role="logs-lines">' +
-      '    <option value="100">100</option>' +
-      '    <option value="500" selected>500</option>' +
-      '    <option value="2000">2000</option>' +
-      '  </select></label>' +
-      '  <button class="btn-secondary" data-role="logs-refresh">Refresh</button>' +
-      '  <label class="logs-auto-label"><input type="checkbox" data-role="logs-auto"> Auto-refresh (5 s)</label>' +
-      '</div>' +
-      '<div class="logs-output">' +
-      '  <h4>stderr</h4>' +
-      '  <pre data-role="logs-stdio" class="logs-pre"></pre>' +
-      '  <h4>events</h4>' +
-      '  <div data-role="logs-events" class="logs-events"></div>' +
-      '</div>';
-    pane.dataset.built = '1';
-
-    pane.querySelector('[data-role="logs-refresh"]').addEventListener('click',
-      () => fetchPluginLogsInto(modal));
-    pane.querySelector('[data-role="logs-auto"]').addEventListener('change', (ev) => {
-      if (_pluginLogsAutoTimer) { clearInterval(_pluginLogsAutoTimer); _pluginLogsAutoTimer = null; }
-      if (ev.target.checked) {
-        _pluginLogsAutoTimer = setInterval(() => {
-          // Self-teardown: when the modal closes (backdrop / Esc / Cancel /
-          // tab switch removes the body) the interval clears itself on its
-          // next tick rather than needing the close-handler to know about it.
-          if (!document.body.contains(modal.body)) {
-            clearInterval(_pluginLogsAutoTimer); _pluginLogsAutoTimer = null;
-            return;
-          }
-          fetchPluginLogsInto(modal);
-        }, 5000);
-      }
-    });
-  }
-  await fetchPluginLogsInto(modal);
-}
-
-async function fetchPluginLogsInto(modal) {
-  // Slug stashed on modal.body.dataset by openPluginConfigModal.
-  const slug = modal.body.dataset.pluginSlug;
-  if (!slug) return;
-  const linesEl = modal.body.querySelector('[data-role="logs-lines"]');
-  const lines = linesEl ? linesEl.value : '500';
-  try {
-    const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/logs?lines=' + lines,
-                          { credentials: 'same-origin' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
-    const pre = modal.body.querySelector('[data-role="logs-stdio"]');
-    if (pre) pre.textContent = (data.stdio_log || []).join('');
-    const evDiv = modal.body.querySelector('[data-role="logs-events"]');
-    if (evDiv) {
-      evDiv.innerHTML = (data.events || []).map(e =>
-        '<div class="event-row event-' + escAttr(e.kind) + '">' +
-        '<span class="event-ts">' + escAttr(new Date(e.ts * 1000).toISOString()) + '</span> ' +
-        '<span class="event-kind">' + escAttr(e.kind) + '</span> ' +
-        '<span class="event-msg">' + escAttr(e.message || '') + '</span>' +
-        '</div>'
-      ).join('');
-    }
-  } catch (e) {
-    const pre = modal.body.querySelector('[data-role="logs-stdio"]');
-    if (pre) pre.textContent = 'Failed to load logs: ' + e.message;
-  }
-}
-
-function renderAboutPane(detail) {
-  const m = detail.manifest || {};
-  const rt = detail.runtime || {};
-  const meta = m._meta || {};
-  const role = meta['com.synssins.glados/recommended_persona_role'] || 'both';
-  const cat = meta['com.synssins.glados/category'] || 'utility';
-  const repo = m.repository ? m.repository.url : null;
-  const sourceUrl = meta['com.synssins.glados/source_url'] || null;
-
-  let h = '<div class="about-pane">';
-  h += '<dl class="about-list">';
-  h += '<dt>Name</dt><dd>' + escAttr(m.name || '') + '</dd>';
-  h += '<dt>Title</dt><dd>' + escAttr(m.title || m.name || '') + '</dd>';
-  h += '<dt>Version</dt><dd><code>' + escAttr(m.version || '') + '</code></dd>';
-  h += '<dt>Description</dt><dd>' + escAttr(m.description || '') + '</dd>';
-  h += '<dt>Category</dt><dd>' + escAttr(cat) + '</dd>';
-  h += '<dt>Persona role</dt><dd>' + escAttr(role) + '</dd>';
-  if (repo) {
-    h += '<dt>Repository</dt><dd><a href="' + escAttr(repo) +
-         '" target="_blank" rel="noopener">' + escAttr(repo) + '</a></dd>';
-  }
-  if (sourceUrl) {
-    h += '<dt>Installed from</dt><dd><a href="' + escAttr(sourceUrl) +
-         '" target="_blank" rel="noopener">' + escAttr(sourceUrl) + '</a></dd>';
-  }
-  h += '<dt>Transport</dt><dd>' + ((rt.remote_index !== null && rt.remote_index !== undefined) ? 'remote' : 'local') + '</dd>';
-  h += '</dl>';
-  if (sourceUrl) {
-    // Reinstall is only offered when we know where to fetch the manifest
-    // from. Plugins installed before T9 (no _meta source_url stash) won't
-    // show this button — that's intentional, the operator can re-add by
-    // URL manually.
-    h += '<button type="button" class="btn-secondary" data-action="reinstall-from-source">' +
-         'Reinstall from source</button>';
-  }
-  h += '</div>';
-  return h;
-}
-
 function renderAddByUrlCard() {
   return '' +
     '<div class="card" style="margin-top:var(--sp-3);">' +
-    '  <div class="section-title">Add by URL</div>' +
-    '  <div class="mode-desc" style="margin-bottom:10px;">' +
-    '    Paste an MCP <code>server.json</code> URL (https) and optionally a slug. ' +
-    '    Slug defaults to the manifest name slugified.' +
-    '  </div>' +
-    '  <div class="add-url-form" style="display:grid;grid-template-columns:1fr 200px auto;gap:10px;">' +
-    '    <input type="url" data-role="install-url" placeholder="https://example.test/server.json">' +
-    '    <input type="text" data-role="install-slug" placeholder="optional slug">' +
-    '    <button class="btn-primary" data-role="install-btn">Install</button>' +
-    '  </div>' +
-    '  <div data-role="install-result" class="install-result" style="margin-top:8px;"></div>' +
+    '  <details class="plugin-collapsible">' +
+    '    <summary class="section-title plugin-collapsible-summary">Add by URL</summary>' +
+    '    <div class="mode-desc" style="margin-bottom:10px;">' +
+    '      Paste an MCP <code>server.json</code> URL (https) and optionally a slug. ' +
+    '      Slug defaults to the manifest name slugified.' +
+    '    </div>' +
+    '    <div class="add-url-form" style="display:grid;grid-template-columns:1fr 200px auto;gap:10px;">' +
+    '      <input type="url" data-role="install-url" placeholder="https://example.test/server.json">' +
+    '      <input type="text" data-role="install-slug" placeholder="optional slug">' +
+    '      <button class="btn-primary" data-role="install-btn">Install</button>' +
+    '    </div>' +
+    '    <div data-role="install-result" class="install-result" style="margin-top:8px;"></div>' +
+    '  </details>' +
     '</div>';
 }
 
-function wireAddByUrlHandlers() {
-  const urlEl = document.querySelector('[data-role="install-url"]');
-  const slugEl = document.querySelector('[data-role="install-slug"]');
-  const btnEl = document.querySelector('[data-role="install-btn"]');
-  const resultEl = document.querySelector('[data-role="install-result"]');
+function wireAddByUrlHandlers(root) {
+  const scope = root || document;
+  const urlEl = scope.querySelector('[data-role="install-url"]');
+  const slugEl = scope.querySelector('[data-role="install-slug"]');
+  const btnEl = scope.querySelector('[data-role="install-btn"]');
+  const resultEl = scope.querySelector('[data-role="install-result"]');
   if (!urlEl || !slugEl || !btnEl) return;
 
   urlEl.addEventListener('blur', () => {
@@ -3108,9 +3217,10 @@ function wireAddByUrlHandlers() {
       resultEl.textContent = '';
       urlEl.value = ''; slugEl.value = '';
       showToast('Plugin installed: ' + data.slug, 'success');
-      await loadPluginsPanel();
-      // Auto-open the modal so operator fills in values + enables.
-      openPluginConfigModal(data.slug);
+      // Pre-set the active tab so loadPluginsPage drops the operator
+      // straight into the new plugin's pane.
+      _pluginActiveSlug = data.slug;
+      await loadPluginsPage();
     } catch (e) {
       resultEl.textContent = 'Install failed: ' + e.message;
       resultEl.style.color = 'var(--red)';
@@ -3123,33 +3233,36 @@ function wireAddByUrlHandlers() {
 function renderBrowseCard() {
   return '' +
     '<div class="card" style="margin-top:var(--sp-3);">' +
-    '  <div class="section-title">Browse plugins</div>' +
-    '  <div class="mode-desc" style="margin-bottom:10px;">' +
-    '    Operator-managed list of <code>index.json</code> URLs. The Browse button ' +
-    '    merges all configured indexes into a catalog you can install from.' +
-    '  </div>' +
-    '  <details class="indexes-section">' +
-    '    <summary>Index URLs</summary>' +
-    '    <div data-role="indexes-list" style="margin-top:var(--sp-2);"></div>' +
-    '    <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2);">' +
-    '      <input type="url" data-role="index-add" placeholder="https://example.test/index.json" style="flex:1;">' +
-    '      <button class="btn-secondary" data-role="index-add-btn">Add</button>' +
+    '  <details class="plugin-collapsible">' +
+    '    <summary class="section-title plugin-collapsible-summary">Browse plugins</summary>' +
+    '    <div class="mode-desc" style="margin-bottom:10px;">' +
+    '      Operator-managed list of <code>index.json</code> URLs. The Browse button ' +
+    '      merges all configured indexes into a catalog you can install from.' +
     '    </div>' +
-    '    <div data-role="indexes-result" style="margin-top:6px;font-size:0.8rem;"></div>' +
+    '    <details class="indexes-section">' +
+    '      <summary>Index URLs</summary>' +
+    '      <div data-role="indexes-list" style="margin-top:var(--sp-2);"></div>' +
+    '      <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2);">' +
+    '        <input type="url" data-role="index-add" placeholder="https://example.test/index.json" style="flex:1;">' +
+    '        <button class="btn-secondary" data-role="index-add-btn">Add</button>' +
+    '      </div>' +
+    '      <div data-role="indexes-result" style="margin-top:6px;font-size:0.8rem;"></div>' +
+    '    </details>' +
+    '    <div style="margin-top:var(--sp-4);">' +
+    '      <button class="btn-primary" data-role="browse-btn">Browse</button>' +
+    '    </div>' +
+    '    <div data-role="browse-gallery" class="browse-gallery" style="margin-top:var(--sp-4);"></div>' +
     '  </details>' +
-    '  <div style="margin-top:var(--sp-4);">' +
-    '    <button class="btn-primary" data-role="browse-btn">Browse</button>' +
-    '  </div>' +
-    '  <div data-role="browse-gallery" class="browse-gallery" style="margin-top:var(--sp-4);"></div>' +
     '</div>';
 }
 
-async function wireBrowseHandlers() {
-  const listEl = document.querySelector('[data-role="indexes-list"]');
-  const addInput = document.querySelector('[data-role="index-add"]');
-  const addBtn = document.querySelector('[data-role="index-add-btn"]');
-  const browseBtn = document.querySelector('[data-role="browse-btn"]');
-  const gallery = document.querySelector('[data-role="browse-gallery"]');
+async function wireBrowseHandlers(root) {
+  const scope = root || document;
+  const listEl = scope.querySelector('[data-role="indexes-list"]');
+  const addInput = scope.querySelector('[data-role="index-add"]');
+  const addBtn = scope.querySelector('[data-role="index-add-btn"]');
+  const browseBtn = scope.querySelector('[data-role="browse-btn"]');
+  const gallery = scope.querySelector('[data-role="browse-gallery"]');
   if (!listEl || !browseBtn) return;
 
   let urls = [];
@@ -3164,8 +3277,6 @@ async function wireBrowseHandlers() {
       return;
     }
     if (!urls.length) {
-      // Empty state: tell the operator the Browse button is gated on at
-      // least one configured index URL.
       listEl.innerHTML = '<div class="mode-desc" style="font-style:italic;">'
         + 'No index URLs configured. Add one to browse plugins.</div>';
       return;
@@ -3186,7 +3297,7 @@ async function wireBrowseHandlers() {
   }
 
   async function saveIndexes(newUrls) {
-    const resultEl = document.querySelector('[data-role="indexes-result"]');
+    const resultEl = scope.querySelector('[data-role="indexes-result"]');
     resultEl.textContent = 'Saving…';
     resultEl.style.color = '';
     try {
@@ -3211,8 +3322,7 @@ async function wireBrowseHandlers() {
     const v = (addInput.value || '').trim();
     if (!v) return;
     if (!v.toLowerCase().startsWith('https://')) {
-      // Server enforces https-only too; this is just the fast-path UX.
-      const resultEl = document.querySelector('[data-role="indexes-result"]');
+      const resultEl = scope.querySelector('[data-role="indexes-result"]');
       resultEl.textContent = 'URL must use https://';
       resultEl.style.color = 'var(--red)';
       return;
@@ -3278,8 +3388,8 @@ function renderBrowseGallery(host, data) {
       const name = btn.getAttribute('data-name');
       btn.disabled = true; btn.textContent = 'Installing…';
       try {
-        // Match server-side slugify: last path segment, lowercase,
-        // non-alphanumeric runs to '-', trim leading/trailing '-'.
+        // Match the server-side slugify: last path segment, lowercase,
+        // non-alphanumeric runs collapsed to '-', strip leading/trailing.
         const slugSeed = name.split('/').pop().toLowerCase()
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-+|-+$/g, '');
@@ -3292,8 +3402,8 @@ function renderBrowseGallery(host, data) {
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
         showToast('Installed: ' + data.slug, 'success');
-        await loadPluginsPanel();
-        openPluginConfigModal(data.slug);
+        _pluginActiveSlug = data.slug;
+        await loadPluginsPage();
       } catch (e) {
         showToast('Install failed: ' + e.message, 'error');
       } finally {
@@ -3302,6 +3412,7 @@ function renderBrowseGallery(host, data) {
     });
   });
 }
+
 
 function cfgRenderServices(data, scope) {
   // Phase 6.2 (2026-04-22): scope filters the service grid.
@@ -5518,9 +5629,10 @@ async function memSweepRetention() {
 // Memory which have their own HTML).
 
 function _panelIdFor(key) {
-  if (key === 'config.system') return 'tab-config-system';
-  if (key === 'config.memory') return 'tab-config-memory';
-  if (key === 'config.logs')   return 'tab-config-logs';
+  if (key === 'config.system')  return 'tab-config-system';
+  if (key === 'config.memory')  return 'tab-config-memory';
+  if (key === 'config.logs')    return 'tab-config-logs';
+  if (key === 'config.plugins') return 'tab-config-plugins';
   if (key && key.indexOf('config.') === 0) return 'tab-config';
   return 'tab-' + key;
 }
@@ -5616,6 +5728,8 @@ function navigateTo(key) {
     if (typeof memoryLoadAll === 'function') memoryLoadAll();
   } else if (key === 'config.logs') {
     if (typeof logsOnTabActivate === 'function') logsOnTabActivate();
+  } else if (key === 'config.plugins') {
+    if (typeof loadPluginsPage === 'function') loadPluginsPage();
   } else if (key.indexOf('config.') === 0) {
     const section = key.substring('config.'.length);
     _cfgCurrentSection = section;
@@ -5641,6 +5755,10 @@ function switchTab(name) { navigateTo(_migrateLegacyKey(name)); }
 
 // Check auth on load, THEN restore saved tab (default: TTS for unauth, Chat for auth).
 checkAuth().then(() => {
+  // Plugins page is JS-injected — sidebar entry + tab-content host land
+  // here so the localStorage restore below finds them.
+  _ensurePluginsNavEntry();
+  _ensurePluginsPagePanel();
   let restored = false;
   try {
     const raw = localStorage.getItem('glados_active_tab');
