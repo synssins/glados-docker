@@ -185,11 +185,20 @@ def load_plugin(plugin_dir: Path) -> Plugin:
     )
 
 
-def discover_plugins(plugins_dir: Path | None = None) -> list[Plugin]:
+def discover_plugins(
+    plugins_dir: Path | None = None,
+    *,
+    include_disabled: bool = False,
+) -> list[Plugin]:
     """Walk ``plugins_dir`` (defaults to ``/app/data/plugins/``) and
     return every plugin that loaded cleanly. Broken plugins are logged
     and skipped -- never raised -- so one malformed manifest doesn't
-    take down the rest."""
+    take down the rest.
+
+    By default, disabled plugins are filtered out (the engine only spawns
+    enabled ones). Pass ``include_disabled=True`` for the WebUI listing,
+    which has to show disabled plugins so operators can configure and
+    enable them."""
     plugins_dir = plugins_dir or default_plugins_dir()
     if not plugins_dir.exists():
         logger.info("Plugins directory {!s} does not exist; skipping discovery", plugins_dir)
@@ -206,14 +215,15 @@ def discover_plugins(plugins_dir: Path | None = None) -> list[Plugin]:
         except ManifestError as exc:
             logger.warning("Plugin {!s} skipped: {}", entry.name, exc)
             continue
-        if not plugin.enabled:
+        if not plugin.enabled and not include_disabled:
             logger.info("Plugin {!s} disabled in runtime.yaml; skipping", plugin.name)
             continue
         out.append(plugin)
         logger.success(
-            "Plugin loaded: {} v{} ({}category={})",
+            "Plugin loaded: {} v{} ({}{}category={})",
             plugin.name, plugin.manifest_v2.version,
             "remote, " if plugin.is_remote() else "local, ",
+            "disabled, " if not plugin.enabled else "",
             plugin.manifest_v2.category,
         )
     return out

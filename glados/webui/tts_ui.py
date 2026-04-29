@@ -6069,7 +6069,7 @@ class Handler(BaseHTTPRequestHandler):
         if not enabled_globally:
             self._send_json(200, {"plugins": [], "enabled_globally": False})
             return
-        plugins = _plugins.discover_plugins()
+        plugins = _plugins.discover_plugins(include_disabled=True)
         out = [_plugins.serialize_plugin_summary(p) for p in plugins]
         self._send_json(200, {"plugins": out, "enabled_globally": True})
 
