@@ -821,3 +821,60 @@ added to this list. Current scan helpers:
   `bypass.audit_tag()` into the existing `audit.py` callers so audit
   rows during a bypass run are unambiguously attributed. Surfaced
   during Task 9 implementation.
+
+---
+
+## TLS coverage on every container interface (2026-04-29)
+
+When SSL is enabled (cert + key files present at `/app/certs/{cert,key}.pem`,
+or operator-overridden via `SSL_CERT` / `SSL_KEY` env vars) the container
+should serve **every external port over TLS using the same cert** — not
+just the WebUI on 8052. The "OpenAI API Compatibility" section in the
+README implicitly promises HTTPS works on the OpenAI surface; today only
+8052 is wrapped, and 8015 / 5051 are plaintext-only.
+
+Operator surfaced 2026-04-29 while wiring HA's `openai_tts` integration —
+that integration's default URL is `https://api.openai.com/v1/audio/speech`
+and many OpenAI-protocol clients won't tolerate scheme rewrites. Until
+this lands, operators are forced to either edit the integration to
+`http://...` (works on a LAN but feels wrong) or run a reverse-proxy
+sidecar that terminates TLS (defeats the self-contained design promise).
+
+### Design
+
+- **`0.0.0.0:8015`** (OpenAI API) — TLS-wrap when cert files exist,
+  plain HTTP otherwise (the no-cert operator path stays trivial).
+- **`0.0.0.0:5051`** (HA audio file server in `audio_io/homeassistant_io.py`) —
+  same. Sonos / Alexa / cast renderers handle HTTPS as long as the cert
+  validates; LE-via-DNS is fine, self-signed will need the renderer to
+  trust the CA (operator caveat documented).
+- **`0.0.0.0:8052`** (WebUI) — already TLS-wrapped on cert presence; no
+  change needed.
+- **`127.0.0.1:18015`** (new) — always plain HTTP, loopback-only,
+  introduced as the canonical "internal" API endpoint for in-container
+  callers (autonomy announce, doorbell screen, WebUI streaming-chat
+  conn, anything that previously hardcoded `http://localhost:8015`).
+  Avoids the cert-doesn't-cover-localhost mismatch entirely.
+- A central helper `glados/core/tls.py:get_ssl_context()` makes the
+  "should this listener be TLS?" decision once. Every binding site calls
+  through it.
+
+### Migrations needed
+
+- `glados/webui/tts_ui.py:2571` — `_http.HTTPConnection("localhost", 8015, …)`
+  → `_http.HTTPConnection("127.0.0.1", INTERNAL_PORT, …)`.
+- `glados/autonomy/agents/ha_sensor_watcher.py:115` (announce_url default),
+  `:1392` (doorbell screen URL) — same migration.
+- `glados/core/config_store.py` — `service_url("api_wrapper")` default
+  flips from `http://localhost:8015` to `http://127.0.0.1:18015` so any
+  caller already going through the helper auto-routes correctly.
+- `homeassistant_io.py:209,260` — URL scheme in `media_content_id`
+  reflects the listener's actual protocol.
+
+### Documentation deltas
+
+- README "OpenAI API Compatibility" section — surface the four-row table
+  (cert+DNS / cert+self-signed / no-cert / bare-IP) showing what HA
+  points at in each case.
+- README "Ports" — note that `0.0.0.0:5051` joins the TLS-on-cert set.
+- `docs/CHANGES.md` — Change 30 entry.

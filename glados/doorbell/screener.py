@@ -752,14 +752,16 @@ class DoorbellScreener:
         from glados.core.config_store import cfg as store_cfg
 
         # Determine the URL to serve the file
+        from glados.core.tls import is_tls_active
+        _proto = "https" if is_tls_active() else "http"
         if wav_path.parent == SERVE_DIR:
             # Already in serve directory
-            media_url = f"http://{store_cfg.serve_host}:{store_cfg.serve_port}/{wav_path.name}"
+            media_url = f"{_proto}://{store_cfg.serve_host}:{store_cfg.serve_port}/{wav_path.name}"
         else:
             # Copy to serve directory first
             dest = SERVE_DIR / wav_path.name
             dest.write_bytes(wav_path.read_bytes())
-            media_url = f"http://{store_cfg.serve_host}:{store_cfg.serve_port}/{dest.name}"
+            media_url = f"{_proto}://{store_cfg.serve_host}:{store_cfg.serve_port}/{dest.name}"
 
         ha_url = store_cfg.ha_url.rstrip("/")
         ha_token = store_cfg.ha_token

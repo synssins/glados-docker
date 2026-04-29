@@ -70,16 +70,21 @@ def test_ha_defaults_use_mdns() -> None:
 
 
 def test_services_defaults_self_contained() -> None:
-    """TTS and STT default to the container's own api_wrapper port —
-    both are served in-process via the bundled VITS + CTC ONNX models.
-    Ollama defaults remain Docker service names (external LLM is still
-    a required dependency). Vision defaults to empty (optional)."""
+    """TTS and STT default to the container's own api_wrapper endpoint
+    via the loopback-only internal port (always plain HTTP). The public
+    8015 listener may be TLS-wrapped when a cert is mounted, but in-
+    container callers don't validate against a public domain cert, so
+    127.0.0.1:18015 (or whatever GLADOS_INTERNAL_API_PORT is) is the
+    canonical path. Both endpoints are served in-process via the
+    bundled VITS + CTC ONNX models. Ollama defaults remain Docker
+    service names (external LLM is still a required dependency).
+    Vision defaults to empty (optional)."""
     s = ServicesConfig()
     assert s.llm_interactive.url == "http://ollama:11434"
     assert s.llm_autonomy.url == "http://ollama:11434"
     assert s.llm_vision.url == "http://ollama:11434"
-    assert s.tts.url == "http://localhost:8015"
-    assert s.stt.url == "http://localhost:8015"
+    assert s.tts.url == "http://127.0.0.1:18015"
+    assert s.stt.url == "http://127.0.0.1:18015"
     assert s.vision.url == ""
 
 
@@ -194,7 +199,9 @@ def test_services_yaml_url_still_wins_over_default() -> None:
     })
     assert s.llm_interactive.url == "http://10.0.0.10:11434"
     # Untouched fields still resolve from pydantic defaults (self-contained).
-    assert s.tts.url == "http://localhost:8015"
+    # TTS / STT / api_wrapper default to the loopback internal port
+    # (see TLS-everywhere migration, 2026-04-29).
+    assert s.tts.url == "http://127.0.0.1:18015"
 
 
 # ── Backward compat: existing YAML still parses ────────────────────────

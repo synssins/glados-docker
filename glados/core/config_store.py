@@ -338,22 +338,24 @@ class ServicesConfig(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    # TTS / STT default to the container's own api_wrapper endpoint.
-    # `/v1/audio/speech` and `/v1/audio/transcriptions` are both served
-    # in-process against the bundled VITS + CTC ONNX models. No external
-    # Speaches involved. Operator can override these via YAML to point
-    # at a remote service if they really want to.
+    # TTS / STT default to the container's own api_wrapper endpoint via
+    # the loopback-only internal port (always plain HTTP). The public
+    # 8015 listener may be TLS-wrapped when a cert is mounted, but the
+    # in-container callers don't validate against a public domain cert,
+    # so internal 18015 (or whatever GLADOS_INTERNAL_API_PORT is) is the
+    # canonical path. Operator can override these via YAML to point at
+    # a remote service if they really want to.
     tts: ServiceEndpoint = ServiceEndpoint(
-        url=f"http://localhost:{_env('GLADOS_PORT', '8015')}",
+        url=f"http://127.0.0.1:{_env('GLADOS_INTERNAL_API_PORT', '18015')}",
         voice="glados",
         model="local",
     )
     stt: ServiceEndpoint = ServiceEndpoint(
-        url=f"http://localhost:{_env('GLADOS_PORT', '8015')}",
+        url=f"http://127.0.0.1:{_env('GLADOS_INTERNAL_API_PORT', '18015')}",
         model="local-ctc",
     )
     api_wrapper: ServiceEndpoint = ServiceEndpoint(
-        url=f"http://localhost:{_env('GLADOS_PORT', '8015')}"
+        url=f"http://127.0.0.1:{_env('GLADOS_INTERNAL_API_PORT', '18015')}"
     )
     # External-service defaults. `_env(...)` remains only as the fallback
     # when the operator hasn't set the YAML value. Once YAML is populated

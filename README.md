@@ -302,8 +302,10 @@ battery analysis and the remediation plan (complete).
 
 | Port | Exposed | Purpose |
 |------|---------|---------|
-| 8015 | LAN     | OpenAI-compatible persona API (`/v1/chat/completions`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`, `/v1/voices`) |
-| 8052 | LAN     | Admin WebUI (config editor, health panel, TTS generator, chat) — HTTPS when SSL enabled |
+| 8015 | LAN     | OpenAI-compatible persona API (`/v1/chat/completions`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`, `/v1/voices`). HTTPS when SSL cert mounted, plain HTTP otherwise. |
+| 8052 | LAN     | Admin WebUI (config editor, health panel, TTS generator, chat). HTTPS when SSL cert mounted, plain HTTP otherwise. |
+| 5051 | LAN     | HA audio file server — serves WAV / startup announcement files for `media_player.play_media`. HTTPS when SSL cert mounted, plain HTTP otherwise. |
+| 18015 | loopback | Internal plain-HTTP API for in-container callers (env `GLADOS_INTERNAL_API_PORT`). Bound to `127.0.0.1` only — not reachable from the LAN. |
 
 The container is designed for LAN deployment. If you expose port 8052
 to the public internet, put it behind a reverse proxy (Cloudflare Access,
@@ -348,6 +350,29 @@ The container itself uses stdlib `http.client` against the upstream —
 no OpenAI SDK is imported. Anything emitting canonical OpenAI SSE
 chunks works as a backend; production runs to date use Ollama and LM
 Studio.
+
+### TLS for OpenAI-compat clients
+
+The container's external ports (`8015`, `8052`, `5051`) speak plain
+HTTP by default and TLS when SSL cert + key files are mounted at
+`/app/certs/{cert,key}.pem` (or wherever `SSL_CERT` / `SSL_KEY` env
+point). Same cert is used on every port — single source of truth at
+`glados/core/tls.py`. The decision is on file presence, so:
+
+| Operator setup | Port 8015 speaks | What an OpenAI client points at |
+|----------------|------------------|---------------------------------|
+| No cert mounted | plain HTTP | `http://<host>:8015/...` |
+| Let's Encrypt cert + matching DNS resolves on the LAN | HTTPS, validates cleanly | `https://<cert-domain>:8015/...` |
+| Self-signed cert | HTTPS but the client must trust the CA or skip-verify | `https://<host>:8015/...` with verify off |
+| Bare-IP, no domain, no cert | plain HTTP | `http://<ip>:8015/...` |
+
+The "bare-IP, no cert" path is the universal floor — works with zero
+configuration. The "LE cert + DNS" path is the production target.
+
+In-container callers (autonomy announce, doorbell screening, the
+WebUI's streaming-chat connection) hit a separate plain-HTTP listener
+on `127.0.0.1:18015` (env `GLADOS_INTERNAL_API_PORT`) so they're never
+asked to validate the public cert against `localhost`.
 
 ## Models
 

@@ -1370,7 +1370,9 @@ class Glados:
                     )
                     return
 
-                media_url = f"http://{serve_host}:{serve_port}/{chosen.name}"
+                from glados.core.tls import is_tls_active
+                _proto = "https" if is_tls_active() else "http"
+                media_url = f"{_proto}://{serve_host}:{serve_port}/{chosen.name}"
                 httpx.post(
                     f"{ha_url}/api/services/media_player/play_media",
                     headers={"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"},

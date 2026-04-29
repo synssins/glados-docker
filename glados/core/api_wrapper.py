@@ -3818,15 +3818,46 @@ def main() -> None:
     )
     entity_thread.start()
 
-    # Start HTTP server in background thread
+    # Public listener: TLS-wrap if cert files exist (matches the WebUI's
+    # bind pattern in tts_ui.py), else plain HTTP. The decision is made
+    # once in glados.core.tls.maybe_wrap_socket so adding a new external
+    # listener is a one-line change at the bind site.
+    from glados.core.tls import (
+        INTERNAL_API_HOST,
+        internal_api_port,
+        maybe_wrap_socket,
+    )
     server = ThreadingHTTPServer((args.host, args.port), APIHandler)
+    proto = maybe_wrap_socket(server)
     server_thread = threading.Thread(
         target=server.serve_forever,
         name="APIServer",
         daemon=True,
     )
     server_thread.start()
-    logger.success(f"GLaDOS API Wrapper listening on {args.host}:{args.port}")
+    logger.success(
+        f"GLaDOS API Wrapper listening on {proto}://{args.host}:{args.port}"
+    )
+
+    # Internal listener: always plain HTTP on 127.0.0.1 only. Internal
+    # callers (autonomy announce, doorbell screen, WebUI streaming-chat
+    # connection, etc.) hit this so they never have to negotiate TLS
+    # against a cert whose CN/SAN won't include "localhost". External
+    # clients on the LAN cannot reach it (loopback-only bind).
+    _internal_port = internal_api_port()
+    internal_server = ThreadingHTTPServer(
+        (INTERNAL_API_HOST, _internal_port), APIHandler
+    )
+    internal_thread = threading.Thread(
+        target=internal_server.serve_forever,
+        name=f"APIServer-internal-{_internal_port}",
+        daemon=True,
+    )
+    internal_thread.start()
+    logger.success(
+        "GLaDOS API Wrapper internal listener on http://{}:{}",
+        INTERNAL_API_HOST, _internal_port,
+    )
 
     # Run engine on main thread, looping across hot-reloads. `_engine` is a
     # module global; reload_engine() may set it to None briefly and then to

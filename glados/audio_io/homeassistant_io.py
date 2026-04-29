@@ -109,6 +109,13 @@ class HomeAssistantAudioIO:
     def _start_file_server(self) -> None:
         handler = partial(_QuietHandler, directory=str(self.serve_dir))
         self._httpd = ThreadingHTTPServer(("0.0.0.0", self.serve_port), handler)
+        # TLS-wrap when cert files exist (single decision point in
+        # glados.core.tls). Sonos / Alexa / cast renderers fetch the
+        # media_content_id URL we hand HA; modern firmware handles
+        # HTTPS as long as the cert chain validates. For self-signed
+        # certs the renderer must trust the CA — operator caveat.
+        from glados.core.tls import maybe_wrap_socket
+        self._httpd_proto = maybe_wrap_socket(self._httpd)
         self._server_thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="ha-audio-fileserver",
@@ -116,7 +123,7 @@ class HomeAssistantAudioIO:
         )
         self._server_thread.start()
         logger.info(
-            f"HA audio file server listening on 0.0.0.0:{self.serve_port}, "
+            f"HA audio file server listening on {self._httpd_proto}://0.0.0.0:{self.serve_port}, "
             f"serving {self.serve_dir}"
         )
 
@@ -206,7 +213,7 @@ class HomeAssistantAudioIO:
         wav_path.write_bytes(wav_bytes)
         logger.debug(f"Prepared WAV: {len(wav_bytes)} bytes → {wav_path}")
 
-        return f"http://{self.serve_host}:{self.serve_port}/{filename}"
+        return f"{self._httpd_proto}://{self.serve_host}:{self.serve_port}/{filename}"
 
     def play_prepared_wav(self, media_url: str) -> None:
         """Tell HA to play a pre-encoded WAV URL (from :meth:`prepare_wav`).
@@ -256,8 +263,9 @@ class HomeAssistantAudioIO:
         wav_path.write_bytes(wav_bytes)
         logger.debug(f"Wrote {len(wav_bytes)} bytes to {wav_path}")
 
-        # Build the public URL that HA will fetch
-        media_url = f"http://{self.serve_host}:{self.serve_port}/{filename}"
+        # Build the public URL that HA will fetch (scheme reflects the
+        # file server's actual protocol — HTTPS when cert is mounted).
+        media_url = f"{self._httpd_proto}://{self.serve_host}:{self.serve_port}/{filename}"
 
         self._is_playing = True
 
