@@ -99,6 +99,10 @@ USER glados
 EXPOSE 8015 8052
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8015/health || exit 1
+    CMD curl -f http://127.0.0.1:18015/health || exit 1
+# ^ Targets the loopback-only internal API port (always plain HTTP)
+# rather than 0.0.0.0:8015 which TLS-wraps when SSL_CERT/SSL_KEY are
+# mounted. Internal-port healthcheck is protocol-stable across both
+# the no-cert and TLS-enabled deployments.
 
 CMD ["python", "-m", "glados.server"]
