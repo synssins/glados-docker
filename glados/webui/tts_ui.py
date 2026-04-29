@@ -6105,8 +6105,8 @@ class Handler(BaseHTTPRequestHandler):
         if manager is not None:
             try:
                 manager.remove_server(slug)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("plugin {!s} delete: remove_server raised: {}", slug, exc)
         try:
             _plugins.remove_plugin(plugins_dir, slug)
         except _plugins.InstallError as exc:

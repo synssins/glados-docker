@@ -281,7 +281,12 @@ def test_enable_calls_add_server(auth_off, tmp_path: Path, monkeypatch):
         h.do_POST()
     code, _ = h._json_response
     assert code == 200
-    fake_manager.add_server.assert_called_once()
+    add_mock = fake_manager.add_server
+    add_mock.assert_called_once()
+    cfg = add_mock.call_args.args[0]
+    # MCPServerConfig.name is the manifest name (Plugin.name), not the slug.
+    assert cfg.name == "demo.python"
+    assert cfg.transport == "http"  # remote plugin in this test
 
 
 def test_disable_calls_remove_server(auth_off, tmp_path, monkeypatch):
@@ -325,6 +330,48 @@ def test_delete_removes_session_and_dir(auth_off, tmp_path, monkeypatch):
     assert code == 200
     fake_manager.remove_server.assert_called_once_with("demo")
     assert not plugin_dir.exists()
+
+
+# ── Auth gate (chat role rejected) ──────────────────────────────────
+#
+# The `auth_off` fixture above short-circuits require_perm() so the
+# admin-only gate is never exercised in the happy-path tests. These
+# three tests run with auth ON and a chat-role user to confirm GET /
+# POST / DELETE all reject. The `_admin_handler` mock overrides
+# `_send_json` to capture into `_json_response`, so we check that
+# rather than `send_response`. The `***` literal elsewhere in this
+# file is the SECRET_PLACEHOLDER convention, not a real secret.
+
+
+@pytest.fixture
+def auth_on(monkeypatch):
+    """Enable auth so require_perm() actually runs the role check."""
+    from glados.core.config_store import cfg as _cfg_live
+    monkeypatch.setattr(_cfg_live.auth, "enabled", True)
+
+
+def test_chat_role_blocked_from_get(auth_on):
+    handler = _chat_handler("GET", "/api/plugins")
+    handler.do_GET()
+    code, _ = handler._json_response
+    assert code in (401, 403)
+
+
+def test_chat_role_blocked_from_post(auth_on):
+    handler = _chat_handler(
+        "POST", "/api/plugins/install",
+        body={"url": "https://example.test/server.json"},
+    )
+    handler.do_POST()
+    code, _ = handler._json_response
+    assert code in (401, 403)
+
+
+def test_chat_role_blocked_from_delete(auth_on):
+    handler = _chat_handler("DELETE", "/api/plugins/some-slug")
+    handler.do_DELETE()
+    code, _ = handler._json_response
+    assert code in (401, 403)
 
 
 def test_logs_returns_stdio_tail_and_events(auth_off, tmp_path, monkeypatch):

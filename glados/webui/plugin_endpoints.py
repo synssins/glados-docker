@@ -4,6 +4,13 @@ Kept in a separate module so tts_ui.py doesn't grow further. Handlers
 in tts_ui.py call into this module; this module contains the URL
 fetching / SSRF guard / secret-merge logic that's worth unit-testing
 without spinning up the full HTTP server.
+
+Known limitation (v1): the SSRF guard resolves once via _resolve_safe_host,
+then httpx does an independent resolution for the GET. A DNS-rebinding
+attacker controlling the target's DNS could return a public IP for the
+guard check and a private IP for the fetch. Mitigation (pinning the
+resolved IP into the URL with a Host header) is deferred to v2 — the
+admin-only install flow + manual operator workflow lower the risk.
 """
 from __future__ import annotations
 
@@ -80,11 +87,23 @@ def fetch_manifest(url: str) -> ServerJSON:
             "address; refusing for SSRF safety"
         )
     try:
-        r = httpx.get(url, timeout=FETCH_TIMEOUT_S, follow_redirects=True)
+        r = httpx.get(url, timeout=FETCH_TIMEOUT_S, follow_redirects=False)
     except httpx.HTTPError as exc:
         raise InstallError(f"manifest fetch failed: {exc}") from exc
+    if 300 <= r.status_code < 400:
+        raise InstallError(
+            f"manifest URL returned redirect {r.status_code} (Location: "
+            f"{r.headers.get('location', '<missing>')!r}); refusing to follow "
+            "for SSRF safety — adjust the source URL"
+        )
     if r.status_code != 200:
         raise InstallError(f"manifest fetch returned HTTP {r.status_code}")
+    content_length = r.headers.get("content-length")
+    if content_length and int(content_length) > MAX_MANIFEST_BYTES:
+        raise InstallError(
+            f"manifest too large per Content-Length ({content_length} bytes; "
+            f"max {MAX_MANIFEST_BYTES})"
+        )
     text = r.text
     if len(text.encode("utf-8")) > MAX_MANIFEST_BYTES:
         raise InstallError(
