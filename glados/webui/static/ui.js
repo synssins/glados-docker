@@ -2592,9 +2592,314 @@ function schedulePluginsPoll() {
   }, 30000);
 }
 
-// Stubs filled in by T8/T10/T11. Defined here so wire-up doesn't
-// throw before those tasks land.
-function openPluginConfigModal(slug) { /* T8 */ }
+// ── Plugin configuration modal (T8) ───────────────────────────────
+// Gear icon → centered modal with three tabs (Configuration / Logs /
+// About). Configuration tab auto-renders the install form from the
+// manifest + current runtime values. Secrets are masked as '***' on
+// read; unchanged secrets post back as '***' so the server-side merge
+// (T4) preserves the original value.
+
+async function openPluginConfigModal(slug) {
+  // Fetch detail.
+  let detail;
+  try {
+    const r = await fetch('/api/plugins/' + encodeURIComponent(slug),
+                          { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    detail = await r.json();
+  } catch (e) {
+    showToast('Failed to load plugin: ' + e.message, 'error');
+    return;
+  }
+
+  const m = detail.manifest || {};
+  const title = m.title || m.name || slug;
+
+  const modal = createModal({
+    title: title,
+    body: renderPluginModalBody(detail),
+    width: 720,
+    confirmIfDirty: true,
+  });
+
+  // Wire tab switching.
+  modal.body.querySelectorAll('[data-tab]').forEach(btn => {
+    btn.addEventListener('click', () => switchPluginTab(modal, btn.dataset.tab));
+  });
+
+  // Wire Save.
+  const saveBtn = modal.body.querySelector('[data-action="save-plugin"]');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => savePluginRuntime(slug, modal));
+  }
+
+  // Track dirty state — any input/select change marks the modal as dirty
+  // so click-outside / Esc / Cancel asks for confirmation.
+  modal.body.querySelectorAll('[data-role="config-form"] input, [data-role="config-form"] select').forEach(el => {
+    el.addEventListener('input', () => { modal.markDirty(); });
+    el.addEventListener('change', () => { modal.markDirty(); });
+  });
+
+  // Default tab.
+  switchPluginTab(modal, 'config');
+
+  modal.show();
+}
+
+function renderPluginModalBody(detail) {
+  let h = '';
+  // Tabs.
+  h += '<div class="modal-tabs">';
+  h += '  <button type="button" class="modal-tab" data-tab="config">Configuration</button>';
+  h += '  <button type="button" class="modal-tab" data-tab="logs">Logs</button>';
+  h += '  <button type="button" class="modal-tab" data-tab="about">About</button>';
+  h += '</div>';
+
+  // Configuration tab pane.
+  h += '<div class="modal-pane" data-pane="config">';
+  h += renderConfigForm(detail);
+  h += '<div class="modal-actions">';
+  h += '  <span class="save-result" data-role="save-result"></span>';
+  h += '  <button type="button" class="btn btn-secondary" data-action="close-modal">Cancel</button>';
+  h += '  <button type="button" class="btn btn-primary" data-action="save-plugin">Save</button>';
+  h += '</div>';
+  h += '</div>';
+
+  // Logs + About panes — populated in T9.
+  h += '<div class="modal-pane" data-pane="logs"><div class="mode-desc">Loading logs…</div></div>';
+  h += '<div class="modal-pane" data-pane="about">' + renderAboutPane(detail) + '</div>';
+  return h;
+}
+
+function renderConfigForm(detail) {
+  const m = detail.manifest || {};
+  const rt = detail.runtime || {};
+  const secretMask = detail.secrets || {};
+
+  // Pick the active package or remote based on runtime indices.
+  const packages = m.packages || [];
+  const remotes = m.remotes || [];
+  const pkg = (rt.package_index !== null && rt.package_index !== undefined && packages[rt.package_index])
+              ? packages[rt.package_index] : null;
+  const remote = (rt.remote_index !== null && rt.remote_index !== undefined && remotes[rt.remote_index])
+                 ? remotes[rt.remote_index] : null;
+
+  let h = '<form class="plugin-config-form" data-role="config-form" onsubmit="return false;">';
+  let anySection = false;
+
+  if (pkg && pkg.environmentVariables && pkg.environmentVariables.length) {
+    h += '<div class="form-section">';
+    h += '<h4>Environment variables</h4>';
+    for (const ev of pkg.environmentVariables) {
+      h += renderFormField('env', ev, rt.env_values || {}, secretMask);
+    }
+    h += '</div>';
+    anySection = true;
+  }
+
+  if (remote && remote.headers && remote.headers.length) {
+    h += '<div class="form-section">';
+    h += '<h4>Headers</h4>';
+    for (const hd of remote.headers) {
+      h += renderFormField('header', hd, rt.header_values || {}, secretMask);
+    }
+    h += '</div>';
+    anySection = true;
+  }
+
+  if (pkg && pkg.packageArguments && pkg.packageArguments.length) {
+    // Hide arguments where a literal value is hard-coded — operator
+    // can't override those.
+    const visible = pkg.packageArguments.filter(a => !a.value);
+    if (visible.length) {
+      h += '<div class="form-section">';
+      h += '<h4>Arguments</h4>';
+      for (const arg of visible) {
+        h += renderFormField('arg', arg, rt.arg_values || {}, secretMask);
+      }
+      h += '</div>';
+      anySection = true;
+    }
+  }
+
+  if (!anySection) {
+    h += '<div class="mode-desc" style="color:var(--fg-muted);">'
+       + 'This plugin has no operator-configurable values.'
+       + '</div>';
+  }
+
+  h += '</form>';
+  return h;
+}
+
+function renderFormField(group, spec, values, secretMask) {
+  // For arguments, prefer name; fall back to valueHint when the arg is
+  // positional + unnamed (then valueHint is the storage key).
+  const name = spec.name || spec.valueHint || '';
+  if (!name) return '';
+  const value = values[name] !== undefined ? values[name] : '';
+  const requiredMark = spec.isRequired ? '<span class="required-mark">*</span>' : '';
+  const placeholder = spec.default ? ('default: ' + spec.default) : '';
+  const description = spec.description || '';
+
+  let inputHtml;
+  if (spec.isSecret) {
+    const mask = secretMask[name] !== undefined ? '***' : '';
+    inputHtml = '<input type="password" name="' + escAttr(name) +
+                '" data-group="' + group + '" data-secret="1" value="' +
+                escAttr(mask) + '" placeholder="' + escAttr(placeholder) + '">';
+  } else if (spec.choices && spec.choices.length) {
+    let opts = '<option value=""></option>';
+    for (const c of spec.choices) {
+      const sel = (String(c) === String(value)) ? ' selected' : '';
+      opts += '<option' + sel + ' value="' + escAttr(c) + '">' + escAttr(c) + '</option>';
+    }
+    inputHtml = '<select name="' + escAttr(name) + '" data-group="' + group + '">' + opts + '</select>';
+  } else if (spec.format === 'url') {
+    inputHtml = '<input type="url" name="' + escAttr(name) +
+                '" data-group="' + group + '" value="' + escAttr(value) +
+                '" placeholder="' + escAttr(placeholder) + '">';
+  } else {
+    inputHtml = '<input type="text" name="' + escAttr(name) +
+                '" data-group="' + group + '" value="' + escAttr(value) +
+                '" placeholder="' + escAttr(placeholder) + '">';
+  }
+  return '<div class="form-field">' +
+         '  <label>' + escAttr(name) + requiredMark + '</label>' +
+         '  ' + inputHtml +
+         '  ' + (description ? '<div class="field-desc">' + escAttr(description) + '</div>' : '') +
+         '</div>';
+}
+
+function switchPluginTab(modal, tabName) {
+  modal.body.querySelectorAll('.modal-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tabName);
+  });
+  modal.body.querySelectorAll('.modal-pane').forEach(p => {
+    p.style.display = (p.dataset.pane === tabName) ? 'block' : 'none';
+  });
+  if (tabName === 'logs') {
+    loadPluginLogs(modal);  // T9
+  }
+}
+
+async function savePluginRuntime(slug, modal) {
+  const form = modal.body.querySelector('[data-role="config-form"]');
+  const result = modal.body.querySelector('[data-role="save-result"]');
+  if (!form) return;
+
+  const env_values = {};
+  const header_values = {};
+  const arg_values = {};
+  const secrets = {};
+
+  form.querySelectorAll('input, select').forEach(el => {
+    const grp = el.dataset.group;
+    const name = el.name;
+    const isSecret = el.dataset.secret === '1';
+    const v = el.value;
+    if (!name) return;
+    if (isSecret) {
+      // Empty + masked → leave alone. Operator typed real new value → send.
+      if (v === '***' || v === '') {
+        secrets[name] = '***';  // sentinel: server preserves the original
+      } else {
+        secrets[name] = v;
+      }
+      return;
+    }
+    if (grp === 'env') env_values[name] = v;
+    else if (grp === 'header') header_values[name] = v;
+    else if (grp === 'arg') arg_values[name] = v;
+  });
+
+  if (result) {
+    result.textContent = 'Saving…';
+    result.style.color = 'var(--fg-secondary)';
+  }
+  try {
+    const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ env_values, header_values, arg_values, secrets }),
+    });
+    if (!r.ok) {
+      let msg;
+      try { msg = (await r.json()).error || ('HTTP ' + r.status); }
+      catch (_) { msg = 'HTTP ' + r.status; }
+      throw new Error(msg);
+    }
+    if (result) result.textContent = '';
+    showToast('Plugin saved', 'success');
+    modal.clearDirty();
+    modal.close();
+    loadPluginsPanel();
+  } catch (e) {
+    if (result) {
+      result.textContent = 'Save failed: ' + e.message;
+      result.style.color = 'var(--red)';
+    }
+  }
+}
+
+// ── Generic centered-modal helper ─────────────────────────────────
+// Used by the plugin config modal (T8). May grow other consumers
+// later; keep the API minimal for now.
+function createModal({ title, body, width, confirmIfDirty }) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal-box" style="width:' + (width || 600) + 'px;">' +
+    '  <div class="modal-header">' +
+    '    <h3 class="modal-title">' + escAttr(title || '') + '</h3>' +
+    '    <button type="button" class="modal-close" data-action="close-modal" aria-label="Close">×</button>' +
+    '  </div>' +
+    '  <div class="modal-body">' + body + '</div>' +
+    '</div>';
+
+  let dirty = false;
+  const wantsConfirm = !!confirmIfDirty;
+
+  const tryClose = () => {
+    if (dirty && wantsConfirm) {
+      const ok = confirm('You have unsaved changes. Discard them?');
+      if (!ok) return;
+    }
+    close();
+  };
+  const close = () => {
+    document.removeEventListener('keydown', escHandler);
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  };
+  const escHandler = (ev) => { if (ev.key === 'Escape') tryClose(); };
+
+  overlay.addEventListener('click', (ev) => {
+    // Close on backdrop click or any element with data-action="close-modal".
+    const t = ev.target;
+    if (t === overlay) { tryClose(); return; }
+    if (t && t.closest && t.closest('[data-action="close-modal"]')) { tryClose(); return; }
+  });
+
+  return {
+    body: overlay,
+    show() {
+      document.body.appendChild(overlay);
+      document.addEventListener('keydown', escHandler);
+    },
+    close,
+    markDirty() { dirty = true; },
+    clearDirty() { dirty = false; },
+  };
+}
+
+// T9 stubs — keep call sites working before T9 lands.
+function loadPluginLogs(_modal) { /* T9 */ }
+function renderAboutPane(_detail) {
+  // T9 will replace this with a real About pane.
+  return '<div class="mode-desc" style="color:var(--fg-muted);">About details coming soon.</div>';
+}
+
 function renderAddByUrlCard() { return ''; /* T10 */ }
 function wireAddByUrlHandlers() { /* T10 */ }
 function renderBrowseCard() { return ''; /* T11 */ }
