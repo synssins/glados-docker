@@ -1766,11 +1766,59 @@ def _stream_chat_sse_impl(
             logger.debug("Entity resolve failed: {}", _e)
         return args
 
-    # Reinforce tool use - the personality preprompt few-shot examples show
-    # text-only responses which biases the model against calling tools.
-    # SKIP for chitchat: the reinforcement message pushes the model toward
-    # device-oriented framing even when there's no device in play.
-    if glados.mcp_manager and is_home_command:
+    # Phase 2c — run plugin intent FIRST. Operator-declared keywords are a
+    # more specific signal than the legacy HA-shaped `is_home_command`
+    # classifier; when a plugin matches, that plugin owns the tool list
+    # regardless of whether the verb tripped is_home_command. Without this
+    # ordering, queries like "Check my movie library" classify as
+    # home_command, advertise ALL tools (including 41 *arr ones), but the
+    # HA-bias system prompt below tells the model to ignore non-HA tools —
+    # so the *arr tools are visible but unused.
+    _matched_plugins: list = []
+    if glados.mcp_manager:
+        try:
+            from glados.plugins import discover_plugins
+            from glados.plugins.intent import match_plugins
+            from glados.plugins.triage import triage_plugins
+            _enabled_plugins = discover_plugins()
+            _matched_plugins = match_plugins(user_message, _enabled_plugins)
+            if _matched_plugins:
+                logger.info(
+                    "[{}] plugin intent: keyword matched: {}",
+                    request_id, [p.name for p in _matched_plugins],
+                )
+            else:
+                _triaged = triage_plugins(user_message, _enabled_plugins)
+                if _triaged:
+                    _matched_plugins = [
+                        p for p in _enabled_plugins if p.name in _triaged
+                    ]
+                    logger.info(
+                        "[{}] plugin intent: triage matched: {}",
+                        request_id, list(_triaged),
+                    )
+                else:
+                    logger.info("[{}] plugin intent: no match", request_id)
+        except Exception as _intent_exc:
+            logger.debug(
+                "[{}] plugin intent gate skipped: {}",
+                request_id, _intent_exc,
+            )
+
+    # Build tool definitions. Plugin-intent wins; HA path is the no-plugin
+    # fallback. Chitchat with no plugin match gets an empty tool list.
+    tools: list[dict[str, Any]] = []
+    if _matched_plugins and glados.mcp_manager:
+        try:
+            tools = glados.mcp_manager.get_tool_definitions(
+                server_filter={p.name for p in _matched_plugins},
+            )
+        except Exception:
+            pass
+    elif glados.mcp_manager and is_home_command:
+        # Legacy HA path: no plugin matched, query smells home-command.
+        # Insert the HA-bias hint so the model favors HA-shaped tool calls,
+        # then advertise the full tool catalog + builtins.
         _tool_hint = {
             "role": "system",
             "content": (
@@ -1778,63 +1826,12 @@ def _stream_chat_sse_impl(
             ),
         }
         messages.insert(len(messages) - 1, _tool_hint)
-
-    # Build tool definitions - MCP/HA tools only (static tools like do_nothing,
-    # robot_move etc. are for the engine autonomy loop, not WebUI chat).
-    # Chitchat turns get an empty tool list — nothing to call, nothing to
-    # bloat the prompt with — UNLESS the Phase 2c plugin intent gates fire.
-    tools: list[dict[str, Any]] = []
-    if glados.mcp_manager and is_home_command:
         try:
             tools = glados.mcp_manager.get_tool_definitions()
         except Exception:
             pass
-    elif glados.mcp_manager and not is_home_command:
-        # Phase 2c — plugin intent routing on the chitchat path. The
-        # legacy is_home_command gate is HA-shaped and silently skips
-        # plugin tools (e.g. *arr Stack) on queries like "what movies
-        # do I have." Two-stage match: zero-latency keyword pre-filter,
-        # then small-fast triage LLM if the keyword pass missed.
-        try:
-            from glados.plugins import discover_plugins
-            from glados.plugins.intent import match_plugins
-            from glados.plugins.triage import triage_plugins
-            _enabled_plugins = discover_plugins()
-            _matched = match_plugins(user_message, _enabled_plugins)
-            if _matched:
-                _names = [p.name for p in _matched]
-                logger.info(
-                    "[{}] plugin intent: keyword matched: {}",
-                    request_id, _names,
-                )
-            else:
-                _triaged = triage_plugins(user_message, _enabled_plugins)
-                if _triaged:
-                    _names = list(_triaged)
-                    _matched = [p for p in _enabled_plugins if p.name in _triaged]
-                    logger.info(
-                        "[{}] plugin intent: triage matched: {}",
-                        request_id, _names,
-                    )
-                else:
-                    _names = []
-                    logger.info("[{}] plugin intent: no match", request_id)
-            if _matched:
-                tools = glados.mcp_manager.get_tool_definitions(
-                    server_filter={p.name for p in _matched},
-                )
-        except Exception as _intent_exc:
-            logger.debug(
-                "[{}] plugin intent gate skipped: {}",
-                request_id, _intent_exc,
-            )
-    # Phase 8.3.4b — append the in-process built-in tools
-    # (search_entities, get_entity_details). Always available when
-    # we're on the home-command path, regardless of whether any
-    # remote MCP server is configured. Gives the Tier 3 planner a
-    # direct hook into the semantic retriever without having to
-    # ship a separate MCP server.
-    if is_home_command:
+        # Phase 8.3.4b builtins (search_entities, get_entity_details) — only
+        # on the legacy HA path. Plugin path uses plugin-declared tools only.
         try:
             from glados.core.builtin_tools import get_builtin_tool_definitions
             tools = list(tools) + get_builtin_tool_definitions()
