@@ -1845,30 +1845,30 @@ def _stream_chat_sse_impl(
     # path (qwen2.5:14b-instruct vs the retired glados:latest Modelfile) —
     # persona strength is more sensitive to these parameters when no SYSTEM
     # is baked into the Modelfile.
-    # Phase 8.0.1 — Qwen3 thinking-mode suppression on the Tier 3 chat
-    # path. Prevents the model from emitting a long <think>…</think>
-    # prelude on each tool round, which was blowing the output budget
-    # before a user-visible answer could be produced (see the
-    # "It's too bright in the office" investigation in Change 14.3).
-    # Reasoning gate: home commands / tool-call turns benefit from the
-    # hybrid model's thinking mode (entity disambiguation, tool selection,
-    # multi-step planning). Pure chitchat turns short-circuit straight to
-    # /no_think for ~2-5 s replies instead of 30+ s reasoning chains. The
-    # hybrid Qwen3-30B-A3B (NOT the -thinking-2507 variant) honours both
-    # /think and /no_think directives at chat-template level.
+    # Phase 8.0.1 / Phase 2c — thinking + budget track tool advertisement,
+    # not the legacy is_home_command classifier. Reasoning: any time tools
+    # are advertised to the model (HA path, plugin-intent path, future
+    # cataloged plugins), the model needs deliberation budget for tool
+    # selection AND output budget for tool_call JSON + post-result text.
+    # Pure chitchat (no tools) gets the original 512-token cap and
+    # /no_think for ~2-5 s replies. The hybrid Qwen3-30B-A3B (NOT the
+    # -thinking-2507 variant) honours both /think and /no_think at
+    # chat-template level. Generic across all tool-advertising paths;
+    # not coupled to is_home_command.
+    _has_tools = bool(tools)
     from glados.core.llm_directives import apply_model_family_directives
     messages = apply_model_family_directives(
-        messages, glados.llm_model, enable_thinking=is_home_command,
+        messages, glados.llm_model, enable_thinking=_has_tools,
     )
-    # 2026-04-20 — cap num_predict on Tier 3 so a confused model
-    # can't produce a 2000+ token essay when it mis-reads context
-    # (observed live: "What level is the desk lamp set to?" came
-    # back as a 2430-token markdown summary of the weather data
-    # that had bled in from autonomy writes). The preprompt asks
-    # for 1–2 sentences; 512 tokens is a 4x safety margin that
-    # still prevents runaway generation.
+    # num_predict budget — when tools are advertised, the model may emit
+    # a <think> chain + tool_call JSON + post-tool result analysis +
+    # final user-visible answer across 1-3 streaming rounds. 2048 fits
+    # within the 12K-ctx envelope after typical input (~6K) and gives
+    # headroom for multi-round flows; the original 512 cap was sized
+    # for chitchat-only and starves tool-using turns of the budget needed
+    # to produce a final user reply.
     _streaming_options = dict(cfg.personality.model_options.to_ollama_options())
-    _streaming_options.setdefault("num_predict", 512)
+    _streaming_options.setdefault("num_predict", 2048 if _has_tools else 512)
     payload: dict[str, Any] = {
         "model": glados.llm_model,
         "stream": True,
@@ -1883,10 +1883,19 @@ def _stream_chat_sse_impl(
         payload["stream_options"] = {"include_usage": True}
     if tools:
         payload["tools"] = tools
+    # Route marker reflects actual tool-routing decision, not just the
+    # legacy is_home_command flag (which can be true even when plugin
+    # intent overrides — confusing during debugging).
+    if _matched_plugins:
+        _route = "plugin:" + ",".join(p.name for p in _matched_plugins)
+    elif is_home_command:
+        _route = "ha"
+    else:
+        _route = "chitchat"
     logger.success(
-        "[{}] SSE: {} msgs, {} tools (mode={})",
+        "[{}] SSE: {} msgs, {} tools, num_predict={} (route={})",
         request_id, len(messages), len(tools),
-        "home_command" if is_home_command else "chitchat",
+        _streaming_options.get("num_predict"), _route,
     )
     body = json.dumps(payload).encode("utf-8")
 
