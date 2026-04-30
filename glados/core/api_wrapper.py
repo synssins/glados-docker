@@ -1845,20 +1845,21 @@ def _stream_chat_sse_impl(
     # path (qwen2.5:14b-instruct vs the retired glados:latest Modelfile) —
     # persona strength is more sensitive to these parameters when no SYSTEM
     # is baked into the Modelfile.
-    # Phase 8.0.1 / Phase 2c — thinking + budget track tool advertisement,
-    # not the legacy is_home_command classifier. Reasoning: any time tools
-    # are advertised to the model (HA path, plugin-intent path, future
-    # cataloged plugins), the model needs deliberation budget for tool
-    # selection AND output budget for tool_call JSON + post-result text.
-    # Pure chitchat (no tools) gets the original 512-token cap and
-    # /no_think for ~2-5 s replies. The hybrid Qwen3-30B-A3B (NOT the
-    # -thinking-2507 variant) honours both /think and /no_think at
-    # chat-template level. Generic across all tool-advertising paths;
-    # not coupled to is_home_command.
+    # Phase 8.0.1 — Qwen3 thinking mode is unconditionally OFF on the
+    # Tier 3 chat path. The original design already documented this:
+    # thinking emits a long <think>…</think> prelude that blows the
+    # output budget before the user-visible answer can be produced,
+    # AND triggers a separate LM Studio runtime crash (Exit code
+    # 3221226505) when combined with multi-round tool calling on
+    # heavy tool catalogs (~40+ tool defs). Verified live 2026-04-29
+    # against qwen3-30b-a3b at ctx=12288. Disabling thinking is the
+    # generic fix across HA + plugin-intent + any future tool-using
+    # path; tool selection works fine without it for catalogs
+    # operators are likely to install.
     _has_tools = bool(tools)
     from glados.core.llm_directives import apply_model_family_directives
     messages = apply_model_family_directives(
-        messages, glados.llm_model, enable_thinking=_has_tools,
+        messages, glados.llm_model, enable_thinking=False,
     )
     # num_predict budget — when tools are advertised, the model may emit
     # a <think> chain + tool_call JSON + post-tool result analysis +
