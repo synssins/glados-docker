@@ -1862,13 +1862,16 @@ def _stream_chat_sse_impl(
     )
     # num_predict budget — when tools are advertised, the model may emit
     # a <think> chain + tool_call JSON + post-tool result analysis +
-    # final user-visible answer across 1-3 streaming rounds. 2048 fits
-    # within the 12K-ctx envelope after typical input (~6K) and gives
-    # headroom for multi-round flows; the original 512 cap was sized
-    # for chitchat-only and starves tool-using turns of the budget needed
-    # to produce a final user reply.
+    # final user-visible answer across 1-3 streaming rounds. Sized at
+    # 1024 to fit within a 12K-ctx envelope after typical input grows
+    # to ~10K from heavy tool catalogs (41 tools × ~150 tokens of JSON
+    # schema = ~6K alone, plus history + persona). Operators with
+    # heavier catalogs and ctx headroom can override via
+    # personality.model_options.num_predict. The original 512 cap was
+    # sized for chitchat-only and starves tool-using turns of the budget
+    # needed to produce a final user reply.
     _streaming_options = dict(cfg.personality.model_options.to_ollama_options())
-    _streaming_options.setdefault("num_predict", 2048 if _has_tools else 512)
+    _streaming_options.setdefault("num_predict", 1024 if _has_tools else 512)
     payload: dict[str, Any] = {
         "model": glados.llm_model,
         "stream": True,
