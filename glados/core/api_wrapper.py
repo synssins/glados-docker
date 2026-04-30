@@ -2037,6 +2037,52 @@ def _stream_chat_sse_impl(
         handler.wfile.flush()
 
     full_response: list[str] = []
+    _upstream_errors_emitted = False  # prevent duplicate emissions across rounds
+
+    def _emit_upstream_error_to_sse(error_payload: Any, *, round_label: str) -> None:
+        """Surface an LM Studio (or other upstream) error chunk into the
+        WebUI bubble as a visible content chunk + persist it as the
+        assistant turn.
+
+        Empty bubbles must never happen silently again. The chat-path
+        diag captures the error chunk; this helper makes it visible to
+        the operator without log-diving.
+
+        Tolerant: if the SSE client has already disconnected the write
+        will raise BrokenPipeError and we swallow it — the diag log has
+        the message anyway. ``full_response`` carries the user-facing
+        text so the conversation store has something better than '' to
+        save as the assistant turn.
+        """
+        nonlocal _upstream_errors_emitted
+        msg: str = ""
+        if isinstance(error_payload, dict):
+            msg = str(error_payload.get("message") or error_payload)
+        elif error_payload is not None:
+            msg = str(error_payload)
+        if not msg:
+            return
+        text = f"[Upstream error ({round_label}): {msg}]"
+        full_response.append(text)
+        chunk = {
+            "id": f"chatcmpl-{request_id}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": "glados",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": text},
+                "finish_reason": None,
+            }],
+        }
+        try:
+            handler.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            handler.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # Client disconnected — diag log still captured the message.
+            pass
+        _upstream_errors_emitted = True
+
     t_stream_start = time.time()
     t_first_token = None
     ollama_metrics: dict[str, Any] = {}
@@ -2191,6 +2237,9 @@ def _stream_chat_sse_impl(
                             _log_chat_round1.warning(
                                 "[{}] r1 upstream error chunk: {!r}",
                                 request_id, parsed["error"],
+                            )
+                            _emit_upstream_error_to_sse(
+                                parsed["error"], round_label="round 1"
                             )
                         # OpenAI-compat sends `usage` in a terminal chunk
                         # with choices=[] when stream_options.include_usage
@@ -2552,6 +2601,9 @@ def _stream_chat_sse_impl(
                                     _log_chat_round2.warning(
                                         "[{}] r2 upstream error chunk: {!r}",
                                         request_id, _pp2["error"],
+                                    )
+                                    _emit_upstream_error_to_sse(
+                                        _pp2["error"], round_label="round 2"
                                     )
                                 _u2 = _pp2.get("usage")
                                 if isinstance(_u2, dict):
