@@ -2218,6 +2218,15 @@ def _stream_chat_sse_impl(
             _h2 = {"Content-Type": "application/json", "Content-Length": str(len(_b2))}
             if glados.api_key:
                 _h2["Authorization"] = f"Bearer {glados.api_key}"
+            # Diagnostic accumulators for the round-2 stream. Logged at end
+            # of round so we can see exactly what LM Studio sent back vs
+            # what reached the WebUI. Pure observability — no behaviour
+            # change. Remove once the empty-bubble bug is rooted.
+            _r2_chunks = 0
+            _r2_raw_buf: list[str] = []
+            _r2_visible_buf: list[str] = []
+            _r2_tool_deltas = 0
+            _r2_finish_reason = None
             try:
                 _c2 = _http.HTTPConnection(parsed_url.hostname or "localhost", parsed_url.port or 11434, timeout=int(timeout))
                 _c2.request("POST", parsed_url.path, body=_b2, headers=_h2)
@@ -2238,11 +2247,16 @@ def _stream_chat_sse_impl(
                         else:
                             try:
                                 _pp2 = json.loads(_js2)
-                                _d2 = _pp2.get("choices", [{}])[0].get("delta", {})
+                                _ch_obj = _pp2.get("choices", [{}])[0]
+                                _d2 = _ch_obj.get("delta", {})
                                 _content2 = _d2.get("content")
+                                _fr = _ch_obj.get("finish_reason")
+                                if _fr:
+                                    _r2_finish_reason = _fr
                                 _ttc = _d2.get("tool_calls")
                                 if _ttc:
                                     pending_tool_calls.extend(_ttc)
+                                    _r2_tool_deltas += len(_ttc)
                             except (json.JSONDecodeError, IndexError):
                                 pass
                     else:
@@ -2259,9 +2273,12 @@ def _stream_chat_sse_impl(
                                 _ttc = _m2.get("tool_calls")
                                 if _ttc:
                                     pending_tool_calls.extend(_ttc)
+                                    _r2_tool_deltas += len(_ttc)
                         except json.JSONDecodeError:
                             continue
                     if _content2:
+                        _r2_chunks += 1
+                        _r2_raw_buf.append(_content2)
                         if t_first_token is None:
                             t_first_token = time.time()
                         # Phase 8.0.1 — the tool-loop continuation
@@ -2274,6 +2291,7 @@ def _stream_chat_sse_impl(
                         # conversation_store save at the finally block.
                         _visible2 = _filter_think_chunk(_content2)
                         if _visible2:
+                            _r2_visible_buf.append(_visible2)
                             full_response.append(_visible2)
                             _cd2 = {"id": f"chatcmpl-{request_id}", "object": "chat.completion.chunk", "created": int(time.time()), "model": "glados", "choices": [{"index": 0, "delta": {"content": _visible2}, "finish_reason": None}]}
                             handler.wfile.write(f"data: {json.dumps(_cd2)}\n\n".encode())
@@ -2283,6 +2301,25 @@ def _stream_chat_sse_impl(
                 _c2.close()
             except Exception as _e2:
                 logger.error("[{}] Tool follow-up error: {}", request_id, _e2)
+            # Diagnostic dump — see what round 2 actually emitted.
+            _r2_raw_full = "".join(_r2_raw_buf)
+            _r2_visible_full = "".join(_r2_visible_buf)
+            logger.info(
+                "[{}] round-2 diag: chunks={} raw_chars={} visible_chars={} "
+                "tool_deltas={} finish_reason={!r}",
+                request_id, _r2_chunks, len(_r2_raw_full), len(_r2_visible_full),
+                _r2_tool_deltas, _r2_finish_reason,
+            )
+            if _r2_raw_full:
+                logger.info(
+                    "[{}] round-2 raw[:500]: {!r}",
+                    request_id, _r2_raw_full[:500],
+                )
+            if _r2_visible_full:
+                logger.info(
+                    "[{}] round-2 visible[:500]: {!r}",
+                    request_id, _r2_visible_full[:500],
+                )
 
         t_stream_end = time.time()
 
