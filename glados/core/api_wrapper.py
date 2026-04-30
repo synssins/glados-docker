@@ -2052,6 +2052,15 @@ def _stream_chat_sse_impl(
         think_state["tail"] = buf[i:]
         return "".join(out)
 
+    # Round-1 stream diagnostics — same shape as the round-2 ones added
+    # alongside this commit. Pure observability so the empty-bubble
+    # investigation has direct evidence rather than inference.
+    _r1_chunks = 0
+    _r1_raw_buf: list[str] = []
+    _r1_visible_buf: list[str] = []
+    _r1_tool_deltas = 0
+    _r1_finish_reason = None
+
     try:
         while True:
             raw_line = api_resp.readline()
@@ -2087,9 +2096,13 @@ def _stream_chat_sse_impl(
                         if _choices:
                             delta = _choices[0].get("delta", {})
                             content = delta.get("content")
+                            _fr = _choices[0].get("finish_reason")
+                            if _fr:
+                                _r1_finish_reason = _fr
                             _tc = delta.get("tool_calls")
                             if _tc:
                                 pending_tool_calls.extend(_tc)
+                                _r1_tool_deltas += len(_tc)
                     except json.JSONDecodeError:
                         pass
             else:
@@ -2109,14 +2122,18 @@ def _stream_chat_sse_impl(
                         _tc = msg.get("tool_calls")
                         if _tc:
                             pending_tool_calls.extend(_tc)
+                            _r1_tool_deltas += len(_tc)
                 except json.JSONDecodeError:
                     continue
 
             if content:
+                _r1_chunks += 1
+                _r1_raw_buf.append(content)
                 if t_first_token is None:
                     t_first_token = time.time()
                 visible = _filter_think_chunk(content)
                 if visible:
+                    _r1_visible_buf.append(visible)
                     full_response.append(visible)
                     # Emit SSE chunk in OpenAI format
                     chunk_data = {
@@ -2139,6 +2156,7 @@ def _stream_chat_sse_impl(
                 if think_state["tail"]:
                     tail_visible = "" if think_state["in_thinking"] else think_state["tail"]
                     if tail_visible:
+                        _r1_visible_buf.append(tail_visible)
                         full_response.append(tail_visible)
                         chunk_data = {
                             "id": f"chatcmpl-{request_id}",
@@ -2155,6 +2173,26 @@ def _stream_chat_sse_impl(
                         handler.wfile.flush()
                     think_state["tail"] = ""
                 break
+
+        # Diagnostic dump — see what round 1 actually emitted.
+        _r1_raw_full = "".join(_r1_raw_buf)
+        _r1_visible_full = "".join(_r1_visible_buf)
+        logger.info(
+            "[{}] round-1 diag: chunks={} raw_chars={} visible_chars={} "
+            "tool_deltas={} finish_reason={!r}",
+            request_id, _r1_chunks, len(_r1_raw_full), len(_r1_visible_full),
+            _r1_tool_deltas, _r1_finish_reason,
+        )
+        if _r1_raw_full:
+            logger.info(
+                "[{}] round-1 raw[:500]: {!r}",
+                request_id, _r1_raw_full[:500],
+            )
+        if _r1_visible_full:
+            logger.info(
+                "[{}] round-1 visible[:500]: {!r}",
+                request_id, _r1_visible_full[:500],
+            )
 
         # ── Agentic tool loop ─────────────────────────────────────
         _tool_round = 0

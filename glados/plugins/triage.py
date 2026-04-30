@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
@@ -84,10 +85,17 @@ def triage_plugins(
     * The LLM call times out, errors, or returns unparseable content
     """
     if not _enabled():
+        logger.info("plugin triage: skipped (GLADOS_PLUGIN_TRIAGE_ENABLED falsy)")
         return []
     if not plugins or not message or not message.strip():
         return []
 
+    plugin_names = [p.name for p in plugins]
+    logger.info(
+        "plugin triage: invoking llm_triage slot ({} plugins in catalog: {})",
+        len(plugin_names), plugin_names,
+    )
+    t0 = time.time()
     try:
         config = LLMConfig.for_slot("llm_triage", timeout=timeout_s)
         # Determinism matters here; the temperature kwarg isn't
@@ -101,11 +109,21 @@ def triage_plugins(
             json_response=True,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("plugin triage: LLM call raised: {}", exc)
+        logger.warning(
+            "plugin triage: LLM call raised after {:.0f}ms: {}",
+            (time.time() - t0) * 1000, exc,
+        )
         return []
 
+    elapsed_ms = (time.time() - t0) * 1000
     if not raw:
+        logger.info("plugin triage: empty response after {:.0f}ms", elapsed_ms)
         return []
+
+    logger.info(
+        "plugin triage: response in {:.0f}ms, raw[:200]={!r}",
+        elapsed_ms, raw[:200],
+    )
 
     try:
         parsed = json.loads(raw)
@@ -115,7 +133,16 @@ def triage_plugins(
 
     relevant = parsed.get("relevant") if isinstance(parsed, dict) else None
     if not isinstance(relevant, list):
+        logger.info("plugin triage: parsed object missing 'relevant' list; parsed={!r}", parsed)
         return []
 
     enabled_names = {p.name for p in plugins}
-    return [n for n in relevant if isinstance(n, str) and n in enabled_names]
+    matched = [n for n in relevant if isinstance(n, str) and n in enabled_names]
+    dropped = [n for n in relevant if isinstance(n, str) and n not in enabled_names]
+    if dropped:
+        logger.warning(
+            "plugin triage: dropped hallucinated names not in enabled set: {}",
+            dropped,
+        )
+    logger.info("plugin triage: matched={}", matched)
+    return matched

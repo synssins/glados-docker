@@ -20,6 +20,8 @@ import re
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 if TYPE_CHECKING:
     from .loader import Plugin
 
@@ -69,7 +71,11 @@ def match_plugins(message: str, plugins: Iterable["Plugin"]) -> list["Plugin"]:
     Each keyword is itself stemmed before comparison so an operator
     can declare "movies" and still match a user query for "movie"
     (and vice versa). Plugins with empty ``intent_keywords`` are
-    never matched here -- the triage LLM gate handles them."""
+    never matched here -- the triage LLM gate handles them.
+
+    Emits an INFO log for every match identifying the matching keyword
+    AND the user-message word that triggered it, so "why didn't my
+    plugin trigger" debugging is possible from container logs alone."""
     if not message:
         return []
     msg_tokens = _tokens(message)
@@ -79,10 +85,13 @@ def match_plugins(message: str, plugins: Iterable["Plugin"]) -> list["Plugin"]:
         if not keywords:
             continue
         for kw in keywords:
-            # Stem both sides: operator may declare singular OR plural;
-            # message may contain the other form. Set intersection
-            # collapses every variant pair to a single check.
-            if _stems(kw.lower()) & msg_tokens:
+            kw_stems = _stems(kw.lower())
+            hit = kw_stems & msg_tokens
+            if hit:
+                logger.info(
+                    "intent: plugin {!r} matched keyword {!r} via stem {!r}",
+                    plugin.name, kw, sorted(hit)[0],
+                )
                 out.append(plugin)
                 break
     return out
