@@ -4356,3 +4356,92 @@ will migrate over the next ten commits, subsystem by subsystem.
 operator the visual surface to flip toggles without editing YAML by
 hand. Then commit-by-commit instrumentation of every subsystem (chat
 path first, since that is the bug we are actively chasing).
+
+## Change 35 — WebUI Logging page (Configuration → Logging) (2026-04-30)
+
+**Why.** Change 34 landed the per-group log filter foundation, but
+operating it required hand-editing `configs/logging.yaml` over SSH.
+That works for one or two toggles per investigation; it doesn't scale
+to ~50 groups with the granular dial-up/dial-down workflow the
+operator wants. This change adds the operator-facing surface — a
+dedicated Configuration → Logging page with per-group toggles, level
+dropdowns, bulk operations, and a raw-YAML drawer for power users.
+
+**What's in the page.**
+
+- A table of every log group, grouped by category (Chat / Plugin /
+  Autonomy / HA / MCP / TTS / Memory / WebUI / Auth / Lifecycle /
+  Conversation / Config / Filter / Network).
+- Per-row: Enabled toggle, Level dropdown
+  (`DEBUG` / `INFO` / `SUCCESS` / `WARNING`), and a "Recent activity"
+  count showing hits over the last 5 minutes (refreshed every 5 s
+  while the tab is open).
+- Locked-on groups (`auth.audit`) render the toggle disabled with a
+  lock icon.
+- Bulk operations: Enable all / Disable all / Reset to defaults /
+  per-category Enable / per-category Disable.
+- Filter input: free-text search across name, ID, and description.
+- Default-level dropdown for ungrouped logs (legacy `logger.info()`
+  call sites).
+- A banner appears when the `GLADOS_LOG_LEVEL` env var is set,
+  warning the operator that per-group toggles can't lower output
+  below the override floor.
+- Raw YAML drawer: collapsible textarea with Load / Save buttons
+  that round-trips through `configs/logging.yaml` with full schema
+  validation. Schema errors come back inline.
+
+**Server-side**:
+
+- `GET /api/log_groups` — entire registry as JSON, including recent
+  activity counts and the global override level.
+- `POST /api/log_groups/group` — toggle / level for one group.
+- `POST /api/log_groups/bulk` — bulk operations.
+- `POST /api/log_groups/reset` — reset to builtin defaults.
+- `GET  /api/log_groups/yaml` — raw YAML.
+- `POST /api/log_groups/yaml` — atomic save with schema validation.
+
+All routes admin-only. Every mutation emits an audit record via the
+existing `audit()` channel (origin = `webui_chat`, kind =
+`config_change`, principal = the requesting username) so the change
+is observable from the audit log alongside login / role-change /
+configuration-save events.
+
+**Safety:**
+
+- Schema validation before every YAML save — bad input rejected with
+  a 400 + line-level error message, in-memory state preserved.
+- Locked-on groups can't be disabled via UI or YAML save (the
+  registry's `set_group_state` and `replace_config` both refuse).
+- Optimistic UI: each row save patches local state on success, falls
+  back to a full refetch on any error so the displayed state never
+  drifts from the backend.
+- Activity polling tears down when the operator leaves the tab, so
+  the page doesn't burn HTTP traffic in the background.
+
+**Files added:**
+
+- `glados/webui/pages/logging_page.py` — page HTML.
+- `glados/webui/log_groups_endpoints.py` — server-side handlers.
+- `tests/test_log_groups_endpoints.py` — 22 tests covering payload
+  shape, single-group updates, bulk operations, default-level save,
+  raw YAML round-trip, schema validation, locked-on enforcement,
+  unknown-ID rejection, missing-field handling.
+
+**Files modified:**
+
+- `glados/webui/tts_ui.py` — page composition + GET/POST routing for
+  `/api/log_groups/*` (admin-gated, mirrors plugin endpoints).
+- `glados/webui/pages/_shell.py` — sidebar entry under Configuration.
+- `glados/webui/static/ui.js` — page render, filter, save, bulk, raw
+  YAML drawer (~280 lines appended).
+- `glados/webui/static/style.css` — new `.logging-*` classes
+  (toolbar, override banner, category cards, row grid, raw drawer).
+- `docs/CHANGES.md` (this entry).
+
+**Tests:** 1645 → 1667 (22 new), 0 regressions. `pytest -q` runs in
+~55 s.
+
+**Visual verification:** deferred to operator after deploy. The
+WebUI runs in a docker container on the docker host (192.168.1.150);
+this session does not have a local browser preview surface — the
+operator confirms in their actual browser after the next deploy.

@@ -5631,6 +5631,7 @@ function _panelIdFor(key) {
   if (key === 'config.system')  return 'tab-config-system';
   if (key === 'config.memory')  return 'tab-config-memory';
   if (key === 'config.logs')    return 'tab-config-logs';
+  if (key === 'config.logging') return 'tab-config-logging';
   if (key === 'config.plugins') return 'tab-config-plugins';
   if (key && key.indexOf('config.') === 0) return 'tab-config';
   return 'tab-' + key;
@@ -5727,6 +5728,8 @@ function navigateTo(key) {
     if (typeof memoryLoadAll === 'function') memoryLoadAll();
   } else if (key === 'config.logs') {
     if (typeof logsOnTabActivate === 'function') logsOnTabActivate();
+  } else if (key === 'config.logging') {
+    if (typeof loggingOnTabActivate === 'function') loggingOnTabActivate();
   } else if (key === 'config.plugins') {
     if (typeof loadPluginsPage === 'function') loadPluginsPage();
   } else if (key.indexOf('config.') === 0) {
@@ -7476,5 +7479,338 @@ async function trainingStop() {
   } catch(e) {
     showToast('Stop request failed', 'error');
   }
+}
+
+/* ============================================================================
+   Configuration → Logging page (Change 35 — per-group log filter)
+
+   The page renders a table of every log group with a per-row Enabled toggle
+   and Level dropdown, grouped by category. Bulk operations across categories
+   let the operator turn an entire subsystem on/off at once. A Raw YAML drawer
+   exposes configs/logging.yaml directly for power-user editing.
+
+   All endpoints under /api/log_groups/* require admin perms (handled
+   server-side in tts_ui.py before dispatch).
+   ============================================================================ */
+
+let _loggingState = null;            // last full payload from /api/log_groups
+let _loggingFilterText = '';
+let _loggingActivityTimer = null;    // setInterval handle for the activity column
+
+async function loggingOnTabActivate() {
+  // Auth gate: same pattern as the Logs tab.
+  const overlay = document.getElementById('loggingAuthOverlay');
+  const authed = (_currentRole === 'admin');
+  if (overlay) overlay.style.display = authed ? 'none' : 'flex';
+  if (!authed) return;
+
+  await loggingRefresh();
+
+  // Activity counts only refresh while the tab is open.
+  if (_loggingActivityTimer) clearInterval(_loggingActivityTimer);
+  _loggingActivityTimer = setInterval(() => {
+    if (_activeNavKey !== 'config.logging') {
+      clearInterval(_loggingActivityTimer);
+      _loggingActivityTimer = null;
+      return;
+    }
+    loggingRefreshActivityOnly();
+  }, 5000);
+}
+
+async function loggingRefresh() {
+  const status = document.getElementById('loggingStatus');
+  if (status) status.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/log_groups');
+    if (r.status === 401 || r.status === 403) {
+      if (status) status.textContent = 'Authentication required.';
+      return;
+    }
+    if (!r.ok) {
+      if (status) status.textContent = 'Load failed: HTTP ' + r.status;
+      return;
+    }
+    const payload = await r.json();
+    _loggingState = payload;
+    loggingRender();
+    if (status) status.textContent = '';
+  } catch(e) {
+    if (status) status.textContent = 'Load failed: ' + e.message;
+  }
+}
+
+async function loggingRefreshActivityOnly() {
+  // Lightweight repaint: just the recent_5min counts.
+  try {
+    const r = await fetch('/api/log_groups');
+    if (!r.ok) return;
+    const payload = await r.json();
+    if (!_loggingState) { _loggingState = payload; loggingRender(); return; }
+    // Patch counts onto existing state without redrawing the whole table.
+    const byId = {};
+    for (const g of payload.groups) byId[g.id] = g.recent_5min;
+    for (const g of _loggingState.groups) {
+      g.recent_5min = byId[g.id] || 0;
+      const el = document.querySelector(
+        '.logging-row[data-group-id="' + cssEscape(g.id) + '"] .logging-activity'
+      );
+      if (el) el.textContent = String(g.recent_5min);
+    }
+  } catch(e) { /* ignore — best-effort poll */ }
+}
+
+function loggingRender() {
+  if (!_loggingState) return;
+  const root = document.getElementById('loggingTable');
+  if (!root) return;
+
+  // Update default-level dropdown
+  const defSel = document.getElementById('loggingDefaultLevel');
+  if (defSel) defSel.value = _loggingState.default_level || 'SUCCESS';
+
+  // Override banner
+  const banner = document.getElementById('loggingOverrideBanner');
+  const ovLevel = document.getElementById('loggingOverrideLevel');
+  if (_loggingState.global_override_level) {
+    if (banner) banner.style.display = 'block';
+    if (ovLevel) ovLevel.textContent = _loggingState.global_override_level;
+  } else {
+    if (banner) banner.style.display = 'none';
+  }
+
+  // Group by category
+  const byCat = {};
+  for (const g of _loggingState.groups) {
+    const cat = g.category || 'Other';
+    if (!byCat[cat]) byCat[cat] = [];
+    byCat[cat].push(g);
+  }
+  // Stable category order: alpha
+  const cats = Object.keys(byCat).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+  let html = '';
+  const filterTokens = _loggingFilterText.toLowerCase().split(/\s+/).filter(Boolean);
+  for (const cat of cats) {
+    const groups = byCat[cat].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    const visible = groups.filter(g => {
+      if (filterTokens.length === 0) return true;
+      const hay = (g.id + ' ' + g.name + ' ' + (g.description || '')).toLowerCase();
+      return filterTokens.every(t => hay.indexOf(t) !== -1);
+    });
+    if (visible.length === 0) continue;
+    html += '<div class="logging-category">';
+    html += '<div class="logging-category-header">';
+    html += '<div class="logging-category-title">' + escHtml(cat)
+         + ' <span class="logging-category-count">' + visible.length + '</span></div>';
+    html += '<div class="logging-category-actions">';
+    html += '<button class="btn-tiny" onclick="loggingBulk(\'category_enable\', \'' + escAttr(cat) + '\')">Enable category</button>';
+    html += '<button class="btn-tiny" onclick="loggingBulk(\'category_disable\', \'' + escAttr(cat) + '\')">Disable category</button>';
+    html += '</div></div>';
+    html += '<div class="logging-category-rows">';
+    for (const g of visible) {
+      html += loggingRowHtml(g);
+    }
+    html += '</div></div>';
+  }
+  if (!html) html = '<div class="logging-empty">No groups match the filter.</div>';
+  root.innerHTML = html;
+}
+
+function loggingRowHtml(g) {
+  const lvls = (_loggingState && _loggingState.available_levels) || ['DEBUG','INFO','SUCCESS','WARNING'];
+  const lockedHint = g.locked ? ' <span class="logging-lock" title="Locked-on by policy — cannot be disabled.">&#128274;</span>' : '';
+  const enabledAttrs = g.locked ? 'disabled title="Locked-on by policy"' : '';
+  let opts = '';
+  for (const lv of lvls) {
+    opts += '<option value="' + lv + '"' + (lv === g.level ? ' selected' : '') + '>' + lv + '</option>';
+  }
+  return (
+    '<div class="logging-row" data-group-id="' + escAttr(g.id) + '">' +
+      '<div class="logging-row-name" title="' + escAttr(g.id) + '">' +
+        escHtml(g.name) + lockedHint +
+        '<div class="logging-row-id">' + escHtml(g.id) + '</div>' +
+        (g.description
+          ? '<div class="logging-row-desc">' + escHtml(g.description) + '</div>'
+          : '') +
+      '</div>' +
+      '<label class="logging-row-toggle">' +
+        '<input type="checkbox" ' + (g.enabled ? 'checked' : '') + ' ' + enabledAttrs +
+          ' onchange="loggingSaveRow(\'' + escAttr(g.id) + '\', this)">' +
+        '<span>' + (g.enabled ? 'On' : 'Off') + '</span>' +
+      '</label>' +
+      '<select class="logging-row-level" ' + enabledAttrs +
+        ' onchange="loggingSaveRowLevel(\'' + escAttr(g.id) + '\', this.value)">' +
+        opts +
+      '</select>' +
+      '<div class="logging-activity" title="Hits in the last 5 minutes">' + (g.recent_5min || 0) + '</div>' +
+    '</div>'
+  );
+}
+
+function loggingApplyFilter() {
+  const inp = document.getElementById('loggingFilter');
+  _loggingFilterText = inp ? inp.value || '' : '';
+  loggingRender();
+}
+
+async function loggingSaveRow(groupId, checkbox) {
+  const enabled = !!checkbox.checked;
+  await loggingPostUpdate({id: groupId, enabled: enabled});
+}
+
+async function loggingSaveRowLevel(groupId, level) {
+  await loggingPostUpdate({id: groupId, level: level});
+}
+
+async function loggingPostUpdate(body) {
+  try {
+    const r = await fetch('/api/log_groups/group', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showToast(d.error || ('HTTP ' + r.status), 'error');
+      // Roll back: re-fetch authoritative state.
+      await loggingRefresh();
+      return;
+    }
+    showToast('Saved', 'success');
+    // Patch local state so we don't need a full refresh.
+    if (_loggingState && d.group) {
+      for (const g of _loggingState.groups) {
+        if (g.id === d.group.id) {
+          if (typeof d.group.enabled === 'boolean') g.enabled = d.group.enabled;
+          if (typeof d.group.level === 'string') g.level = d.group.level;
+        }
+      }
+    }
+  } catch(e) {
+    showToast('Save failed: ' + e.message, 'error');
+    await loggingRefresh();
+  }
+}
+
+async function loggingSaveDefaultLevel() {
+  const sel = document.getElementById('loggingDefaultLevel');
+  if (!sel) return;
+  try {
+    const r = await fetch('/api/log_groups/bulk', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({op: 'set_default_level', level: sel.value}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showToast(d.error || ('HTTP ' + r.status), 'error');
+      await loggingRefresh();
+      return;
+    }
+    if (_loggingState) _loggingState.default_level = d.default_level;
+    showToast('Default level saved', 'success');
+  } catch(e) {
+    showToast('Save failed: ' + e.message, 'error');
+    await loggingRefresh();
+  }
+}
+
+async function loggingBulk(op, category) {
+  if (op === 'disable_all' || op === 'category_disable') {
+    if (!confirm('Disable all matching log groups? Locked-on groups (auth.audit) will stay enabled.')) return;
+  }
+  const body = {op: op};
+  if (category) body.category = category;
+  try {
+    const r = await fetch('/api/log_groups/bulk', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showToast(d.error || ('HTTP ' + r.status), 'error');
+      return;
+    }
+    showToast(op + ': ' + (d.affected ? d.affected.length : 0) + ' groups changed', 'success');
+    await loggingRefresh();
+  } catch(e) {
+    showToast('Bulk op failed: ' + e.message, 'error');
+  }
+}
+
+async function loggingResetDefaults() {
+  if (!confirm('Reset every log group to its built-in default state? This wipes your customisations.')) return;
+  try {
+    const r = await fetch('/api/log_groups/reset', {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showToast(d.error || ('HTTP ' + r.status), 'error');
+      return;
+    }
+    showToast('Reset to defaults', 'success');
+    await loggingRefresh();
+  } catch(e) {
+    showToast('Reset failed: ' + e.message, 'error');
+  }
+}
+
+function loggingToggleRaw() {
+  const body = document.getElementById('loggingRawBody');
+  const caret = document.getElementById('loggingRawCaret');
+  if (!body) return;
+  const open = (body.style.display !== 'none');
+  body.style.display = open ? 'none' : 'block';
+  if (caret) caret.innerHTML = open ? '&#9656;' : '&#9662;';
+}
+
+async function loggingLoadRaw() {
+  const ta = document.getElementById('loggingRawText');
+  const status = document.getElementById('loggingRawStatus');
+  if (status) status.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/log_groups/yaml');
+    const d = await r.json();
+    if (!r.ok) {
+      if (status) status.textContent = 'Load failed: HTTP ' + r.status;
+      return;
+    }
+    if (ta) ta.value = d.yaml || '';
+    if (status) status.textContent = 'Loaded ' + ((d.yaml || '').length) + ' bytes';
+  } catch(e) {
+    if (status) status.textContent = 'Load failed: ' + e.message;
+  }
+}
+
+async function loggingSaveRaw() {
+  const ta = document.getElementById('loggingRawText');
+  const status = document.getElementById('loggingRawStatus');
+  if (!ta) return;
+  const text = ta.value || '';
+  if (!confirm('Save the textarea contents to configs/logging.yaml? The file is validated before write.')) return;
+  if (status) status.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/log_groups/yaml', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({yaml: text}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      if (status) status.textContent = 'Save failed: ' + (d.error || ('HTTP ' + r.status));
+      return;
+    }
+    if (status) status.textContent = 'Saved.';
+    showToast('Raw YAML saved', 'success');
+    await loggingRefresh();
+  } catch(e) {
+    if (status) status.textContent = 'Save failed: ' + e.message;
+  }
+}
+
+// CSS-escape helper (simplistic — covers the IDs we generate).
+function cssEscape(s) {
+  return String(s).replace(/[^a-zA-Z0-9_\-\.]/g, '\\$&');
 }
 

@@ -1976,6 +1976,14 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_plugins_get()
             return
 
+        # /api/log_groups — admin-only, see Change 35.
+        if self.path == "/api/log_groups" or self.path.startswith("/api/log_groups/") \
+                or self.path.startswith("/api/log_groups?"):
+            if not require_perm(self, "admin"):
+                return
+            self._dispatch_log_groups_get()
+            return
+
         if not require_perm(self, "admin"):
             return
         self._dispatch_get()
@@ -2014,6 +2022,13 @@ class Handler(BaseHTTPRequestHandler):
             if not require_perm(self, "admin"):
                 return
             self._dispatch_plugins_post()
+            return
+
+        # /api/log_groups POST endpoints — admin only.
+        if self.path.startswith("/api/log_groups/") or self.path == "/api/log_groups":
+            if not require_perm(self, "admin"):
+                return
+            self._dispatch_log_groups_post()
             return
 
         if not require_perm(self, "admin"):
@@ -6051,6 +6066,62 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._save_plugin_runtime(rest)
 
+    # ── Log groups — Configuration → Logging page ──────────────────────
+    # Backed by glados/webui/log_groups_endpoints.py. Admin-only;
+    # require_perm checked upstream at do_GET / do_POST dispatch.
+
+    def _dispatch_log_groups_get(self) -> None:
+        from glados.webui import log_groups_endpoints as _lge
+        from urllib.parse import urlparse
+
+        path = urlparse(self.path).path
+        if path == "/api/log_groups":
+            self._send_json(200, _lge.list_groups_payload())
+            return
+        if path == "/api/log_groups/yaml":
+            self._send_json(200, _lge.raw_yaml_payload())
+            return
+        self._send_json(404, {"ok": False, "error": "not found"})
+
+    def _dispatch_log_groups_post(self) -> None:
+        from glados.webui import log_groups_endpoints as _lge
+
+        path = self.path
+        user = ""
+        try:
+            u = _resolve_user_for_request(self)
+            if u:
+                user = u.get("username") or ""
+        except Exception:
+            user = ""
+
+        # Read body (empty allowed for /reset).
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+            body = json.loads(raw) if raw.strip() else {}
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_json(400, {"ok": False, "error": f"invalid JSON: {exc}"})
+            return
+
+        if path == "/api/log_groups/group":
+            code, payload = _lge.update_group(user=user, body=body)
+            self._send_json(code, payload)
+            return
+        if path == "/api/log_groups/bulk":
+            code, payload = _lge.bulk_update(user=user, body=body)
+            self._send_json(code, payload)
+            return
+        if path == "/api/log_groups/reset":
+            code, payload = _lge.reset_to_defaults(user=user)
+            self._send_json(code, payload)
+            return
+        if path == "/api/log_groups/yaml":
+            code, payload = _lge.save_raw_yaml(user=user, body=body)
+            self._send_json(code, payload)
+            return
+        self._send_json(404, {"ok": False, "error": "not found"})
+
     def _get_plugin_indexes(self) -> None:
         urls = list(_cfg.services.plugin_indexes)
         self._send_json(200, {"urls": urls})
@@ -6267,6 +6338,7 @@ from glados.webui.pages import (
     _shell,
     chat,
     integrations,
+    logging_page,
     logs,
     memory,
     system,
@@ -6284,6 +6356,7 @@ HTML_PAGE = (
     + memory.HTML
     + training.HTML
     + logs.HTML
+    + logging_page.HTML
     + users_page.HTML
     + _shell.SHELL_BOTTOM
 )
