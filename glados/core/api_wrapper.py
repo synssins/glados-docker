@@ -2211,7 +2211,15 @@ def _stream_chat_sse_impl(
                 messages.append({"role": "tool", "tool_call_id": _tc_id, "content": str(_result)})
 
             pending_tool_calls = []
-            _p2 = {"model": glados.llm_model, "stream": True, "messages": messages}
+            # Round 1 used /think to help the model pick the tool. Round 2's
+            # job is to summarize the tool result for the user — deliberation
+            # there just produces 700+ tokens of <think> that _filter_think_chunk
+            # strips, leaving an empty visible bubble. Force /no_think for
+            # post-tool-result rounds so qwen3 emits the summary directly.
+            _p2_messages = apply_model_family_directives(
+                messages, glados.llm_model, enable_thinking=False,
+            )
+            _p2 = {"model": glados.llm_model, "stream": True, "messages": _p2_messages}
             if tools:
                 _p2["tools"] = tools
             _b2 = json.dumps(_p2).encode("utf-8")
