@@ -35,7 +35,26 @@ from glados.core.command_resolver import get_resolver
 from glados.core.config_store import cfg
 from glados.core.source_context import SourceContext
 from glados.doorbell.screener import DoorbellScreener
-from glados.observability import AuditEvent, Origin, audit
+from glados.observability import AuditEvent, LogGroupId, Origin, audit, group_logger
+
+# Module-level grouped loggers for the chat path. Each call site picks
+# the appropriate group so the operator can dial individual surfaces
+# up/down via Configuration -> Logging without touching the global
+# loguru level. ERROR/CRITICAL records bypass per-group filtering.
+_log_chat_connect = group_logger(LogGroupId.CHAT.CONNECT_PATH)
+_log_chat_round1 = group_logger(LogGroupId.CHAT.ROUND1_STREAM)
+_log_chat_round1_raw = group_logger(LogGroupId.CHAT.ROUND1_RAW_BYTES)
+_log_chat_round2 = group_logger(LogGroupId.CHAT.ROUND2_STREAM)
+_log_chat_round2_raw = group_logger(LogGroupId.CHAT.ROUND2_RAW_BYTES)
+_log_chat_tool_call = group_logger(LogGroupId.CHAT.TOOL_CALL)
+_log_chat_tool_result = group_logger(LogGroupId.CHAT.TOOL_RESULT)
+_log_chat_filter = group_logger(LogGroupId.CHAT.FILTER_PIPELINE)
+_log_chat_sanitize = group_logger(LogGroupId.CHAT.SANITIZE_HISTORY)
+_log_chat_routing = group_logger(LogGroupId.CHAT.ROUTING_DECISION)
+_log_filter_think = group_logger(LogGroupId.FILTER.THINK_TAG)
+_log_filter_boilerplate = group_logger(LogGroupId.FILTER.BOILERPLATE)
+_log_memory_inject = group_logger(LogGroupId.MEMORY.CONTEXT_INJECT)
+_log_conversation_store = group_logger(LogGroupId.CONVERSATION.STORE)
 from glados import ha as _ha
 from glados import intent as _intent
 from glados import persona as _persona
@@ -1409,11 +1428,17 @@ def _sanitize_message_history(
             fixed["tool_calls"] = new_calls
         out.append(fixed)
     if repaired or filtered:
-        logger.warning(
+        _log_chat_sanitize.warning(
             "[{}] sanitized {} field(s), dropped {} autonomy-noise message(s) "
             "before Ollama POST",
             request_id, repaired, filtered,
         )
+    _log_chat_sanitize.debug(
+        "[{}] sanitize input msg roles={}, output msg roles={}",
+        request_id,
+        [m.get("role") for m in messages],
+        [m.get("role") for m in out],
+    )
     return out
 
 
@@ -1662,9 +1687,13 @@ def _stream_chat_sse_impl(
                 # ops signals that ARE worth seeing ride at this
                 # level. Same convention the rest of the codebase
                 # uses for "visible, not a warning."
-                logger.success(
+                _log_memory_inject.info(
                     "[{}] memory_context injected ({} chars)",
                     request_id, len(memory_prompt),
+                )
+                _log_memory_inject.debug(
+                    "[{}] memory_context content[:500]: {!r}",
+                    request_id, memory_prompt[:500],
                 )
     except Exception as _mem_exc:
         logger.warning("[{}] memory_context skipped: {}", request_id, _mem_exc)
@@ -1911,10 +1940,12 @@ def _stream_chat_sse_impl(
         _route = "ha"
     else:
         _route = "chitchat"
-    logger.success(
-        "[{}] SSE: {} msgs, {} tools, num_predict={} (route={})",
+    _log_chat_routing.info(
+        "[{}] SSE: {} msgs, {} tools, num_predict={} (route={}) "
+        "system_prompt_chars={} body_bytes_pending=true",
         request_id, len(messages), len(tools),
         _streaming_options.get("num_predict"), _route,
+        sum(len(m.get("content") or "") for m in messages if m.get("role") == "system"),
     )
     body = json.dumps(payload).encode("utf-8")
 
@@ -1928,10 +1959,10 @@ def _stream_chat_sse_impl(
     # Connect to Ollama via http.client (no buffering)
     conn = None
     t_request_sent = time.time()  # TTFT: start timer BEFORE sending request
-    logger.success(
-        "[{}] LLM upstream connecting: {}:{} POST {}",
+    _log_chat_connect.info(
+        "[{}] LLM upstream connecting: {}:{} POST {} (body_bytes={})",
         request_id, parsed_url.hostname or "localhost",
-        parsed_url.port or 11434, parsed_url.path,
+        parsed_url.port or 11434, parsed_url.path, len(body),
     )
     try:
         conn = _http.HTTPConnection(
@@ -1941,15 +1972,18 @@ def _stream_chat_sse_impl(
         )
         conn.request("POST", parsed_url.path, body=body, headers=headers)
         api_resp = conn.getresponse()
-        logger.success(
-            "[{}] LLM upstream status={} reason={!r}",
+        _resp_headers = {k.lower(): v for k, v in api_resp.getheaders()}
+        _log_chat_connect.info(
+            "[{}] LLM upstream status={} reason={!r} content_type={!r} server={!r}",
             request_id, api_resp.status, api_resp.reason,
+            _resp_headers.get("content-type", ""),
+            _resp_headers.get("server", ""),
         )
 
         if api_resp.status >= 400:
-            err_body = api_resp.read().decode("utf-8", errors="replace")[:200]
-            logger.warning(
-                "[{}] LLM upstream 4xx body[:200]={!r}",
+            err_body = api_resp.read().decode("utf-8", errors="replace")[:1000]
+            _log_chat_connect.warning(
+                "[{}] LLM upstream 4xx body[:1000]={!r}",
                 request_id, err_body,
             )
             handler.send_response(200)
@@ -1975,7 +2009,10 @@ def _stream_chat_sse_impl(
     except Exception as e:
         if conn:
             conn.close()
-        logger.error(f"[{request_id}] SSE stream connect error: {e}")
+        _log_chat_connect.error(
+            "[{}] SSE stream connect error: {} ({})",
+            request_id, type(e).__name__, e,
+        )
         handler._send_json(
             {"error": {"message": f"LLM connection error: {e}", "type": "server_error"}},
             502,
@@ -2040,6 +2077,10 @@ def _stream_chat_sse_impl(
                     break
                 i = next_close + close_tag_len
                 think_state["in_thinking"] = False
+                _log_filter_think.debug(
+                    "[{}] think_state: closing tag matched at idx {} (len={}); now NOT in_thinking",
+                    request_id, next_close, close_tag_len,
+                )
             else:
                 # Looking for an opening tag
                 next_open = -1
@@ -2062,68 +2103,166 @@ def _stream_chat_sse_impl(
                     out.append(buf[i:next_open])
                 i = next_open + open_tag_len
                 think_state["in_thinking"] = True
+                _log_filter_think.debug(
+                    "[{}] think_state: opening tag matched at idx {} (len={}); now in_thinking",
+                    request_id, next_open, open_tag_len,
+                )
         think_state["tail"] = buf[i:]
         return "".join(out)
 
-    # Round-1 stream diagnostics — same shape as the round-2 ones added
-    # alongside this commit. Pure observability so the empty-bubble
-    # investigation has direct evidence rather than inference.
+    # Round-1 stream diagnostics — every chunk shape this code has ever
+    # encountered (or might encounter) is counted independently so the
+    # diag dump unambiguously distinguishes:
+    #   - "stream sat empty"            (lines == 0)
+    #   - "stream emitted only role/init chunks" (chunks but no content)
+    #   - "stream emitted reasoning_content only"   (qwen3 reasoning shape)
+    #   - "stream emitted tool_calls"              (tool_deltas > 0)
+    #   - "stream emitted top-level error"         (error_payload set)
+    #   - "stream content was filtered into nothing visible"
+    #     (raw_chars > 0 but visible_chars == 0)
+    # Defensive: each counter increments BEFORE any optional parsing,
+    # so even malformed chunks register as 'something arrived'.
+    _r1_lines = 0
+    _r1_data_lines = 0
+    _r1_parsed = 0
+    _r1_parse_failures = 0
+    _r1_total_bytes = 0
     _r1_chunks = 0
+    _r1_empty_content_chunks = 0
+    _r1_role_only_chunks = 0
     _r1_raw_buf: list[str] = []
     _r1_visible_buf: list[str] = []
+    _r1_reasoning_buf: list[str] = []
+    _r1_refusal_buf: list[str] = []
     _r1_tool_deltas = 0
     _r1_finish_reason = None
+    _r1_first_chunk_raw: str | None = None
+    _r1_delta_keys: set[str] = set()
+    _r1_top_level_keys: set[str] = set()
+    _r1_error_payload: dict | None = None
+    _r1_usage: dict | None = None
+    _r1_done_seen = False
 
-    logger.success("[{}] entering round-1 stream loop", request_id)
+    _log_chat_round1.info("[{}] entering round-1 stream loop", request_id)
     try:
         while True:
             raw_line = api_resp.readline()
             if not raw_line:
                 break
 
+            _r1_total_bytes += len(raw_line)
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
             if not line:
                 continue
+            _r1_lines += 1
+
+            # Per-line raw bytes — DEBUG-level, gated by chat.round1_raw_bytes.
+            _log_chat_round1_raw.debug(
+                "[{}] r1 line[{:04d}]: {!r}", request_id, _r1_lines, line[:1000],
+            )
 
             # Parse the chunk (handle both Ollama and OpenAI formats)
             content = None
             done = False
 
             if line.startswith("data: "):
+                _r1_data_lines += 1
                 json_str = line[6:]
                 if json_str.strip() == "[DONE]":
                     done = True
+                    _r1_done_seen = True
                 else:
+                    if _r1_first_chunk_raw is None:
+                        _r1_first_chunk_raw = json_str[:1000]
                     try:
                         parsed = json.loads(json_str)
+                        _r1_parsed += 1
+                        if isinstance(parsed, dict):
+                            _r1_top_level_keys.update(parsed.keys())
+                        # LM Studio runtime errors arrive as
+                        # `data: {"error": {"message": "..."}}` with no
+                        # `choices` array. We were silently dropping these
+                        # before (parsed.get("choices") was empty, so the
+                        # whole chunk got ignored). Capture them so the
+                        # diag dump surfaces "Context size exceeded" and
+                        # similar runtime failures verbatim.
+                        if isinstance(parsed.get("error"), dict):
+                            _r1_error_payload = parsed["error"]
+                            _log_chat_round1.warning(
+                                "[{}] r1 upstream error chunk: {!r}",
+                                request_id, parsed["error"],
+                            )
                         # OpenAI-compat sends `usage` in a terminal chunk
                         # with choices=[] when stream_options.include_usage
                         # is set. Map onto the same keys the metrics block
                         # below already reads from `ollama_metrics`.
                         _usage = parsed.get("usage")
                         if isinstance(_usage, dict):
+                            _r1_usage = _usage
                             if "prompt_tokens" in _usage:
                                 ollama_metrics["prompt_eval_count"] = _usage["prompt_tokens"]
                             if "completion_tokens" in _usage:
                                 ollama_metrics["eval_count"] = _usage["completion_tokens"]
                         _choices = parsed.get("choices") or []
                         if _choices:
-                            delta = _choices[0].get("delta", {})
+                            choice0 = _choices[0]
+                            delta = choice0.get("delta") or {}
+                            if isinstance(delta, dict):
+                                _r1_delta_keys.update(delta.keys())
                             content = delta.get("content")
-                            _fr = _choices[0].get("finish_reason")
+                            # Reasoning models (qwen3, DeepSeek-R1, etc.)
+                            # emit thinking via `delta.reasoning_content`
+                            # in the OpenAI-compat surface. Track this
+                            # separately — without it the empty-bubble
+                            # diag was unable to distinguish "model
+                            # generated nothing" from "model generated
+                            # only thinking which we never read".
+                            _rc = delta.get("reasoning_content")
+                            if isinstance(_rc, str) and _rc:
+                                _r1_reasoning_buf.append(_rc)
+                            _refusal = delta.get("refusal")
+                            if isinstance(_refusal, str) and _refusal:
+                                _r1_refusal_buf.append(_refusal)
+                            _fr = choice0.get("finish_reason")
                             if _fr:
                                 _r1_finish_reason = _fr
                             _tc = delta.get("tool_calls")
                             if _tc:
                                 pending_tool_calls.extend(_tc)
                                 _r1_tool_deltas += len(_tc)
+                            # Role-only init chunks (delta == {"role":
+                            # "assistant"}) are extremely common at start
+                            # of stream — count them separately so the
+                            # operator can see "10 role-only chunks, 0
+                            # content" and know the model never emitted.
+                            if (
+                                not content
+                                and not _tc
+                                and not _rc
+                                and isinstance(delta, dict)
+                                and ("role" in delta and len(delta) == 1)
+                            ):
+                                _r1_role_only_chunks += 1
+                            elif content == "":
+                                _r1_empty_content_chunks += 1
                     except json.JSONDecodeError:
-                        pass
+                        _r1_parse_failures += 1
+                        _log_chat_round1.warning(
+                            "[{}] r1 JSON parse failure on data line[:200]={!r}",
+                            request_id, json_str[:200],
+                        )
             else:
+                # Ollama-native chunk (no "data: " SSE prefix)
                 try:
                     parsed = json.loads(line)
+                    _r1_parsed += 1
+                    if _r1_first_chunk_raw is None:
+                        _r1_first_chunk_raw = line[:1000]
+                    if isinstance(parsed, dict):
+                        _r1_top_level_keys.update(parsed.keys())
                     if parsed.get("done"):
                         done = True
+                        _r1_done_seen = True
                         # Ollama final chunk contains timing/token metrics
                         for key in ("eval_count", "prompt_eval_count",
                                      "eval_duration", "prompt_eval_duration",
@@ -2131,13 +2270,16 @@ def _stream_chat_sse_impl(
                             if key in parsed:
                                 ollama_metrics[key] = parsed[key]
                     else:
-                        msg = parsed.get("message", {})
+                        msg = parsed.get("message") or {}
+                        if isinstance(msg, dict):
+                            _r1_delta_keys.update(msg.keys())
                         content = msg.get("content")
                         _tc = msg.get("tool_calls")
                         if _tc:
                             pending_tool_calls.extend(_tc)
                             _r1_tool_deltas += len(_tc)
                 except json.JSONDecodeError:
+                    _r1_parse_failures += 1
                     continue
 
             if content:
@@ -2188,29 +2330,73 @@ def _stream_chat_sse_impl(
                     think_state["tail"] = ""
                 break
 
-        # Diagnostic dump — see what round 1 actually emitted.
+        # Diagnostic dump — every chunk-shape counter so the operator
+        # can read this single block and know exactly what LM Studio
+        # sent back. Designed against the empty-bubble decision table:
+        # any combination of stream symptoms maps to a unique fingerprint
+        # here. Emitted at INFO so it's always visible when the
+        # chat.round1_stream group is enabled.
         _r1_raw_full = "".join(_r1_raw_buf)
         _r1_visible_full = "".join(_r1_visible_buf)
-        logger.success(
-            "[{}] round-1 diag: chunks={} raw_chars={} visible_chars={} "
-            "tool_deltas={} finish_reason={!r}",
-            request_id, _r1_chunks, len(_r1_raw_full), len(_r1_visible_full),
-            _r1_tool_deltas, _r1_finish_reason,
+        _r1_reasoning_full = "".join(_r1_reasoning_buf)
+        _r1_refusal_full = "".join(_r1_refusal_buf)
+        _log_chat_round1.info(
+            "[{}] round-1 diag: lines={} data_lines={} parsed={} "
+            "parse_fail={} bytes={} chunks={} role_only={} empty_content={} "
+            "raw_chars={} visible_chars={} reasoning_chars={} refusal_chars={} "
+            "tool_deltas={} finish_reason={!r} done_seen={} error={!r} usage={!r}",
+            request_id, _r1_lines, _r1_data_lines, _r1_parsed,
+            _r1_parse_failures, _r1_total_bytes, _r1_chunks,
+            _r1_role_only_chunks, _r1_empty_content_chunks,
+            len(_r1_raw_full), len(_r1_visible_full),
+            len(_r1_reasoning_full), len(_r1_refusal_full),
+            _r1_tool_deltas, _r1_finish_reason, _r1_done_seen,
+            _r1_error_payload, _r1_usage,
         )
+        if _r1_top_level_keys or _r1_delta_keys:
+            _log_chat_round1.info(
+                "[{}] round-1 chunk shape: top_level_keys={} delta_keys={}",
+                request_id, sorted(_r1_top_level_keys), sorted(_r1_delta_keys),
+            )
+        if _r1_first_chunk_raw:
+            _log_chat_round1.info(
+                "[{}] round-1 first_chunk[:1000]: {!r}",
+                request_id, _r1_first_chunk_raw,
+            )
         if _r1_raw_full:
-            logger.success(
+            _log_chat_round1.info(
                 "[{}] round-1 raw[:500]: {!r}",
                 request_id, _r1_raw_full[:500],
             )
         if _r1_visible_full:
-            logger.success(
+            _log_chat_round1.info(
                 "[{}] round-1 visible[:500]: {!r}",
                 request_id, _r1_visible_full[:500],
+            )
+        if _r1_reasoning_full:
+            _log_chat_round1.info(
+                "[{}] round-1 reasoning_content[:500]: {!r}",
+                request_id, _r1_reasoning_full[:500],
+            )
+        if _r1_refusal_full:
+            _log_chat_round1.warning(
+                "[{}] round-1 refusal[:500]: {!r}",
+                request_id, _r1_refusal_full[:500],
             )
 
         # ── Agentic tool loop ─────────────────────────────────────
         _tool_round = 0
         _max_rounds = 5
+        if pending_tool_calls and glados.mcp_manager is None:
+            _log_chat_tool_call.warning(
+                "[{}] {} tool_calls queued but mcp_manager is None; agentic loop skipped",
+                request_id, len(pending_tool_calls),
+            )
+        elif pending_tool_calls:
+            _log_chat_tool_call.info(
+                "[{}] entering agentic tool loop with {} pending call(s)",
+                request_id, len(pending_tool_calls),
+            )
         while pending_tool_calls and _tool_round < _max_rounds and glados.mcp_manager:
             _tool_round += 1
             messages.append({"role": "assistant", "tool_calls": pending_tool_calls, "content": ""})
@@ -2240,7 +2426,11 @@ def _stream_chat_sse_impl(
                 # Pre-resolve fuzzy entity names against HA
                 if "HassTurn" in _tool_name or "HassLight" in _tool_name:
                     _tool_args = _resolve_entity_name(_tool_args)
-                logger.info("[{}] Streaming tool call: {} {} (round {})", request_id, _tool_name, _tool_args, _tool_round)
+                _tool_t0 = time.time()
+                _log_chat_tool_call.info(
+                    "[{}] tool dispatch (round {}): {} args={}",
+                    request_id, _tool_round, _tool_name, _tool_args,
+                )
                 try:
                     # Phase 8.3.4b — route the built-in
                     # search_entities / get_entity_details calls to
@@ -2251,15 +2441,38 @@ def _stream_chat_sse_impl(
                         invoke_builtin_tool, is_builtin_tool,
                     )
                     if is_builtin_tool(_tool_name):
+                        _log_chat_tool_call.debug(
+                            "[{}] tool path: builtin", request_id,
+                        )
                         _result = invoke_builtin_tool(_tool_name, _tool_args)
                     elif _tool_name.startswith("mcp."):
+                        _log_chat_tool_call.debug(
+                            "[{}] tool path: mcp", request_id,
+                        )
                         _result = glados.mcp_manager.call_tool(_tool_name, _tool_args, timeout=30)
                     else:
                         _result = "error: only MCP tools supported in streaming chat"
-                    logger.success("[{}] Tool done: {}", request_id, _tool_name)
+                        _log_chat_tool_call.warning(
+                            "[{}] tool path: unsupported (name={!r})",
+                            request_id, _tool_name,
+                        )
+                    _tool_ms = (time.time() - _tool_t0) * 1000.0
+                    _result_text = str(_result)
+                    _log_chat_tool_call.info(
+                        "[{}] tool done: {} latency={:.0f}ms result_chars={}",
+                        request_id, _tool_name, _tool_ms, len(_result_text),
+                    )
+                    _log_chat_tool_result.debug(
+                        "[{}] tool result body[:500] for {}: {!r}",
+                        request_id, _tool_name, _result_text[:500],
+                    )
                 except Exception as _te:
                     _result = f"error: {_te}"
-                    logger.error("[{}] Tool error: {} -> {}", request_id, _tool_name, _te)
+                    _tool_ms = (time.time() - _tool_t0) * 1000.0
+                    _log_chat_tool_call.error(
+                        "[{}] tool error: {} -> {} ({}) latency={:.0f}ms",
+                        request_id, _tool_name, type(_te).__name__, _te, _tool_ms,
+                    )
                 messages.append({"role": "tool", "tool_call_id": _tc_id, "content": str(_result)})
 
             pending_tool_calls = []
@@ -2270,63 +2483,144 @@ def _stream_chat_sse_impl(
             _h2 = {"Content-Type": "application/json", "Content-Length": str(len(_b2))}
             if glados.api_key:
                 _h2["Authorization"] = f"Bearer {glados.api_key}"
-            # Diagnostic accumulators for the round-2 stream. Logged at end
-            # of round so we can see exactly what LM Studio sent back vs
-            # what reached the WebUI. Pure observability — no behaviour
-            # change. Remove once the empty-bubble bug is rooted.
+            # Diagnostic accumulators for the round-2 stream. Same shape
+            # as round-1, so the operator can compare both halves of the
+            # chat at a glance. Tracks every chunk variant LM Studio
+            # might emit (content / reasoning_content / tool_calls /
+            # role-only init / refusal / top-level error / usage / [DONE]).
+            _r2_lines = 0
+            _r2_data_lines = 0
+            _r2_parsed = 0
+            _r2_parse_failures = 0
+            _r2_total_bytes = 0
             _r2_chunks = 0
+            _r2_empty_content_chunks = 0
+            _r2_role_only_chunks = 0
             _r2_raw_buf: list[str] = []
             _r2_visible_buf: list[str] = []
+            _r2_reasoning_buf: list[str] = []
+            _r2_refusal_buf: list[str] = []
             _r2_tool_deltas = 0
             _r2_finish_reason = None
+            _r2_first_chunk_raw: str | None = None
+            _r2_delta_keys: set[str] = set()
+            _r2_top_level_keys: set[str] = set()
+            _r2_error_payload: dict | None = None
+            _r2_usage: dict | None = None
+            _r2_done_seen = False
+            _log_chat_round2.info("[{}] entering round-2 stream loop", request_id)
             try:
                 _c2 = _http.HTTPConnection(parsed_url.hostname or "localhost", parsed_url.port or 11434, timeout=int(timeout))
                 _c2.request("POST", parsed_url.path, body=_b2, headers=_h2)
                 _r2 = _c2.getresponse()
+                _r2_resp_headers = {k.lower(): v for k, v in _r2.getheaders()}
+                _log_chat_round2.info(
+                    "[{}] round-2 upstream status={} reason={!r} content_type={!r}",
+                    request_id, _r2.status, _r2.reason,
+                    _r2_resp_headers.get("content-type", ""),
+                )
                 while True:
                     _raw2 = _r2.readline()
                     if not _raw2:
                         break
+                    _r2_total_bytes += len(_raw2)
                     _ln2 = _raw2.decode("utf-8", errors="replace").rstrip()
                     if not _ln2:
                         continue
+                    _r2_lines += 1
+                    _log_chat_round2_raw.debug(
+                        "[{}] r2 line[{:04d}]: {!r}", request_id, _r2_lines, _ln2[:1000],
+                    )
                     _content2 = None
                     _done2 = False
                     if _ln2.startswith("data: "):
+                        _r2_data_lines += 1
                         _js2 = _ln2[6:]
                         if _js2.strip() == "[DONE]":
                             _done2 = True
+                            _r2_done_seen = True
                         else:
+                            if _r2_first_chunk_raw is None:
+                                _r2_first_chunk_raw = _js2[:1000]
                             try:
                                 _pp2 = json.loads(_js2)
-                                _ch_obj = _pp2.get("choices", [{}])[0]
-                                _d2 = _ch_obj.get("delta", {})
-                                _content2 = _d2.get("content")
-                                _fr = _ch_obj.get("finish_reason")
-                                if _fr:
-                                    _r2_finish_reason = _fr
-                                _ttc = _d2.get("tool_calls")
-                                if _ttc:
-                                    pending_tool_calls.extend(_ttc)
-                                    _r2_tool_deltas += len(_ttc)
+                                _r2_parsed += 1
+                                if isinstance(_pp2, dict):
+                                    _r2_top_level_keys.update(_pp2.keys())
+                                if isinstance(_pp2.get("error"), dict):
+                                    _r2_error_payload = _pp2["error"]
+                                    _log_chat_round2.warning(
+                                        "[{}] r2 upstream error chunk: {!r}",
+                                        request_id, _pp2["error"],
+                                    )
+                                _u2 = _pp2.get("usage")
+                                if isinstance(_u2, dict):
+                                    _r2_usage = _u2
+                                    if "prompt_tokens" in _u2:
+                                        ollama_metrics["prompt_eval_count"] = _u2["prompt_tokens"]
+                                    if "completion_tokens" in _u2:
+                                        ollama_metrics["eval_count"] = _u2["completion_tokens"]
+                                _ch_list = _pp2.get("choices") or []
+                                if _ch_list:
+                                    _ch_obj = _ch_list[0]
+                                    _d2 = _ch_obj.get("delta") or {}
+                                    if isinstance(_d2, dict):
+                                        _r2_delta_keys.update(_d2.keys())
+                                    _content2 = _d2.get("content")
+                                    _rc2 = _d2.get("reasoning_content")
+                                    if isinstance(_rc2, str) and _rc2:
+                                        _r2_reasoning_buf.append(_rc2)
+                                    _refusal2 = _d2.get("refusal")
+                                    if isinstance(_refusal2, str) and _refusal2:
+                                        _r2_refusal_buf.append(_refusal2)
+                                    _fr = _ch_obj.get("finish_reason")
+                                    if _fr:
+                                        _r2_finish_reason = _fr
+                                    _ttc = _d2.get("tool_calls")
+                                    if _ttc:
+                                        pending_tool_calls.extend(_ttc)
+                                        _r2_tool_deltas += len(_ttc)
+                                    if (
+                                        not _content2
+                                        and not _ttc
+                                        and not _rc2
+                                        and isinstance(_d2, dict)
+                                        and ("role" in _d2 and len(_d2) == 1)
+                                    ):
+                                        _r2_role_only_chunks += 1
+                                    elif _content2 == "":
+                                        _r2_empty_content_chunks += 1
                             except (json.JSONDecodeError, IndexError):
-                                pass
+                                _r2_parse_failures += 1
+                                _log_chat_round2.warning(
+                                    "[{}] r2 JSON parse failure on data line[:200]={!r}",
+                                    request_id, _js2[:200],
+                                )
                     else:
                         try:
                             _pp2 = json.loads(_ln2)
+                            _r2_parsed += 1
+                            if _r2_first_chunk_raw is None:
+                                _r2_first_chunk_raw = _ln2[:1000]
+                            if isinstance(_pp2, dict):
+                                _r2_top_level_keys.update(_pp2.keys())
                             if _pp2.get("done"):
                                 _done2 = True
+                                _r2_done_seen = True
                                 for _k in ("eval_count", "prompt_eval_count", "eval_duration", "prompt_eval_duration", "total_duration"):
                                     if _k in _pp2:
                                         ollama_metrics[_k] = _pp2[_k]
                             else:
-                                _m2 = _pp2.get("message", {})
+                                _m2 = _pp2.get("message") or {}
+                                if isinstance(_m2, dict):
+                                    _r2_delta_keys.update(_m2.keys())
                                 _content2 = _m2.get("content")
                                 _ttc = _m2.get("tool_calls")
                                 if _ttc:
                                     pending_tool_calls.extend(_ttc)
                                     _r2_tool_deltas += len(_ttc)
                         except json.JSONDecodeError:
+                            _r2_parse_failures += 1
                             continue
                     if _content2:
                         _r2_chunks += 1
@@ -2352,26 +2646,68 @@ def _stream_chat_sse_impl(
                         break
                 _c2.close()
             except Exception as _e2:
-                logger.error("[{}] Tool follow-up error: {}", request_id, _e2)
-            # Diagnostic dump — see what round 2 actually emitted.
+                _log_chat_round2.error(
+                    "[{}] Tool follow-up error: {} ({})",
+                    request_id, type(_e2).__name__, _e2,
+                )
+            # Diagnostic dump — same comprehensive shape as round-1.
             _r2_raw_full = "".join(_r2_raw_buf)
             _r2_visible_full = "".join(_r2_visible_buf)
-            logger.success(
-                "[{}] round-2 diag: chunks={} raw_chars={} visible_chars={} "
-                "tool_deltas={} finish_reason={!r}",
-                request_id, _r2_chunks, len(_r2_raw_full), len(_r2_visible_full),
-                _r2_tool_deltas, _r2_finish_reason,
+            _r2_reasoning_full = "".join(_r2_reasoning_buf)
+            _r2_refusal_full = "".join(_r2_refusal_buf)
+            _log_chat_round2.info(
+                "[{}] round-2 diag: lines={} data_lines={} parsed={} "
+                "parse_fail={} bytes={} chunks={} role_only={} empty_content={} "
+                "raw_chars={} visible_chars={} reasoning_chars={} refusal_chars={} "
+                "tool_deltas={} finish_reason={!r} done_seen={} error={!r} usage={!r}",
+                request_id, _r2_lines, _r2_data_lines, _r2_parsed,
+                _r2_parse_failures, _r2_total_bytes, _r2_chunks,
+                _r2_role_only_chunks, _r2_empty_content_chunks,
+                len(_r2_raw_full), len(_r2_visible_full),
+                len(_r2_reasoning_full), len(_r2_refusal_full),
+                _r2_tool_deltas, _r2_finish_reason, _r2_done_seen,
+                _r2_error_payload, _r2_usage,
             )
+            if _r2_top_level_keys or _r2_delta_keys:
+                _log_chat_round2.info(
+                    "[{}] round-2 chunk shape: top_level_keys={} delta_keys={}",
+                    request_id, sorted(_r2_top_level_keys), sorted(_r2_delta_keys),
+                )
+            if _r2_first_chunk_raw:
+                _log_chat_round2.info(
+                    "[{}] round-2 first_chunk[:1000]: {!r}",
+                    request_id, _r2_first_chunk_raw,
+                )
             if _r2_raw_full:
-                logger.success(
+                _log_chat_round2.info(
                     "[{}] round-2 raw[:500]: {!r}",
                     request_id, _r2_raw_full[:500],
                 )
             if _r2_visible_full:
-                logger.success(
+                _log_chat_round2.info(
                     "[{}] round-2 visible[:500]: {!r}",
                     request_id, _r2_visible_full[:500],
                 )
+            if _r2_reasoning_full:
+                _log_chat_round2.info(
+                    "[{}] round-2 reasoning_content[:500]: {!r}",
+                    request_id, _r2_reasoning_full[:500],
+                )
+            if _r2_refusal_full:
+                _log_chat_round2.warning(
+                    "[{}] round-2 refusal[:500]: {!r}",
+                    request_id, _r2_refusal_full[:500],
+                )
+
+        # Diagnostic — if we hit max-rounds with the model still trying to
+        # tool-call, surface that explicitly. This was previously silent;
+        # the chat just truncated to whatever round-(_max_rounds) emitted.
+        if pending_tool_calls and _tool_round >= _max_rounds:
+            _log_chat_tool_call.warning(
+                "[{}] agentic loop hit _max_rounds={} with {} tool call(s) "
+                "still pending — chat will end with the last round's output",
+                request_id, _max_rounds, len(pending_tool_calls),
+            )
 
         t_stream_end = time.time()
 
@@ -2435,12 +2771,19 @@ def _stream_chat_sse_impl(
         conn.close()
         # Save to conversation store so follow-ups have context
         response_text = "".join(full_response)
+        _resp_pre_strip_chars = len(response_text)
         # Phase 8.0.1 belt — even with /no_think and per-chunk stream
         # filtering, strip any residual thinking tags from the final
         # persisted message. Any unmatched / partial tag (e.g. a
         # response truncated mid-think on token cap) would otherwise
         # end up in the UI's next history fetch.
         response_text = _strip_thinking(response_text)
+        _resp_post_thinking_chars = len(response_text)
+        if _resp_post_thinking_chars != _resp_pre_strip_chars:
+            _log_filter_think.info(
+                "[{}] _strip_thinking removed {} chars from final response",
+                request_id, _resp_pre_strip_chars - _resp_post_thinking_chars,
+            )
         # Phase 8.3 operator bug — strip Qwen3's trailing sign-off
         # tics ("I do not require further confirmation", etc.) from
         # both the stored message and the next persisted history
@@ -2448,11 +2791,21 @@ def _stream_chat_sse_impl(
         # backstop.
         from glados.core.llm_directives import strip_closing_boilerplate
         response_text = strip_closing_boilerplate(response_text)
+        if len(response_text) != _resp_post_thinking_chars:
+            _log_filter_boilerplate.info(
+                "[{}] strip_closing_boilerplate removed {} chars from final response",
+                request_id, _resp_post_thinking_chars - len(response_text),
+            )
         if response_text:
             store.append({"role": "user", "content": user_message})
             store.append({"role": "assistant", "content": response_text})
-            logger.info(
-                f"[{request_id}] SSE stream complete: {len(response_text)} chars saved to store"
+            _log_conversation_store.info(
+                "[{}] conversation_store appended: user={}chars assistant={}chars (final)",
+                request_id, len(user_message or ""), len(response_text),
+            )
+            _log_conversation_store.debug(
+                "[{}] conversation_store assistant content[:500]: {!r}",
+                request_id, response_text[:500],
             )
             # Push emotion event with repetition-aware severity tagging
             try:

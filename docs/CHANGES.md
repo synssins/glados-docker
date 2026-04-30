@@ -4445,3 +4445,73 @@ configuration-save events.
 WebUI runs in a docker container on the docker host (192.168.1.150);
 this session does not have a local browser preview surface — the
 operator confirms in their actual browser after the next deploy.
+
+## Change 36 — Chat-path instrumentation (per-group logging) (2026-04-30)
+
+**Why.** With the per-group log filter live (Change 34) and the WebUI
+toggle surface live (Change 35), every diagnostic call site on the
+chat path migrates to the new system. The empty-bubble investigation
+finally has the comprehensive chunk-shape coverage that earlier diag
+attempts kept missing.
+
+**What.** Every chat-path log call now binds a stable group ID:
+
+- `chat.connect_path` — connect attempt, status, response headers,
+  4xx body (full first 1000 chars instead of 200).
+- `chat.round1_stream` / `chat.round2_stream` — per-round summary
+  diagnostics. Now tracks every chunk shape independently:
+  - `lines` — every non-empty SSE line.
+  - `data_lines` — every `data: ...` line.
+  - `parsed` / `parse_fail` — JSON parse outcomes.
+  - `bytes` — total upstream bytes.
+  - `chunks` — chunks with non-empty content.
+  - `role_only` — chunks with `delta == {"role": "assistant"}`.
+  - `empty_content` — chunks where `delta.content == ""`.
+  - `raw_chars` / `visible_chars` — content before / after the
+    `<think>` filter.
+  - `reasoning_chars` — chars accumulated in `delta.reasoning_content`
+    (the surface qwen3 / DeepSeek-R1 use that the prior diag missed
+    entirely).
+  - `refusal_chars` — chars in `delta.refusal`.
+  - `tool_deltas` — count of tool-call deltas.
+  - `finish_reason` / `done_seen` — terminal-chunk state.
+  - `error` — captured top-level `{"error": {...}}` chunk (LM Studio
+    runtime errors like "Context size exceeded" arrive in this shape
+    with no `choices`; previously silently dropped).
+  - `usage` — captured terminal usage chunk.
+  - `top_level_keys` / `delta_keys` — sorted set of every key that
+    appeared in any chunk, so unknown shapes surface immediately.
+  - `first_chunk[:1000]` — verbatim JSON of the first non-DONE chunk.
+- `chat.round1_raw_bytes` / `chat.round2_raw_bytes` — DEBUG-level
+  per-line dump of every SSE line received. Disabled by default.
+- `chat.tool_call` — per-tool dispatch with args, latency, result
+  size, max-rounds-reached warning.
+- `chat.tool_result` — tool result body[:500] at DEBUG.
+- `chat.filter_pipeline` — every `<think>` open/close transition at
+  DEBUG.
+- `chat.sanitize_history` — what `_sanitize_message_history`
+  dropped, with role lists at DEBUG.
+- `chat.routing_decision` — SSE preamble: msg count, tool count,
+  `num_predict`, route, system_prompt_chars.
+- `filter.think_tag` / `filter.boilerplate` — final-response strip
+  diff (chars removed by `_strip_thinking` and
+  `strip_closing_boilerplate`).
+- `memory.context_inject` — chars + content[:500] preview at DEBUG.
+- `conversation.store` — assistant content[:500] preview at DEBUG.
+- `plugin.intent_match` — match (INFO), miss explained (DEBUG).
+- `plugin.triage_llm` — invocation, latency, raw response (full at
+  DEBUG, [:200] at INFO), parsed result, hallucinated-name drops.
+
+**Files modified:**
+
+- `glados/core/api_wrapper.py` — module-level grouped loggers, every
+  chat-path call site rewired to the appropriate group, comprehensive
+  chunk-shape tracking in both round-1 and round-2 loops.
+- `glados/plugins/intent.py` — converted to `_log_intent`,
+  added DEBUG-level miss explanation.
+- `glados/plugins/triage.py` — converted to `_log_triage`, added
+  DEBUG-level full-raw-response dump.
+
+**Tests:** 1667 → 1667, 0 regressions. `pytest -q` runs in ~56 s.
+The chat-path instrumentation is observability-only and has no
+behaviour change.

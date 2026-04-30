@@ -27,6 +27,9 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from glados.autonomy.llm_client import LLMConfig, llm_call
+from glados.observability import LogGroupId, group_logger
+
+_log_triage = group_logger(LogGroupId.PLUGIN.TRIAGE_LLM)
 
 if TYPE_CHECKING:
     from .loader import Plugin
@@ -85,13 +88,13 @@ def triage_plugins(
     * The LLM call times out, errors, or returns unparseable content
     """
     if not _enabled():
-        logger.success("plugin triage: skipped (GLADOS_PLUGIN_TRIAGE_ENABLED falsy)")
+        _log_triage.debug("plugin triage: skipped (GLADOS_PLUGIN_TRIAGE_ENABLED falsy)")
         return []
     if not plugins or not message or not message.strip():
         return []
 
     plugin_names = [p.name for p in plugins]
-    logger.success(
+    _log_triage.info(
         "plugin triage: invoking llm_triage slot ({} plugins in catalog: {})",
         len(plugin_names), plugin_names,
     )
@@ -109,7 +112,7 @@ def triage_plugins(
             json_response=True,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
+        _log_triage.warning(
             "plugin triage: LLM call raised after {:.0f}ms: {}",
             (time.time() - t0) * 1000, exc,
         )
@@ -117,32 +120,33 @@ def triage_plugins(
 
     elapsed_ms = (time.time() - t0) * 1000
     if not raw:
-        logger.success("plugin triage: empty response after {:.0f}ms", elapsed_ms)
+        _log_triage.info("plugin triage: empty response after {:.0f}ms", elapsed_ms)
         return []
 
-    logger.success(
+    _log_triage.info(
         "plugin triage: response in {:.0f}ms, raw[:200]={!r}",
         elapsed_ms, raw[:200],
     )
+    _log_triage.debug("plugin triage: full raw response: {!r}", raw)
 
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("plugin triage: JSON parse failed ({}); raw={!r}", exc, raw[:200])
+        _log_triage.warning("plugin triage: JSON parse failed ({}); raw={!r}", exc, raw[:200])
         return []
 
     relevant = parsed.get("relevant") if isinstance(parsed, dict) else None
     if not isinstance(relevant, list):
-        logger.success("plugin triage: parsed object missing 'relevant' list; parsed={!r}", parsed)
+        _log_triage.info("plugin triage: parsed object missing 'relevant' list; parsed={!r}", parsed)
         return []
 
     enabled_names = {p.name for p in plugins}
     matched = [n for n in relevant if isinstance(n, str) and n in enabled_names]
     dropped = [n for n in relevant if isinstance(n, str) and n not in enabled_names]
     if dropped:
-        logger.warning(
+        _log_triage.warning(
             "plugin triage: dropped hallucinated names not in enabled set: {}",
             dropped,
         )
-    logger.success("plugin triage: matched={}", matched)
+    _log_triage.info("plugin triage: matched={}", matched)
     return matched

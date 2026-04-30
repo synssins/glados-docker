@@ -20,7 +20,9 @@ import re
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from loguru import logger
+from glados.observability import LogGroupId, group_logger
+
+_log_intent = group_logger(LogGroupId.PLUGIN.INTENT_MATCH)
 
 if TYPE_CHECKING:
     from .loader import Plugin
@@ -88,10 +90,22 @@ def match_plugins(message: str, plugins: Iterable["Plugin"]) -> list["Plugin"]:
             kw_stems = _stems(kw.lower())
             hit = kw_stems & msg_tokens
             if hit:
-                logger.success(
+                _log_intent.info(
                     "intent: plugin {!r} matched keyword {!r} via stem {!r}",
                     plugin.name, kw, sorted(hit)[0],
                 )
                 out.append(plugin)
                 break
+        else:
+            # No match for this plugin — log at DEBUG so toggling intent_match
+            # to DEBUG explains why a plugin DIDN'T fire, not just why one DID.
+            if keywords:
+                _log_intent.debug(
+                    "intent: plugin {!r} no match (tried {} keyword(s))",
+                    plugin.name, len(keywords),
+                )
+    if not out:
+        _log_intent.debug(
+            "intent: no plugin matched message tokens={}", sorted(msg_tokens)[:20],
+        )
     return out
