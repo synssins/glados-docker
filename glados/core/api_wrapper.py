@@ -2039,6 +2039,42 @@ def _stream_chat_sse_impl(
     full_response: list[str] = []
     _upstream_errors_emitted = False  # prevent duplicate emissions across rounds
 
+    def _merge_tool_call_delta(buf: dict, delta_calls: list) -> None:
+        """Accumulate streaming tool_call deltas by their ``index`` field.
+
+        The OpenAI-compat streaming surface emits a single logical tool
+        call across multiple chunks: the first delta carries
+        ``{index:0, id, type, function:{name}}``, subsequent deltas
+        carry ``{index:0, function:{arguments: "..."}}`` with the
+        argument JSON bytes split arbitrarily. The previous code did
+        ``pending_tool_calls.extend(_tc)`` on every delta, so seven
+        deltas for one logical call became seven fake calls — six of
+        which had empty name + empty args and dispatched to the
+        "only MCP tools supported" error branch, then round 2 sent a
+        malformed messages history and LM Studio responded 400.
+
+        Merge by ``index``. Caller flattens the buf into
+        ``pending_tool_calls`` once the stream ends.
+        """
+        for dc in delta_calls or []:
+            if not isinstance(dc, dict):
+                continue
+            idx = dc.get("index", 0)
+            slot = buf.setdefault(idx, {
+                "id": "", "type": "function",
+                "function": {"name": "", "arguments": ""},
+            })
+            if dc.get("id"):
+                slot["id"] = dc["id"]
+            if dc.get("type"):
+                slot["type"] = dc["type"]
+            fn = dc.get("function") or {}
+            if isinstance(fn, dict):
+                if fn.get("name"):
+                    slot["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+
     def _emit_upstream_error_to_sse(error_payload: Any, *, round_label: str) -> None:
         """Surface an LM Studio (or other upstream) error chunk into the
         WebUI bubble as a visible content chunk + persist it as the
@@ -2181,6 +2217,7 @@ def _stream_chat_sse_impl(
     _r1_reasoning_buf: list[str] = []
     _r1_refusal_buf: list[str] = []
     _r1_tool_deltas = 0
+    _r1_tc_buf: dict[int, dict] = {}
     _r1_finish_reason = None
     _r1_first_chunk_raw: str | None = None
     _r1_delta_keys: set[str] = set()
@@ -2277,7 +2314,9 @@ def _stream_chat_sse_impl(
                                 _r1_finish_reason = _fr
                             _tc = delta.get("tool_calls")
                             if _tc:
-                                pending_tool_calls.extend(_tc)
+                                # Streaming tool_calls arrive as deltas
+                                # indexed by ``index`` — must merge, not extend.
+                                _merge_tool_call_delta(_r1_tc_buf, _tc)
                                 _r1_tool_deltas += len(_tc)
                             # Role-only init chunks (delta == {"role":
                             # "assistant"}) are extremely common at start
@@ -2433,6 +2472,21 @@ def _stream_chat_sse_impl(
                 request_id, _r1_refusal_full[:500],
             )
 
+        # Flush merged streaming tool_calls into pending_tool_calls.
+        # Each entry in _r1_tc_buf is a single complete tool call
+        # accumulated across however many delta chunks LM Studio sent.
+        if _r1_tc_buf:
+            for _idx in sorted(_r1_tc_buf):
+                _merged_call = _r1_tc_buf[_idx]
+                if not _merged_call.get("id"):
+                    _merged_call["id"] = f"call_{request_id}_{_idx}"
+                pending_tool_calls.append(_merged_call)
+            _log_chat_tool_call.info(
+                "[{}] round-1 merged {} streaming tool_call delta(s) into {} call(s): {}",
+                request_id, _r1_tool_deltas, len(_r1_tc_buf),
+                [c.get("function", {}).get("name", "?") for c in pending_tool_calls],
+            )
+
         # ── Agentic tool loop ─────────────────────────────────────
         _tool_round = 0
         _max_rounds = 5
@@ -2550,6 +2604,7 @@ def _stream_chat_sse_impl(
             _r2_reasoning_buf: list[str] = []
             _r2_refusal_buf: list[str] = []
             _r2_tool_deltas = 0
+            _r2_tc_buf: dict[int, dict] = {}
             _r2_finish_reason = None
             _r2_first_chunk_raw: str | None = None
             _r2_delta_keys: set[str] = set()
@@ -2630,7 +2685,9 @@ def _stream_chat_sse_impl(
                                         _r2_finish_reason = _fr
                                     _ttc = _d2.get("tool_calls")
                                     if _ttc:
-                                        pending_tool_calls.extend(_ttc)
+                                        # Same delta-by-index merge as
+                                        # round 1 — see _merge_tool_call_delta.
+                                        _merge_tool_call_delta(_r2_tc_buf, _ttc)
                                         _r2_tool_deltas += len(_ttc)
                                     if (
                                         not _content2
@@ -2749,6 +2806,18 @@ def _stream_chat_sse_impl(
                 _log_chat_round2.warning(
                     "[{}] round-2 refusal[:500]: {!r}",
                     request_id, _r2_refusal_full[:500],
+                )
+            if _r2_tc_buf:
+                for _idx in sorted(_r2_tc_buf):
+                    _merged_call = _r2_tc_buf[_idx]
+                    if not _merged_call.get("id"):
+                        _merged_call["id"] = f"call_{request_id}_r2_{_idx}"
+                    pending_tool_calls.append(_merged_call)
+                _log_chat_tool_call.info(
+                    "[{}] round-2 merged {} streaming tool_call delta(s) into {} call(s): {}",
+                    request_id, _r2_tool_deltas, len(_r2_tc_buf),
+                    [c.get("function", {}).get("name", "?") for c in
+                     [_r2_tc_buf[i] for i in sorted(_r2_tc_buf)]],
                 )
 
         # Diagnostic — if we hit max-rounds with the model still trying to
