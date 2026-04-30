@@ -88,7 +88,7 @@ def match_plugins(message: str, plugins: Iterable["Plugin"]) -> list["Plugin"]:
             kw_stems = _stems(kw.lower())
             hit = kw_stems & msg_tokens
             if hit:
-                logger.info(
+                logger.success(
                     "intent: plugin {!r} matched keyword {!r} via stem {!r}",
                     plugin.name, kw, sorted(hit)[0],
                 )

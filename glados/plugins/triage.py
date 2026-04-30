@@ -85,13 +85,13 @@ def triage_plugins(
     * The LLM call times out, errors, or returns unparseable content
     """
     if not _enabled():
-        logger.info("plugin triage: skipped (GLADOS_PLUGIN_TRIAGE_ENABLED falsy)")
+        logger.success("plugin triage: skipped (GLADOS_PLUGIN_TRIAGE_ENABLED falsy)")
         return []
     if not plugins or not message or not message.strip():
         return []
 
     plugin_names = [p.name for p in plugins]
-    logger.info(
+    logger.success(
         "plugin triage: invoking llm_triage slot ({} plugins in catalog: {})",
         len(plugin_names), plugin_names,
     )
@@ -117,10 +117,10 @@ def triage_plugins(
 
     elapsed_ms = (time.time() - t0) * 1000
     if not raw:
-        logger.info("plugin triage: empty response after {:.0f}ms", elapsed_ms)
+        logger.success("plugin triage: empty response after {:.0f}ms", elapsed_ms)
         return []
 
-    logger.info(
+    logger.success(
         "plugin triage: response in {:.0f}ms, raw[:200]={!r}",
         elapsed_ms, raw[:200],
     )
@@ -133,7 +133,7 @@ def triage_plugins(
 
     relevant = parsed.get("relevant") if isinstance(parsed, dict) else None
     if not isinstance(relevant, list):
-        logger.info("plugin triage: parsed object missing 'relevant' list; parsed={!r}", parsed)
+        logger.success("plugin triage: parsed object missing 'relevant' list; parsed={!r}", parsed)
         return []
 
     enabled_names = {p.name for p in plugins}
@@ -144,5 +144,5 @@ def triage_plugins(
             "plugin triage: dropped hallucinated names not in enabled set: {}",
             dropped,
         )
-    logger.info("plugin triage: matched={}", matched)
+    logger.success("plugin triage: matched={}", matched)
     return matched

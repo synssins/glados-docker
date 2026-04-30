@@ -1928,7 +1928,7 @@ def _stream_chat_sse_impl(
     # Connect to Ollama via http.client (no buffering)
     conn = None
     t_request_sent = time.time()  # TTFT: start timer BEFORE sending request
-    logger.info(
+    logger.success(
         "[{}] LLM upstream connecting: {}:{} POST {}",
         request_id, parsed_url.hostname or "localhost",
         parsed_url.port or 11434, parsed_url.path,
@@ -1941,7 +1941,7 @@ def _stream_chat_sse_impl(
         )
         conn.request("POST", parsed_url.path, body=body, headers=headers)
         api_resp = conn.getresponse()
-        logger.info(
+        logger.success(
             "[{}] LLM upstream status={} reason={!r}",
             request_id, api_resp.status, api_resp.reason,
         )
@@ -2074,7 +2074,7 @@ def _stream_chat_sse_impl(
     _r1_tool_deltas = 0
     _r1_finish_reason = None
 
-    logger.info("[{}] entering round-1 stream loop", request_id)
+    logger.success("[{}] entering round-1 stream loop", request_id)
     try:
         while True:
             raw_line = api_resp.readline()
@@ -2191,19 +2191,19 @@ def _stream_chat_sse_impl(
         # Diagnostic dump — see what round 1 actually emitted.
         _r1_raw_full = "".join(_r1_raw_buf)
         _r1_visible_full = "".join(_r1_visible_buf)
-        logger.info(
+        logger.success(
             "[{}] round-1 diag: chunks={} raw_chars={} visible_chars={} "
             "tool_deltas={} finish_reason={!r}",
             request_id, _r1_chunks, len(_r1_raw_full), len(_r1_visible_full),
             _r1_tool_deltas, _r1_finish_reason,
         )
         if _r1_raw_full:
-            logger.info(
+            logger.success(
                 "[{}] round-1 raw[:500]: {!r}",
                 request_id, _r1_raw_full[:500],
             )
         if _r1_visible_full:
-            logger.info(
+            logger.success(
                 "[{}] round-1 visible[:500]: {!r}",
                 request_id, _r1_visible_full[:500],
             )
@@ -2356,19 +2356,19 @@ def _stream_chat_sse_impl(
             # Diagnostic dump — see what round 2 actually emitted.
             _r2_raw_full = "".join(_r2_raw_buf)
             _r2_visible_full = "".join(_r2_visible_buf)
-            logger.info(
+            logger.success(
                 "[{}] round-2 diag: chunks={} raw_chars={} visible_chars={} "
                 "tool_deltas={} finish_reason={!r}",
                 request_id, _r2_chunks, len(_r2_raw_full), len(_r2_visible_full),
                 _r2_tool_deltas, _r2_finish_reason,
             )
             if _r2_raw_full:
-                logger.info(
+                logger.success(
                     "[{}] round-2 raw[:500]: {!r}",
                     request_id, _r2_raw_full[:500],
                 )
             if _r2_visible_full:
-                logger.info(
+                logger.success(
                     "[{}] round-2 visible[:500]: {!r}",
                     request_id, _r2_visible_full[:500],
                 )
