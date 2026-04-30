@@ -1862,21 +1862,19 @@ def _stream_chat_sse_impl(
     # path (qwen2.5:14b-instruct vs the retired glados:latest Modelfile) —
     # persona strength is more sensitive to these parameters when no SYSTEM
     # is baked into the Modelfile.
-    # Phase 8.0.1 — Qwen3 thinking mode is unconditionally OFF on the
-    # Tier 3 chat path. The original design already documented this:
-    # thinking emits a long <think>…</think> prelude that blows the
-    # output budget before the user-visible answer can be produced,
-    # AND triggers a separate LM Studio runtime crash (Exit code
-    # 3221226505) when combined with multi-round tool calling on
-    # heavy tool catalogs (~40+ tool defs). Verified live 2026-04-29
-    # against qwen3-30b-a3b at ctx=12288. Disabling thinking is the
-    # generic fix across HA + plugin-intent + any future tool-using
-    # path; tool selection works fine without it for catalogs
-    # operators are likely to install.
+    # Thinking + tool selection trade-off: with thinking OFF, qwen3-30b
+    # produces neither tool_calls nor text on multi-tool catalogs (model
+    # needs deliberation to pick from 20+ tools). With thinking ON +
+    # 40+ tools, LM Studio crashes (Exit code 3221226505). The tool
+    # catalog cap below sits well under the crash threshold, so we can
+    # keep thinking enabled when tools are advertised — the model uses
+    # it to pick the right tool, then produces a tool_call + post-result
+    # final text within the 1024 num_predict budget. Pure chitchat
+    # (no tools) still skips thinking for fast 2-5 s replies.
     _has_tools = bool(tools)
     from glados.core.llm_directives import apply_model_family_directives
     messages = apply_model_family_directives(
-        messages, glados.llm_model, enable_thinking=False,
+        messages, glados.llm_model, enable_thinking=_has_tools,
     )
     # num_predict budget — when tools are advertised, the model may emit
     # a <think> chain + tool_call JSON + post-tool result analysis +
