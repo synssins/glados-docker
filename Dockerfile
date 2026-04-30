@@ -91,6 +91,7 @@ RUN curl -fsSL --retry 5 --retry-delay 2 \
 # Application source
 COPY glados/ ./glados/
 COPY configs/config.example.yaml ./configs/config.example.yaml
+COPY configs/logging.example.yaml ./configs/logging.example.yaml
 COPY scripts/ ./scripts/
 
 # Non-root user with home dir (subagent memory writes to ~/.glados/)

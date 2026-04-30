@@ -1,0 +1,404 @@
+# GLaDOS log groups — operator-tunable per-subsystem logging.
+#
+# This file is the persistent state for the per-group log filter (see
+# glados/observability/log_groups.py). The WebUI Logging page reads and
+# writes this file; you can also edit it directly here.
+#
+# default_level
+#   Floor for log calls that have no group binding (legacy logger.info()
+#   calls). Records below this level are dropped before the per-group
+#   filter runs. Loguru levels (low → high): DEBUG, INFO, SUCCESS,
+#   WARNING. ERROR / CRITICAL bypass filtering entirely.
+#
+# groups[]
+#   id            stable machine ID — must match a builtin group from
+#                 glados/observability/log_groups.py. Unknown IDs are
+#                 dropped on load with a warning.
+#   name          human-readable display name (UI only).
+#   description   one-line tooltip (UI only).
+#   category      top-level group for UI bucketing.
+#   enabled       per-group on/off.
+#   level         per-group threshold. Same level set as default_level.
+#
+# Hot-reload
+#   Changes saved here (via the WebUI page or a direct edit + container
+#   restart) take effect immediately for the WebUI write path. A direct
+#   file edit does NOT auto-reload — flip a single toggle in the WebUI
+#   to pick up your changes, or restart the container.
+#
+# Locked-on groups
+#   The auth.audit group cannot be disabled via this file or the WebUI.
+#   That's intentional — silencing audit events is a security-control
+#   change that needs a code-level deviation, not a config edit.
+#
+# Global override
+#   The GLADOS_LOG_LEVEL env var, if set, lowers every group's effective
+#   floor to that level for the lifetime of the process. Useful for
+#   one-shot deployments where you want the firehose without flipping
+#   ~40 toggles. e.g. `GLADOS_LOG_LEVEL=DEBUG`.
+
+default_level: SUCCESS
+groups:
+  # --- Chat path -----------------------------------------------------------
+  - id: chat.round1_stream
+    name: "Chat — Round 1 LLM Stream"
+    description: "Per-chunk events from the user's chat request to the LLM."
+    category: Chat
+    enabled: true
+    level: INFO
+  - id: chat.round1_raw_bytes
+    name: "Chat — Round 1 Raw Chunk Bytes"
+    description: "Every SSE line from LM Studio verbatim. Very verbose."
+    category: Chat
+    enabled: false
+    level: DEBUG
+  - id: chat.round2_stream
+    name: "Chat — Round 2 LLM Stream (post-tool-result)"
+    description: "Per-chunk events from the post-tool-result LLM call."
+    category: Chat
+    enabled: true
+    level: INFO
+  - id: chat.round2_raw_bytes
+    name: "Chat — Round 2 Raw Chunk Bytes"
+    description: "Every SSE line from the round-2 stream verbatim."
+    category: Chat
+    enabled: false
+    level: DEBUG
+  - id: chat.tool_call
+    name: "Chat — Tool Call Dispatch"
+    description: "Each tool the model invokes during the agentic loop."
+    category: Chat
+    enabled: true
+    level: INFO
+  - id: chat.tool_result
+    name: "Chat — Tool Result Body"
+    description: "First 500 chars of each tool's result body."
+    category: Chat
+    enabled: false
+    level: DEBUG
+  - id: chat.filter_pipeline
+    name: "Chat — <think> Tag Filter Pipeline"
+    description: "State transitions in the streaming reasoning-content filter."
+    category: Chat
+    enabled: false
+    level: DEBUG
+  - id: chat.connect_path
+    name: "Chat — LLM Upstream Connect / Status"
+    description: "Connect attempts, response status, error bodies."
+    category: Chat
+    enabled: true
+    level: INFO
+  - id: chat.sanitize_history
+    name: "Chat — Message History Sanitization"
+    description: "What the sanitizer dropped before sending to the LLM."
+    category: Chat
+    enabled: false
+    level: DEBUG
+  - id: chat.routing_decision
+    name: "Chat — Routing Decision (HA / plugin / chitchat)"
+    description: "Which path the chat handler chose and why."
+    category: Chat
+    enabled: true
+    level: INFO
+
+  # --- Plugin layer --------------------------------------------------------
+  - id: plugin.intent_match
+    name: "Plugin — Keyword Intent Matcher"
+    description: "Which keyword triggered which plugin."
+    category: Plugin
+    enabled: true
+    level: INFO
+  - id: plugin.triage_llm
+    name: "Plugin — LLM Triage Classifier"
+    description: "Triage LLM invocation, latency, raw response, parsed list."
+    category: Plugin
+    enabled: true
+    level: INFO
+  - id: plugin.discovery
+    name: "Plugin — Bundle Discovery"
+    description: "Each plugin.json / runtime.yaml / secrets.env file load."
+    category: Plugin
+    enabled: true
+    level: INFO
+  - id: plugin.bundle_validation
+    name: "Plugin — Bundle Schema Validation"
+    description: "PluginJSON pass/fail with field-level detail."
+    category: Plugin
+    enabled: true
+    level: INFO
+  - id: plugin.runner
+    name: "Plugin — Runner / MCPServerConfig Translation"
+    description: "Plugin manifest to MCP server config translation."
+    category: Plugin
+    enabled: false
+    level: DEBUG
+
+  # --- Autonomy ------------------------------------------------------------
+  - id: autonomy.slots
+    name: "Autonomy — Slot State Transitions"
+    description: "Slot transitions with the reason."
+    category: Autonomy
+    enabled: true
+    level: INFO
+  - id: autonomy.weather
+    name: "Autonomy — Weather Subagent"
+    description: "Weather fetch, decisions, fallbacks."
+    category: Autonomy
+    enabled: false
+    level: INFO
+  - id: autonomy.camera_watcher
+    name: "Autonomy — Camera Watcher"
+    description: "Camera-events poll; noisy when vision service is down."
+    category: Autonomy
+    enabled: false
+    level: INFO
+  - id: autonomy.ha_sensor_watcher
+    name: "Autonomy — HA Sensor Watcher"
+    description: "Home Assistant sensor poll cycle."
+    category: Autonomy
+    enabled: false
+    level: INFO
+  - id: autonomy.hacker_news
+    name: "Autonomy — Hacker News Subagent"
+    description: "HN fetch + summarization decisions."
+    category: Autonomy
+    enabled: false
+    level: INFO
+  - id: autonomy.emotion
+    name: "Autonomy — Emotion State / PAD Math"
+    description: "Emotion event push, repetition counter, clustering."
+    category: Autonomy
+    enabled: false
+    level: INFO
+  - id: autonomy.message_compaction
+    name: "Autonomy — Message Compaction"
+    description: "Compaction trigger, before/after token counts, summary."
+    category: Autonomy
+    enabled: true
+    level: INFO
+  - id: autonomy.observer
+    name: "Autonomy — Observer Agent"
+    description: "ObserverAgent decision rationale."
+    category: Autonomy
+    enabled: false
+    level: INFO
+  - id: autonomy.llm_client
+    name: "Autonomy — LLM Client Calls"
+    description: "Outbound LLM calls from autonomy slots."
+    category: Autonomy
+    enabled: true
+    level: INFO
+  - id: autonomy.llm_processor
+    name: "Autonomy — LLM Processor"
+    description: "Chunk processing for autonomy LLM responses."
+    category: Autonomy
+    enabled: true
+    level: INFO
+
+  # --- Home Assistant ------------------------------------------------------
+  - id: ha.ws_client
+    name: "HA — WebSocket Client"
+    description: "Connect / auth / subscribe lifecycle, state events."
+    category: HA
+    enabled: false
+    level: INFO
+  - id: ha.semantic_index
+    name: "HA — Semantic Entity Index"
+    description: "Build, persistence, query top-K."
+    category: HA
+    enabled: false
+    level: INFO
+  - id: ha.disambiguator
+    name: "HA — Tier 2 Disambiguator"
+    description: "Tier 2 invocation, raw response, parsed candidates."
+    category: HA
+    enabled: true
+    level: INFO
+  - id: ha.command_resolver
+    name: "HA — Command Resolver / Learned Context"
+    description: "Learned-context lookup, user-pref overrides."
+    category: HA
+    enabled: false
+    level: INFO
+  - id: ha.registry_apply
+    name: "HA — Registry Application"
+    description: "Entity / device / area registry application counts."
+    category: HA
+    enabled: false
+    level: INFO
+
+  # --- MCP -----------------------------------------------------------------
+  - id: mcp.manager
+    name: "MCP — Tool Manager / Dispatch"
+    description: "Server selection, request, response, latency."
+    category: MCP
+    enabled: true
+    level: INFO
+  - id: mcp.spawn
+    name: "MCP — stdio Server Spawn Lifecycle"
+    description: "uvx/npx spawn, stdout/stderr, exit code."
+    category: MCP
+    enabled: false
+    level: INFO
+  - id: mcp.builtin_tools
+    name: "MCP — Built-in Tools"
+    description: "Built-in tools that bypass MCP transport."
+    category: MCP
+    enabled: false
+    level: INFO
+
+  # --- TTS pipeline --------------------------------------------------------
+  - id: tts.synthesizer
+    name: "TTS — Sentence Buffer / Chunking"
+    description: "Sentence boundary decisions, chunk indexing."
+    category: TTS
+    enabled: false
+    level: INFO
+  - id: tts.piper
+    name: "TTS — Piper / Speaches Calls"
+    description: "TTS backend invocations with timing."
+    category: TTS
+    enabled: false
+    level: INFO
+  - id: tts.pronunciation
+    name: "TTS — Pronunciation Override Pipeline"
+    description: "Container-side pronunciation rules and matches."
+    category: TTS
+    enabled: false
+    level: INFO
+  - id: tts.audio_file_server
+    name: "TTS — Audio File Server"
+    description: "Port-5051 audio file serving."
+    category: TTS
+    enabled: false
+    level: INFO
+
+  # --- Memory --------------------------------------------------------------
+  - id: memory.context_inject
+    name: "Memory — Chat Context Injection"
+    description: "Memory context injection into the chat prompt."
+    category: Memory
+    enabled: true
+    level: INFO
+  - id: memory.passive_extract
+    name: "Memory — Passive Fact Extraction"
+    description: "Background fact-extraction pipeline."
+    category: Memory
+    enabled: false
+    level: INFO
+  - id: memory.chromadb
+    name: "Memory — ChromaDB Read/Write"
+    description: "Every ChromaDB query / persist with key + size + latency."
+    category: Memory
+    enabled: false
+    level: INFO
+  - id: memory.store
+    name: "Memory — Memory Store"
+    description: "MemoryStore reads / writes / evictions."
+    category: Memory
+    enabled: false
+    level: INFO
+
+  # --- WebUI ---------------------------------------------------------------
+  - id: webui.api_request
+    name: "WebUI — Server-Side API Request Handlers"
+    description: "Every API route entry/exit."
+    category: WebUI
+    enabled: false
+    level: INFO
+  - id: webui.config_save
+    name: "WebUI — Configuration Save Events"
+    description: "Each YAML save with diff vs prior."
+    category: WebUI
+    enabled: true
+    level: INFO
+  - id: webui.client_console
+    name: "WebUI — Client-Side Console (forwarded from browser)"
+    description: "Browser console.log/.error forwarded via /api/log."
+    category: WebUI
+    enabled: false
+    level: INFO
+  - id: webui.tts_stream
+    name: "WebUI — TTS Streaming Pipeline"
+    description: "TTS UI's main streaming loop diagnostics."
+    category: WebUI
+    enabled: true
+    level: INFO
+  - id: webui.static_files
+    name: "WebUI — Static File Serving"
+    description: "Static asset GETs."
+    category: WebUI
+    enabled: false
+    level: INFO
+
+  # --- Auth ----------------------------------------------------------------
+  - id: auth.session
+    name: "Auth — Session Validation"
+    description: "Per-request session check."
+    category: Auth
+    enabled: false
+    level: INFO
+  - id: auth.audit
+    name: "Auth — Audit Events"
+    description: "Always-on by policy. Toggle is locked."
+    category: Auth
+    enabled: true
+    level: SUCCESS
+
+  # --- Lifecycle -----------------------------------------------------------
+  - id: lifecycle.startup
+    name: "Lifecycle — Container Startup"
+    description: "Init steps with entry, exit, latency."
+    category: Lifecycle
+    enabled: true
+    level: INFO
+  - id: lifecycle.shutdown
+    name: "Lifecycle — Container Shutdown / SIGTERM"
+    description: "Shutdown orchestration steps."
+    category: Lifecycle
+    enabled: true
+    level: INFO
+  - id: lifecycle.health
+    name: "Lifecycle — Health Endpoint"
+    description: "What /health actually checks each cycle."
+    category: Lifecycle
+    enabled: false
+    level: INFO
+
+  # --- Misc ----------------------------------------------------------------
+  - id: conversation.store
+    name: "Conversation Store — Append / Load / Prune"
+    description: "Every conversation-store operation with content preview."
+    category: Conversation
+    enabled: false
+    level: INFO
+  - id: config.store
+    name: "Config Store — YAML Load / Save"
+    description: "YAML file load / save with parse outcome."
+    category: Config
+    enabled: false
+    level: INFO
+  - id: config.context_gates
+    name: "Config — Context Gates"
+    description: "context_gates.yaml resolution."
+    category: Config
+    enabled: false
+    level: INFO
+  - id: filter.think_tag
+    name: "Filter — Streaming <think> Tag State"
+    description: "Per-byte state machine for the <think> filter."
+    category: Filter
+    enabled: false
+    level: DEBUG
+  - id: filter.boilerplate
+    name: "Filter — Closing Boilerplate Stripper"
+    description: "When strip_closing_boilerplate matches."
+    category: Filter
+    enabled: false
+    level: INFO
+  - id: net.outbound_http
+    name: "Network — Outbound HTTP Calls"
+    description: "Generic wrapper for outbound HTTP calls."
+    category: Network
+    enabled: false
+    level: INFO

@@ -51,11 +51,14 @@ from .text_listener import TextListener
 from .tool_executor import ToolExecutor
 from .tts_synthesizer import TextToSpeechSynthesizer
 
-try:
-    logger.remove(0)
-except ValueError:
-    pass  # No default handler to remove
-logger.add(sys.stderr, level="SUCCESS")
+# Wire the per-group log filter (see glados/observability/log_groups.py).
+# Replaces the prior single-sink hard-coded SUCCESS-floor — now each
+# subsystem's group can be toggled / re-levelled at runtime via the WebUI
+# Logging page or by editing configs/logging.yaml. The GLADOS_LOG_LEVEL
+# env var still works as a global override floor for one-shot debugging.
+from ..observability import install_loguru_sink as _install_loguru_sink  # noqa: E402
+
+_install_loguru_sink(sys.stderr)
 
 
 @dataclass(frozen=True)

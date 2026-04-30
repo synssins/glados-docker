@@ -37,7 +37,12 @@ from loguru import logger
 # Configuration â€” all values from centralized config store
 # ---------------------------------------------------------------------------
 from glados.core.config_store import cfg as _cfg
-from glados.observability import AuditEvent, Origin, audit
+from glados.observability import AuditEvent, LogGroupId, Origin, audit, group_logger
+
+# Module-level logger bound to the WebUI TTS-stream group. Every former
+# print("[STREAM] ...", flush=True) call now routes through here so the
+# operator can toggle this surface in the WebUI Logging page.
+_tts_stream_log = group_logger(LogGroupId.WEBUI.TTS_STREAM)
 
 # Wizard registry — Phase 1 ships one step.
 from glados.webui.setup.steps.admin_password import SetAdminPasswordStep
@@ -2704,12 +2709,12 @@ class Handler(BaseHTTPRequestHandler):
                         total_pcm / bps_rate if bps_rate else 0
                     )
                     session["cond"].notify_all()
-                print(f"[STREAM] TTS chunk {idx} ready: "
-                      f"{len(pcm)} bytes, "
-                      f"total buffered {session['buffered_seconds']:.1f}s",
-                      flush=True)
+                _tts_stream_log.info(
+                    "TTS chunk {} ready: {} bytes, total buffered {:.1f}s",
+                    idx, len(pcm), session["buffered_seconds"],
+                )
             except Exception as e:
-                print(f"[STREAM] TTS chunk {idx} error: {e}", flush=True)
+                _tts_stream_log.error("TTS chunk {} error: {}", idx, e)
                 with session["cond"]:
                     session["chunks"][idx] = b""  # empty on error
                     session["cond"].notify_all()
@@ -2753,8 +2758,11 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         attitude_data = json.loads(line[6:])
                         attitude_tts_params = attitude_data.get("tts", {})
-                        print(f"[STREAM] Attitude: {attitude_data.get('tag', 'unknown')}, "
-                              f"TTS params: {attitude_tts_params}", flush=True)
+                        _tts_stream_log.info(
+                            "Attitude: {}, TTS params: {}",
+                            attitude_data.get("tag", "unknown"),
+                            attitude_tts_params,
+                        )
                     except json.JSONDecodeError:
                         pass
                     pending_event_type = None
@@ -2764,7 +2772,7 @@ class Handler(BaseHTTPRequestHandler):
                 if pending_event_type == "metrics":
                     try:
                         llm_metrics = json.loads(line[6:])
-                        print(f"[STREAM] LLM metrics: {llm_metrics}", flush=True)
+                        _tts_stream_log.info("LLM metrics: {}", llm_metrics)
                     except json.JSONDecodeError:
                         pass
                     pending_event_type = None
@@ -2856,9 +2864,10 @@ class Handler(BaseHTTPRequestHandler):
                 _sse_write(
                     f"event: audio\ndata: {stream_event}\n\n".encode("utf-8")
                 )
-                print(f"[STREAM] Sent streaming URL after "
-                      f"{session['buffered_seconds']:.1f}s buffered",
-                      flush=True)
+                _tts_stream_log.info(
+                    "Sent streaming URL after {:.1f}s buffered",
+                    session["buffered_seconds"],
+                )
 
                 # Wait for ALL TTS threads, then save a static WAV for
                 # replay (the streaming session is ephemeral).
@@ -2877,8 +2886,10 @@ class Handler(BaseHTTPRequestHandler):
                 _sse_write(
                     f"event: replay\ndata: {replay_event}\n\n".encode("utf-8")
                 )
-                print(f"[STREAM] Static WAV saved: {static_filename} "
-                      f"({len(combined_wav)} bytes)", flush=True)
+                _tts_stream_log.info(
+                    "Static WAV saved: {} ({} bytes)",
+                    static_filename, len(combined_wav),
+                )
 
             # Emit combined timing metrics
             t_total_end = _time.time()
@@ -2914,18 +2925,28 @@ class Handler(BaseHTTPRequestHandler):
                             timing_payload["pad_d"]             = float(_pm.group(3))
                             if _lm:
                                 timing_payload["emotion_locked_h"] = float(_lm.group(1))
-                            print(f"[STREAM] Emotion injected: {timing_payload['emotion']} "
-                                  f"({timing_payload['emotion_intensity']:.2f})", flush=True)
+                            _tts_stream_log.info(
+                                "Emotion injected: {} ({:.2f})",
+                                timing_payload["emotion"],
+                                timing_payload["emotion_intensity"],
+                            )
                             break
                 else:
-                    print("[STREAM] Emotion log not found at {}/glados-api.log".format(os.environ.get("GLADOS_LOGS", "/app/logs")), flush=True)
+                    _tts_stream_log.debug(
+                        "Emotion log not found at {}/glados-api.log",
+                        os.environ.get("GLADOS_LOGS", "/app/logs"),
+                    )
             except Exception as _emo_err:
-                print(f"[STREAM] Emotion injection failed: {_emo_err}", flush=True)
+                _tts_stream_log.warning("Emotion injection failed: {}", _emo_err)
             _sse_write(
                 f"event: timing\ndata: {json.dumps(timing_payload)}\n\n".encode("utf-8")
             )
-            print(f"[STREAM] Timing: LLM gen={llm_metrics.get('generation_time_ms', '?')}ms, "
-                  f"TTS={tts_wall_ms}ms, Total={timing_payload['total_time_ms']}ms", flush=True)
+            _tts_stream_log.info(
+                "Timing: LLM gen={}ms, TTS={}ms, Total={}ms",
+                llm_metrics.get("generation_time_ms", "?"),
+                tts_wall_ms,
+                timing_payload["total_time_ms"],
+            )
 
             # Schedule cleanup of the streaming session (keep 5 min for
             # any in-flight GET requests to the streaming endpoint).

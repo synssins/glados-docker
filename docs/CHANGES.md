@@ -4270,3 +4270,89 @@ removed install-by-URL routing tests, plus consolidation in
   Upload; Add-by-URL section removed; link to bundle-format doc)
 
 
+
+## Change 34 — Per-group log filter foundation (2026-04-30)
+
+**Why.** The empty-bubble investigation in late April revealed that
+loguru's single-sink hard-coded `level="SUCCESS"` filter (engine.py:58)
+was silently dropping every `logger.info()`/`logger.debug()` call across
+the codebase, including the diagnostic instrumentation added across two
+sessions to debug the bug. "Add more logs" became "logs added,
+invisible, three deploys wasted." Operator-flagged: build a tunable
+per-subsystem log filter so individual subsystems can be dialled up or
+down without flipping the global level.
+
+**What.** `glados/observability/log_groups.py` defines a registry of
+named log groups (~50 groups, one per logical subsystem on the chat /
+autonomy / HA / MCP / TTS / memory / WebUI / auth / lifecycle /
+network paths). Every diagnostic log call binds a group ID via
+`group_logger(LogGroupId.X.Y)`; the registry decides per record whether
+to emit, based on each group's `enabled` + per-group level threshold.
+`engine.py` now installs a single `TRACE`-floor sink with a filter that
+consults the registry per record, so changes take effect immediately
+without a restart.
+
+**Persistent state** lives in `configs/logging.yaml` (joins the
+existing 5-file Raw YAML split — global / services / speakers / audio
+/ personality / **logging**, now 6 files). The
+`configs/logging.example.yaml` reference is bundled into the image so
+operators can see the schema. The on-disk file is created lazily — the
+WebUI Save action writes it the first time, otherwise the registry
+runs from in-code defaults.
+
+**Safety:**
+
+- Atomic writes (temp + rename), pydantic schema validation before
+  swap.
+- Bad YAML at startup: WARNING + fall back to defaults + preserve the
+  bad file as `<name>.broken-<timestamp>` so nothing is lost.
+- Unknown group IDs in YAML are dropped on load with a warning (no
+  zombie state).
+- Missing builtin IDs in YAML are auto-merged on load (no manual
+  re-export needed after a deploy adds new groups).
+- `ERROR` and `CRITICAL` records bypass the per-group filter entirely
+  — you cannot accidentally silence error logging via this UI.
+- The `auth.audit` group is locked-on by policy; `set_group_state`
+  refuses to disable it.
+
+**Global override.** `GLADOS_LOG_LEVEL` env var, if set, lowers every
+group's effective floor to that level for the lifetime of the process.
+Useful for one-shot deployments where you want the firehose without
+flipping ~50 toggles. e.g. `GLADOS_LOG_LEVEL=DEBUG`.
+
+**Activity counter.** Rolling 5-minute hit counter per group, kept
+in-memory (resets on restart). Powers the WebUI page's "Recent activity"
+column so the operator can spot noisy / silent groups visually.
+
+**Code-side migration.** `tts_ui.py`'s nine `print("[STREAM] …")`
+calls are now `_tts_stream_log.info(…)` bound to `webui.tts_stream`,
+the first surface to use the new system. The remainder of the codebase
+will migrate over the next ten commits, subsystem by subsystem.
+
+**Files added:**
+
+- `glados/observability/log_groups.py` — registry, filter, `LogGroupId`
+  constants, helpers, loguru-sink installer.
+- `configs/logging.example.yaml` — example file with all ~50 groups.
+- `tests/test_log_groups.py` — 33 tests covering schema validation,
+  filter decisions, persistence round-trips, atomic writes, locked-on
+  policy, error-bypass, env override, activity counter, sink
+  integration.
+
+**Files modified:**
+
+- `glados/core/engine.py` — sink installation now goes through
+  `install_loguru_sink` instead of a hard-coded `logger.add(level=…)`.
+- `glados/observability/__init__.py` — re-exports the public surface.
+- `glados/webui/tts_ui.py` — nine `print` calls converted to grouped
+  logger.
+- `Dockerfile` — copies `configs/logging.example.yaml` into the image.
+- `docs/CHANGES.md` (this entry).
+
+**Tests:** 1612 → 1645 (33 new), 0 regressions. `pytest -q` runs in
+~55 s.
+
+**Next.** WebUI Configuration → Logging page (Change 35) gives the
+operator the visual surface to flip toggles without editing YAML by
+hand. Then commit-by-commit instrumentation of every subsystem (chat
+path first, since that is the bug we are actively chasing).
