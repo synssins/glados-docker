@@ -1838,6 +1838,23 @@ def _stream_chat_sse_impl(
         except Exception as exc:  # noqa: BLE001
             logger.debug("builtin tool registration skipped: {}", exc)
 
+    # Hard cap on the advertised tool catalog. Defensive workaround for an
+    # LM Studio runtime crash (Exit code 3221226505 = STATUS_STACK_BUFFER_
+    # OVERRUN) reproducible against qwen3-30b-a3b when the chat payload
+    # carries ~40+ tool definitions. Crash kills the response stream and
+    # the operator sees an empty bubble. Cap at 24 — comfortably above the
+    # typical plugin's tool count, below the observed crash threshold.
+    # Tools are kept in their existing order, so plugin-supplied catalogs
+    # land before the (long) HA tool list and the in-process builtins.
+    # Generic across all plugins / future tool sources.
+    _MAX_TOOLS_PER_TURN = 24
+    if len(tools) > _MAX_TOOLS_PER_TURN:
+        logger.warning(
+            "[{}] tool catalog truncated: {} → {} (LM Studio + qwen3 buffer overrun workaround)",
+            request_id, len(tools), _MAX_TOOLS_PER_TURN,
+        )
+        tools = tools[:_MAX_TOOLS_PER_TURN]
+
     # Build request payload
     # Stage 3 Phase A: model_options come from PersonalityConfig.model_options
     # so the operator can tune temperature/top_p/num_ctx/repeat_penalty per
