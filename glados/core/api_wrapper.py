@@ -1928,6 +1928,11 @@ def _stream_chat_sse_impl(
     # Connect to Ollama via http.client (no buffering)
     conn = None
     t_request_sent = time.time()  # TTFT: start timer BEFORE sending request
+    logger.info(
+        "[{}] LLM upstream connecting: {}:{} POST {}",
+        request_id, parsed_url.hostname or "localhost",
+        parsed_url.port or 11434, parsed_url.path,
+    )
     try:
         conn = _http.HTTPConnection(
             parsed_url.hostname or "localhost",
@@ -1936,9 +1941,17 @@ def _stream_chat_sse_impl(
         )
         conn.request("POST", parsed_url.path, body=body, headers=headers)
         api_resp = conn.getresponse()
+        logger.info(
+            "[{}] LLM upstream status={} reason={!r}",
+            request_id, api_resp.status, api_resp.reason,
+        )
 
         if api_resp.status >= 400:
             err_body = api_resp.read().decode("utf-8", errors="replace")[:200]
+            logger.warning(
+                "[{}] LLM upstream 4xx body[:200]={!r}",
+                request_id, err_body,
+            )
             handler.send_response(200)
             handler.send_header("Content-Type", "text/event-stream")
             handler.send_header("Cache-Control", "no-cache")
@@ -2061,6 +2074,7 @@ def _stream_chat_sse_impl(
     _r1_tool_deltas = 0
     _r1_finish_reason = None
 
+    logger.info("[{}] entering round-1 stream loop", request_id)
     try:
         while True:
             raw_line = api_resp.readline()
