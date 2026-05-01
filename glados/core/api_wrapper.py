@@ -60,6 +60,74 @@ from glados import intent as _intent
 from glados import persona as _persona
 from glados.intent.rules import looks_like_home_command
 
+
+# ---------------------------------------------------------------------------
+# Command-lane routing helpers (chat path)
+# ---------------------------------------------------------------------------
+# Tool-using turns (route=plugin:* or is_home_command) get a separate
+# upstream model from the conversational lane. Operator preference: terse,
+# anti-fabrication, no persona overlay on command turns. Persona is reserved
+# for chitchat / weather / status / autonomy alerts.
+
+COMMAND_MODE_SYSTEM_PROMPT = (
+    "You are a tool-using command interface. Respond tersely with what "
+    "was done or found. No persona. No quips. State only facts grounded "
+    "in actual tool results. If a tool errors or returns nothing, say so "
+    "plainly. Never claim an action you did not invoke as a tool call in "
+    "this turn."
+)
+
+
+def _select_command_lane(
+    is_command_route: bool,
+    interactive_url: str,
+    interactive_model: str,
+    commands_endpoint: Any,
+) -> tuple[str, str, bool]:
+    """Pick (url, model, is_command_lane) for the chat upstream.
+
+    ``commands_endpoint`` is ``cfg.services.llm_commands`` (a
+    ``ServiceEndpoint``), or ``None``. When the route is non-command,
+    or the endpoint URL is empty/blank, falls back to the interactive
+    lane so deployments without a configured llm_commands keep working.
+    """
+    if not is_command_route or commands_endpoint is None:
+        return (interactive_url, interactive_model, False)
+    cmd_url = (getattr(commands_endpoint, "url", "") or "").strip()
+    if not cmd_url:
+        return (interactive_url, interactive_model, False)
+    cmd_model = getattr(commands_endpoint, "model", "") or interactive_model
+    return (cmd_url, cmd_model, True)
+
+
+def _strip_persona_for_command_lane(
+    messages: list[dict],
+    preprompt_count: int,
+) -> list[dict]:
+    """Rewrite messages for the command lane.
+
+    - Replaces the leading persona system message with the minimal
+      command-mode instruction (``COMMAND_MODE_SYSTEM_PROMPT``).
+    - Drops the persona's few-shot user/assistant pairs (positions
+      ``1..preprompt_count-1``). Few-shots bias the model toward
+      textual replies, suppressing tool calls.
+
+    Non-persona system messages (weather context, memory, attitude,
+    turn guards, etc.) are preserved.
+    """
+    if not messages:
+        return messages
+    out: list[dict] = []
+    for i, m in enumerate(messages):
+        if i == 0 and m.get("role") == "system":
+            out.append({"role": "system", "content": COMMAND_MODE_SYSTEM_PROMPT})
+            continue
+        if 0 < i < preprompt_count and m.get("role") in ("user", "assistant"):
+            continue
+        out.append(m)
+    return out
+
+
 # Container-aware path resolution
 _GLADOS_ROOT = Path(os.environ.get("GLADOS_ROOT", "/app"))
 _GLADOS_CONFIG_DIR = Path(os.environ.get("GLADOS_CONFIG_DIR", str(_GLADOS_ROOT / "configs")))
@@ -1575,37 +1643,72 @@ def _stream_chat_sse_impl(
     # the preprompt isn't reliably followed by 8b alone.
     messages = _drop_parrot_anchors(messages, user_message, request_id)
 
-    # When tools are available AND we're in home-command mode, strip
-    # few-shot user/assistant examples from the personality preprompt.
-    # These examples show text-only responses which biases the model
-    # against generating <tool_call> XML. For chitchat we KEEP the
-    # few-shots on purpose — they show the desired conversational shape.
-    if glados.mcp_manager and is_home_command:
-        _preprompt_n = getattr(store, 'preprompt_count', 0)
-        if _preprompt_n > 1:
-            _filtered = []
-            for _i, _m in enumerate(messages):
-                if _i > 0 and _i < _preprompt_n and _m.get("role") in ("user", "assistant"):
-                    continue  # Skip few-shot examples
-                _filtered.append(_m)
-            messages = _filtered
+    # Phase 2c — run plugin intent BEFORE persona/few-shot manipulation
+    # and before the turn-guard append. Operator-declared keywords are a
+    # more specific signal than the legacy HA-shaped `is_home_command`
+    # classifier; when a plugin matches, that plugin owns the tool list
+    # regardless of whether the verb tripped is_home_command. Used here
+    # to compute ``route_is_command``, which drives the few-shot strip,
+    # the persona-replacement, the guard selection, and (downstream) the
+    # llm_commands lane URL/model override.
+    _matched_plugins: list = []
+    if glados.mcp_manager:
+        try:
+            from glados.plugins import discover_plugins
+            from glados.plugins.intent import match_plugins
+            from glados.plugins.triage import triage_plugins
+            _enabled_plugins = discover_plugins()
+            _matched_plugins = match_plugins(user_message, _enabled_plugins)
+            if _matched_plugins:
+                logger.info(
+                    "[{}] plugin intent: keyword matched: {}",
+                    request_id, [p.name for p in _matched_plugins],
+                )
+            else:
+                _triaged = triage_plugins(user_message, _enabled_plugins)
+                if _triaged:
+                    _matched_plugins = [
+                        p for p in _enabled_plugins if p.name in _triaged
+                    ]
+                    logger.info(
+                        "[{}] plugin intent: triage matched: {}",
+                        request_id, list(_triaged),
+                    )
+                else:
+                    logger.info("[{}] plugin intent: no match", request_id)
+        except Exception as _intent_exc:
+            logger.debug(
+                "[{}] plugin intent gate skipped: {}",
+                request_id, _intent_exc,
+            )
 
-    # Phase 8.3 — chitchat-path guard. On the is_home_command=False
-    # branch no tool was called, so the model must NOT narrate device
-    # actions, temperatures, or environmental status. Qwen3:8b was
-    # hallucinating full "the lights have been dimmed" responses to
-    # "Hey you" without any tool invocation. Inject a terse system
-    # message just before the user turn so it's the most recent
-    # instruction the model sees — matches the emotion-directive
-    # placement below so both ride together.
-    # SSE turn-guard: the canonical guard text lives in
-    # `glados/core/turn_guards.py` so the engine's ContextBuilder
-    # registration and this SSE block can't drift apart.
+    # Tool-using turns (plugin route OR is_home_command) take the
+    # command lane: terse, anti-fabrication, no persona overlay.
+    # Conversational turns (weather / status / direct chat / autonomy)
+    # keep the persona preprompt and the interactive lane.
+    route_is_command = bool(_matched_plugins or is_home_command)
+
+    # On the command lane: replace the persona system message with the
+    # minimal command-mode instruction and drop the persona's few-shot
+    # user/assistant pairs. Few-shots show textual replies which bias
+    # the model against generating <tool_call> XML. For the interactive
+    # (chitchat) lane we KEEP the few-shots on purpose — they show the
+    # desired conversational shape.
+    if route_is_command and glados.mcp_manager:
+        _preprompt_n = getattr(store, 'preprompt_count', 0)
+        messages = _strip_persona_for_command_lane(messages, _preprompt_n)
+
+    # Phase 8.3 — turn guard. Command lane gets HOME_COMMAND_GUARD ("use
+    # the provided tools, never narrate actions you didn't take");
+    # interactive lane gets CHITCHAT_GUARD ("no tool was called this
+    # turn, do not narrate device actions / temperatures"). Generalized
+    # from the previous is_home_command-only check so plugin routes get
+    # the tool-using guard too.
     from glados.core.turn_guards import CHITCHAT_GUARD, HOME_COMMAND_GUARD
-    if not is_home_command:
-        messages.append({"role": "system", "content": CHITCHAT_GUARD})
-    else:
+    if route_is_command:
         messages.append({"role": "system", "content": HOME_COMMAND_GUARD})
+    else:
+        messages.append({"role": "system", "content": CHITCHAT_GUARD})
 
     messages.append({"role": "user", "content": user_message})
 
@@ -1745,8 +1848,21 @@ def _stream_chat_sse_impl(
     # protocol-internal paths. ``compose_endpoint`` is forgiving — if a
     # legacy installation still has ``/api/chat`` baked into the stored URL,
     # the path component is stripped before the OpenAI suffix is appended.
+    #
+    # Command-lane override: when ``route_is_command`` and
+    # ``cfg.services.llm_commands.url`` is configured, the upstream is
+    # the dedicated command-lane endpoint (typically a smaller, faster
+    # tool-call-clean model). When unset, we fall back to llm_interactive
+    # — backwards-compatible with deployments that haven't configured a
+    # separate command lane.
     from glados.core.url_utils import compose_endpoint
-    completion_url = compose_endpoint(str(glados.completion_url), "/v1/chat/completions")
+    _upstream_url, _upstream_model, _is_command_lane = _select_command_lane(
+        is_command_route=route_is_command,
+        interactive_url=str(glados.completion_url),
+        interactive_model=glados.llm_model,
+        commands_endpoint=getattr(cfg.services, "llm_commands", None),
+    )
+    completion_url = compose_endpoint(_upstream_url, "/v1/chat/completions")
     parsed_url = urlparse(completion_url)
 
     # ── Entity name resolver ─────────────────────────────────────────
@@ -1795,44 +1911,9 @@ def _stream_chat_sse_impl(
             logger.debug("Entity resolve failed: {}", _e)
         return args
 
-    # Phase 2c — run plugin intent FIRST. Operator-declared keywords are a
-    # more specific signal than the legacy HA-shaped `is_home_command`
-    # classifier; when a plugin matches, that plugin owns the tool list
-    # regardless of whether the verb tripped is_home_command. Without this
-    # ordering, queries like "Check my movie library" classify as
-    # home_command, advertise ALL tools (including 41 *arr ones), but the
-    # HA-bias system prompt below tells the model to ignore non-HA tools —
-    # so the *arr tools are visible but unused.
-    _matched_plugins: list = []
-    if glados.mcp_manager:
-        try:
-            from glados.plugins import discover_plugins
-            from glados.plugins.intent import match_plugins
-            from glados.plugins.triage import triage_plugins
-            _enabled_plugins = discover_plugins()
-            _matched_plugins = match_plugins(user_message, _enabled_plugins)
-            if _matched_plugins:
-                logger.info(
-                    "[{}] plugin intent: keyword matched: {}",
-                    request_id, [p.name for p in _matched_plugins],
-                )
-            else:
-                _triaged = triage_plugins(user_message, _enabled_plugins)
-                if _triaged:
-                    _matched_plugins = [
-                        p for p in _enabled_plugins if p.name in _triaged
-                    ]
-                    logger.info(
-                        "[{}] plugin intent: triage matched: {}",
-                        request_id, list(_triaged),
-                    )
-                else:
-                    logger.info("[{}] plugin intent: no match", request_id)
-        except Exception as _intent_exc:
-            logger.debug(
-                "[{}] plugin intent gate skipped: {}",
-                request_id, _intent_exc,
-            )
+    # Plugin intent matching has already run further up — its output
+    # (`_matched_plugins`) is what drove the few-shot strip and the
+    # turn guard selection. Reuse it here for tool catalogue selection.
 
     # Build tool definitions. Plugin-intent wins; HA path is the no-plugin
     # fallback. Chitchat with no plugin match gets an empty tool list.
@@ -1903,22 +1984,24 @@ def _stream_chat_sse_impl(
     _has_tools = bool(tools)
     from glados.core.llm_directives import apply_model_family_directives
     messages = apply_model_family_directives(
-        messages, glados.llm_model, enable_thinking=_has_tools,
+        messages, _upstream_model, enable_thinking=_has_tools,
     )
-    # num_predict budget — when tools are advertised, the model may emit
-    # a <think> chain + tool_call JSON + post-tool result analysis +
-    # final user-visible answer across 1-3 streaming rounds. Sized at
-    # 1024 to fit within a 12K-ctx envelope after typical input grows
-    # to ~10K from heavy tool catalogs (41 tools × ~150 tokens of JSON
-    # schema = ~6K alone, plus history + persona). Operators with
-    # heavier catalogs and ctx headroom can override via
-    # personality.model_options.num_predict. The original 512 cap was
-    # sized for chitchat-only and starves tool-using turns of the budget
-    # needed to produce a final user reply.
+    # num_predict budget. Two modes:
+    #   - command lane (qwen2.5-coder-7b on the dedicated lane): 512 is
+    #     sufficient. Tool-using command turns produce short tool_call
+    #     JSON + a terse confirmation; no <think> overhead, no persona
+    #     prose. Smaller budget keeps replies snappy.
+    #   - interactive lane: 1024 when tools are advertised (covers
+    #     <think> + tool_call + post-result final text across 1-3
+    #     rounds), else 512 for pure chitchat. Operators with heavier
+    #     catalogs can override via personality.model_options.num_predict.
     _streaming_options = dict(cfg.personality.model_options.to_ollama_options())
-    _streaming_options.setdefault("num_predict", 1024 if _has_tools else 512)
+    if _is_command_lane:
+        _streaming_options.setdefault("num_predict", 512)
+    else:
+        _streaming_options.setdefault("num_predict", 1024 if _has_tools else 512)
     payload: dict[str, Any] = {
-        "model": glados.llm_model,
+        "model": _upstream_model,
         "stream": True,
         "messages": messages,
         "options": _streaming_options,
@@ -1940,11 +2023,12 @@ def _stream_chat_sse_impl(
         _route = "ha"
     else:
         _route = "chitchat"
+    _lane = "commands" if _is_command_lane else "interactive"
     _log_chat_routing.info(
-        "[{}] SSE: {} msgs, {} tools, num_predict={} (route={}) "
-        "system_prompt_chars={} body_bytes_pending=true",
+        "[{}] SSE: {} msgs, {} tools, num_predict={} (route={} lane={} "
+        "model={}) system_prompt_chars={} body_bytes_pending=true",
         request_id, len(messages), len(tools),
-        _streaming_options.get("num_predict"), _route,
+        _streaming_options.get("num_predict"), _route, _lane, _upstream_model,
         sum(len(m.get("content") or "") for m in messages if m.get("role") == "system"),
     )
     body = json.dumps(payload).encode("utf-8")
@@ -2579,7 +2663,13 @@ def _stream_chat_sse_impl(
                 messages.append({"role": "tool", "tool_call_id": _tc_id, "content": str(_result)})
 
             pending_tool_calls = []
-            _p2 = {"model": glados.llm_model, "stream": True, "messages": messages}
+            # Round-2 dispatch uses the SAME upstream as round 1 — the
+            # tool result must travel back to the model that emitted the
+            # tool call (model identity matters: command-lane qwen2.5-coder
+            # vs interactive-lane qwen3-14b have different tool_call
+            # surfaces). parsed_url already points at the right host;
+            # _upstream_model is the matching model identifier.
+            _p2 = {"model": _upstream_model, "stream": True, "messages": messages}
             if tools:
                 _p2["tools"] = tools
             _b2 = json.dumps(_p2).encode("utf-8")
