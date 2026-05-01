@@ -106,18 +106,36 @@ def triage_plugins(
         "plugin triage: invoking llm_triage slot ({} plugins in catalog: {})",
         len(plugin_names), plugin_names,
     )
+    # Schema-constrained decoding: enum the actual plugin names so the
+    # 1B classifier model literally cannot emit a hallucinated name.
+    # Live observation prior to this: the model returned subcomponent
+    # names ("Prowlarr", "Lidarr") instead of the catalog name ("*arr
+    # Stack"); the downstream filter dropped them as hallucinations and
+    # routing fell through to chitchat. The enum constraint at the
+    # runtime layer eliminates the failure class entirely.
+    triage_schema = {
+        "name": "plugin_triage",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "relevant": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": plugin_names},
+                },
+            },
+            "required": ["relevant"],
+            "additionalProperties": False,
+        },
+    }
     t0 = time.time()
     try:
         config = LLMConfig.for_slot("llm_triage", timeout=timeout_s)
-        # Determinism matters here; the temperature kwarg isn't
-        # exposed on llm_call, but the underlying triage model is
-        # already tuned hot toward classification by the slot
-        # default, and the JSON-response path constrains output.
         raw = llm_call(
             config,
             _SYSTEM_PROMPT,
             _build_user_prompt(message, plugins),
-            json_response=True,
+            json_schema=triage_schema,
         )
     except Exception as exc:  # noqa: BLE001
         _log_triage.warning(

@@ -110,6 +110,37 @@ def test_empty_plugin_list_short_circuits():
     call.assert_not_called()
 
 
+def test_passes_json_schema_with_enum_of_plugin_names():
+    """Schema-constrained decoding: the `relevant` array items must be
+    constrained to the set of actual plugin names so the model cannot
+    emit a hallucinated entry. Live failure prior to this: the 1B model
+    returned subcomponent names ('Prowlarr', 'Lidarr') instead of the
+    catalog name ('*arr Stack'); enum + grammar makes that impossible.
+    """
+    from glados.plugins.triage import triage_plugins
+    plugins = [
+        _plugin("arr-stack", "Sonarr/Radarr"),
+        _plugin("calendar", "Calendar"),
+        _plugin("notes", "Notes"),
+    ]
+    with patch(
+        "glados.plugins.triage.llm_call",
+        return_value='{"relevant": ["arr-stack"]}',
+    ) as call:
+        triage_plugins("any message with no keyword match", plugins)
+    assert call.call_count == 1
+    schema = call.call_args.kwargs.get("json_schema")
+    assert schema is not None, "triage must pass a json_schema, not the legacy json_response flag"
+    # Must NOT pass the legacy soft-hint flag — the schema wins, but
+    # mixing them is a smell that suggests an incomplete migration.
+    assert call.call_args.kwargs.get("json_response", False) is False
+    assert schema["strict"] is True
+    enum = schema["schema"]["properties"]["relevant"]["items"]["enum"]
+    assert sorted(enum) == ["arr-stack", "calendar", "notes"]
+    assert schema["schema"]["required"] == ["relevant"]
+    assert schema["schema"]["additionalProperties"] is False
+
+
 def test_empty_message_short_circuits():
     from glados.plugins.triage import triage_plugins
     plugins = [_plugin("arr-stack", "movies")]
