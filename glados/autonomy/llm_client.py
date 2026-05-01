@@ -122,7 +122,29 @@ def llm_call(
     }
 
     if json_response:
-        data["response_format"] = {"type": "json_object"}
+        # LM Studio's llama.cpp runtime (build 2.13.0+) rejects the
+        # legacy `{"type": "json_object"}` form with a 400 in ~3 ms:
+        # ``'response_format.type' must be 'json_schema' or 'text'``.
+        # That broke every JSON-mode caller — plugin triage, emotion
+        # agent, observer, doorbell screener — all silently returning
+        # empty.
+        #
+        # Use ``text`` here: every caller already wraps ``json.loads``
+        # in try/except and tolerates malformed responses, and the
+        # system prompts already say "reply with JSON {…}". The system
+        # prompt + tolerant parser pair was doing the real work; the
+        # legacy ``json_object`` flag was only a soft assist.
+        #
+        # TODO(json_schema): evolve each call site to a proper
+        # ``{"type": "json_schema", "json_schema": {…}}`` body with a
+        # per-site schema definition. That re-imposes hard constraints
+        # at the runtime level (LM Studio honours json_schema) and
+        # gives us back grammar-constrained decoding. Per-call-site
+        # because the schemas differ (triage wants
+        # ``{relevant: [str]}``, emotion wants
+        # ``{p: float, a: float, d: float, …}``, etc.). Tracked in
+        # follow-up.
+        data["response_format"] = {"type": "text"}
 
     # ``config.url`` is the bare ``scheme://host:port`` operators paste into
     # the LLM & Services WebUI URL field; the OpenAI chat-completions path
