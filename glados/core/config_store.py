@@ -390,6 +390,13 @@ class ServicesConfig(BaseModel):
             model="llama-3.2-1b-instruct",
         ),
     )
+    # Dedicated lane for tool-using command turns (route=plugin:* /
+    # is_home_command). When url is empty, the chat path falls back to
+    # llm_interactive — backwards-compatible with deployments that
+    # haven't configured a separate command-lane endpoint.
+    llm_commands: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(url=""),
+    )
     gladys_api: ServiceEndpoint = Field(
         default=ServiceEndpoint(url="http://localhost:8020"),
         deprecated=True,
