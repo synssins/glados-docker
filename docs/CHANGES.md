@@ -4515,3 +4515,104 @@ attempts kept missing.
 **Tests:** 1667 → 1667, 0 regressions. `pytest -q` runs in ~56 s.
 The chat-path instrumentation is observability-only and has no
 behaviour change.
+
+## Change 37 — Command lane: separate upstream for tool-using turns (2026-05-01)
+
+**Why.** Every chat turn — including tool-using "Add Ghostbusters" /
+"Is X in my library" commands — was routed through the big
+personality-laden qwen3-14b model on the interactive lane. Three costs:
+
+1. *Slow.* qwen3-14b at ctx=32768 / parallel=1 produces ~16 tok/s on
+   the Intel Arc Pro B60 — fine for conversational replies, sluggish
+   for tool-call confirmations.
+2. *Fabrication risk.* Persona overlay encourages the model to
+   *describe* what it would do rather than *invoke* the tool, then
+   produce a witty in-character "I added it for you" without an
+   actual tool call having fired.
+3. *Crash pressure.* The bigger model + tool catalogue + persona
+   pushed against the per-slot ctx boundary that triggers the
+   llama.cpp Vulkan `STATUS_STACK_BUFFER_OVERRUN` (Exit 3221226505).
+
+Operator preference (locked in
+`feedback_command_vs_conversational.md`): tool-using turns get
+terse, direct, tool-result-echo replies with NO persona. Persona
+remains on weather / status / direct chat / autonomy alerts.
+
+**What.** A new ``services.llm_commands`` endpoint slot drives a
+dedicated upstream for tool-using turns. The chat path's
+``_stream_chat_sse_impl`` now classifies each turn and picks the
+upstream lane:
+
+  - ``route=plugin:* OR is_home_command`` → command lane (URL +
+    model from ``cfg.services.llm_commands``).
+  - everything else → interactive lane (the existing
+    ``llm_interactive`` upstream, unchanged).
+
+When ``llm_commands.url`` is empty, the chat path silently falls
+back to the interactive lane — backwards-compatible with deployments
+that haven't configured a separate command lane.
+
+**Command-lane prompt shape.** Three modifications relative to the
+interactive lane:
+
+  - Persona system message replaced with a minimal, anti-fabrication
+    command-mode instruction. The persona's HEXACO traits / quip
+    library / response directives are absent on the command path.
+  - Persona few-shots dropped (they bias the model toward textual
+    replies, suppressing tool calls).
+  - ``HOME_COMMAND_GUARD`` applied on plugin routes too (previously
+    only on legacy is_home_command). Generalises the guard to all
+    tool-using turns.
+
+``num_predict`` caps at 512 on the command lane (was 1024) — a small
+coder-tuned model produces tool_call JSON + a short confirmation
+without needing the bigger budget.
+
+**LM Studio side.** ``qwen2.5-coder-7b-instruct`` Q4_K_M (~4.7 GB)
+loaded at ctx=32768 with no ``--parallel`` (single slot — the
+per-slot stack-overrun risk applies on the command lane too, and
+command turns are short and serial). Added to:
+
+  - ``lms_autoload.bat`` — bootstrap unload + load entries.
+  - ``lms_watchdog.ps1`` — desired list, so the model auto-reloads
+    if it crashes.
+
+**Routing log.** ``chat.routing_decision`` now reports the lane
+choice and the actual upstream model so operators can watch which
+turns took which path:
+
+```
+SSE: 12 msgs, 24 tools, num_predict=512 (route=plugin:radarr
+lane=commands model=qwen2.5-coder-7b-instruct) ...
+```
+
+**Files added:**
+
+- ``tests/test_command_lane_routing.py`` — 13 unit tests for the
+  two pure helpers (``_select_command_lane``,
+  ``_strip_persona_for_command_lane``) covering URL fallback rules,
+  empty/blank URL, model-inheritance, persona replacement, few-shot
+  drop, multi-system-msg preservation.
+
+**Files modified:**
+
+- ``glados/core/config_store.py`` — new ``ServicesConfig.llm_commands``
+  field, defaults to empty URL.
+- ``glados/core/api_wrapper.py`` — plugin-intent block moved up so
+  the route classifier is known before the few-shot strip; new
+  helpers wired into ``_stream_chat_sse_impl``; round-2 dispatch
+  uses the same upstream as round 1.
+- ``glados/webui/static/ui.js`` — ``SERVICE_NAMES['llm_commands']
+  = 'LLM (Commands)'``. Card auto-renders via the existing
+  data-driven service grid.
+- ``glados/webui/tts_ui.py`` — ``llm_commands`` added to the URL
+  validator slot list.
+- ``docs/CHANGES.md`` (this entry).
+
+**Not touched** — single-source-of-truth refactor of legacy
+``Glados.completion_url`` / ``Glados.llm_model`` /
+``Glados.autonomy.*`` mirror fields in ``glados_config.yaml`` is
+explicitly out of scope and remains queued.
+
+**Tests:** 1667 → 1680 (13 new), 0 regressions. ``pytest -q`` runs in
+~57 s.
