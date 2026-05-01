@@ -1227,7 +1227,9 @@ def _validate_llm_urls(services_payload: Any) -> str | None:
     if not isinstance(services_payload, dict):
         return None
     from urllib.parse import urlparse
-    _llm_slots = ("llm_interactive", "llm_autonomy", "llm_triage", "llm_vision")
+    _llm_slots = (
+        "llm_interactive", "llm_autonomy", "llm_triage", "llm_vision", "llm_commands",
+    )
     _err = (
         "expected http://host:port (scheme + port required, no path)"
     )
