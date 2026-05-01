@@ -106,23 +106,46 @@ def _strip_persona_for_command_lane(
 ) -> list[dict]:
     """Rewrite messages for the command lane.
 
-    - Replaces the leading persona system message with the minimal
-      command-mode instruction (``COMMAND_MODE_SYSTEM_PROMPT``).
-    - Drops the persona's few-shot user/assistant pairs (positions
-      ``1..preprompt_count-1``). Few-shots bias the model toward
-      textual replies, suppressing tool calls.
+    Two responsibilities:
 
-    Non-persona system messages (weather context, memory, attitude,
-    turn guards, etc.) are preserved.
+    1. Replaces the leading persona system message with the minimal
+       command-mode instruction (``COMMAND_MODE_SYSTEM_PROMPT``).
+    2. Drops ALL prior user/assistant turns — both the persona's
+       few-shot pairs AND any real conversation history.
+
+    The history drop is the load-bearing change: tool-using turns
+    inherit prior chitchat from the conversation_store, and small
+    instruction-tuned models do in-context learning on it. If the
+    last few assistant turns responded with text (which is what the
+    chat path produces today on chitchat / tier-1 fast-path / failed
+    tool turns), the model copies the pattern and emits text instead
+    of a tool_call. Diagnostic confirmed via LM Studio's input log:
+    every prior assistant turn in history primed the model to
+    fabricate.
+
+    The command lane is therefore stateless: each tool-using turn
+    is a clean (system + user) pair plus tools. The interactive lane
+    keeps the history for chat continuity ("brighter" → reference
+    last command). Cross-lane carry-over (e.g. "and what about the
+    sequel?" after a Radarr lookup) is not supported in this
+    iteration.
+
+    Non-persona system messages (memory context, weather, etc.) that
+    were already present pass through unchanged. New system messages
+    inserted downstream (turn guard, etc.) are not affected by this
+    function.
     """
     if not messages:
         return messages
     out: list[dict] = []
     for i, m in enumerate(messages):
-        if i == 0 and m.get("role") == "system":
+        role = m.get("role")
+        if i == 0 and role == "system":
             out.append({"role": "system", "content": COMMAND_MODE_SYSTEM_PROMPT})
             continue
-        if 0 < i < preprompt_count and m.get("role") in ("user", "assistant"):
+        # Drop ALL user/assistant turns — both persona few-shots
+        # and real conversation history. See docstring above for why.
+        if role in ("user", "assistant"):
             continue
         out.append(m)
     return out
@@ -1688,13 +1711,28 @@ def _stream_chat_sse_impl(
     # keep the persona preprompt and the interactive lane.
     route_is_command = bool(_matched_plugins or is_home_command)
 
+    # Resolve the upstream lane early so subsequent persona-flavoured
+    # injections (attitude directive, PAD TTS override, emotion
+    # directive, attitude SSE event) can guard on it. The actual
+    # ``compose_endpoint`` call still happens later, at the dispatch
+    # site, but the lane decision is needed up here.
+    _upstream_url, _upstream_model, _is_command_lane = _select_command_lane(
+        is_command_route=route_is_command,
+        interactive_url=str(glados.completion_url),
+        interactive_model=glados.llm_model,
+        commands_endpoint=getattr(cfg.services, "llm_commands", None),
+    )
+
     # On the command lane: replace the persona system message with the
-    # minimal command-mode instruction and drop the persona's few-shot
-    # user/assistant pairs. Few-shots show textual replies which bias
-    # the model against generating <tool_call> XML. For the interactive
-    # (chitchat) lane we KEEP the few-shots on purpose — they show the
-    # desired conversational shape.
-    if route_is_command and glados.mcp_manager:
+    # minimal command-mode instruction and drop ALL prior user/assistant
+    # turns from history. The history drop is load-bearing: without it,
+    # small instruction-tuned models on the command lane do in-context
+    # learning on the conversation_store and copy whatever pattern the
+    # last few assistant turns took (typically text replies from
+    # chitchat / tier-1 fast-path / failed tool turns) — which
+    # suppresses tool_call emission entirely. The interactive lane
+    # keeps its history; cross-lane carry-over is not supported.
+    if _is_command_lane and glados.mcp_manager:
         _preprompt_n = getattr(store, 'preprompt_count', 0)
         messages = _strip_persona_for_command_lane(messages, _preprompt_n)
 
@@ -1712,17 +1750,26 @@ def _stream_chat_sse_impl(
 
     messages.append({"role": "user", "content": user_message})
 
-    # Roll an attitude directive for this turn (adds variety to responses)
-    attitude = roll_attitude()
-    attitude_directive = attitude.get("directive") if attitude else None
-    attitude_tts = attitude.get("tts", {}) if attitude else {}
-    if attitude_directive:
-        # Insert directive as a system message after any existing system messages
-        insert_idx = 0
-        while insert_idx < len(messages) and messages[insert_idx].get("role") == "system":
-            insert_idx += 1
-        messages.insert(insert_idx, {"role": "system", "content": attitude_directive})
-        logger.debug("[{}] Attitude: {} — {}", request_id, attitude.get("tag"), attitude_directive[:60])
+    # Roll an attitude directive for this turn (adds variety to responses).
+    # Skipped on the command lane: tool-using turns are voice-of-the-tool-
+    # result, not voice-of-GLaDOS — the attitude directive injects
+    # persona-flavoured language ("respond with theatrical exasperation")
+    # that leaks quips into terse confirmations.
+    if not _is_command_lane:
+        attitude = roll_attitude()
+        attitude_directive = attitude.get("directive") if attitude else None
+        attitude_tts = attitude.get("tts", {}) if attitude else {}
+        if attitude_directive:
+            # Insert directive as a system message after any existing system messages
+            insert_idx = 0
+            while insert_idx < len(messages) and messages[insert_idx].get("role") == "system":
+                insert_idx += 1
+            messages.insert(insert_idx, {"role": "system", "content": attitude_directive})
+            logger.debug("[{}] Attitude: {} — {}", request_id, attitude.get("tag"), attitude_directive[:60])
+    else:
+        attitude = None
+        attitude_directive = None
+        attitude_tts = {}
 
     # Phase Emotion-G: PAD override on TTS params. When the emotion state
     # is deep-negative, clobber the random attitude's Piper params with a
@@ -1733,21 +1780,31 @@ def _stream_chat_sse_impl(
     # Also publishes to the thread-local via set_pad_override() so
     # downstream TTS code reading get_tts_params() sees the same
     # values — not just the SSE attitude event.
-    try:
-        if glados._emotion_agent is not None and glados._emotion_agent.state is not None:
-            _es = glados._emotion_agent.state
-            _override = pad_to_tts_override(_es.pleasure, _es.arousal, _es.dominance)
-            if _override:
-                attitude_tts = _override
-                set_pad_override(_override)
-                logger.info(
-                    "[{}] PAD TTS override applied (P={:.2f}): {}",
-                    request_id, _es.pleasure, _override,
-                )
-            else:
+    #
+    # Skipped on the command lane: same rationale as the attitude
+    # directive above. Tool-result confirmations should not get
+    # menacing TTS modulation.
+    if not _is_command_lane:
+        try:
+            if glados._emotion_agent is not None and glados._emotion_agent.state is not None:
+                _es = glados._emotion_agent.state
+                _override = pad_to_tts_override(_es.pleasure, _es.arousal, _es.dominance)
+                if _override:
+                    attitude_tts = _override
+                    set_pad_override(_override)
+                    logger.info(
+                        "[{}] PAD TTS override applied (P={:.2f}): {}",
+                        request_id, _es.pleasure, _override,
+                    )
+                else:
+                    set_pad_override(None)
+        except Exception as _pad_exc:
+            logger.debug("[{}] PAD TTS override skipped: {}", request_id, _pad_exc)
+            try:
                 set_pad_override(None)
-    except Exception as _pad_exc:
-        logger.debug("[{}] PAD TTS override skipped: {}", request_id, _pad_exc)
+            except Exception:
+                pass
+    else:
         try:
             set_pad_override(None)
         except Exception:
@@ -1830,10 +1887,11 @@ def _stream_chat_sse_impl(
     except Exception as _canon_exc:
         logger.warning("[{}] canon_context skipped: {}", request_id, _canon_exc)
 
-    # Inject emotional state directive as the LAST system message before the user turn
-    # This ensures it's the most recent context GLaDOS reads before generating
+    # Inject emotional state directive as the LAST system message before the user turn.
+    # Skipped on the command lane: the emotion directive is persona
+    # guidance for the conversational voice, not for tool-result echoes.
     try:
-        if glados._emotion_agent is not None and glados._emotion_agent.state is not None:
+        if not _is_command_lane and glados._emotion_agent is not None and glados._emotion_agent.state is not None:
             directive = glados._emotion_agent.state.to_response_directive()
             # Insert just before the user message (after all other system messages)
             insert_idx = len(messages) - 1  # position of the user message
@@ -1842,26 +1900,18 @@ def _stream_chat_sse_impl(
     except Exception as _emo_exc:
         logger.debug("[{}] Emotion directive skipped: {}", request_id, _emo_exc)
 
-    # Determine endpoint. The system stores ``glados.completion_url`` as the
-    # bare ``scheme://host:port``; ``/v1/chat/completions`` is appended only
-    # at dispatch time so the operator never has to type or know about
-    # protocol-internal paths. ``compose_endpoint`` is forgiving — if a
-    # legacy installation still has ``/api/chat`` baked into the stored URL,
-    # the path component is stripped before the OpenAI suffix is appended.
+    # Compose the upstream endpoint. ``glados.completion_url`` (and the
+    # llm_commands URL) are stored as bare ``scheme://host:port``;
+    # ``/v1/chat/completions`` is appended only at dispatch time so the
+    # operator never has to type or know about protocol-internal paths.
+    # ``compose_endpoint`` is forgiving — if a legacy installation still
+    # has ``/api/chat`` baked into the stored URL, the path component
+    # is stripped before the OpenAI suffix is appended.
     #
-    # Command-lane override: when ``route_is_command`` and
-    # ``cfg.services.llm_commands.url`` is configured, the upstream is
-    # the dedicated command-lane endpoint (typically a smaller, faster
-    # tool-call-clean model). When unset, we fall back to llm_interactive
-    # — backwards-compatible with deployments that haven't configured a
-    # separate command lane.
+    # ``_upstream_url`` / ``_upstream_model`` / ``_is_command_lane`` were
+    # picked earlier (right after route classification) so the
+    # persona-flavoured injections above could guard on the lane choice.
     from glados.core.url_utils import compose_endpoint
-    _upstream_url, _upstream_model, _is_command_lane = _select_command_lane(
-        is_command_route=route_is_command,
-        interactive_url=str(glados.completion_url),
-        interactive_model=glados.llm_model,
-        commands_endpoint=getattr(cfg.services, "llm_commands", None),
-    )
     completion_url = compose_endpoint(_upstream_url, "/v1/chat/completions")
     parsed_url = urlparse(completion_url)
 

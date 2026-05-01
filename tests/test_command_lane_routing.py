@@ -102,75 +102,76 @@ def test_none_commands_endpoint_falls_back_to_interactive():
 # ── _strip_persona_for_command_lane ──────────────────────────────
 
 
-def test_strip_persona_replaces_first_system_message():
+def test_strip_persona_replaces_first_system_and_drops_user_turns():
+    # Strip is called BEFORE the current user message is appended at
+    # the call site, so any user/assistant turns the helper sees are
+    # prior history — which gets dropped on the command lane.
     msgs = [
         {"role": "system", "content": "[persona stuff]"},
-        {"role": "user", "content": "Add ghostbusters"},
+        {"role": "user", "content": "earlier turn — should be dropped"},
     ]
     out = _strip_persona_for_command_lane(msgs, preprompt_count=1)
-    assert out[0]["role"] == "system"
-    assert out[0]["content"] == COMMAND_MODE_SYSTEM_PROMPT
-    assert out[1] == msgs[1]
+    assert len(out) == 1
+    assert out[0] == {"role": "system", "content": COMMAND_MODE_SYSTEM_PROMPT}
 
 
-def test_strip_persona_drops_few_shot_pairs():
+def test_strip_persona_drops_all_history_not_just_few_shots():
+    # Critical: prior real conversation history (not just persona
+    # few-shots) must also be dropped. Live failure prior to this:
+    # qwen2.5-7b copied the text-reply pattern from prior fabricated
+    # assistant turns and never emitted tool_calls.
     msgs = [
         {"role": "system", "content": "[persona stuff]"},
         {"role": "user", "content": "[example user 1]"},
         {"role": "assistant", "content": "[example assistant 1]"},
-        {"role": "user", "content": "[example user 2]"},
-        {"role": "assistant", "content": "[example assistant 2]"},
-        {"role": "user", "content": "Real user message"},
+        # ↓ real history (NOT few-shot) — must also be dropped on command lane
+        {"role": "user", "content": "What is the forecast today?"},
+        {"role": "assistant", "content": "It's 52 degrees."},
+        {"role": "user", "content": "Add Ghostbusters."},
+        {"role": "assistant", "content": "Adding has been initiated."},
     ]
-    out = _strip_persona_for_command_lane(msgs, preprompt_count=5)
-    assert len(out) == 2
+    out = _strip_persona_for_command_lane(msgs, preprompt_count=3)
+    assert len(out) == 1
     assert out[0]["content"] == COMMAND_MODE_SYSTEM_PROMPT
-    assert out[1]["content"] == "Real user message"
 
 
 def test_strip_persona_preserves_non_persona_system_messages():
     msgs = [
         {"role": "system", "content": "[persona]"},
         {"role": "system", "content": "Weather: 70F clear"},
-        {"role": "user", "content": "Hi"},
+        {"role": "user", "content": "earlier turn — dropped"},
     ]
     out = _strip_persona_for_command_lane(msgs, preprompt_count=1)
-    assert out[0]["content"] == COMMAND_MODE_SYSTEM_PROMPT
-    assert out[1]["content"] == "Weather: 70F clear"
-    assert out[2] == msgs[2]
+    assert out == [
+        {"role": "system", "content": COMMAND_MODE_SYSTEM_PROMPT},
+        {"role": "system", "content": "Weather: 70F clear"},
+    ]
 
 
 def test_strip_persona_no_preprompt_count_still_replaces_system():
     msgs = [
         {"role": "system", "content": "[persona stuff]"},
-        {"role": "user", "content": "Real user"},
+        {"role": "user", "content": "earlier — dropped"},
     ]
     out = _strip_persona_for_command_lane(msgs, preprompt_count=0)
-    assert out[0]["content"] == COMMAND_MODE_SYSTEM_PROMPT
-    assert out[1] == msgs[1]
+    assert out == [{"role": "system", "content": COMMAND_MODE_SYSTEM_PROMPT}]
 
 
 def test_strip_persona_empty_messages_returns_empty():
     assert _strip_persona_for_command_lane([], preprompt_count=0) == []
 
 
-def test_strip_persona_drops_only_user_assistant_in_preprompt_range():
-    # When there is no leading system message, the helper does not
-    # synthesize one — it just drops the few-shot user/assistant pairs
-    # within the preprompt index range. This mirrors the behaviour of
-    # the legacy strip block: index 0 is kept (would normally be the
-    # persona system msg); indices 1..preprompt-1 of role
-    # user/assistant are dropped.
+def test_strip_persona_drops_user_assistant_even_without_leading_system():
+    # When there is no leading persona system message, the helper does
+    # not synthesise one — but it still drops every user/assistant
+    # turn so the command lane stays history-free.
     msgs = [
         {"role": "user", "content": "leading_user"},
-        {"role": "assistant", "content": "few_shot_a"},
+        {"role": "assistant", "content": "earlier_response"},
         {"role": "user", "content": "real_user"},
     ]
     out = _strip_persona_for_command_lane(msgs, preprompt_count=2)
-    assert out == [
-        {"role": "user", "content": "leading_user"},
-        {"role": "user", "content": "real_user"},
-    ]
+    assert out == []
 
 
 def test_command_mode_prompt_is_terse_and_anti_fabrication():
