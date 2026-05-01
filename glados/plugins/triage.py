@@ -1,15 +1,23 @@
 """LLM-backed plugin intent triage.
 
 Phase 2c gate #2: when the keyword pre-filter returns zero plugins,
-ask the small fast triage model (default ``llama-3.2-1b-instruct``,
-~300-500 ms warm) which plugins are relevant given the user query
-and the catalog of (name, description) tuples.
+ask the small fast triage model (default ``llama-3.2-1b-instruct``)
+which plugins are relevant given the user query and the catalog of
+(name, description) tuples.
 
-Strict 1.5 s timeout -- this runs INLINE on the chat path, so the
-budget has to stay tight or the operator notices. Any failure
-(timeout, network error, malformed JSON, names outside the enabled
-set) returns ``[]`` so the chitchat path falls back to the existing
-no-tools behavior. Never raises.
+5 s timeout -- triage runs INLINE on the chat path, so the budget
+needs to stay tight, but the original 1.5 s ceiling assumed
+"~300-500 ms warm" generation that doesn't materialise on the Intel
+Arc Pro B60 / Vulkan deployment (live measurement: 1.5-3 s warm for
+the classifier prompt; cold the 1 B model can sit at 6 s for an
+8-token reply). At 1.5 s every triage call timed out, every
+keyword-miss turn fell through to chitchat, and the operator saw a
+30 B model run with no tools + the wrong system prompt. 5 s is a
+realistic upper bound for warm classification on this hardware
+while still capping the budget so a sick LLM doesn't hold the chat
+path hostage. Any failure (timeout, network error, malformed JSON,
+names outside the enabled set) returns ``[]`` so the chitchat path
+falls back to the existing no-tools behavior. Never raises.
 
 Globally toggleable via ``GLADOS_PLUGIN_TRIAGE_ENABLED`` env. Default
 ``true``; any falsy value (``"false"``, ``"0"``, ``"no"``, ``"off"``)
@@ -71,7 +79,7 @@ def _build_user_prompt(message: str, plugins: Iterable["Plugin"]) -> str:
 def triage_plugins(
     message: str,
     plugins: list["Plugin"],
-    timeout_s: float = 1.5,
+    timeout_s: float = 5.0,
 ) -> list[str]:
     """Ask the triage LLM which plugins are relevant for ``message``.
 
