@@ -53,17 +53,20 @@ def _enabled() -> bool:
     return raw in _TRUTHY
 
 
+_NONE_SENTINEL = "__none__"
+
 _SYSTEM_PROMPT = (
     "You are a tool-routing classifier. Given a user message and a "
     "catalog of plugins, decide which plugin (if any) the user "
     "actually needs to satisfy the request. Reply with strict JSON: "
     '{"relevant": [<plugin_name>, ...]}.\n\n'
-    "Return an EMPTY list when the message is not specifically about "
-    "any plugin's domain. This includes weather questions, time-of-day "
+    "If — AND ONLY IF — the message is specifically about a plugin's "
+    "domain, output that plugin's name verbatim. Otherwise output "
+    f'``"{_NONE_SENTINEL}"`` as the single array element. Use '
+    f"``{_NONE_SENTINEL}`` for weather questions, time-of-day "
     "queries, greetings, identity / capability questions, casual "
-    "conversation, and any general chat. Do NOT list a plugin 'just "
-    "in case' — only list a plugin when the user's request clearly "
-    "needs that plugin's tools.\n\n"
+    "conversation, and any general chat. Do NOT list a real plugin "
+    "'just in case'.\n\n"
     "Do not duplicate names. Do not invent names. Output one entry "
     "per relevant plugin, verbatim from the catalog.\n\n"
     "Examples:\n"
@@ -74,11 +77,11 @@ _SYSTEM_PROMPT = (
     "  User: \"What's the weather?\"\n"
     "  Catalog: '- *arr Stack: Sonarr / Radarr / Lidarr / Prowlarr"
     " media management.'\n"
-    '  Output: {"relevant": []}\n\n'
+    f'  Output: {{"relevant": ["{_NONE_SENTINEL}"]}}\n\n'
     "  User: 'Who are you and what do you do?'\n"
     "  Catalog: '- *arr Stack: Sonarr / Radarr / Lidarr / Prowlarr"
     " media management.'\n"
-    '  Output: {"relevant": []}'
+    f'  Output: {{"relevant": ["{_NONE_SENTINEL}"]}}'
 )
 
 
@@ -125,13 +128,16 @@ def triage_plugins(
         "plugin triage: invoking llm_triage slot ({} plugins in catalog: {})",
         len(plugin_names), plugin_names,
     )
-    # Schema-constrained decoding: enum the actual plugin names so the
-    # 1B classifier model literally cannot emit a hallucinated name.
-    # Live observation prior to this: the model returned subcomponent
-    # names ("Prowlarr", "Lidarr") instead of the catalog name ("*arr
-    # Stack"); the downstream filter dropped them as hallucinations and
-    # routing fell through to chitchat. The enum constraint at the
-    # runtime layer eliminates the failure class entirely.
+    # Schema-constrained decoding: enum the actual plugin names plus
+    # an explicit ``__none__`` sentinel so the model has a grammar-
+    # legal way to say "nothing applies". Without the sentinel the
+    # 1B classifier kept committing to the only available enum value
+    # for clearly unrelated queries (forecast, identity) — the
+    # grammar made [] technically valid but the model didn't pick it.
+    # Including the sentinel in the enum gives a token sequence the
+    # model can deterministically commit to for the negative case.
+    # The triage code drops the sentinel from ``matched`` so callers
+    # only see real plugin names.
     triage_schema = {
         "name": "plugin_triage",
         "strict": True,
@@ -140,7 +146,10 @@ def triage_plugins(
             "properties": {
                 "relevant": {
                     "type": "array",
-                    "items": {"type": "string", "enum": plugin_names},
+                    "items": {
+                        "type": "string",
+                        "enum": [*plugin_names, _NONE_SENTINEL],
+                    },
                 },
             },
             "required": ["relevant"],
@@ -186,21 +195,24 @@ def triage_plugins(
         return []
 
     enabled_names = {p.name for p in plugins}
-    # Dedup while preserving first-seen order. Schema-constrained
-    # decoding on a small classifier model occasionally pads the
-    # array with duplicates ("*arr Stack" three times) when the
-    # catalog has only one valid enum value — the model doesn't
-    # know how to commit to ``[]`` and just repeats. Collapsing
-    # here keeps ``len(matched) == 1`` honest downstream.
+    # Drop the ``__none__`` sentinel (the grammar-legal "nothing
+    # applies" marker), then dedup while preserving first-seen order.
+    # Schema-constrained decoding on a small classifier model
+    # occasionally pads the array with duplicates when the catalog
+    # has only one valid enum value — collapsing here keeps the
+    # multiplicity honest downstream.
     seen: set[str] = set()
     matched: list[str] = []
     for n in relevant:
-        if not isinstance(n, str):
+        if not isinstance(n, str) or n == _NONE_SENTINEL:
             continue
         if n in enabled_names and n not in seen:
             matched.append(n)
             seen.add(n)
-    dropped = [n for n in relevant if isinstance(n, str) and n not in enabled_names]
+    dropped = [
+        n for n in relevant
+        if isinstance(n, str) and n != _NONE_SENTINEL and n not in enabled_names
+    ]
     if dropped:
         _log_triage.warning(
             "plugin triage: dropped hallucinated names not in enabled set: {}",

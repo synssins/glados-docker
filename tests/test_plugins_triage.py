@@ -134,10 +134,13 @@ def test_dedup_preserves_first_seen_order():
 
 def test_passes_json_schema_with_enum_of_plugin_names():
     """Schema-constrained decoding: the `relevant` array items must be
-    constrained to the set of actual plugin names so the model cannot
-    emit a hallucinated entry. Live failure prior to this: the 1B model
-    returned subcomponent names ('Prowlarr', 'Lidarr') instead of the
-    catalog name ('*arr Stack'); enum + grammar makes that impossible.
+    constrained to the set of actual plugin names plus a __none__
+    sentinel. Live failure prior to this: the 1B model returned
+    subcomponent names ('Prowlarr', 'Lidarr') instead of the catalog
+    name; enum + grammar makes that impossible. The __none__ sentinel
+    gives the model a grammar-legal way to say "nothing applies"
+    without picking a real plugin just because the array has only
+    one valid choice.
     """
     from glados.plugins.triage import triage_plugins
     plugins = [
@@ -153,14 +156,40 @@ def test_passes_json_schema_with_enum_of_plugin_names():
     assert call.call_count == 1
     schema = call.call_args.kwargs.get("json_schema")
     assert schema is not None, "triage must pass a json_schema, not the legacy json_response flag"
-    # Must NOT pass the legacy soft-hint flag — the schema wins, but
-    # mixing them is a smell that suggests an incomplete migration.
     assert call.call_args.kwargs.get("json_response", False) is False
     assert schema["strict"] is True
     enum = schema["schema"]["properties"]["relevant"]["items"]["enum"]
-    assert sorted(enum) == ["arr-stack", "calendar", "notes"]
+    assert "__none__" in enum
+    assert sorted(n for n in enum if n != "__none__") == ["arr-stack", "calendar", "notes"]
     assert schema["schema"]["required"] == ["relevant"]
     assert schema["schema"]["additionalProperties"] is False
+
+
+def test_none_sentinel_treated_as_empty():
+    """When the model picks the __none__ sentinel (grammar-legal way
+    to say "nothing applies"), triage must return [] — the sentinel
+    is a routing signal, not a real plugin name."""
+    from glados.plugins.triage import triage_plugins
+    plugins = [_plugin("arr-stack", "movies")]
+    with patch(
+        "glados.plugins.triage.llm_call",
+        return_value='{"relevant": ["__none__"]}',
+    ):
+        out = triage_plugins("What is the forecast today?", plugins)
+    assert out == []
+
+
+def test_none_sentinel_mixed_with_real_match_keeps_real_match():
+    """Defensive: model emits both the sentinel and a real name. The
+    real name wins; sentinel is silently dropped."""
+    from glados.plugins.triage import triage_plugins
+    plugins = [_plugin("arr-stack", "movies")]
+    with patch(
+        "glados.plugins.triage.llm_call",
+        return_value='{"relevant": ["arr-stack", "__none__"]}',
+    ):
+        out = triage_plugins("Add a movie", plugins)
+    assert out == ["arr-stack"]
 
 
 def test_empty_message_short_circuits():
