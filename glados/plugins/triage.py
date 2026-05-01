@@ -55,11 +55,30 @@ def _enabled() -> bool:
 
 _SYSTEM_PROMPT = (
     "You are a tool-routing classifier. Given a user message and a "
-    "catalog of plugins (name + description), return ONLY the JSON "
-    'object {"relevant": [<name>, ...]} listing every plugin whose '
-    "tools the user might need to satisfy the request. Return an "
-    "empty list if no plugin is relevant. Do not invent names; copy "
-    "them verbatim from the catalog."
+    "catalog of plugins, decide which plugin (if any) the user "
+    "actually needs to satisfy the request. Reply with strict JSON: "
+    '{"relevant": [<plugin_name>, ...]}.\n\n'
+    "Return an EMPTY list when the message is not specifically about "
+    "any plugin's domain. This includes weather questions, time-of-day "
+    "queries, greetings, identity / capability questions, casual "
+    "conversation, and any general chat. Do NOT list a plugin 'just "
+    "in case' — only list a plugin when the user's request clearly "
+    "needs that plugin's tools.\n\n"
+    "Do not duplicate names. Do not invent names. Output one entry "
+    "per relevant plugin, verbatim from the catalog.\n\n"
+    "Examples:\n"
+    "  User: 'Add a new movie to my library.'\n"
+    "  Catalog: '- *arr Stack: Sonarr / Radarr / Lidarr / Prowlarr"
+    " media management.'\n"
+    '  Output: {"relevant": ["*arr Stack"]}\n\n'
+    "  User: \"What's the weather?\"\n"
+    "  Catalog: '- *arr Stack: Sonarr / Radarr / Lidarr / Prowlarr"
+    " media management.'\n"
+    '  Output: {"relevant": []}\n\n'
+    "  User: 'Who are you and what do you do?'\n"
+    "  Catalog: '- *arr Stack: Sonarr / Radarr / Lidarr / Prowlarr"
+    " media management.'\n"
+    '  Output: {"relevant": []}'
 )
 
 
@@ -167,7 +186,20 @@ def triage_plugins(
         return []
 
     enabled_names = {p.name for p in plugins}
-    matched = [n for n in relevant if isinstance(n, str) and n in enabled_names]
+    # Dedup while preserving first-seen order. Schema-constrained
+    # decoding on a small classifier model occasionally pads the
+    # array with duplicates ("*arr Stack" three times) when the
+    # catalog has only one valid enum value — the model doesn't
+    # know how to commit to ``[]`` and just repeats. Collapsing
+    # here keeps ``len(matched) == 1`` honest downstream.
+    seen: set[str] = set()
+    matched: list[str] = []
+    for n in relevant:
+        if not isinstance(n, str):
+            continue
+        if n in enabled_names and n not in seen:
+            matched.append(n)
+            seen.add(n)
     dropped = [n for n in relevant if isinstance(n, str) and n not in enabled_names]
     if dropped:
         _log_triage.warning(

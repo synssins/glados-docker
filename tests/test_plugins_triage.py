@@ -110,6 +110,28 @@ def test_empty_plugin_list_short_circuits():
     call.assert_not_called()
 
 
+def test_dedup_collapses_duplicate_matches():
+    """Schema-constrained decoding can pad the array with duplicates
+    when there's only one valid enum value (the small model doesn't
+    commit to []). Dedup keeps downstream consumers honest about how
+    many distinct plugins matched."""
+    from glados.plugins.triage import triage_plugins
+    plugins = [_plugin("arr-stack", "movies")]
+    fake_response = '{"relevant": ["arr-stack", "arr-stack", "arr-stack"]}'
+    with patch("glados.plugins.triage.llm_call", return_value=fake_response):
+        out = triage_plugins("anything", plugins)
+    assert out == ["arr-stack"]
+
+
+def test_dedup_preserves_first_seen_order():
+    from glados.plugins.triage import triage_plugins
+    plugins = [_plugin("arr-stack", ""), _plugin("calendar", "")]
+    fake_response = '{"relevant": ["calendar", "arr-stack", "calendar", "arr-stack"]}'
+    with patch("glados.plugins.triage.llm_call", return_value=fake_response):
+        out = triage_plugins("any", plugins)
+    assert out == ["calendar", "arr-stack"]
+
+
 def test_passes_json_schema_with_enum_of_plugin_names():
     """Schema-constrained decoding: the `relevant` array items must be
     constrained to the set of actual plugin names so the model cannot
