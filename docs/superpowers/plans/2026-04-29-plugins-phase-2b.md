@@ -3625,7 +3625,7 @@ log file rotation. See CHANGES.md Change 32.
 **Live state:**
 - Branch `webui-polish`, HEAD = post-Phase-2b deploy commit. Merge to
   `main` next session after a soak.
-- Container image SHA <NEW_SHA> running on glados.denofsyn.com
+- Container image SHA <NEW_SHA> running on glados.example.com
   (post-Change-32 deploy, healthy).
 - Test suite: ~1560 / 5 / 0.
 

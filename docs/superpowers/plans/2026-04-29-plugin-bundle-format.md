@@ -1331,7 +1331,7 @@ README install flow updated: Browse / Upload only; Add-by-URL gone.
 **Steps:**
 
 - [ ] `git push origin webui-polish`
-- [ ] `MSYS_NO_PATHCONV=1 GLADOS_SSH_HOST=192.168.1.150 ... python scripts/_local_deploy.py`
+- [ ] `MSYS_NO_PATHCONV=1 GLADOS_SSH_HOST=docker-host.local ... python scripts/_local_deploy.py`
 - [ ] Verify via paramiko: container healthy, image SHA captured, `POST /api/plugins/upload` returns 401 unauth, `POST /api/plugins/install` returns 404 unauth (or 401-then-404 if it falls through the dispatcher).
 - [ ] Update `C:\src\SESSION_STATE.md` Active Handoff with the new image SHA.
 

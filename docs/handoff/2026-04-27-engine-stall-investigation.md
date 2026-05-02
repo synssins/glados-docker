@@ -2,7 +2,7 @@
 
 ## Symptom
 
-Chat through `https://glados.denofsyn.com:8052/api/chat` AND
+Chat through `https://glados.example.com:8052/api/chat` AND
 through `:8015/v1/chat/completions` hangs for the full
 `api_wrapper._response_timeout` (180 s after the timeout fix)
 and never produces an assistant message. The api_wrapper logs
@@ -17,7 +17,7 @@ emits a fallback "no reply" placeholder.
 
 ### LM Studio backend is healthy
 
-Direct calls to LM Studio (`http://192.168.1.75:11434/v1/chat/completions`)
+Direct calls to LM Studio (`http://aibox.local:11434/v1/chat/completions`)
 from the Docker host succeed in:
 - 3.1 s for non-streaming chat with content fitting in default max_tokens
 - 5.4 s with max_tokens=600

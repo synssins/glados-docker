@@ -34,12 +34,12 @@ class TestSyncMaintenanceSpeakerToHa:
         with patch("glados.webui.tts_ui._ha_post", return_value=True) as mock_post, \
              patch("glados.webui.tts_ui._cfg") as mock_cfg:
             mock_cfg.mode_entities.maintenance_speaker = "input_text.glados_maintenance_speaker"
-            handler._sync_maintenance_speaker_to_ha({"default": "media_player.living_room_2"})
+            handler._sync_maintenance_speaker_to_ha({"default": "media_player.example_speaker"})
         mock_post.assert_called_once_with(
             "/api/services/input_text/set_value",
             {
                 "entity_id": "input_text.glados_maintenance_speaker",
-                "value": "media_player.living_room_2",
+                "value": "media_player.example_speaker",
             },
         )
 
@@ -56,7 +56,7 @@ class TestSyncMaintenanceSpeakerToHa:
         handler = self._make_handler()
         with patch("glados.webui.tts_ui._ha_post") as mock_post, \
              patch("glados.webui.tts_ui._cfg"):
-            handler._sync_maintenance_speaker_to_ha({"available": ["media_player.living_room_2"]})
+            handler._sync_maintenance_speaker_to_ha({"available": ["media_player.example_speaker"]})
         mock_post.assert_not_called()
 
     def test_none_default_does_not_post(self) -> None:

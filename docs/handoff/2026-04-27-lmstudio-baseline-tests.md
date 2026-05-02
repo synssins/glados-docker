@@ -6,7 +6,7 @@ side** — they bound where the bug can live. If any test below
 regresses, the issue is on the LM Studio side, not GLaDOS.
 
 All tests are network-callable — no AIBox shell needed. Run from
-the Docker host (`192.168.1.150`) or any LAN box with Python +
+the Docker host (`docker-host.local`) or any LAN box with Python +
 `requests`. Outputs include the wall-clock time observed
 2026-04-27 17:04 UTC for reference.
 
@@ -14,7 +14,7 @@ the Docker host (`192.168.1.150`) or any LAN box with Python +
 
 ```bash
 # Both models loaded, parallel=4, ctx=4096:
-ssh root@192.168.1.150 'curl -s http://192.168.1.75:11434/v1/models | python3 -m json.tool'
+ssh root@docker-host.local 'curl -s http://aibox.local:11434/v1/models | python3 -m json.tool'
 ```
 
 **Expected:** `data` array contains `glm-4.7-flash` and
@@ -23,7 +23,7 @@ ssh root@192.168.1.150 'curl -s http://192.168.1.75:11434/v1/models | python3 -m
 ## Test 1 — `/v1/models` shape
 
 ```bash
-curl -s http://192.168.1.75:11434/v1/models
+curl -s http://aibox.local:11434/v1/models
 ```
 
 **Expected JSON:**
@@ -44,7 +44,7 @@ curl -s http://192.168.1.75:11434/v1/models
 ## Test 2 — `/api/tags` returns 404 (Ollama-native is intentionally not served)
 
 ```bash
-curl -s -w "%{http_code}\n" http://192.168.1.75:11434/api/tags
+curl -s -w "%{http_code}\n" http://aibox.local:11434/api/tags
 ```
 
 **Expected:** body `{"error":"Unexpected endpoint or method. (GET /api/tags)"}`,
@@ -55,7 +55,7 @@ discover function had to handle the shape mismatch.)
 ## Test 3 — Direct chat completion (non-streaming, GLM-4.7-Flash)
 
 ```bash
-curl -s -X POST http://192.168.1.75:11434/v1/chat/completions \
+curl -s -X POST http://aibox.local:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model":"glm-4.7-flash",
@@ -105,7 +105,7 @@ will see empty content if max_tokens cuts off during reasoning.
 ## Test 4 — Direct chat completion (streaming, GLM-4.7-Flash)
 
 ```bash
-curl -sN -X POST http://192.168.1.75:11434/v1/chat/completions \
+curl -sN -X POST http://aibox.local:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model":"glm-4.7-flash",
@@ -136,7 +136,7 @@ unless something earlier short-circuits.
 ## Test 5 — Tool calling (GLM-4.7-Flash, OpenAI structured output)
 
 ```bash
-curl -s -X POST http://192.168.1.75:11434/v1/chat/completions \
+curl -s -X POST http://aibox.local:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model":"glm-4.7-flash",
@@ -177,7 +177,7 @@ Plan when re-enabled:
 
 ```bash
 # Sample image from a known public URL
-curl -s -X POST http://192.168.1.75:11434/v1/chat/completions \
+curl -s -X POST http://aibox.local:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model":"qwen2.5-vl-3b-instruct",
@@ -206,11 +206,11 @@ the second/third request queuing past the first's completion time.
 
 ```bash
 # Run 3 in parallel via background processes:
-( curl -s -X POST http://192.168.1.75:11434/v1/chat/completions \
+( curl -s -X POST http://aibox.local:11434/v1/chat/completions \
     -H "Content-Type: application/json" \
     -d '{"model":"glm-4.7-flash","messages":[{"role":"user","content":"Say HELLO"}],"max_tokens":50,"temperature":0}' ) &
 
-( curl -s -X POST http://192.168.1.75:11434/v1/chat/completions \
+( curl -s -X POST http://aibox.local:11434/v1/chat/completions \
     -H "Content-Type: application/json" \
     -d '{"model":"glm-4.7-flash","messages":[{"role":"user","content":"Say WORLD"}],"max_tokens":50,"temperature":0}' ) &
 

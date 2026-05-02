@@ -6,7 +6,7 @@
 concurrently. Replaces the dead/archived IPEX-LLM Ollama. The native
 GLaDOS NSSM stack (glados-api, glados-tts, glados-vision, etc.) on
 AIBox is intentionally stopped — production GLaDOS personality runs
-on the Docker container at `192.168.1.150` and treats AIBox as an
+on the Docker container at `docker-host.local` and treats AIBox as an
 opaque OpenAI-compatible LLM endpoint.
 
 ## Ground rules (operator-locked)
@@ -30,7 +30,7 @@ opaque OpenAI-compatible LLM endpoint.
 
 ## Hardware
 
-- **Host:** AIBox = `WIN-GTLJ7GFJPC4` @ `192.168.1.75`,
+- **Host:** AIBox = `WIN-GTLJ7GFJPC4` @ `aibox.local`,
   Windows Server 2022 Datacenter, ~64 GB RAM, Intel i7-9700K.
 - **GPUs:** **Intel Arc Pro B60 24 GB** is the LLM target. Driver
   `32.0.101.8314` (Q4'25 Arc Pro WHQL workstation, 2026-02-11). 2×
@@ -80,10 +80,10 @@ OpenAI-compliant — a feature, not a bug.
 |---|---|---|
 | `ollama-ipex-llm` NSSM service | Running, served qwen3:14b | **Stopped + Disabled.** `nssm set ollama-ipex-llm Start SERVICE_DISABLED`. Files retained at `C:\AI\ollama-ipex-llm\` for rollback. |
 | Default LLM port `:11434` | ipex-llm-ollama | LM Studio (`llmster` foreground) |
-| `glados_config.yaml` `Glados.completion_url` | `http://192.168.1.75:11434/api/chat` | `http://192.168.1.75:11434/v1/chat/completions` |
+| `glados_config.yaml` `Glados.completion_url` | `http://aibox.local:11434/api/chat` | `http://aibox.local:11434/v1/chat/completions` |
 | `glados_config.yaml` `Glados.llm_model` | `qwen3:14b` | `glm-4.7-flash` |
 | Same for `Glados.autonomy.*` | (same) | (same) |
-| `services.yaml` `ollama_*.url` | `http://192.168.1.75:11434` (bare) | `http://192.168.1.75:11434/v1/chat/completions` |
+| `services.yaml` `ollama_*.url` | `http://aibox.local:11434` (bare) | `http://aibox.local:11434/v1/chat/completions` |
 | `services.yaml` `ollama_vision.model` | `llama3.2-vision:latest` | `qwen2.5-vl-3b-instruct` |
 
 ## LM Studio install path

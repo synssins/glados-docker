@@ -32,7 +32,7 @@ class TestStripUrlPath:
         ("http://host:11434/api/tags", "http://host:11434"),
         ("http://host:11434/v1/models", "http://host:11434"),
         ("https://llm.example.com:443/anything/else", "https://llm.example.com:443"),
-        ("http://192.168.1.75:11434", "http://192.168.1.75:11434"),
+        ("http://aibox.local:11434", "http://aibox.local:11434"),
     ])
     def test_path_is_stripped(self, inp: str, expected: str) -> None:
         assert strip_url_path(inp) == expected
@@ -56,7 +56,7 @@ class TestStripUrlPath:
         # explicit intent. Lets OpenVINO Model Server (which serves the
         # OpenAI surface on /v3/v1/chat/completions and rejects the
         # canonical /v1/) be configured by URL.
-        ("http://192.168.1.75:11434/v3/v1/chat/completions", "http://192.168.1.75:11434/v3/v1/chat/completions"),
+        ("http://aibox.local:11434/v3/v1/chat/completions", "http://aibox.local:11434/v3/v1/chat/completions"),
         ("http://host:11434/openai/v1/chat/completions", "http://host:11434/openai/v1/chat/completions"),
         ("http://host:11434/v3/v1/chat/completions/", "http://host:11434/v3/v1/chat/completions"),
     ])
@@ -76,8 +76,8 @@ class TestComposeEndpoint:
         """The api_wrapper acceptance criterion: bare base + chat path
         composes to a complete OpenAI chat-completions URL."""
         assert (
-            compose_endpoint("http://192.168.1.75:11434", "/v1/chat/completions")
-            == "http://192.168.1.75:11434/v1/chat/completions"
+            compose_endpoint("http://aibox.local:11434", "/v1/chat/completions")
+            == "http://aibox.local:11434/v1/chat/completions"
         )
 
     def test_legacy_full_url_normalized_then_recomposed(self) -> None:
@@ -106,7 +106,7 @@ class TestComposeEndpoint:
         assert compose_endpoint(None, "/v1/chat/completions") == ""
 
     @pytest.mark.parametrize("inp", [
-        "http://192.168.1.75:11434/v3/v1/chat/completions",
+        "http://aibox.local:11434/v3/v1/chat/completions",
         "http://host:11434/openai/v1/chat/completions",
     ])
     def test_non_canonical_path_preserved_verbatim(self, inp: str) -> None:
@@ -223,7 +223,7 @@ class TestValidateLlmUrls:
     @pytest.mark.parametrize("url", [
         "http://host:11434",
         "https://host.example.com:8080",
-        "http://192.168.1.75:11434",
+        "http://aibox.local:11434",
     ])
     def test_accepts_scheme_host_port(self, url: str) -> None:
         payload = {"llm_interactive": {"url": url}}

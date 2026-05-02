@@ -3336,7 +3336,7 @@ one release; on next save the file is rewritten with the new names.
 
 ### What's verified live (2026-04-28)
 - Container deploy clean. Engine boot log says
-  `Tier 2 disambiguator ready; ollama=http://192.168.1.75:11434/v1/chat/completions model=llama-3.2-1b-instruct (slot=llm_triage) semantic=True`
+  `Tier 2 disambiguator ready; ollama=http://aibox.local:11434/v1/chat/completions model=llama-3.2-1b-instruct (slot=llm_triage) semantic=True`
   — Task 5's routing landed.
 - Engine reconciler reads from `services.llm_interactive.model` and
   `services.llm_autonomy.model` (Task 1's flip live).
@@ -3381,7 +3381,7 @@ one release; on next save the file is rewritten with the new names.
 ### Public-repo discipline notes
 No new secrets shipped this Change; all credential-bearing values
 live in `C:\src\SESSION_STATE.md` (gitignored). The only LAN IP in
-the diff is `192.168.1.75` which lives in operator-side
+the diff is `aibox.local` which lives in operator-side
 `services.yaml` (also gitignored under `configs/`). Pre-commit
 gitleaks rules ran clean on every commit.
 
@@ -3443,7 +3443,7 @@ not in this repo), so it's noted here for the operator's records.
   build. Watchtower exclusion label applied; subsequent automatic
   pulls skipped.
 - Served `ui.js` (302,855 bytes, post-deploy fetch from
-  `glados.denofsyn.com:8052/static/ui.js`) confirms:
+  `glados.example.com:8052/static/ui.js`) confirms:
   - 4-card LLM grid renderer present
   - `http://host:port` placeholder present (2 occurrences — input
     + description)
@@ -3495,7 +3495,7 @@ layer. Operator's screenshots: "Who are you and what do you do" — TTFT
 
 **Investigation** (Phase 1, evidence before fixes):
 
-1. Probed LM Studio (192.168.1.75:11434) directly with five payload
+1. Probed LM Studio (aibox.local:11434) directly with five payload
    variations to bisect the directive layer:
    - A: plain "hello", no directive → 1.42 s, 284 reasoning_content tokens.
    - B: `/no_think` on user → **0.49 s**, 2 reasoning tokens.
@@ -4442,7 +4442,7 @@ configuration-save events.
 ~55 s.
 
 **Visual verification:** deferred to operator after deploy. The
-WebUI runs in a docker container on the docker host (192.168.1.150);
+WebUI runs in a docker container on the docker host (docker-host.local);
 this session does not have a local browser preview surface — the
 operator confirms in their actual browser after the next deploy.
 

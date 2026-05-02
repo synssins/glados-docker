@@ -209,7 +209,7 @@ Then deploy:
 # Credentials in C:/src/SESSION_STATE.md §"Credentials / Secrets State"
 # Run from C:/src/glados-container/.worktrees/webui-polish
 MSYS_NO_PATHCONV=1 \
-GLADOS_SSH_HOST=192.168.1.150 \
+GLADOS_SSH_HOST=docker-host.local \
 GLADOS_SSH_USER=root \
 GLADOS_SSH_PASSWORD='<from SESSION_STATE.md>' \
 GLADOS_COMPOSE_PATH=/srv/dev-disk-by-uuid-8db26308-e3bf-41bc-8a5f-a3eb2c527f41/data/docker/compose/docker-compose.yml \
@@ -231,7 +231,7 @@ new chat, then tell me when you've sent it."*
 ### Step 5 — capture evidence
 
 Once the operator confirms they sent the message, pull the logs
-via paramiko SSH to `192.168.1.150` (creds in
+via paramiko SSH to `docker-host.local` (creds in
 `C:/src/SESSION_STATE.md`). Look for the most recent request-id'd
 block. You should see:
 
@@ -306,13 +306,13 @@ real answer:
 
 ## Operating environment
 
-- **Docker host:** `192.168.1.150` (OMV). SSH creds in
+- **Docker host:** `docker-host.local` (OMV). SSH creds in
   `C:/src/SESSION_STATE.md` §"Credentials / Secrets State".
 - **Compose file:** `/srv/dev-disk-by-uuid-8db26308-e3bf-41bc-8a5f-a3eb2c527f41/data/docker/compose/docker-compose.yml`
 - **Container image:** built locally via `scripts/_local_deploy.py`.
   Watchtower exclusion label is in place; local builds are durable.
   Image is currently from commit `5602d2e`.
-- **LM Studio host:** AIBox (`192.168.1.75:11434`,
+- **LM Studio host:** AIBox (`aibox.local:11434`,
   Windows Server 2022, this session's host machine).
 - **Models loaded:**
   - `qwen3-30b-a3b` at ctx=**16384**, parallel=4 (chat lane).
@@ -337,7 +337,7 @@ real answer:
 - **Use `scripts/_local_deploy.py` for deploys.** Watchtower no
   longer overrides local builds.
 - **No secrets in commits.** Tokens / passwords / LAN IPs / real
-  HA entity names / `glados.denofsyn.com` — never in code, tests,
+  HA entity names / `glados.example.com` — never in code, tests,
   or commit messages. Use generic placeholders.
 - **Don't probe with `nssm list` / `lms ps` / `nssm dump`.**
   Execute the action, read exit code. Operator memory:
@@ -388,7 +388,7 @@ Steps from the handoff doc, in order:
 1. git status + git log --oneline -12 to confirm orientation.
 2. Finish the round-1 diagnostic in api_wrapper.py (mirror the round-2 pattern that's already there at the end of the round-2 loop), then commit + push + deploy via scripts/_local_deploy.py.
 3. Tell me (the operator) — in chat — to send the test query in the WebUI: "Check my movie library and tell me how many movies have titles that start with the letter B."
-4. Once I confirm I sent it, pull the docker logs from 192.168.1.150 via paramiko, find the round-1 + round-2 diag lines for that request.
+4. Once I confirm I sent it, pull the docker logs from docker-host.local via paramiko, find the round-1 + round-2 diag lines for that request.
 5. Use the decision table in §"Step 6" of the handoff doc to root-cause from evidence. Only ship a fix the table directly supports.
 
 I will not run commands. You handle commits, pushes, deploys (scripts/_local_deploy.py with credentials from C:/src/SESSION_STATE.md §Credentials), and any LM Studio host work directly. I just chat.

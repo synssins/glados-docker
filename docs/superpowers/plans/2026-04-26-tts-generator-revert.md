@@ -544,15 +544,15 @@ git commit -m "fix(tts-ui): revert chat-thread, rebuild flat list with single pl
 
 **Acceptance Criteria:**
 - [ ] `scripts/_local_deploy.py` completes without error and prints the new image SHA.
-- [ ] Curl `https://glados.denofsyn.com:8052/static/ui.js | grep -c tts-bubble` returns `0`.
+- [ ] Curl `https://glados.example.com:8052/static/ui.js | grep -c tts-bubble` returns `0`.
 - [ ] Operator hard-refreshes the WebUI and confirms the layout matches the spec.
 
 **Verify:**
 
 ```bash
 python scripts/_local_deploy.py
-curl -ks https://glados.denofsyn.com:8052/health
-curl -ks https://glados.denofsyn.com:8052/static/ui.js | grep -c tts-bubble  # → 0
+curl -ks https://glados.example.com:8052/health
+curl -ks https://glados.example.com:8052/static/ui.js | grep -c tts-bubble  # → 0
 ```
 
 **Steps:**
@@ -570,14 +570,14 @@ The script prints the resulting image SHA. Record it for the handoff update.
 - [ ] **Step 3: Curl-verify the bundle is the new version.**
 
 ```bash
-curl -ks https://glados.denofsyn.com:8052/static/ui.js | grep -c "tts-bubble" || true
+curl -ks https://glados.example.com:8052/static/ui.js | grep -c "tts-bubble" || true
 ```
 
 Expected: `0`.
 
 - [ ] **Step 4: Ask operator to hard-refresh and visually confirm.**
 
-Operator opens `https://glados.denofsyn.com:8052/`, hard-refreshes, navigates to TTS Generator, generates a line, confirms:
+Operator opens `https://glados.example.com:8052/`, hard-refreshes, navigates to TTS Generator, generates a line, confirms:
 - Header style matches Users / System pages.
 - Input on top, file list below, no docking.
 - Play/stop button works (one button, no transport bar).

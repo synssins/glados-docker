@@ -6,7 +6,7 @@
 
 **Architecture:** Add a fourth service slot `llm_triage` to `ServicesConfig`. Add `LLMConfig.for_slot(slot)` so callers don't hardcode endpoints. Introduce `MAX_AUTONOMY_USER_PROMPT_TOKENS` budget enforced inside `glados.autonomy.llm_client.llm_call` — when the user_prompt exceeds the cap, truncate the oldest content with a sentinel and emit a WARNING log. Route classification-only callers (Message Compaction, Memory classifier yes/no, Behavior Observer triage) through `llm_triage`; utterance-emitting subagents (Weather summary, proactive announcements) stay on `llm_autonomy` with persona. Schema rename ships in the same plan because every affected file already touches `services.ollama_*` references — doing the rename concurrently means callers reference the final names.
 
-**Tech Stack:** Python 3.12 (stdlib `http.server` middleware), Pydantic v2 with field aliases for dual-key support, pytest 8.x, LM Studio OpenAI-compatible HTTP API at `192.168.1.75:11434`, Llama-3.2-1B-Instruct (already pre-pulled into LM Studio's index, ~1.32 GB Q4_K_M).
+**Tech Stack:** Python 3.12 (stdlib `http.server` middleware), Pydantic v2 with field aliases for dual-key support, pytest 8.x, LM Studio OpenAI-compatible HTTP API at `aibox.local:11434`, Llama-3.2-1B-Instruct (already pre-pulled into LM Studio's index, ~1.32 GB Q4_K_M).
 
 ---
 
@@ -901,7 +901,7 @@ for test fixtures; the change is just the default resolution path."
 - [ ] Saving a model change to the Triage card writes to `services.yaml` under the `llm_triage` key (verified by reloading the page).
 - [ ] No broken card from the rename — labels read "LLM (Interactive)" / "LLM (Autonomy)" / "LLM (Triage)" / "LLM (Vision)".
 
-**Verify:** Manual visual cycle through Services tab; `curl https://glados.denofsyn.com:8052/api/services` returns the new four-card shape.
+**Verify:** Manual visual cycle through Services tab; `curl https://glados.example.com:8052/api/services` returns the new four-card shape.
 
 **Steps:**
 
@@ -1003,7 +1003,7 @@ git push origin webui-polish
 - [ ] **Step 3: Deploy.**
 
 ```bash
-env GLADOS_SSH_HOST=192.168.1.150 \
+env GLADOS_SSH_HOST=docker-host.local \
     GLADOS_SSH_USER=root \
     GLADOS_SSH_PASSWORD='<see SESSION_STATE.md>' \
     GLADOS_COMPOSE_PATH='/srv/.../docker-compose.yml' \

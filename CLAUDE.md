@@ -113,7 +113,7 @@ require explicit confirmation.
   sleeping. Anything that commands real devices runs under manual
   dispatch only.
 - **Operator runs nothing. Claude executes everything.** Commits,
-  pushes, deploys, SSH to the docker host (`192.168.1.150` —
+  pushes, deploys, SSH to the docker host (`docker-host.local` —
   credentials in `C:\src\SESSION_STATE.md` §"Credentials / Secrets
   State"), `lms.exe` / `ovms.exe` / NSSM service control on AIBox,
   reading container logs, editing remote `services.yaml`, restarting

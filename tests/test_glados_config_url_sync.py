@@ -31,28 +31,28 @@ class TestOllamaChatUrl:
 
     def test_chat_completions_path_stripped(self) -> None:
         assert (
-            _ollama_chat_url("http://192.168.1.75:11434/v1/chat/completions")
-            == "http://192.168.1.75:11434"
+            _ollama_chat_url("http://aibox.local:11434/v1/chat/completions")
+            == "http://aibox.local:11434"
         )
 
     def test_api_chat_path_stripped(self) -> None:
         assert (
-            _ollama_chat_url("http://192.168.1.75:11434/api/chat")
-            == "http://192.168.1.75:11434"
+            _ollama_chat_url("http://aibox.local:11434/api/chat")
+            == "http://aibox.local:11434"
         )
 
     def test_api_tags_path_stripped(self) -> None:
         # Operators who tested with /api/tags before pasting into the
         # URL field shouldn't have their config end up at /api/tags.
         assert (
-            _ollama_chat_url("http://192.168.1.75:11434/api/tags")
-            == "http://192.168.1.75:11434"
+            _ollama_chat_url("http://aibox.local:11434/api/tags")
+            == "http://aibox.local:11434"
         )
 
     def test_v1_models_path_stripped(self) -> None:
         assert (
-            _ollama_chat_url("http://192.168.1.75:11434/v1/models")
-            == "http://192.168.1.75:11434"
+            _ollama_chat_url("http://aibox.local:11434/v1/models")
+            == "http://aibox.local:11434"
         )
 
     def test_ipv4_host(self) -> None:
