@@ -642,6 +642,23 @@ class Glados:
         weather_cache.configure(weather_cache_path)
         # Configure context gates from YAML — add/remove keywords in configs/context_gates.yaml
         _gates_configure(Path("configs/context_gates.yaml"))
+
+        # Initialize authoritative time source (NTP-synced, tz from
+        # weather coords). Reads TimeGlobal from the config store and
+        # passes weather_cache.get_data as the tz lookup callable so a
+        # config reload that changes the weather location flows through
+        # to time_source automatically. Background NTP sync starts
+        # immediately and runs on the configured refresh interval.
+        from . import time_source as _time_source
+        from .config_store import cfg as _cfg_for_time
+        try:
+            _time_source.configure(
+                _cfg_for_time.global_.time,
+                weather_cache_getter=weather_cache.get_data,
+            )
+            _time_source.start()
+        except Exception as _ts_exc:
+            logger.warning("time_source init failed: {}", _ts_exc)
         # Weather context only injected when message is weather-related (saves ~200 tok/turn)
         self.context_builder.register(
             "weather",
