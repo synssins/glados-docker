@@ -200,6 +200,73 @@ def needs_weather_context(message: str) -> bool:
     return False
 
 
+# Time / date / clock triggers. Substring match for unambiguous longer
+# phrases; word-boundary for short nouns that would otherwise fire on
+# common English words (``clock`` in ``clockwork``, ``deadlock``,
+# ``Sherlock``). The injected ``Current time: ...`` system message
+# already carries weekday + date, so any keyword in this set unlocks
+# the same content — the choice of which user phrasings trigger
+# injection is independent of what the model sees once it does.
+_TIME_DEFAULT_TRIGGERS: tuple[_CanonKW, ...] = (
+    _CanonKW("what time"),
+    _CanonKW("what's the time"),
+    _CanonKW("what hour"),
+    _CanonKW("current time"),
+    _CanonKW("time is it"),
+    _CanonKW("clock", needs_word_boundary=True),
+    _CanonKW("o'clock"),
+    _CanonKW("current date"),
+    _CanonKW("today's date"),
+    _CanonKW("what's the date"),
+    _CanonKW("what day"),
+    _CanonKW("day is it"),
+    _CanonKW("date is it"),
+    _CanonKW("what year"),
+)
+
+
+def needs_time_context(message: str) -> bool:
+    """Return True if the user message warrants injecting current-time
+    context.
+
+    GLaDOS defaults to fabricating the time when asked because no other
+    context block carries a wall-clock reference (operator-flagged
+    2026-05-02: "What time is it" returned "3:17 PM" when actual was
+    1:03 PM). Same hardcoded-defaults + YAML-extras shape as the
+    weather and canon gates.
+
+    Hardcoded defaults (``_TIME_DEFAULT_TRIGGERS``) ship in-code so a
+    fresh install works without an operator-curated YAML. Any list
+    under ``time.trigger_keywords`` in ``configs/context_gates.yaml``
+    is merged as additive extras.
+    """
+    if not message:
+        return False
+    text = message.lower()
+
+    for kw in _TIME_DEFAULT_TRIGGERS:
+        if kw.needs_word_boundary:
+            if re.search(r"\b" + re.escape(kw.text) + r"\b", text):
+                return True
+        elif kw.text in text:
+            return True
+
+    cfg = _get_section("time")
+    extras = cfg.get("trigger_keywords") or []
+    for raw in extras:
+        if not isinstance(raw, str):
+            continue
+        kw = raw.strip().lower()
+        if not kw:
+            continue
+        if len(kw) <= 5:
+            if re.search(r"\b" + re.escape(kw) + r"\b", text):
+                return True
+        elif kw in text:
+            return True
+    return False
+
+
 def needs_canon_context(message: str) -> bool:
     """
     Return True if the user message is likely a Portal canon question.
