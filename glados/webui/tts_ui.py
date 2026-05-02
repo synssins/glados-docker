@@ -1806,6 +1806,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_chat_audio()
         elif p == "/api/ssl/status":
             self._ssl_status()
+        elif p == "/api/time/status":
+            self._get_time_status()
         elif p == "/api/speakers":
             self._get_speakers()
         elif p == "/api/attitudes":
@@ -4344,6 +4346,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 info["parse_error"] = str(e)
         self._send_json(200, info)
+
+    def _get_time_status(self):
+        """Return time_source sync state for the System → Time card."""
+        try:
+            from glados.core import time_source
+            self._send_json(200, time_source.status())
+        except Exception as exc:
+            self._send_json(500, {"error": f"time_source status failed: {exc}"})
 
     def _ssl_upload(self):
         """Accept PEM cert + key via JSON body, write to configured paths."""

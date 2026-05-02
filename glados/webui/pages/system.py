@@ -54,6 +54,8 @@ HTML = r"""
             onclick="showPageTab('system','hardware')">Hardware</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="maintenance"
             onclick="showPageTab('system','maintenance')">Maintenance</button>
+    <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="time"
+            onclick="showPageTab('system','time');_loadTimeStatus()">Time</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="account"
             onclick="showPageTab('system','account')">Account</button>
     <button class="page-tab" role="tab" data-page-tab-group="system" data-tab="ssl"
@@ -207,6 +209,37 @@ HTML = r"""
           ones to keep the bind mount manageable.
         </div>
         <div id="audioStatsPanel" style="font-size:0.85rem;color:var(--text-dim);">Loading...</div>
+      </div>
+    </div>
+
+    <!-- ════════════════ Time tab ════════════════ -->
+    <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="time">
+      <div class="card">
+        <div class="section-title">Sync Status</div>
+        <div class="mode-desc" style="margin-bottom:10px;">
+          GLaDOS syncs an offset against an NTP server at startup and on the
+          configured refresh interval, so the wall-clock time injected into
+          chat is independent of the container's system clock. Timezone is
+          read from the IANA zone resolved by the operator-configured
+          weather coordinates (or the manual override below).
+        </div>
+        <div id="timeStatusGrid" style="font-size:0.85rem;color:var(--text-dim);">Loading&hellip;</div>
+        <div style="margin-top:10px;">
+          <button class="btn-small" onclick="_loadTimeStatus()" style="font-size:0.78rem;padding:5px 12px;">Refresh</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:var(--sp-3);">
+        <div class="section-title">Configuration</div>
+        <div class="mode-desc" style="margin-bottom:10px;">
+          Changes save to <code>configs/global.yaml</code> and apply on the
+          next container restart.
+        </div>
+        <div id="sysTimeForm"></div>
+        <div class="cfg-save-row">
+          <button class="cfg-save-btn" onclick="cfgSaveSystemTime()">Save Time Configuration</button>
+          <span id="cfg-save-result-sys-time" class="cfg-result"></span>
+        </div>
       </div>
     </div>
 

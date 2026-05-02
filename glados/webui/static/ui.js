@@ -240,6 +240,12 @@ const FIELD_META = {
   'tuning.engine_pause_time':      { label: 'Engine Pause Time (s)', desc: 'Pause between engine loop iterations', advanced: true },
   'tuning.mode_cache_ttl_s':       { label: 'Mode Cache TTL (s)', desc: 'Seconds to cache HA mode entity states', advanced: true },
   'tuning.engine_audio_default':   { label: 'Engine Audio Default', desc: 'no code consumers', hidden: true },
+  // ── Global: Time (System → Time card, 2026-05-02) ──
+  'time.enabled':                  { label: 'Time Sync Enabled', desc: 'Master toggle for the NTP-synced time source' },
+  'time.ntp_servers':              { label: 'NTP Servers', desc: 'Tried in order until one responds (NIST defaults; comma-separated)' },
+  'time.refresh_interval_hours':   { label: 'Refresh Interval (hours)', desc: 'How often to resync against NTP', advanced: true },
+  'time.timezone_source':          { label: 'Timezone Source', desc: '"auto" derives the IANA zone from your weather coordinates; "manual" uses the field below', options: ['auto', 'manual'] },
+  'time.timezone_manual':          { label: 'Manual Timezone', desc: 'IANA name (e.g. "America/Chicago"). Used only when source=manual' },
   // â”€â”€ Audio â”€â”€
   // Phase 6: audio directory paths are hidden — editing them via the UI
   // can't create the destination folder, so changes either silently do
@@ -1456,6 +1462,7 @@ function loadSystemConfigCards() {
   const run = () => {
     _cfgRenderSystemMaintForm();
     _cfgRenderSystemAuthAuditForm();
+    _cfgRenderSystemTimeForm();
   };
   if (have) { run(); }
   else if (typeof cfgLoadAll === 'function') { cfgLoadAll().then(run); }
@@ -1488,6 +1495,14 @@ function _cfgRenderSystemAuthAuditForm() {
     audit: g.audit || {},
   };
   const host = document.getElementById('sysAuthAuditForm');
+  if (!host) return;
+  host.innerHTML = cfgBuildForm(subset, 'sysaux', '', null);
+}
+
+function _cfgRenderSystemTimeForm() {
+  const g = _cfgData.global || {};
+  const subset = { time: g.time || {} };
+  const host = document.getElementById('sysTimeForm');
   if (!host) return;
   host.innerHTML = cfgBuildForm(subset, 'sysaux', '', null);
 }
@@ -1574,6 +1589,50 @@ async function cfgSaveSystemMaint() {
 async function cfgSaveSystemAuthAudit() {
   const form = document.getElementById('sysAuthAuditForm');
   if (form) await _cfgSaveSystemSubset(form, 'cfg-save-result-sys-authaudit');
+}
+
+async function cfgSaveSystemTime() {
+  const form = document.getElementById('sysTimeForm');
+  if (form) await _cfgSaveSystemSubset(form, 'cfg-save-result-sys-time');
+}
+
+// Status panel for the System → Time card. Re-fetches /api/time/status
+// each time the tab is opened (or the operator hits Refresh) so the
+// "last sync" / offset readings stay fresh without polling.
+function _loadTimeStatus() {
+  const grid = document.getElementById('timeStatusGrid');
+  if (!grid) return;
+  grid.textContent = 'Loading…';
+  fetch('/api/time/status').then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function (s) {
+    function _row(label, value) {
+      return '<div style="display:flex;justify-content:space-between;padding:3px 0;">'
+        + '<span>' + label + '</span>'
+        + '<span style="color:var(--text);">' + value + '</span></div>';
+    }
+    let lastSync = '—';
+    if (s.last_sync_at) {
+      try { lastSync = new Date(s.last_sync_at * 1000).toLocaleString(); }
+      catch (_) { lastSync = String(s.last_sync_at); }
+    }
+    const offsetMs = (s.offset_seconds || 0) * 1000;
+    const offsetStr = (offsetMs >= 0 ? '+' : '') + offsetMs.toFixed(1) + ' ms';
+    const statusBadge = s.synced
+      ? '<span style="color:var(--success, #2ecc71);">synced</span>'
+      : (s.enabled
+          ? '<span style="color:var(--warn, #f1c40f);">unsynced (system clock)</span>'
+          : '<span style="color:var(--text-dim);">disabled</span>');
+    grid.innerHTML =
+        _row('Status:',          statusBadge)
+      + _row('Last sync:',       lastSync)
+      + _row('Offset:',          offsetStr)
+      + _row('Server:',          s.last_sync_server || '—')
+      + _row('Resolved zone:',   s.timezone || 'UTC');
+  }).catch(function (e) {
+    grid.textContent = 'Failed to load: ' + e.message;
+  });
 }
 
 // Phase 6 merged page: renders Speakers + Audio side-by-side with
@@ -1714,6 +1773,7 @@ function _cfgSaveCurrentSystemTab() {
     case 'maintenance':
       showToast('Maintenance actions save immediately; no separate save needed.', 'info');
       return;
+    case 'time':   return cfgSaveSystemTime();
     case 'ssl':    return cfgSaveSsl();
     case 'users':
       showToast('User actions save immediately via their own buttons.', 'info');
