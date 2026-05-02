@@ -1887,6 +1887,35 @@ def _stream_chat_sse_impl(
     except Exception as _canon_exc:
         logger.warning("[{}] canon_context skipped: {}", request_id, _canon_exc)
 
+    # Inject current-time context when the user asks about time / date /
+    # day / clock. GLaDOS otherwise hallucinates the time outright
+    # (operator-flagged 2026-05-02). The time_source module syncs an
+    # offset against an NTP server (NIST default) at startup and
+    # resolves IANA tz from the operator's weather coordinates — see
+    # glados/core/time_source.py.
+    try:
+        from glados.core import time_source
+        from glados.core.context_gates import needs_time_context
+        if needs_time_context(user_message):
+            time_prompt = time_source.as_prompt()
+            if time_prompt:
+                insert_idx = 0
+                while (
+                    insert_idx < len(messages)
+                    and messages[insert_idx].get("role") == "system"
+                ):
+                    insert_idx += 1
+                messages.insert(
+                    insert_idx,
+                    {"role": "system", "content": time_prompt},
+                )
+                logger.success(
+                    "[{}] time_context injected: {!r}",
+                    request_id, time_prompt,
+                )
+    except Exception as _time_exc:
+        logger.warning("[{}] time_context skipped: {}", request_id, _time_exc)
+
     # Inject emotional state directive as the LAST system message before the user turn.
     # Skipped on the command lane: the emotion directive is persona
     # guidance for the conversational voice, not for tool-result echoes.
