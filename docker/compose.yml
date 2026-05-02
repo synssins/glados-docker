@@ -2,19 +2,26 @@
 #
 # The container is self-contained: TTS (local Piper), STT (local Parakeet),
 # embeddings (BGE), and ChromaDB all run inside. The only external services
-# you need are an LLM (Ollama or any OpenAI-compatible endpoint) and
-# optionally Home Assistant + a vision service.
+# you need are an LLM endpoint (any OpenAI-compatible — Ollama, OVMS,
+# llama-server, vLLM, …) and optionally Home Assistant + a vision service.
 #
 # Required env (.env or shell):
-#   OLLAMA_URL    LLM inference endpoint                      e.g. http://host.docker.internal:11434
-#   HA_URL        Home Assistant base URL  (optional)         e.g. http://host.docker.internal:8123
-#   HA_TOKEN      Home Assistant long-lived access token (optional, paired with HA_URL)
+#   OLLAMA_URL    LLM endpoint                                e.g. http://host.docker.internal:11434
+#                 (named for legacy reasons — anything OpenAI-compat works)
+#   HA_URL        Home Assistant base URL          (optional) e.g. http://host.docker.internal:8123
+#   HA_TOKEN      Home Assistant long-lived token  (optional, paired with HA_URL)
 #
 # Optional env:
-#   TZ                       Timezone, default UTC
+#   TZ                       Container system clock TZ; default UTC.
+#                            (Time-of-day INJECTION uses the IANA zone from your
+#                             weather coordinates instead — TZ only affects log timestamps.)
 #   OLLAMA_AUTONOMY_URL      Override autonomy / disambiguator / rewriter endpoint
-#   OLLAMA_VISION_URL        Override vision-call endpoint
+#   OLLAMA_VISION_URL        Override vision endpoint
 #   VISION_URL               External vision service (e.g. http://host.docker.internal:8016)
+#   GLADOS_INTERNAL_API_PORT Loopback-only plain-HTTP port for in-container callers (default 18015)
+#   GLADOS_PLUGINS_ENABLED   MCP plugin runtime master toggle (default true)
+#   GLADOS_AUTH_BYPASS       Set to 1 only for recovery — disables ALL auth checks
+#   WEBUI_HTTP_REDIRECT_PORT If set, listen on this port and 301-redirect HTTP → HTTPS
 #   GLADOS_DOCKER_GID        Host's docker group GID (enables WebUI Logs page; see comment below)
 #
 # Usage:
@@ -32,13 +39,14 @@ services:
     #   dockerfile: Dockerfile
     container_name: glados
     ports:
-      - "8015:8015"   # OpenAI-compatible API
-      - "8052:8052"   # Admin WebUI (HTTPS-capable; HTTP redirect on 8053 if WEBUI_HTTP_REDIRECT_PORT set)
+      - "8015:8015"   # OpenAI-compatible API (TLS when cert mounted, plain HTTP otherwise)
+      - "8052:8052"   # Admin WebUI (TLS when cert mounted, plain HTTP otherwise)
+      - "5051:5051"   # HA audio file server — serves WAV / startup announcements for media_player.play_media
     volumes:
       - glados_configs:/app/configs    # YAML config — first run creates defaults
-      - glados_data:/app/data          # ChromaDB + conversation history + semantic memory
+      - glados_data:/app/data          # ChromaDB + plugins + conversation history + semantic memory
       - glados_audio:/app/audio_files  # TTS-generated audio + chimes
-      - glados_logs:/app/logs          # audit JSONL + service logs
+      - glados_logs:/app/logs          # audit JSONL + service logs + per-plugin stderr
       - glados_certs:/app/certs        # Let's Encrypt cert/key (auto-managed) or operator uploads
       # Optional: read-only docker socket for the WebUI Logs page to tail
       # the GLaDOS container's own stdout. Comment out if you don't need it.
@@ -53,6 +61,13 @@ services:
     # On Linux:  getent group docker | cut -d: -f3
     group_add:
       - "${GLADOS_DOCKER_GID:-0}"
+    # Watchtower exclusion. Without this label, watchtower's hourly pull
+    # of `:latest` from GHCR will silently overwrite a `_local_deploy.py`
+    # build with whatever's published — operators iterating locally will
+    # see their changes vanish on the next watchtower cycle. Safe to
+    # leave on every install; if you don't run watchtower it's a no-op.
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
     restart: unless-stopped
 
 volumes:
