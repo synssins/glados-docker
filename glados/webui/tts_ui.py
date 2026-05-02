@@ -37,14 +37,35 @@ from loguru import logger
 # Configuration â€” all values from centralized config store
 # ---------------------------------------------------------------------------
 from glados.core.config_store import cfg as _cfg
-from glados.observability import AuditEvent, Origin, audit
+from glados.observability import AuditEvent, LogGroupId, Origin, audit, group_logger
+
+# Module-level logger bound to the WebUI TTS-stream group. Every former
+# print("[STREAM] ...", flush=True) call now routes through here so the
+# operator can toggle this surface in the WebUI Logging page.
+_tts_stream_log = group_logger(LogGroupId.WEBUI.TTS_STREAM)
 
 # Wizard registry — Phase 1 ships one step.
 from glados.webui.setup.steps.admin_password import SetAdminPasswordStep
 from glados.webui.setup import wizard as _wizard
 from glados.webui.setup.shell import render_shell as _render_shell
+from glados.webui import plugin_endpoints as _plugins
 
 _WIZARD_STEPS = (SetAdminPasswordStep(),)
+
+
+def _mcp_manager():
+    """Return the live MCPManager from the engine, or None.
+
+    Resolved lazily because the WebUI process and the api_wrapper
+    process import each other circularly at startup; a top-level
+    import would deadlock.
+    """
+    try:
+        from glados.core import api_wrapper as _aw
+        engine = getattr(_aw, "_engine", None)
+        return getattr(engine, "mcp_manager", None) if engine else None
+    except Exception:
+        return None
 
 # Service URLs and models are read live via these helpers so that a
 # config save (LLM & Services page, etc.) takes effect without any
@@ -1206,7 +1227,9 @@ def _validate_llm_urls(services_payload: Any) -> str | None:
     if not isinstance(services_payload, dict):
         return None
     from urllib.parse import urlparse
-    _llm_slots = ("llm_interactive", "llm_autonomy", "llm_triage", "llm_vision")
+    _llm_slots = (
+        "llm_interactive", "llm_autonomy", "llm_triage", "llm_vision", "llm_commands",
+    )
     _err = (
         "expected http://host:port (scheme + port required, no path)"
     )
@@ -1783,6 +1806,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_chat_audio()
         elif p == "/api/ssl/status":
             self._ssl_status()
+        elif p == "/api/time/status":
+            self._get_time_status()
         elif p == "/api/speakers":
             self._get_speakers()
         elif p == "/api/attitudes":
@@ -1948,6 +1973,21 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_get()
             return
 
+        if self.path == "/api/plugins" or self.path.startswith("/api/plugins/") \
+                or self.path.startswith("/api/plugins?"):
+            if not require_perm(self, "admin"):
+                return
+            self._dispatch_plugins_get()
+            return
+
+        # /api/log_groups — admin-only, see Change 35.
+        if self.path == "/api/log_groups" or self.path.startswith("/api/log_groups/") \
+                or self.path.startswith("/api/log_groups?"):
+            if not require_perm(self, "admin"):
+                return
+            self._dispatch_log_groups_get()
+            return
+
         if not require_perm(self, "admin"):
             return
         self._dispatch_get()
@@ -1980,6 +2020,19 @@ class Handler(BaseHTTPRequestHandler):
             if not require_perm(self, "webui.view"):
                 return
             self._dispatch_post()
+            return
+
+        if self.path == "/api/plugins/install" or self.path.startswith("/api/plugins/"):
+            if not require_perm(self, "admin"):
+                return
+            self._dispatch_plugins_post()
+            return
+
+        # /api/log_groups POST endpoints — admin only.
+        if self.path.startswith("/api/log_groups/") or self.path == "/api/log_groups":
+            if not require_perm(self, "admin"):
+                return
+            self._dispatch_log_groups_post()
             return
 
         if not require_perm(self, "admin"):
@@ -2183,6 +2236,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             _sessions.revoke(session_id)
             self._send_json(200, {"ok": True})
+            return
+
+        if self.path.startswith("/api/plugins/"):
+            if not require_perm(self, "admin"):
+                return
+            slug = self.path[len("/api/plugins/"):].rstrip("/")
+            self._delete_plugin(slug)
             return
 
         if not require_perm(self, "admin"):
@@ -2668,12 +2728,12 @@ class Handler(BaseHTTPRequestHandler):
                         total_pcm / bps_rate if bps_rate else 0
                     )
                     session["cond"].notify_all()
-                print(f"[STREAM] TTS chunk {idx} ready: "
-                      f"{len(pcm)} bytes, "
-                      f"total buffered {session['buffered_seconds']:.1f}s",
-                      flush=True)
+                _tts_stream_log.info(
+                    "TTS chunk {} ready: {} bytes, total buffered {:.1f}s",
+                    idx, len(pcm), session["buffered_seconds"],
+                )
             except Exception as e:
-                print(f"[STREAM] TTS chunk {idx} error: {e}", flush=True)
+                _tts_stream_log.error("TTS chunk {} error: {}", idx, e)
                 with session["cond"]:
                     session["chunks"][idx] = b""  # empty on error
                     session["cond"].notify_all()
@@ -2717,8 +2777,11 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         attitude_data = json.loads(line[6:])
                         attitude_tts_params = attitude_data.get("tts", {})
-                        print(f"[STREAM] Attitude: {attitude_data.get('tag', 'unknown')}, "
-                              f"TTS params: {attitude_tts_params}", flush=True)
+                        _tts_stream_log.info(
+                            "Attitude: {}, TTS params: {}",
+                            attitude_data.get("tag", "unknown"),
+                            attitude_tts_params,
+                        )
                     except json.JSONDecodeError:
                         pass
                     pending_event_type = None
@@ -2728,7 +2791,7 @@ class Handler(BaseHTTPRequestHandler):
                 if pending_event_type == "metrics":
                     try:
                         llm_metrics = json.loads(line[6:])
-                        print(f"[STREAM] LLM metrics: {llm_metrics}", flush=True)
+                        _tts_stream_log.info("LLM metrics: {}", llm_metrics)
                     except json.JSONDecodeError:
                         pass
                     pending_event_type = None
@@ -2820,9 +2883,10 @@ class Handler(BaseHTTPRequestHandler):
                 _sse_write(
                     f"event: audio\ndata: {stream_event}\n\n".encode("utf-8")
                 )
-                print(f"[STREAM] Sent streaming URL after "
-                      f"{session['buffered_seconds']:.1f}s buffered",
-                      flush=True)
+                _tts_stream_log.info(
+                    "Sent streaming URL after {:.1f}s buffered",
+                    session["buffered_seconds"],
+                )
 
                 # Wait for ALL TTS threads, then save a static WAV for
                 # replay (the streaming session is ephemeral).
@@ -2841,8 +2905,10 @@ class Handler(BaseHTTPRequestHandler):
                 _sse_write(
                     f"event: replay\ndata: {replay_event}\n\n".encode("utf-8")
                 )
-                print(f"[STREAM] Static WAV saved: {static_filename} "
-                      f"({len(combined_wav)} bytes)", flush=True)
+                _tts_stream_log.info(
+                    "Static WAV saved: {} ({} bytes)",
+                    static_filename, len(combined_wav),
+                )
 
             # Emit combined timing metrics
             t_total_end = _time.time()
@@ -2878,18 +2944,28 @@ class Handler(BaseHTTPRequestHandler):
                             timing_payload["pad_d"]             = float(_pm.group(3))
                             if _lm:
                                 timing_payload["emotion_locked_h"] = float(_lm.group(1))
-                            print(f"[STREAM] Emotion injected: {timing_payload['emotion']} "
-                                  f"({timing_payload['emotion_intensity']:.2f})", flush=True)
+                            _tts_stream_log.info(
+                                "Emotion injected: {} ({:.2f})",
+                                timing_payload["emotion"],
+                                timing_payload["emotion_intensity"],
+                            )
                             break
                 else:
-                    print("[STREAM] Emotion log not found at {}/glados-api.log".format(os.environ.get("GLADOS_LOGS", "/app/logs")), flush=True)
+                    _tts_stream_log.debug(
+                        "Emotion log not found at {}/glados-api.log",
+                        os.environ.get("GLADOS_LOGS", "/app/logs"),
+                    )
             except Exception as _emo_err:
-                print(f"[STREAM] Emotion injection failed: {_emo_err}", flush=True)
+                _tts_stream_log.warning("Emotion injection failed: {}", _emo_err)
             _sse_write(
                 f"event: timing\ndata: {json.dumps(timing_payload)}\n\n".encode("utf-8")
             )
-            print(f"[STREAM] Timing: LLM gen={llm_metrics.get('generation_time_ms', '?')}ms, "
-                  f"TTS={tts_wall_ms}ms, Total={timing_payload['total_time_ms']}ms", flush=True)
+            _tts_stream_log.info(
+                "Timing: LLM gen={}ms, TTS={}ms, Total={}ms",
+                llm_metrics.get("generation_time_ms", "?"),
+                tts_wall_ms,
+                timing_payload["total_time_ms"],
+            )
 
             # Schedule cleanup of the streaming session (keep 5 min for
             # any in-flight GET requests to the streaming endpoint).
@@ -4270,6 +4346,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 info["parse_error"] = str(e)
         self._send_json(200, info)
+
+    def _get_time_status(self):
+        """Return time_source sync state for the System → Time card."""
+        try:
+            from glados.core import time_source
+            self._send_json(200, time_source.status())
+        except Exception as exc:
+            self._send_json(500, {"error": f"time_source status failed: {exc}"})
 
     def _ssl_upload(self):
         """Accept PEM cert + key via JSON body, write to configured paths."""
@@ -5935,6 +6019,313 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json(500, {"ok": False, "error": str(e)})
 
+    # ── Plugins ─────────────────────────────────────────────────────
+
+    def _read_plugin_body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError):
+            return {}
+
+    def _dispatch_plugins_get(self) -> None:
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/plugins":
+            self._list_plugins()
+            return
+        if path == "/api/plugins/indexes":
+            self._get_plugin_indexes()
+            return
+        if path == "/api/plugins/browse":
+            self._browse_plugins()
+            return
+
+        rest = path[len("/api/plugins/"):]
+        if "/" in rest:
+            slug, _, sub = rest.partition("/")
+            if sub == "logs":
+                try:
+                    lines = int(parse_qs(parsed.query).get("lines", ["200"])[0])
+                except (TypeError, ValueError):
+                    lines = 200
+                self._plugin_logs(slug, min(max(lines, 1), 5000))
+                return
+            self._send_error(404, "Not found")
+            return
+
+        self._plugin_detail(rest)
+
+    def _dispatch_plugins_post(self) -> None:
+        path = self.path
+        if path == "/api/plugins/upload":
+            self._upload_plugin()
+            return
+        if path == "/api/plugins/indexes":
+            self._set_plugin_indexes()
+            return
+
+        rest = path[len("/api/plugins/"):]
+        if rest.endswith("/enable"):
+            self._set_plugin_enabled(rest[:-len("/enable")], True)
+            return
+        if rest.endswith("/disable"):
+            self._set_plugin_enabled(rest[:-len("/disable")], False)
+            return
+        self._save_plugin_runtime(rest)
+
+    # ── Log groups — Configuration → Logging page ──────────────────────
+    # Backed by glados/webui/log_groups_endpoints.py. Admin-only;
+    # require_perm checked upstream at do_GET / do_POST dispatch.
+
+    def _dispatch_log_groups_get(self) -> None:
+        from glados.webui import log_groups_endpoints as _lge
+        from urllib.parse import urlparse
+
+        path = urlparse(self.path).path
+        if path == "/api/log_groups":
+            self._send_json(200, _lge.list_groups_payload())
+            return
+        if path == "/api/log_groups/yaml":
+            self._send_json(200, _lge.raw_yaml_payload())
+            return
+        self._send_json(404, {"ok": False, "error": "not found"})
+
+    def _dispatch_log_groups_post(self) -> None:
+        from glados.webui import log_groups_endpoints as _lge
+
+        path = self.path
+        user = ""
+        try:
+            u = _resolve_user_for_request(self)
+            if u:
+                user = u.get("username") or ""
+        except Exception:
+            user = ""
+
+        # Read body (empty allowed for /reset).
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+            body = json.loads(raw) if raw.strip() else {}
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_json(400, {"ok": False, "error": f"invalid JSON: {exc}"})
+            return
+
+        if path == "/api/log_groups/group":
+            code, payload = _lge.update_group(user=user, body=body)
+            self._send_json(code, payload)
+            return
+        if path == "/api/log_groups/bulk":
+            code, payload = _lge.bulk_update(user=user, body=body)
+            self._send_json(code, payload)
+            return
+        if path == "/api/log_groups/reset":
+            code, payload = _lge.reset_to_defaults(user=user)
+            self._send_json(code, payload)
+            return
+        if path == "/api/log_groups/yaml":
+            code, payload = _lge.save_raw_yaml(user=user, body=body)
+            self._send_json(code, payload)
+            return
+        self._send_json(404, {"ok": False, "error": "not found"})
+
+    def _get_plugin_indexes(self) -> None:
+        urls = list(_cfg.services.plugin_indexes)
+        self._send_json(200, {"urls": urls})
+
+    def _set_plugin_indexes(self) -> None:
+        body = self._read_plugin_body()
+        urls = body.get("urls", [])
+        if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
+            self._send_json(400, {"error": "urls must be a list of strings"})
+            return
+        # Validate scheme at the handler so we can return a precise 400
+        # before touching the config writer (which would also reject but
+        # with a less actionable message).
+        for url in urls:
+            if not url.lower().startswith("https://"):
+                self._send_json(400, {"error": f"non-https URL rejected: {url!r}"})
+                return
+        try:
+            _cfg.update_section("services", {"plugin_indexes": urls})
+        except Exception as exc:
+            self._send_json(500, {"error": f"persist failed: {exc}"})
+            return
+        self._send_json(200, {"urls": urls})
+
+    def _browse_plugins(self) -> None:
+        urls = list(_cfg.services.plugin_indexes)
+        if not urls:
+            self._send_json(200, {"entries": [], "errors": []})
+            return
+        result = _plugins.merge_browse_catalog(urls)
+        self._send_json(200, result)
+
+    def _list_plugins(self) -> None:
+        enabled_globally = os.environ.get(
+            "GLADOS_PLUGINS_ENABLED", "true",
+        ).lower() in ("1", "true", "yes", "on")
+        if not enabled_globally:
+            self._send_json(200, {"plugins": [], "enabled_globally": False})
+            return
+        plugins = _plugins.discover_plugins(include_disabled=True)
+        out = [_plugins.serialize_plugin_summary(p) for p in plugins]
+        self._send_json(200, {"plugins": out, "enabled_globally": True})
+
+    def _plugin_detail(self, slug: str) -> None:
+        plugins_dir = _plugins.default_plugins_dir()
+        target = plugins_dir / slug
+        try:
+            plugin = _plugins.load_plugin(target)
+        except (_plugins.ManifestError, FileNotFoundError) as exc:
+            self._send_json(404, {"error": str(exc)})
+            return
+        self._send_json(200, _plugins.serialize_plugin_detail(plugin))
+
+    def _upload_plugin(self) -> None:
+        """Multipart upload of a v2 plugin zip bundle.
+
+        Replaces the v1 install-by-URL flow. Operators upload a self-
+        contained .zip; the v2 schema in plugin.json is the source of
+        truth and the bundle pipeline applies the safety guards (size /
+        traversal / symlink) before extraction.
+        """
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            self._send_json(400, {"error": "invalid Content-Length"})
+            return
+        if content_length > 50 * 1024 * 1024:
+            self._send_json(400, {"error": "bundle too large (max 50 MB)"})
+            return
+        if content_length == 0:
+            self._send_json(400, {"error": "empty upload"})
+            return
+
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.startswith("multipart/form-data"):
+            self._send_json(400, {"error": "expected multipart/form-data"})
+            return
+
+        # cgi.FieldStorage is deprecated in Python 3.13 but still available
+        # in 3.12 (the container's Python). The replacement (third-party
+        # python-multipart) is a separate task -- keep this here for now.
+        import cgi
+        fs = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
+        )
+        if "bundle" not in fs:
+            self._send_json(400, {"error": "missing 'bundle' file field"})
+            return
+        bundle_field = fs["bundle"]
+        if not getattr(bundle_field, "file", None):
+            self._send_json(400, {"error": "'bundle' must be a file upload"})
+            return
+        zip_bytes = bundle_field.file.read()
+
+        plugins_dir = _plugins.default_plugins_dir()
+        try:
+            final_dir = _plugins.install_from_zip(zip_bytes, plugins_dir)
+        except _plugins.InstallError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            logger.warning("plugin upload failed: {}", exc)
+            self._send_json(500, {"error": "upload failed"})
+            return
+
+        # Re-load the freshly installed plugin so the WebUI can render it
+        # without doing a second list call.
+        try:
+            plugin = _plugins.load_plugin(final_dir)
+        except Exception as exc:
+            self._send_json(500, {"error": f"installed but cannot load: {exc}"})
+            return
+        self._send_json(200, _plugins.serialize_plugin_detail(plugin))
+
+    def _save_plugin_runtime(self, slug: str) -> None:
+        body = self._read_plugin_body()
+        plugins_dir = _plugins.default_plugins_dir()
+        target = plugins_dir / slug
+        if not target.exists():
+            self._send_json(404, {"error": f"plugin {slug!r} not installed"})
+            return
+        try:
+            _plugins.merge_runtime_save(
+                target,
+                env_values=body.get("env_values"),
+                header_values=body.get("header_values"),
+                arg_values=body.get("arg_values"),
+                secrets=body.get("secrets"),
+            )
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"saved": True})
+
+    def _set_plugin_enabled(self, slug: str, enabled: bool) -> None:
+        plugins_dir = _plugins.default_plugins_dir()
+        target = plugins_dir / slug
+        if not target.exists():
+            self._send_json(404, {"error": f"plugin {slug!r} not installed"})
+            return
+        _plugins.set_enabled(target, enabled)
+
+        manager = _mcp_manager()
+        if manager is None:
+            self._send_json(200, {"enabled": enabled, "session": "manager-unavailable"})
+            return
+
+        try:
+            if enabled:
+                plugin = _plugins.load_plugin(target)
+                cfg = _plugins.plugin_to_mcp_config(plugin)
+                manager.add_server(cfg)
+            else:
+                manager.remove_server(slug)
+        except Exception as exc:
+            logger.warning("hot-rotate {!s} enabled={}: {}", slug, enabled, exc)
+            self._send_json(200, {"enabled": enabled, "session_error": str(exc)})
+            return
+        self._send_json(200, {"enabled": enabled})
+
+    def _delete_plugin(self, slug: str) -> None:
+        plugins_dir = _plugins.default_plugins_dir()
+        manager = _mcp_manager()
+        if manager is not None:
+            try:
+                manager.remove_server(slug)
+            except Exception as exc:
+                logger.warning("plugin {!s} delete: remove_server raised: {}", slug, exc)
+        try:
+            _plugins.remove_plugin(plugins_dir, slug)
+        except _plugins.InstallError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, {"removed": True})
+
+    def _plugin_logs(self, slug: str, lines: int) -> None:
+        log_dir = os.environ.get("GLADOS_PLUGIN_LOG_DIR", "/app/logs/plugins")
+        log_path = Path(log_dir) / f"{slug}.log"
+        stdio_log: list[str] = []
+        if log_path.exists():
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+                    stdio_log = fh.readlines()[-lines:]
+            except OSError:
+                pass
+
+        manager = _mcp_manager()
+        events = manager.get_plugin_events(slug, limit=lines) if manager else []
+        self._send_json(200, {"stdio_log": stdio_log, "events": events})
+
     # â”€â”€ Response helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _send_json(self, code: int, data: dict):
@@ -5959,6 +6350,7 @@ from glados.webui.pages import (
     _shell,
     chat,
     integrations,
+    logging_page,
     logs,
     memory,
     system,
@@ -5976,6 +6368,7 @@ HTML_PAGE = (
     + memory.HTML
     + training.HTML
     + logs.HTML
+    + logging_page.HTML
     + users_page.HTML
     + _shell.SHELL_BOTTOM
 )

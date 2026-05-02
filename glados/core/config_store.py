@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 import yaml
 from loguru import logger
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from glados.robots.config import RobotsConfig
 
@@ -310,6 +310,49 @@ class WeatherGlobal(BaseModel):
     timezone: str = "auto"                 # Open-Meteo IANA or 'auto'
 
 
+class TimeGlobal(BaseModel):
+    """Authoritative wall-clock time configuration (System page, 2026-05-02).
+
+    GLaDOS doesn't trust the container's system clock for "current
+    time" answers — system clocks drift, and on a host VM that gets
+    suspended they can be wildly wrong. The time_source module syncs
+    an offset against an NTP server (NIST by default) at startup and
+    on a refresh interval, then exposes a tz-aware datetime that the
+    chat path injects when the user asks about the time. NTP failure
+    falls back to the system clock with a WARNING log — operators
+    asking the time still get an answer, just one tagged as
+    unsynchronized in the container logs.
+
+    Timezone defaults to ``"auto"``: use whatever IANA zone Open-Meteo
+    resolved for the operator's weather coordinates (captured into the
+    weather cache by `_process_forecast`). Set ``timezone_source`` to
+    ``"manual"`` and ``timezone_manual`` to an IANA name when no
+    weather config exists or the operator wants a different zone.
+    DST is handled for free as long as the IANA name is correct —
+    Python's stdlib `zoneinfo` knows the transition rules.
+    """
+
+    enabled: bool = True
+    ntp_servers: list[str] = Field(
+        default_factory=lambda: [
+            "time.nist.gov",
+            "time-a-g.nist.gov",
+            "time-b-g.nist.gov",
+        ],
+        description=(
+            "NTP servers tried in order until one responds. NIST defaults are the "
+            "operational standard; operators can substitute an internal stratum-1, "
+            "pool.ntp.org, time.cloudflare.com, etc."
+        ),
+    )
+    refresh_interval_hours: float = 6.0
+    timezone_source: Literal["auto", "manual"] = "auto"
+    timezone_manual: str = Field(
+        default="",
+        description="IANA timezone name (e.g. 'America/Chicago'). Used only when timezone_source=manual.",
+    )
+
+
 class GlobalConfig(BaseModel):
     home_assistant: HomeAssistantGlobal = HomeAssistantGlobal()
     network: NetworkGlobal = NetworkGlobal()
@@ -321,6 +364,7 @@ class GlobalConfig(BaseModel):
     silent_hours: SilentHoursGlobal = SilentHoursGlobal()
     tuning: TuningGlobal = TuningGlobal()
     weather: WeatherGlobal = WeatherGlobal()
+    time: TimeGlobal = TimeGlobal()
 
 
 class ServiceEndpoint(BaseModel):
@@ -390,10 +434,29 @@ class ServicesConfig(BaseModel):
             model="llama-3.2-1b-instruct",
         ),
     )
+    # Dedicated lane for tool-using command turns (route=plugin:* /
+    # is_home_command). When url is empty, the chat path falls back to
+    # llm_interactive — backwards-compatible with deployments that
+    # haven't configured a separate command-lane endpoint.
+    llm_commands: ServiceEndpoint = Field(
+        default_factory=lambda: ServiceEndpoint(url=""),
+    )
     gladys_api: ServiceEndpoint = Field(
         default=ServiceEndpoint(url="http://localhost:8020"),
         deprecated=True,
     )
+    plugin_indexes: list[str] = Field(
+        default_factory=list,
+        description="HTTPS URLs to plugin index.json files. WebUI Browse tab merges these into the catalog.",
+    )
+
+    @field_validator("plugin_indexes")
+    @classmethod
+    def _plugin_indexes_https_only(cls, v: list[str]) -> list[str]:
+        for url in v:
+            if not url.lower().startswith("https://"):
+                raise ValueError(f"plugin index URL must be https://: {url!r}")
+        return v
 
     @model_validator(mode="after")
     def _warn_deprecated(self) -> "ServicesConfig":

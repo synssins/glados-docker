@@ -1,0 +1,33 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-29-plugin-bundle-format.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 1: Backend bundle format + zip-install endpoint",
+      "status": "pending",
+      "description": "**Goal:** plugin.json Pydantic model + loader fallback (plugin.json → server.json) + install_from_zip with safety guards + POST /api/plugins/upload (multipart). Removes /api/plugins/install (v1 URL-fetch endpoint).\n\n**Files:**\n- Create: glados/plugins/bundle.py\n- Modify: glados/plugins/loader.py, runner.py, store.py, __init__.py\n- Modify: glados/webui/plugin_endpoints.py, tts_ui.py\n- Create: tests/test_plugins_bundle.py, tests/test_plugins_zip_install.py\n- Modify: tests/test_webui_plugins.py\n\n**Acceptance Criteria:**\n- PluginJSON model with three runtime mode subclasses\n- Six setting types\n- v1_to_v2 conversion for legacy server.json installs\n- install_from_zip safety: 50 MB compressed, 200 MB total uncompressed, 50 MB per entry, no symlinks, no traversal, no absolute paths, no zip-bombs\n- POST /api/plugins/upload accepts multipart\n- POST /api/plugins/install removed\n- 25+ new tests pass\n\n**Verify:** `python -m pytest tests/test_plugins_*.py tests/test_webui_plugins.py -v`\n\n```json:metadata\n{\"files\": [\"glados/plugins/bundle.py\", \"glados/plugins/loader.py\", \"glados/plugins/runner.py\", \"glados/plugins/store.py\", \"glados/webui/plugin_endpoints.py\", \"glados/webui/tts_ui.py\", \"tests/test_plugins_bundle.py\", \"tests/test_plugins_zip_install.py\", \"tests/test_webui_plugins.py\"], \"verifyCommand\": \"python -m pytest tests/test_plugins_bundle.py tests/test_plugins_zip_install.py tests/test_webui_plugins.py -v\", \"acceptanceCriteria\": [\"PluginJSON model + 3 runtime modes + 6 settings types\", \"v1_to_v2 backward-compat\", \"install_from_zip safety guards\", \"upload endpoint\", \"install endpoint removed\", \"25+ new tests pass\"]}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 2: WebUI rework — Upload tab, page-conformance, terminology pass",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** Drop Add-by-URL section. Add Upload (drag-drop + file picker). Form labels from setting.label not key. Page-conformance to Memory/SSL/Logs/Raw YAML. Category title-case label map. Terminology sweep.\n\n**Files:**\n- Modify: glados/webui/static/ui.js\n- Modify: glados/webui/static/style.css\n\n**Acceptance Criteria:**\n- Page wrapper / header / card / tab-strip match existing Configuration sub-page conventions\n- Manage tab: Upload section (drag-drop + file picker, .zip only, 50 MB)\n- Form fields use setting.label\n- Category labels via JS map\n- No 'slug' / 'manifest' / 'runtime.yaml' / 'secrets.env' / env-var keys visible\n\n**Verify:** Manual UI inspection on deploy.\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\", \"glados/webui/static/style.css\"], \"verifyCommand\": \"\", \"acceptanceCriteria\": [\"design-system conformance\", \"upload section + drag-drop\", \"setting.label in forms\", \"category title-case\", \"terminology sweep\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 3: Docs (architecture migration + bundle-format guide + CHANGES 33 + README)",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** Operator-facing bundle format guide + architecture v1→v2 migration note + CHANGES Change 33 + README install flow update.\n\n**Files:**\n- Create: docs/plugin-bundle-format.md\n- Modify: docs/plugins-architecture.md, docs/CHANGES.md, README.md\n\n**Acceptance Criteria:**\n- plugin-bundle-format.md covers layout / schema / 3 modes / 'wrap any MCP server' tutorial\n- Architecture doc has v2 section + migration note\n- CHANGES 33 follows Change 32 structure\n- README mentions Browse + Upload (no Add-by-URL)\n\n**Verify:** `git diff --stat` shows only 4 doc files\n\n```json:metadata\n{\"files\": [\"docs/plugin-bundle-format.md\", \"docs/plugins-architecture.md\", \"docs/CHANGES.md\", \"README.md\"], \"verifyCommand\": \"git diff --stat\", \"acceptanceCriteria\": [\"bundle format guide\", \"architecture migration note\", \"CHANGES 33\", \"README updated\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 4: Deploy + verify",
+      "status": "pending",
+      "blockedBy": [2],
+      "description": "**Goal:** Push branch + redeploy. Verify health, confirm POST /api/plugins/upload returns 401 unauth, confirm /api/plugins/install gone.\n\n```json:metadata\n{\"files\": [\"C:/src/SESSION_STATE.md\"], \"verifyCommand\": \"\", \"acceptanceCriteria\": [\"deploy + healthcheck green\", \"upload endpoint reachable\", \"install endpoint removed\", \"SESSION_STATE handoff updated\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-04-29T20:00:00Z"
+}

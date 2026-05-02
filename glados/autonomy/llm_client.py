@@ -84,6 +84,7 @@ def llm_call(
     system_prompt: str,
     user_prompt: str,
     json_response: bool = False,
+    json_schema: dict | None = None,
 ) -> str | None:
     """
     Make a simple LLM call.
@@ -121,8 +122,43 @@ def llm_call(
         "stream": False,
     }
 
-    if json_response:
-        data["response_format"] = {"type": "json_object"}
+    if json_schema is not None:
+        # Schema-constrained decoding: LM Studio's llama.cpp runtime
+        # converts the schema to a grammar and rejects any token
+        # sequence that doesn't conform. Use this when the caller has
+        # a well-defined output shape and wants the runtime to enforce
+        # it (e.g. triage with an ``enum`` of valid plugin names so
+        # the model literally cannot hallucinate a name).
+        #
+        # ``json_schema`` argument shape mirrors OpenAI's
+        # response_format spec — caller passes the inner object:
+        #
+        #   {
+        #     "name": "<short id>",
+        #     "strict": True,
+        #     "schema": {<JSON Schema>},
+        #   }
+        data["response_format"] = {
+            "type": "json_schema",
+            "json_schema": json_schema,
+        }
+    elif json_response:
+        # Soft JSON hint without a schema. LM Studio's llama.cpp
+        # runtime (build 2.13.0+) rejects the legacy
+        # ``{"type": "json_object"}`` form with a 400 in ~3 ms:
+        # ``'response_format.type' must be 'json_schema' or 'text'``.
+        # ``text`` is the closest legacy-compatible behaviour: each
+        # caller already wraps ``json.loads`` in try/except and
+        # tolerates malformed responses, and the system prompts
+        # already say "reply with JSON {…}". The system prompt +
+        # tolerant parser pair does the real work; the legacy
+        # ``json_object`` flag was only a soft assist.
+        #
+        # TODO(json_schema): evolve emotion agent / observer /
+        # doorbell screener call sites to pass an explicit
+        # ``json_schema`` so they get hard constraints instead of
+        # this soft hint. Triage already migrated.
+        data["response_format"] = {"type": "text"}
 
     # ``config.url`` is the bare ``scheme://host:port`` operators paste into
     # the LLM & Services WebUI URL field; the OpenAI chat-completions path

@@ -18,17 +18,23 @@ WORKDIR /app
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    curl \
+        ffmpeg \
+        curl \
+        ca-certificates \
+        gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps (CPU only)
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir -e ".[api]" \
-    && pip install --no-cache-dir certbot certbot-dns-cloudflare
+    && pip install --no-cache-dir certbot certbot-dns-cloudflare \
+    && pip install --no-cache-dir uv
 
 # Runtime dirs — operator provides real content via volume mounts
-RUN mkdir -p /app/configs /app/data /app/logs /app/audio_files /app/certs /app/models
+RUN mkdir -p /app/configs /app/data /app/logs /app/logs/plugins /app/audio_files /app/certs /app/models
 
 # Phase 8.3 — BGE-small-en-v1.5 ONNX for entity semantic retrieval.
 # Downloaded at image build so there is no runtime network dependency
@@ -85,6 +91,7 @@ RUN curl -fsSL --retry 5 --retry-delay 2 \
 # Application source
 COPY glados/ ./glados/
 COPY configs/config.example.yaml ./configs/config.example.yaml
+COPY configs/logging.example.yaml ./configs/logging.example.yaml
 COPY scripts/ ./scripts/
 
 # Non-root user with home dir (subagent memory writes to ~/.glados/)

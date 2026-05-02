@@ -3931,3 +3931,905 @@ storage layout, runtime mapping, trust posture, and phasing.
 - `README.md` (Plugins section pointing at architecture doc)
 
 
+## Change 32 — Plugin system Phase 2b: WebUI panel + stdio spawn + Browse (2026-04-29)
+
+**Goal**
+
+Phase 2a (Change 31) shipped the on-disk format, manifest parser,
+loader, and runner. Phase 2b makes plugins useful end-to-end: stdio
+plugins now spawn via `uvx` / `npx` with per-plugin caches; the WebUI
+exposes install / configure / enable-toggle / logs / browse via a
+gear-icon-modal UX; operators can register multiple `index.json` URLs
+and browse catalogs from inside the panel. Browse was pulled forward
+from Phase 3 — Phase 3 now ships only the curated repo *content*.
+
+**What changed**
+
+*Image (Dockerfile)*
+
+- `pip install uv` brings `uvx` onto PATH (~25 MB).
+- NodeSource `setup_20.x` + `apt-get install nodejs` brings `npx` onto
+  PATH (~30 MB).
+- `mkdir -p /app/logs/plugins` for stdio stderr capture.
+
+*`GLADOS_PLUGINS_ENABLED` gate (`glados/core/engine.py`)*
+
+- Default `true`. When set to `false` / `0` / `no` / `off`, engine
+  logs `Plugins disabled by GLADOS_PLUGINS_ENABLED env` and skips
+  `discover_plugins()`. WebUI panel renders an "off" notice. Read
+  once at startup; flipping requires a container restart.
+
+*Runner cache routing (`glados/plugins/runner.py`)*
+
+- uvx packages: `--cache-dir <plugin>/.uvx-cache` injected into args
+  immediately after `<pkg>@<ver>`.
+- npx packages: `npm_config_cache=<plugin>/.uvx-cache` env injected.
+- `.uvx-cache/` lives under `/app/data/plugins/<name>/`, survives
+  image rebuilds.
+
+*MCPManager per-plugin lifecycle (`glados/mcp/manager.py`)*
+
+- `add_server(cfg)` schedules `_session_runner` for one plugin and
+  registers in `_servers` + `_session_tasks`. Raises `MCPError` on
+  duplicate name.
+- `remove_server(name)` cancels the task, awaits up to 5 s, drops
+  from internal state. No-op if missing.
+- Per-plugin event ring (`deque maxlen=256`) records connect /
+  disconnect / error / tools events; `get_plugin_events(name, limit)`
+  surfaces them to the WebUI Logs tab.
+- stdio errlog routes to `/app/logs/plugins/<name>.log` instead of
+  `DEVNULL`. Lazy size-cap rotation (>1 MB → `.log.1`).
+
+*Plugin store helpers (`glados/plugins/store.py`)*
+
+- `install_plugin(plugins_dir, slug, manifest)` — atomic dir create
+  via `<slug>.installing/` rename. Stub `runtime.yaml` written
+  disabled.
+- `remove_plugin(plugins_dir, slug)` — `rmtree` with `..` safety.
+- `set_enabled(plugin_dir, enabled)` — `runtime.yaml` flip.
+- `slugify(name, existing)` — last segment, lowercased,
+  non-alphanumeric → `-`, collisions resolved via `-2`..`-100`
+  suffixes.
+
+*Endpoint surface (`glados/webui/tts_ui.py` + `plugin_endpoints.py`)*
+
+11 new endpoints under `/api/plugins/*`, all admin-only:
+
+- `GET /api/plugins`, `GET /api/plugins/<slug>`,
+  `POST /api/plugins/install`, `POST /api/plugins/<slug>`,
+  `POST /api/plugins/<slug>/enable`,
+  `POST /api/plugins/<slug>/disable`,
+  `DELETE /api/plugins/<slug>`, `GET /api/plugins/<slug>/logs`,
+  `GET /api/plugins/indexes`, `POST /api/plugins/indexes`,
+  `GET /api/plugins/browse`.
+
+Install flow enforces https-only, rejects RFC1918 / loopback /
+link-local resolutions (SSRF guard), 256 KB manifest cap, 5 s
+fetch timeout. Save-runtime supports a `***` sentinel: secrets
+unchanged at the client preserve via the server-side merge.
+
+*WebUI panel (`glados/webui/static/ui.js`)*
+
+- Three cards under **System → Services**: Installed plugins
+  (per-row layout `[icon] name vX.Y.Z [cat] ●  [⏻ toggle]  [⚙]
+  [🗑]`), Add-by-URL, Browse.
+- Gear icon opens a centered modal with three tabs:
+  Configuration / Logs / About. Configuration auto-renders from
+  `server.json` (env vars / headers / arguments) with typed
+  inputs: password for secrets, select for choices, url for
+  format=url, required-asterisk for `isRequired`, default →
+  placeholder.
+- Logs tab: 100 / 500 / 2000 lines, Refresh button, 5 s
+  auto-refresh, both stdio tail + event ring.
+- About tab: name, version, category, persona role, repository,
+  source index, Reinstall-from-source button.
+- Browse card: collapsible Index URLs editor + Browse button → gallery.
+- Polls `/api/plugins` every 30 s while System tab is visible.
+
+*`ServicesConfig.plugin_indexes`*
+
+New `list[str]` field on `services.yaml` for the Browse card's
+catalog URLs. https-only validator at load time. Default empty.
+
+**Tests**: +56 across new files.
+
+- `tests/test_engine_plugin_gate.py` — `GLADOS_PLUGINS_ENABLED`
+  parsing + skip-discovery behaviour.
+- `tests/test_plugins_runner.py` — uvx `--cache-dir` injection +
+  npx `npm_config_cache` env routing.
+- `tests/test_mcp_manager_lifecycle.py` — `add_server` /
+  `remove_server` / event ring / log-file rotation.
+- `tests/test_plugins_store.py` — `install_plugin` /
+  `remove_plugin` / `set_enabled` / `slugify`.
+- `tests/test_webui_plugins.py` — 11-endpoint surface,
+  https-only + SSRF guards, `***` secret-preserve sentinel.
+- `tests/test_services_config_plugin_indexes.py` — schema +
+  https-only validator.
+
+Suite: 1519 → 1575 (+56).
+
+**Files touched**
+
+- `Dockerfile` (uvx + Node 20 + plugin log dir)
+- `glados/core/engine.py` (`GLADOS_PLUGINS_ENABLED` gate)
+- `glados/plugins/runner.py` (cache routing)
+- `glados/plugins/store.py` (`install_plugin` / `remove_plugin` /
+  `set_enabled` / `slugify`)
+- `glados/mcp/manager.py` (`add_server` / `remove_server` /
+  event ring / log rotation)
+- `glados/webui/plugin_endpoints.py` (new — 11 endpoints)
+- `glados/webui/tts_ui.py` (route registration)
+- `glados/webui/static/ui.js` (Plugins panel + modal + browse)
+- `glados/config/services.py` (`plugin_indexes` field)
+- `tests/test_engine_plugin_gate.py` (new)
+- `tests/test_plugins_runner.py` (new)
+- `tests/test_mcp_manager_lifecycle.py` (new)
+- `tests/test_plugins_store.py` (new)
+- `tests/test_webui_plugins.py` (new)
+- `tests/test_services_config_plugin_indexes.py` (new)
+- `docs/plugins-architecture.md` (Phase 2b status flipped to live;
+  Browse-pulled-forward note; phasing table updated)
+- `README.md` (Plugins section extended with operator install +
+  browse + logs walkthrough)
+
+## Change 33 — Plugin system v2: zip bundle format + Upload (2026-04-29 evening)
+
+**Goal**
+
+Operator review of the live Phase 2b panel surfaced two structural
+problems with the v1 install path: developer terminology leaked into
+the operator UI (`slug`, `manifest`, `runtime.yaml`, env-var keys
+like `SONARR_API_KEY` shown verbatim as form labels), and Add-by-URL
+required upstream cooperation (a published `server.json`) that most
+GitHub MCP servers don't ship. The fix pivots the install format to
+a self-contained zip bundle along the lines of HA `custom_components`
+and the VS Code `.vsix` family — operators can repackage any GitHub
+MCP server with a GLaDOS-side `plugin.json`, drag-drop the zip into
+the WebUI, and configure operator-friendly settings without touching
+upstream code.
+
+**What changed**
+
+*New bundle format (`glados/plugins/bundle.py`)*
+
+- `PluginJSON` Pydantic model. Required fields: `schema_version`
+  (`1`), `name`, `description`, `version`, `category`, `runtime`.
+  Optional: `icon`, `persona_role`, `homepage`, `settings[]`.
+- Three runtime-mode discriminated submodels:
+  - `RegistryRuntime` (`mode: "registry"`, `package: "uvx:pkg@ver"`
+    or `npx:pkg@ver`). Spawns via uvx/npx fetching at runtime.
+  - `BundledRuntime` (`mode: "bundled"`, `command`, `args`). Spawns
+    from inside the unpacked zip with `GLADOS_PLUGIN_DIR` exposed.
+  - `RemoteRuntime` (`mode: "remote"`, `url` https-only, optional
+    `headers`). Connects via streamable-HTTP, no subprocess.
+- Six `Setting.type` widgets: `text`, `url`, `number`, `boolean`,
+  `select` (requires `choices`), `secret`. Operators see
+  `setting.label`; the env-var key is internal.
+- `v1_to_v2(server_json, package_index, remote_index) -> PluginJSON`
+  synthesises a v2 view from the v1 schema so the runner and form
+  renderer can consume a single shape regardless of bundle vintage.
+
+*Loader fallback (`glados/plugins/loader.py`)*
+
+- `load_plugin(plugin_dir)` checks for `plugin.json` first; parses
+  as `PluginJSON` and builds the `Plugin` directly. If absent, falls
+  back to the existing v1 path (`server.json` + `runtime.yaml`) and
+  feeds the result through `v1_to_v2`. The `Plugin` dataclass now
+  carries `manifest_v2: PluginJSON` (always present) alongside the
+  legacy `manifest: ServerJSON | None` (v1 installs only).
+
+*Runner (`glados/plugins/runner.py`)*
+
+- Rewritten to dispatch on `plugin.manifest_v2.runtime.mode`:
+  `_build_remote_v2`, `_build_registry_v2`, `_build_bundled_v2`.
+  Cache routing for uvx (`--cache-dir`) and npx (`npm_config_cache`)
+  carried forward unchanged. `_resolve_settings` merges
+  `runtime.yaml.env_values` and `secrets.env`, applies defaults,
+  and surfaces missing-required errors using `setting.label`.
+
+*Zip install pipeline (`glados/plugins/store.py`)*
+
+- `install_from_zip(zip_bytes, plugins_dir) -> Path`. Caps: 50 MB
+  compressed, 200 MB uncompressed, 50 MB per entry. Rejects
+  symlinks (POSIX file-type `0o120000`), absolute paths, path
+  traversal. Validates `plugin.json` via `PluginJSON.model_validate`
+  before extraction. Atomic via `<internal-name>.installing/` →
+  `<internal-name>/` rename. Collisions append `-2`, `-3` suffix.
+
+*Endpoint surface (`glados/webui/tts_ui.py` + `plugin_endpoints.py`)*
+
+- New `POST /api/plugins/upload` accepts multipart upload with file
+  field `bundle`. Reads bytes (50 MB content-length cap), invokes
+  `install_from_zip`, returns `{name, internal_name, plugin}` for
+  the WebUI to switch to the new tab.
+- `POST /api/plugins/install` (the v1 URL-fetch endpoint) is removed
+  from the dispatcher. The helper stays in the module unexported.
+- The remaining 10 admin-only `/api/plugins/*` endpoints (list /
+  get / save / enable / disable / delete / logs / indexes ×2 /
+  browse) unchanged.
+- Serializers updated to read from `manifest_v2`.
+
+*WebUI rework (`glados/webui/static/ui.js` + `style.css`)*
+
+Design-system conformance pass — Phase 2b's bespoke classes diverged
+from the rest of the Configuration sub-page system. v2 grounds the
+page in the established conventions:
+
+- Page wrapper now uses `.page-shell > .container > .page-header`
+  with `h2.page-title` + `.page-title-desc`, matching Memory / SSL /
+  Logs / Raw YAML. Bespoke `.plugins-page` outer class dropped.
+- Per-plugin pane header rebuilt with `.card` + `.section-title`.
+  Bespoke `.plugin-header-card` / `.plugin-header-*` /
+  `.plugin-icon-large` / `.plugin-meta-*` / `.plugin-status-text`
+  classes removed.
+- Browse + Upload cards are flat `.card` sections, not collapsible
+  details. `.plugin-collapsible*` CSS removed.
+- Save button adopts the standard `.cfg-save-btn` / `.cfg-result`
+  classes from elsewhere.
+- `.page-tabs` strip retained — system-wide convention for tabbed
+  Configuration pages.
+
+Install flow rework:
+
+- Add-by-URL inline section gone (`renderAddByUrlCard` /
+  `wireAddByUrlHandlers` removed). Upload card takes its place
+  (`renderUploadCard` / `wireUploadHandlers`): drag-drop zone +
+  file picker, `.zip` only, 50 MB client-side cap, multipart POST
+  to `/api/plugins/upload`. New CSS: `.upload-dropzone` +
+  `.upload-prompt`.
+- Browse-gallery Install button changed from POST
+  `/api/plugins/install` to a two-step fetch + multipart upload.
+  Catalog entries now read `bundle_url` (preferred) with
+  `server_json_url` legacy fallback.
+- Reinstall-from-source button removed from the per-plugin About
+  pane (its endpoint is gone; operators re-upload).
+
+Form rendering pivots to the v2 shape:
+
+- `renderConfigForm` / `renderFormField` iterate
+  `detail.manifest.settings[]` (the v2 array, synthesised
+  identically for v1-on-disk and v2-native installs).
+- Every form label sources from `setting.label`, not the env-var
+  key. The key is invisible to operators.
+- Six setting types render correctly: `text`, `url`, `number`,
+  `boolean`, `select` (with choices), `secret` (password input;
+  the `***` sentinel preserves the existing value on partial save).
+
+Terminology sweep:
+
+- "slug", "Slug", "slugified", "optional slug" placeholder removed
+  from operator-visible strings. Internal JS identifier
+  `_pluginActiveSlug` retained — it's a tab key, never rendered.
+- Empty-state in `renderPluginsList` no longer references "Add by
+  URL"; points operators at Upload + Browse.
+- Category badges (tab strip, installed list, browse gallery)
+  render via `pluginCategoryLabel(cat)` against
+  `_PLUGIN_CATEGORY_LABELS` (`media → Media`, `home → Home`,
+  `integrations → Integrations`, `system → System`, `dev →
+  Developer`, `utility → Utility`), with literal-string fallback
+  for unknown categories.
+
+**Tests**: 1575 → 1592 (+17 net).
+
+- `tests/test_plugins_bundle.py` (new) — `PluginJSON` schema,
+  three runtime modes, six setting types, `v1_to_v2` conversion
+  for both registry and remote v1 sources. +25 tests.
+- `tests/test_plugins_zip_install.py` (new) — `install_from_zip`
+  safety + atomicity: traversal, absolute path, symlink, oversize
+  compressed / uncompressed, missing `plugin.json`, invalid JSON,
+  staging cleanup, collision suffix. +10 tests.
+- `tests/test_webui_plugins.py` updated — install-by-URL routing
+  tests removed (the endpoint is gone) and the file consolidated
+  around the upload pipeline. −6 routing tests, plus the rest of
+  the consolidation lands the file at the +17-net mark.
+
+Suite: 1575 → 1592 (+25 new bundle, +10 new zip-install, −6
+removed install-by-URL routing tests, plus consolidation in
+`test_webui_plugins.py` = +17 net).
+
+**Files touched**
+
+*Backend*
+
+- `glados/plugins/bundle.py` (new — `PluginJSON`, `Setting`, three
+  `*Runtime` models, `v1_to_v2`)
+- `glados/plugins/loader.py` (`plugin.json`-first; v1 fallback)
+- `glados/plugins/runner.py` (three-mode dispatch)
+- `glados/plugins/store.py` (`install_from_zip` + safety guards)
+- `glados/plugins/__init__.py` (re-export `install_from_zip`)
+- `glados/webui/plugin_endpoints.py` (serializers read
+  `manifest_v2`; `install_from_url` no longer exported)
+- `glados/webui/tts_ui.py` (`POST /api/plugins/upload`; install
+  route removed from dispatcher)
+
+*WebUI*
+
+- `glados/webui/static/ui.js` (page wrapper, Upload card,
+  Browse-gallery upload pipeline, v2 form rendering, terminology
+  sweep, category label map)
+- `glados/webui/static/style.css` (page-conformance pass:
+  bespoke `.plugins-page` / `.plugin-header-*` /
+  `.plugin-collapsible*` removed; `.upload-dropzone` +
+  `.upload-prompt` added)
+
+*Tests*
+
+- `tests/test_plugins_bundle.py` (new)
+- `tests/test_plugins_zip_install.py` (new)
+- `tests/test_webui_plugins.py` (upload tests; install-by-URL
+  routing removed)
+
+*Docs*
+
+- `docs/plugin-bundle-format.md` (new — operator-facing schema
+  reference + "wrap any MCP server in 5 minutes" tutorial)
+- `docs/plugins-architecture.md` (v2 bundle-format section;
+  Phase 2c row in phasing table; v1 history retained)
+- `docs/CHANGES.md` (this entry)
+- `README.md` (Plugins install walkthrough updated to Browse +
+  Upload; Add-by-URL section removed; link to bundle-format doc)
+
+
+
+## Change 34 — Per-group log filter foundation (2026-04-30)
+
+**Why.** The empty-bubble investigation in late April revealed that
+loguru's single-sink hard-coded `level="SUCCESS"` filter (engine.py:58)
+was silently dropping every `logger.info()`/`logger.debug()` call across
+the codebase, including the diagnostic instrumentation added across two
+sessions to debug the bug. "Add more logs" became "logs added,
+invisible, three deploys wasted." Operator-flagged: build a tunable
+per-subsystem log filter so individual subsystems can be dialled up or
+down without flipping the global level.
+
+**What.** `glados/observability/log_groups.py` defines a registry of
+named log groups (~50 groups, one per logical subsystem on the chat /
+autonomy / HA / MCP / TTS / memory / WebUI / auth / lifecycle /
+network paths). Every diagnostic log call binds a group ID via
+`group_logger(LogGroupId.X.Y)`; the registry decides per record whether
+to emit, based on each group's `enabled` + per-group level threshold.
+`engine.py` now installs a single `TRACE`-floor sink with a filter that
+consults the registry per record, so changes take effect immediately
+without a restart.
+
+**Persistent state** lives in `configs/logging.yaml` (joins the
+existing 5-file Raw YAML split — global / services / speakers / audio
+/ personality / **logging**, now 6 files). The
+`configs/logging.example.yaml` reference is bundled into the image so
+operators can see the schema. The on-disk file is created lazily — the
+WebUI Save action writes it the first time, otherwise the registry
+runs from in-code defaults.
+
+**Safety:**
+
+- Atomic writes (temp + rename), pydantic schema validation before
+  swap.
+- Bad YAML at startup: WARNING + fall back to defaults + preserve the
+  bad file as `<name>.broken-<timestamp>` so nothing is lost.
+- Unknown group IDs in YAML are dropped on load with a warning (no
+  zombie state).
+- Missing builtin IDs in YAML are auto-merged on load (no manual
+  re-export needed after a deploy adds new groups).
+- `ERROR` and `CRITICAL` records bypass the per-group filter entirely
+  — you cannot accidentally silence error logging via this UI.
+- The `auth.audit` group is locked-on by policy; `set_group_state`
+  refuses to disable it.
+
+**Global override.** `GLADOS_LOG_LEVEL` env var, if set, lowers every
+group's effective floor to that level for the lifetime of the process.
+Useful for one-shot deployments where you want the firehose without
+flipping ~50 toggles. e.g. `GLADOS_LOG_LEVEL=DEBUG`.
+
+**Activity counter.** Rolling 5-minute hit counter per group, kept
+in-memory (resets on restart). Powers the WebUI page's "Recent activity"
+column so the operator can spot noisy / silent groups visually.
+
+**Code-side migration.** `tts_ui.py`'s nine `print("[STREAM] …")`
+calls are now `_tts_stream_log.info(…)` bound to `webui.tts_stream`,
+the first surface to use the new system. The remainder of the codebase
+will migrate over the next ten commits, subsystem by subsystem.
+
+**Files added:**
+
+- `glados/observability/log_groups.py` — registry, filter, `LogGroupId`
+  constants, helpers, loguru-sink installer.
+- `configs/logging.example.yaml` — example file with all ~50 groups.
+- `tests/test_log_groups.py` — 33 tests covering schema validation,
+  filter decisions, persistence round-trips, atomic writes, locked-on
+  policy, error-bypass, env override, activity counter, sink
+  integration.
+
+**Files modified:**
+
+- `glados/core/engine.py` — sink installation now goes through
+  `install_loguru_sink` instead of a hard-coded `logger.add(level=…)`.
+- `glados/observability/__init__.py` — re-exports the public surface.
+- `glados/webui/tts_ui.py` — nine `print` calls converted to grouped
+  logger.
+- `Dockerfile` — copies `configs/logging.example.yaml` into the image.
+- `docs/CHANGES.md` (this entry).
+
+**Tests:** 1612 → 1645 (33 new), 0 regressions. `pytest -q` runs in
+~55 s.
+
+**Next.** WebUI Configuration → Logging page (Change 35) gives the
+operator the visual surface to flip toggles without editing YAML by
+hand. Then commit-by-commit instrumentation of every subsystem (chat
+path first, since that is the bug we are actively chasing).
+
+## Change 35 — WebUI Logging page (Configuration → Logging) (2026-04-30)
+
+**Why.** Change 34 landed the per-group log filter foundation, but
+operating it required hand-editing `configs/logging.yaml` over SSH.
+That works for one or two toggles per investigation; it doesn't scale
+to ~50 groups with the granular dial-up/dial-down workflow the
+operator wants. This change adds the operator-facing surface — a
+dedicated Configuration → Logging page with per-group toggles, level
+dropdowns, bulk operations, and a raw-YAML drawer for power users.
+
+**What's in the page.**
+
+- A table of every log group, grouped by category (Chat / Plugin /
+  Autonomy / HA / MCP / TTS / Memory / WebUI / Auth / Lifecycle /
+  Conversation / Config / Filter / Network).
+- Per-row: Enabled toggle, Level dropdown
+  (`DEBUG` / `INFO` / `SUCCESS` / `WARNING`), and a "Recent activity"
+  count showing hits over the last 5 minutes (refreshed every 5 s
+  while the tab is open).
+- Locked-on groups (`auth.audit`) render the toggle disabled with a
+  lock icon.
+- Bulk operations: Enable all / Disable all / Reset to defaults /
+  per-category Enable / per-category Disable.
+- Filter input: free-text search across name, ID, and description.
+- Default-level dropdown for ungrouped logs (legacy `logger.info()`
+  call sites).
+- A banner appears when the `GLADOS_LOG_LEVEL` env var is set,
+  warning the operator that per-group toggles can't lower output
+  below the override floor.
+- Raw YAML drawer: collapsible textarea with Load / Save buttons
+  that round-trips through `configs/logging.yaml` with full schema
+  validation. Schema errors come back inline.
+
+**Server-side**:
+
+- `GET /api/log_groups` — entire registry as JSON, including recent
+  activity counts and the global override level.
+- `POST /api/log_groups/group` — toggle / level for one group.
+- `POST /api/log_groups/bulk` — bulk operations.
+- `POST /api/log_groups/reset` — reset to builtin defaults.
+- `GET  /api/log_groups/yaml` — raw YAML.
+- `POST /api/log_groups/yaml` — atomic save with schema validation.
+
+All routes admin-only. Every mutation emits an audit record via the
+existing `audit()` channel (origin = `webui_chat`, kind =
+`config_change`, principal = the requesting username) so the change
+is observable from the audit log alongside login / role-change /
+configuration-save events.
+
+**Safety:**
+
+- Schema validation before every YAML save — bad input rejected with
+  a 400 + line-level error message, in-memory state preserved.
+- Locked-on groups can't be disabled via UI or YAML save (the
+  registry's `set_group_state` and `replace_config` both refuse).
+- Optimistic UI: each row save patches local state on success, falls
+  back to a full refetch on any error so the displayed state never
+  drifts from the backend.
+- Activity polling tears down when the operator leaves the tab, so
+  the page doesn't burn HTTP traffic in the background.
+
+**Files added:**
+
+- `glados/webui/pages/logging_page.py` — page HTML.
+- `glados/webui/log_groups_endpoints.py` — server-side handlers.
+- `tests/test_log_groups_endpoints.py` — 22 tests covering payload
+  shape, single-group updates, bulk operations, default-level save,
+  raw YAML round-trip, schema validation, locked-on enforcement,
+  unknown-ID rejection, missing-field handling.
+
+**Files modified:**
+
+- `glados/webui/tts_ui.py` — page composition + GET/POST routing for
+  `/api/log_groups/*` (admin-gated, mirrors plugin endpoints).
+- `glados/webui/pages/_shell.py` — sidebar entry under Configuration.
+- `glados/webui/static/ui.js` — page render, filter, save, bulk, raw
+  YAML drawer (~280 lines appended).
+- `glados/webui/static/style.css` — new `.logging-*` classes
+  (toolbar, override banner, category cards, row grid, raw drawer).
+- `docs/CHANGES.md` (this entry).
+
+**Tests:** 1645 → 1667 (22 new), 0 regressions. `pytest -q` runs in
+~55 s.
+
+**Visual verification:** deferred to operator after deploy. The
+WebUI runs in a docker container on the docker host (192.168.1.150);
+this session does not have a local browser preview surface — the
+operator confirms in their actual browser after the next deploy.
+
+## Change 36 — Chat-path instrumentation (per-group logging) (2026-04-30)
+
+**Why.** With the per-group log filter live (Change 34) and the WebUI
+toggle surface live (Change 35), every diagnostic call site on the
+chat path migrates to the new system. The empty-bubble investigation
+finally has the comprehensive chunk-shape coverage that earlier diag
+attempts kept missing.
+
+**What.** Every chat-path log call now binds a stable group ID:
+
+- `chat.connect_path` — connect attempt, status, response headers,
+  4xx body (full first 1000 chars instead of 200).
+- `chat.round1_stream` / `chat.round2_stream` — per-round summary
+  diagnostics. Now tracks every chunk shape independently:
+  - `lines` — every non-empty SSE line.
+  - `data_lines` — every `data: ...` line.
+  - `parsed` / `parse_fail` — JSON parse outcomes.
+  - `bytes` — total upstream bytes.
+  - `chunks` — chunks with non-empty content.
+  - `role_only` — chunks with `delta == {"role": "assistant"}`.
+  - `empty_content` — chunks where `delta.content == ""`.
+  - `raw_chars` / `visible_chars` — content before / after the
+    `<think>` filter.
+  - `reasoning_chars` — chars accumulated in `delta.reasoning_content`
+    (the surface qwen3 / DeepSeek-R1 use that the prior diag missed
+    entirely).
+  - `refusal_chars` — chars in `delta.refusal`.
+  - `tool_deltas` — count of tool-call deltas.
+  - `finish_reason` / `done_seen` — terminal-chunk state.
+  - `error` — captured top-level `{"error": {...}}` chunk (LM Studio
+    runtime errors like "Context size exceeded" arrive in this shape
+    with no `choices`; previously silently dropped).
+  - `usage` — captured terminal usage chunk.
+  - `top_level_keys` / `delta_keys` — sorted set of every key that
+    appeared in any chunk, so unknown shapes surface immediately.
+  - `first_chunk[:1000]` — verbatim JSON of the first non-DONE chunk.
+- `chat.round1_raw_bytes` / `chat.round2_raw_bytes` — DEBUG-level
+  per-line dump of every SSE line received. Disabled by default.
+- `chat.tool_call` — per-tool dispatch with args, latency, result
+  size, max-rounds-reached warning.
+- `chat.tool_result` — tool result body[:500] at DEBUG.
+- `chat.filter_pipeline` — every `<think>` open/close transition at
+  DEBUG.
+- `chat.sanitize_history` — what `_sanitize_message_history`
+  dropped, with role lists at DEBUG.
+- `chat.routing_decision` — SSE preamble: msg count, tool count,
+  `num_predict`, route, system_prompt_chars.
+- `filter.think_tag` / `filter.boilerplate` — final-response strip
+  diff (chars removed by `_strip_thinking` and
+  `strip_closing_boilerplate`).
+- `memory.context_inject` — chars + content[:500] preview at DEBUG.
+- `conversation.store` — assistant content[:500] preview at DEBUG.
+- `plugin.intent_match` — match (INFO), miss explained (DEBUG).
+- `plugin.triage_llm` — invocation, latency, raw response (full at
+  DEBUG, [:200] at INFO), parsed result, hallucinated-name drops.
+
+**Files modified:**
+
+- `glados/core/api_wrapper.py` — module-level grouped loggers, every
+  chat-path call site rewired to the appropriate group, comprehensive
+  chunk-shape tracking in both round-1 and round-2 loops.
+- `glados/plugins/intent.py` — converted to `_log_intent`,
+  added DEBUG-level miss explanation.
+- `glados/plugins/triage.py` — converted to `_log_triage`, added
+  DEBUG-level full-raw-response dump.
+
+**Tests:** 1667 → 1667, 0 regressions. `pytest -q` runs in ~56 s.
+The chat-path instrumentation is observability-only and has no
+behaviour change.
+
+## Change 37 — Command lane: separate upstream for tool-using turns (2026-05-01)
+
+**Why.** Every chat turn — including tool-using "Add Ghostbusters" /
+"Is X in my library" commands — was routed through the big
+personality-laden qwen3-14b model on the interactive lane. Three costs:
+
+1. *Slow.* qwen3-14b at ctx=32768 / parallel=1 produces ~16 tok/s on
+   the Intel Arc Pro B60 — fine for conversational replies, sluggish
+   for tool-call confirmations.
+2. *Fabrication risk.* Persona overlay encourages the model to
+   *describe* what it would do rather than *invoke* the tool, then
+   produce a witty in-character "I added it for you" without an
+   actual tool call having fired.
+3. *Crash pressure.* The bigger model + tool catalogue + persona
+   pushed against the per-slot ctx boundary that triggers the
+   llama.cpp Vulkan `STATUS_STACK_BUFFER_OVERRUN` (Exit 3221226505).
+
+Operator preference (locked in
+`feedback_command_vs_conversational.md`): tool-using turns get
+terse, direct, tool-result-echo replies with NO persona. Persona
+remains on weather / status / direct chat / autonomy alerts.
+
+**What.** A new ``services.llm_commands`` endpoint slot drives a
+dedicated upstream for tool-using turns. The chat path's
+``_stream_chat_sse_impl`` now classifies each turn and picks the
+upstream lane:
+
+  - ``route=plugin:* OR is_home_command`` → command lane (URL +
+    model from ``cfg.services.llm_commands``).
+  - everything else → interactive lane (the existing
+    ``llm_interactive`` upstream, unchanged).
+
+When ``llm_commands.url`` is empty, the chat path silently falls
+back to the interactive lane — backwards-compatible with deployments
+that haven't configured a separate command lane.
+
+**Command-lane prompt shape.** Three modifications relative to the
+interactive lane:
+
+  - Persona system message replaced with a minimal, anti-fabrication
+    command-mode instruction. The persona's HEXACO traits / quip
+    library / response directives are absent on the command path.
+  - Persona few-shots dropped (they bias the model toward textual
+    replies, suppressing tool calls).
+  - ``HOME_COMMAND_GUARD`` applied on plugin routes too (previously
+    only on legacy is_home_command). Generalises the guard to all
+    tool-using turns.
+
+``num_predict`` caps at 512 on the command lane (was 1024) — a small
+coder-tuned model produces tool_call JSON + a short confirmation
+without needing the bigger budget.
+
+**LM Studio side.** ``qwen2.5-coder-7b-instruct`` Q4_K_M (~4.7 GB)
+loaded at ctx=32768 with no ``--parallel`` (single slot — the
+per-slot stack-overrun risk applies on the command lane too, and
+command turns are short and serial). Added to:
+
+  - ``lms_autoload.bat`` — bootstrap unload + load entries.
+  - ``lms_watchdog.ps1`` — desired list, so the model auto-reloads
+    if it crashes.
+
+**Routing log.** ``chat.routing_decision`` now reports the lane
+choice and the actual upstream model so operators can watch which
+turns took which path:
+
+```
+SSE: 12 msgs, 24 tools, num_predict=512 (route=plugin:radarr
+lane=commands model=qwen2.5-coder-7b-instruct) ...
+```
+
+**Files added:**
+
+- ``tests/test_command_lane_routing.py`` — 13 unit tests for the
+  two pure helpers (``_select_command_lane``,
+  ``_strip_persona_for_command_lane``) covering URL fallback rules,
+  empty/blank URL, model-inheritance, persona replacement, few-shot
+  drop, multi-system-msg preservation.
+
+**Files modified:**
+
+- ``glados/core/config_store.py`` — new ``ServicesConfig.llm_commands``
+  field, defaults to empty URL.
+- ``glados/core/api_wrapper.py`` — plugin-intent block moved up so
+  the route classifier is known before the few-shot strip; new
+  helpers wired into ``_stream_chat_sse_impl``; round-2 dispatch
+  uses the same upstream as round 1.
+- ``glados/webui/static/ui.js`` — ``SERVICE_NAMES['llm_commands']
+  = 'LLM (Commands)'``. Card auto-renders via the existing
+  data-driven service grid.
+- ``glados/webui/tts_ui.py`` — ``llm_commands`` added to the URL
+  validator slot list.
+- ``docs/CHANGES.md`` (this entry).
+
+**Not touched** — single-source-of-truth refactor of legacy
+``Glados.completion_url`` / ``Glados.llm_model`` /
+``Glados.autonomy.*`` mirror fields in ``glados_config.yaml`` is
+explicitly out of scope and remains queued.
+
+**Tests:** 1667 → 1680 (13 new), 0 regressions. ``pytest -q`` runs in
+~57 s.
+
+## Change 38 — AIBox LLM stack swap to OpenVINO Model Server + URL helper fix (2026-05-02)
+
+**Why.** The prior LM Studio + Ollama-IPEX stack on AIBox had been
+producing layered failures for weeks (`STATUS_STACK_BUFFER_OVERRUN`
+on Vulkan + Qwen3 MoE, `response_format=json_object` rejected with
+HTTP 400, JIT/manual-load theatre, the Ollama-IPEX fork operator-
+flagged as effectively abandoned). Operator authorised a complete
+rip-out and a clean-slate replacement with a stable + actively
+maintained + Intel-Arc-supporting + OpenAI-compatible engine.
+
+**What landed.**
+
+1. **AIBox: complete LM Studio + Ollama-IPEX wipe.** All four NSSM
+   services removed (`LMStudioAutoload`, `ollama-ipex-llm`,
+   `ollama-glados`, `ollama-vision`); `~133 GB` of installs +
+   models reclaimed. Pre-wipe inventory archived at
+   `C:\AI\llm_inventory_2026-05-01_pre_wipe.md` so re-pulls have a
+   reference. ``C:\AI\nssm.exe`` and the non-LLM services (Speaches
+   TTS, Open-WebUI, glados-vision) preserved.
+2. **Replacement engine: OpenVINO Model Server (OVMS) 2026.1.** Intel-
+   first-party, native Windows binary install at ``C:\AI\ovms``,
+   NSSM-wrapped service ``ovms`` listening on ``0.0.0.0:11434``.
+   Auto-starts on boot. Talks to the Intel Arc Pro B60 directly via
+   Level Zero on Windows native — no WSL2 / no Docker / no Linux VM
+   needed. Loaded model: ``OpenVINO/Qwen3-30B-A3B-int4-ov``
+   (16.34 GB INT4, MoE with ~3B active params per token). Tool
+   parser ``hermes3`` + reasoning parser ``qwen3`` configured. KV
+   cache compressed to u8 to fit comfortably in 24 GB VRAM.
+3. **Performance baseline:** 39.8 tok/s steady-state on 1024-token
+   decode (memory-bandwidth-bound on the 16 GB of streamed weights;
+   speculative decoding evaluated and ruled out — MoE-A3B's
+   non-deterministic per-token routing breaks the verify-N-tokens
+   speedup pattern, observed 5× regression to 8.2 tok/s with a
+   0.6B draft).
+4. **OpenAI compliance gap fix.** OVMS exposes the OpenAI surface on
+   ``/v3/chat/completions`` AND ``/v3/v1/chat/completions``, NOT on
+   the standard ``/v1/chat/completions`` path. The container's
+   ``compose_endpoint`` and ``strip_url_path`` helpers were
+   strip-and-rewriting any operator-typed path back to bare and
+   appending ``/v1/chat/completions``, breaking dispatch even when
+   ``services.yaml`` carried the correct full URL. Both helpers now
+   share a ``_path_is_authoritative`` predicate: a URL whose path
+   ends in ``/chat/completions`` AND is something other than the
+   spec-canonical ``/v1/chat/completions`` is treated as an explicit
+   operator endpoint and preserved verbatim. The canonical path
+   continues to strip-to-bare so legacy storage equivalence (and the
+   engine reconciler's drift detection) keeps working. Legacy
+   Ollama-style ``/api/chat`` URLs still get the strip-and-reappend
+   behaviour.
+5. **TTS endpoint port fix.** ``services.yaml`` had ``tts.url``,
+   ``stt.url``, and ``api_wrapper.url`` set to
+   ``http://localhost:8015`` — the operator-facing port. With SSL
+   enabled, port 8015 is HTTPS-wrapped and rejects plain HTTP with a
+   connection reset, breaking the WebUI's TTS-chunk synthesis path.
+   Restored these to the schema default ``http://127.0.0.1:18015``
+   (the always-plain-HTTP loopback listener), which is SSL-state-
+   independent. TTS streams now generate audio chunks correctly.
+
+**Files modified:**
+
+- ``glados/core/url_utils.py`` — ``_path_is_authoritative`` predicate
+  shared by ``strip_url_path`` and ``compose_endpoint``; non-canonical
+  chat-completion paths preserved verbatim through the dispatch chain.
+- ``tests/test_url_utils.py`` — expanded to pin the canonical-path
+  strips and the non-canonical-path preserve cases. 13 new tests.
+
+**Files NOT modified (intentional scope discipline):**
+
+- The legacy ``Glados.completion_url`` / ``Glados.llm_model`` /
+  ``Glados.autonomy.*`` fields in ``glados_config.yaml`` remain
+  scheduled for the separate single-source-of-truth refactor.
+- The container's HTTP/HTTPS port-binding logic is unchanged. The TTS
+  fix routes around the SSL-conditional port instead of touching the
+  binding code.
+
+**Tests:** 1680 → 1697 (17 new), 0 regressions. ``pytest -q`` runs in
+~58 s.
+
+**Open follow-ups surfaced 2026-05-02 (operator-flagged, not yet
+fixed):**
+
+- *Time hallucination*: "What time is it" returned "3:17 PM" when the
+  actual was 1:03 PM. No time-injection or ``get_current_time``
+  builtin tool. Fix path TBD (memory: ``project_glados_time_hallucination.md``).
+- *TTS pronunciation*: "P.M." spoken as "Pem". Adds to the existing
+  pronunciation-overrides queue (memory:
+  ``project_tts_pronunciation_cases.md``).
+
+
+## Change 39 — Authoritative time source: NTP sync + tz-from-weather + System UI (2026-05-02)
+
+**Why.** The 2026-05-02 evening session closed Change 38's open follow-up
+on time hallucination. GLaDOS otherwise fabricates the current time
+when asked because no other context block carries a wall-clock
+reference (operator-flagged: "What time is it" returned "3:17 PM" when
+actual was 1:03 PM). Operator's design constraints: time pulled from
+NIST-style time servers (not the container's drifting system clock),
+timezone derived from the geo-coordinates already configured for
+weather forecasting (so DST is automatic via IANA tz database), and
+operator-tunable through the WebUI rather than YAML-only.
+
+**What landed.**
+
+1. **`weather_cache` captures the resolved IANA timezone.** Open-Meteo's
+   forecast response includes a top-level ``timezone`` (e.g.
+   ``"America/Chicago"``) and ``timezone_abbreviation`` when called
+   with ``timezone=auto`` — the container was previously discarding
+   both. Adding the capture in ``_process_forecast`` lets the new
+   time_source module derive a tz-aware wall-clock without a second
+   geocoding API call or a polygon-lookup library. Older cache files
+   parse cleanly: missing fields surface as None, not KeyError.
+
+2. **``TimeGlobal`` pydantic model under ``GlobalConfig.time``.** Five
+   operator-tunable fields: ``enabled`` (master toggle), ``ntp_servers``
+   (list, NIST defaults — ``time.nist.gov``, ``time-a-g.nist.gov``,
+   ``time-b-g.nist.gov``), ``refresh_interval_hours`` (6h default),
+   ``timezone_source`` (``auto | manual``), ``timezone_manual`` (IANA
+   name, used when source=manual). Pydantic ``Literal`` rejects unknown
+   ``timezone_source`` values like ``"magic"``.
+
+3. **New module ``glados/core/time_source.py``.** Background thread
+   syncs an offset against the configured NTP servers (tried in order
+   until one responds); ``now()`` returns ``datetime.fromtimestamp(time
+   .time() + offset, tz=resolved_tz)``. ``as_prompt()`` formats as
+   ``"Current time: Saturday 2026-05-02 13:03"`` (operator-requested
+   simplified format with weekday + date + 24h time, no tz suffix).
+   ``status()`` exposes sync state for the WebUI card. NTP failure
+   falls back to the system clock with a WARNING log — the chat path
+   still gets an answer rather than dropping the injection. Adds
+   ``ntplib>=0.4.0`` dep (~200 LOC pure Python).
+
+4. **``context_gates.needs_time_context()``.** Mirrors the weather and
+   canon gate shape — hardcoded default triggers + optional YAML
+   extras. Trigger set: ``what time``, ``what's the time``, ``what
+   hour``, ``current time``, ``time is it``, ``clock`` (word-boundary
+   to avoid ``clockwork``/``deadlock``), ``o'clock``, ``current
+   date``, ``today's date``, ``what's the date``, ``what day``, ``day
+   is it``, ``date is it``, ``what year``. Avoids firing on incidental
+   "time"/"day" mentions ("all the time", "good day", "out of date").
+
+5. **Chat path injection.** New block in
+   ``_stream_chat_sse_impl`` directly after the canon block,
+   mirroring the weather/memory/canon insertion shape. Gated on
+   ``needs_time_context``; content from ``time_source.as_prompt()``;
+   skipped silently with a WARNING log on any exception.
+
+6. **Engine wire-in.** ``time_source.configure()`` + ``start()`` are
+   called from the same engine init block that configures
+   ``weather_cache`` and ``context_gates`` — passes
+   ``weather_cache.get_data`` as the tz-lookup callable so the
+   resolved zone tracks operator weather-location changes. Init
+   failures are logged but never fatal; the chat path's injection
+   block already falls back to the system clock when time_source is
+   unconfigured.
+
+7. **WebUI System → Time tab.** New tab between Maintenance and
+   Account. Two cards:
+   - *Sync Status*: live read of ``time_source.status()`` — synced /
+     unsynced / disabled badge, last sync timestamp, offset in ms,
+     responding NTP server, resolved IANA zone. Refresh button
+     re-fetches without polling.
+   - *Configuration*: auto-rendered ``cfgBuildForm`` over
+     ``global.time.*`` with FIELD_META labels; ntp_servers as
+     comma-separated text input, timezone_source as auto/manual
+     dropdown, refresh_interval_hours behind the Advanced toggle.
+     Save dispatches through the existing
+     ``_cfgSaveSystemSubset`` helper so the partial-save / no-wipe
+     contract carries.
+
+8. **Backend endpoint.** ``GET /api/time/status`` returns
+   ``time_source.status()``; admin-gated via the existing
+   ``require_perm("admin")`` fall-through. Adjacent to
+   ``/api/ssl/status`` in the route table.
+
+**Files modified:**
+
+- ``glados/core/weather_cache.py`` — capture timezone fields
+- ``glados/core/config_store.py`` — TimeGlobal model + GlobalConfig.time
+- ``glados/core/time_source.py`` (new) — NTP sync + tz resolution
+- ``glados/core/context_gates.py`` — needs_time_context() + defaults
+- ``glados/core/api_wrapper.py`` — injection block in _stream_chat_sse_impl
+- ``glados/core/engine.py`` — configure + start time_source at init
+- ``glados/webui/pages/system.py`` — new Time tab HTML
+- ``glados/webui/static/ui.js`` — FIELD_META + render/save/status helpers
+- ``glados/webui/tts_ui.py`` — GET /api/time/status route + handler
+- ``pyproject.toml`` — ntplib>=0.4.0 dep
+- New tests: ``tests/test_weather_cache.py``,
+  ``tests/test_time_source.py``, ``tests/test_time_context_gate.py``;
+  TimeGlobal cases added to ``tests/test_config_defaults.py``
+
+**Verification (dev_webui preview, port 28052):**
+
+- Time tab button + panel render under System.
+- ``GET /api/time/status`` returns the expected shape (enabled /
+  synced / last_sync_at / last_sync_server / offset_seconds / timezone).
+- ``GET /api/config/global`` includes the ``time`` block with TimeGlobal
+  defaults: ``enabled=true``, NIST server list, ``refresh_interval_hours
+  =6.0``, ``timezone_source="auto"``, empty ``timezone_manual``.
+- Form auto-renders all five fields with correct types
+  (bool/array/number/select-with-options/string) and pre-fills the
+  default values.
+- No JS console errors.
+
+**Tests:** 1697 → 1754 (+57), 0 regressions. ``pytest -q`` runs in ~56 s.
+
+**Out of scope (deferred):**
+
+- Live-reload on config save: the engine reads TimeGlobal at init time,
+  so changes to NTP servers / timezone source require a container
+  restart — same recompose-required pattern weather_cache,
+  context_gates, and the rest of the boot-time configure() calls
+  already follow.
+- ``get_current_time`` builtin tool (Option 2 from
+  ``project_glados_time_hallucination.md``): not implemented;
+  system-message injection covers the hallucination case end-to-end and
+  matches the established weather/memory/canon pattern.

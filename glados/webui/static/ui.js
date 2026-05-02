@@ -240,6 +240,12 @@ const FIELD_META = {
   'tuning.engine_pause_time':      { label: 'Engine Pause Time (s)', desc: 'Pause between engine loop iterations', advanced: true },
   'tuning.mode_cache_ttl_s':       { label: 'Mode Cache TTL (s)', desc: 'Seconds to cache HA mode entity states', advanced: true },
   'tuning.engine_audio_default':   { label: 'Engine Audio Default', desc: 'no code consumers', hidden: true },
+  // ── Global: Time (System → Time card, 2026-05-02) ──
+  'time.enabled':                  { label: 'Time Sync Enabled', desc: 'Master toggle for the NTP-synced time source' },
+  'time.ntp_servers':              { label: 'NTP Servers', desc: 'Tried in order until one responds (NIST defaults; comma-separated)' },
+  'time.refresh_interval_hours':   { label: 'Refresh Interval (hours)', desc: 'How often to resync against NTP', advanced: true },
+  'time.timezone_source':          { label: 'Timezone Source', desc: '"auto" derives the IANA zone from your weather coordinates; "manual" uses the field below', options: ['auto', 'manual'] },
+  'time.timezone_manual':          { label: 'Manual Timezone', desc: 'IANA name (e.g. "America/Chicago"). Used only when source=manual' },
   // â”€â”€ Audio â”€â”€
   // Phase 6: audio directory paths are hidden — editing them via the UI
   // can't create the destination folder, so changes either silently do
@@ -300,6 +306,7 @@ const SERVICE_NAMES = {
   llm_autonomy: 'LLM (Autonomy)',
   llm_triage: 'LLM (Triage)',
   llm_vision: 'LLM (Vision)',
+  llm_commands: 'LLM (Commands)',
 };
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -1455,6 +1462,7 @@ function loadSystemConfigCards() {
   const run = () => {
     _cfgRenderSystemMaintForm();
     _cfgRenderSystemAuthAuditForm();
+    _cfgRenderSystemTimeForm();
   };
   if (have) { run(); }
   else if (typeof cfgLoadAll === 'function') { cfgLoadAll().then(run); }
@@ -1487,6 +1495,14 @@ function _cfgRenderSystemAuthAuditForm() {
     audit: g.audit || {},
   };
   const host = document.getElementById('sysAuthAuditForm');
+  if (!host) return;
+  host.innerHTML = cfgBuildForm(subset, 'sysaux', '', null);
+}
+
+function _cfgRenderSystemTimeForm() {
+  const g = _cfgData.global || {};
+  const subset = { time: g.time || {} };
+  const host = document.getElementById('sysTimeForm');
   if (!host) return;
   host.innerHTML = cfgBuildForm(subset, 'sysaux', '', null);
 }
@@ -1573,6 +1589,50 @@ async function cfgSaveSystemMaint() {
 async function cfgSaveSystemAuthAudit() {
   const form = document.getElementById('sysAuthAuditForm');
   if (form) await _cfgSaveSystemSubset(form, 'cfg-save-result-sys-authaudit');
+}
+
+async function cfgSaveSystemTime() {
+  const form = document.getElementById('sysTimeForm');
+  if (form) await _cfgSaveSystemSubset(form, 'cfg-save-result-sys-time');
+}
+
+// Status panel for the System → Time card. Re-fetches /api/time/status
+// each time the tab is opened (or the operator hits Refresh) so the
+// "last sync" / offset readings stay fresh without polling.
+function _loadTimeStatus() {
+  const grid = document.getElementById('timeStatusGrid');
+  if (!grid) return;
+  grid.textContent = 'Loading…';
+  fetch('/api/time/status').then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function (s) {
+    function _row(label, value) {
+      return '<div style="display:flex;justify-content:space-between;padding:3px 0;">'
+        + '<span>' + label + '</span>'
+        + '<span style="color:var(--text);">' + value + '</span></div>';
+    }
+    let lastSync = '—';
+    if (s.last_sync_at) {
+      try { lastSync = new Date(s.last_sync_at * 1000).toLocaleString(); }
+      catch (_) { lastSync = String(s.last_sync_at); }
+    }
+    const offsetMs = (s.offset_seconds || 0) * 1000;
+    const offsetStr = (offsetMs >= 0 ? '+' : '') + offsetMs.toFixed(1) + ' ms';
+    const statusBadge = s.synced
+      ? '<span style="color:var(--success, #2ecc71);">synced</span>'
+      : (s.enabled
+          ? '<span style="color:var(--warn, #f1c40f);">unsynced (system clock)</span>'
+          : '<span style="color:var(--text-dim);">disabled</span>');
+    grid.innerHTML =
+        _row('Status:',          statusBadge)
+      + _row('Last sync:',       lastSync)
+      + _row('Offset:',          offsetStr)
+      + _row('Server:',          s.last_sync_server || '—')
+      + _row('Resolved zone:',   s.timezone || 'UTC');
+  }).catch(function (e) {
+    grid.textContent = 'Failed to load: ' + e.message;
+  });
 }
 
 // Phase 6 merged page: renders Speakers + Audio side-by-side with
@@ -1713,6 +1773,7 @@ function _cfgSaveCurrentSystemTab() {
     case 'maintenance':
       showToast('Maintenance actions save immediately; no separate save needed.', 'info');
       return;
+    case 'time':   return cfgSaveSystemTime();
     case 'ssl':    return cfgSaveSsl();
     case 'users':
       showToast('User actions save immediately via their own buttons.', 'info');
@@ -2440,6 +2501,978 @@ async function _cfgSaveSystemServices() {
 
   if (resultEl) { resultEl.textContent = 'Saved'; resultEl.className = 'cfg-result cfg-result-ok'; }
 }
+
+// ── Plugins page (Configuration → Plugins) ────────────────────────
+// Operator-flagged after Phase 2b live review: plugins are not
+// services, so they don't belong under System → Services. New shape:
+// a dedicated Configuration sub-page with a tab strip — Manage tab
+// (default) hosts the installed list + inline Add by URL + inline
+// Browse, and one tab per installed plugin opens that plugin's
+// header / Configuration / Logs cards.
+
+let _pluginsPollTimer = null;
+// Active per-plugin pane's slug + auto-refresh timer for its Logs
+// card. Lives at module scope so switching tabs (or leaving the
+// Plugins page entirely) can tear down the previous interval.
+// Persisted to localStorage so a page reload returns to the same
+// per-plugin tab instead of bouncing back to Manage.
+let _pluginActiveSlug = null;
+let _pluginLogsAutoTimer = null;
+
+const _PLUGIN_ACTIVE_SLUG_KEY = 'glados_plugins_active_tab';
+
+function _setPluginActiveSlug(slug) {
+  _pluginActiveSlug = slug || null;
+  try {
+    if (_pluginActiveSlug) {
+      localStorage.setItem(_PLUGIN_ACTIVE_SLUG_KEY, _pluginActiveSlug);
+    } else {
+      localStorage.removeItem(_PLUGIN_ACTIVE_SLUG_KEY);
+    }
+  } catch (_e) { /* private mode etc. — ignore */ }
+}
+
+function _restorePluginActiveSlug() {
+  try {
+    const v = localStorage.getItem(_PLUGIN_ACTIVE_SLUG_KEY);
+    if (v) _pluginActiveSlug = v;
+  } catch (_e) { /* ignore */ }
+}
+
+const _PLUGIN_ICO_PLUG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+  + '<path d="M6 2 L6 5 M10 2 L10 5 M4 5 L12 5 L12 8 A4 4 0 0 1 4 8 Z M8 12 L8 14"/></svg>';
+const _PLUGIN_ICO_TRASH = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+  + '<path d="M3 5 L13 5 M5 5 L5 13 L11 13 L11 5 M6 3 L10 3 L10 5"/></svg>';
+
+// Category ordering for the tab strip. Anything outside this list
+// (or missing) sorts to the end. Within a category, alphabetical by
+// title. Manage is always first regardless.
+const _PLUGIN_CATEGORY_ORDER = [
+  'home', 'media', 'integrations', 'system', 'dev', 'utility',
+];
+
+// Operator-friendly category labels — keeps the canonical key in API
+// responses while the UI shows title-case strings.
+const _PLUGIN_CATEGORY_LABELS = {
+  'media': 'Media',
+  'home': 'Home',
+  'integrations': 'Integrations',
+  'system': 'System',
+  'dev': 'Developer',
+  'utility': 'Utility',
+};
+
+function pluginCategoryLabel(cat) {
+  if (!cat) return 'Other';
+  const k = String(cat).toLowerCase();
+  return _PLUGIN_CATEGORY_LABELS[k] || (cat.charAt(0).toUpperCase() + cat.slice(1));
+}
+
+function _pluginCategoryRank(cat) {
+  const i = _PLUGIN_CATEGORY_ORDER.indexOf((cat || '').toLowerCase());
+  return i === -1 ? _PLUGIN_CATEGORY_ORDER.length : i;
+}
+
+function _pluginSortKey(p) {
+  const cat = (p.category || '').toLowerCase();
+  const title = (p.title || p.name || p.slug || '').toLowerCase();
+  return [_pluginCategoryRank(cat), title];
+}
+
+function _ensurePluginsPagePanel() {
+  // Plugins doesn't ship a static tab-content panel — keep the brief's
+  // "no new HTML files" rule. Inject the panel host on first use into
+  // <main class="main-content">. Idempotent: subsequent calls no-op.
+  let panel = document.getElementById('tab-config-plugins');
+  if (panel) return panel;
+  panel = document.createElement('div');
+  panel.id = 'tab-config-plugins';
+  panel.className = 'tab-content';
+  const main = document.querySelector('main.main-content');
+  if (main) main.appendChild(panel);
+  return panel;
+}
+
+function _ensurePluginsNavEntry() {
+  // Same rationale as the panel host above — inject the sidebar entry
+  // dynamically rather than touching pages/_shell.py. Sibling of
+  // Memory / Logs under the Configuration submenu.
+  if (document.querySelector('.nav-item[data-nav-key="config.plugins"]')) return;
+  const logsLink = document.querySelector('.nav-children .nav-item[data-nav-key="config.logs"]');
+  if (!logsLink || !logsLink.parentNode) return;
+  const a = document.createElement('a');
+  a.className = 'nav-item';
+  a.setAttribute('data-nav-key', 'config.plugins');
+  a.setAttribute('onclick', "navigateTo('config.plugins')");
+  a.textContent = 'Plugins';
+  logsLink.parentNode.insertBefore(a, logsLink);
+}
+
+async function loadPluginsPage() {
+  const panel = _ensurePluginsPagePanel();
+  if (!panel) return;
+  // Restore the previously-active per-plugin tab on first entry of this
+  // page-load (e.g. after a browser refresh). No-op if module state
+  // already has a slug from an earlier in-session navigation.
+  if (_pluginActiveSlug === null) _restorePluginActiveSlug();
+  // Promote the freshly-injected panel to the active tab — navigateTo()
+  // ran *before* _ensurePluginsPagePanel created the node, so the
+  // class flip there missed it.
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  panel.classList.add('active');
+
+  // Loading skeleton on first paint so the page header appears before
+  // the network round-trip resolves.
+  panel.innerHTML =
+    '<div class="page-shell"><div class="container">' +
+    '  <div class="page-header"><h2 class="page-title">Plugins</h2>' +
+    '    <div class="page-title-desc">Install MCP servers as plugins. Each enabled plugin exposes its tools to GLaDOS at runtime.</div>' +
+    '  </div>' +
+    '  <div class="mode-desc" style="padding:18px 20px;">Loading…</div>' +
+    '</div></div>';
+
+  let data;
+  try {
+    const r = await fetch('/api/plugins', { credentials: 'same-origin' });
+    if (!r.ok) {
+      panel.querySelector('.mode-desc').innerHTML =
+        '<span style="color:var(--fg-muted);">Failed to load plugins (' + r.status + ')</span>';
+      return;
+    }
+    data = await r.json();
+  } catch (e) {
+    panel.querySelector('.mode-desc').textContent =
+      'Plugins page error: ' + (e && e.message ? e.message : String(e));
+    return;
+  }
+
+  if (!data.enabled_globally) {
+    // Off-state: just render the page header + notice on the Manage
+    // tab. No plugin tabs, no install / browse cards.
+    panel.innerHTML = _renderPluginsPageShell([], 'manage') +
+      '';  // shell already includes the Manage pane container
+    const managePane = panel.querySelector('[data-pane="manage"]');
+    if (managePane) managePane.innerHTML = renderPluginsOffNotice();
+    schedulePluginsPoll();
+    return;
+  }
+
+  const plugins = (data.plugins || []).slice().sort((a, b) => {
+    const ka = _pluginSortKey(a), kb = _pluginSortKey(b);
+    if (ka[0] !== kb[0]) return ka[0] - kb[0];
+    return ka[1] < kb[1] ? -1 : ka[1] > kb[1] ? 1 : 0;
+  });
+
+  // Preserve the active tab across refreshes when possible — operator
+  // shouldn't get bounced back to Manage every time the 30 s poll
+  // re-renders. Falls back to Manage if the previously-active slug
+  // is no longer installed.
+  const previousActive = _pluginActiveSlug;
+  const slugSet = new Set(plugins.map(p => p.slug));
+  const initialTab = (previousActive && slugSet.has(previousActive)) ? previousActive : 'manage';
+
+  panel.innerHTML = _renderPluginsPageShell(plugins, initialTab);
+
+  // Manage pane — installed list + Upload + Browse, all inline.
+  const managePane = panel.querySelector('[data-pane="manage"]');
+  if (managePane) {
+    managePane.innerHTML =
+      renderPluginsList(plugins) +
+      renderUploadCard() +
+      renderBrowseCard();
+    wirePluginRowHandlers(panel);
+    wireUploadHandlers(panel);
+    wireBrowseHandlers(panel);
+  }
+
+  // Per-plugin panes — header / Configuration / Logs cards.
+  for (const p of plugins) {
+    const pane = panel.querySelector('[data-pane="' + CSS.escape(p.slug) + '"]');
+    if (!pane) continue;
+    // Detail fetched lazily on first tab activation to avoid 1+N
+    // requests when the page loads with N plugins. Manage tab is the
+    // default so most operators never trigger any of them.
+    pane.dataset.loaded = '';
+  }
+
+  // Wire tab switching across the whole strip.
+  panel.querySelectorAll('.page-tab[data-plugins-tab]').forEach(btn => {
+    btn.addEventListener('click', () => switchPluginsPaneTab(btn.dataset.pluginsTab));
+  });
+
+  // Activate the initial tab. switchPluginsPaneTab handles lazy-loading
+  // the per-plugin pane on first activation.
+  switchPluginsPaneTab(initialTab);
+
+  schedulePluginsPoll();
+}
+
+function _renderPluginsPageShell(plugins, activeTabId) {
+  // Match the existing Configuration sub-page convention: page-shell >
+  // container > page-header (h2.page-title + .page-title-desc) > page-tabs
+  // (same as Integrations / Audio / System pages).
+  let h = '<div class="page-shell"><div class="container">';
+  h += '<div class="page-header"><div>'
+    +  '<h2 class="page-title">Plugins</h2>'
+    +  '<div class="page-title-desc">Install MCP servers as plugins. Each enabled plugin exposes its tools to GLaDOS at runtime.</div>'
+    +  '</div></div>';
+
+  // Tab strip: Manage first, then one tab per plugin (already sorted
+  // by category then title at the call site).
+  h += '<nav class="page-tabs" role="tablist" data-role="plugins-tabs">';
+  const manageCls = activeTabId === 'manage' ? 'page-tab active' : 'page-tab';
+  h += '<button class="' + manageCls + '" role="tab" data-plugins-tab="manage">Manage</button>';
+  for (const p of plugins) {
+    const cls = (p.slug === activeTabId ? 'page-tab active' : 'page-tab') +
+                (p.enabled ? '' : ' plugin-tab-muted');
+    h += '<button class="' + cls + '" role="tab" data-plugins-tab="' + escAttr(p.slug) + '"' +
+         ' title="' + escAttr(p.title || p.name || p.slug) + '">' +
+         escAttr(p.title || p.name || p.slug) +
+         ' <span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(p.category)) + '</span>' +
+         '</button>';
+  }
+  h += '</nav>';
+
+  // Panes container — Manage + one per plugin.
+  h += '<div class="page-tab-panels">';
+  const managePaneCls = activeTabId === 'manage' ? 'page-tab-panel active' : 'page-tab-panel';
+  h += '<div class="' + managePaneCls + '" data-pane="manage"></div>';
+  for (const p of plugins) {
+    const cls = p.slug === activeTabId ? 'page-tab-panel active' : 'page-tab-panel';
+    h += '<div class="' + cls + '" data-pane="' + escAttr(p.slug) + '" data-slug="' + escAttr(p.slug) + '"></div>';
+  }
+  h += '</div>';
+
+  h += '</div></div>';
+  return h;
+}
+
+function switchPluginsPaneTab(tabId) {
+  const panel = document.getElementById('tab-config-plugins');
+  if (!panel) return;
+  // Stop any prior plugin's logs auto-refresh — it's tied to the pane
+  // being active, not the page being open.
+  if (_pluginLogsAutoTimer) {
+    clearInterval(_pluginLogsAutoTimer);
+    _pluginLogsAutoTimer = null;
+  }
+
+  panel.querySelectorAll('.page-tab[data-plugins-tab]').forEach(b => {
+    b.classList.toggle('active', b.dataset.pluginsTab === tabId);
+  });
+  panel.querySelectorAll('.page-tab-panel[data-pane]').forEach(p => {
+    p.classList.toggle('active', p.dataset.pane === tabId);
+  });
+
+  _setPluginActiveSlug((tabId === 'manage') ? null : tabId);
+
+  if (tabId !== 'manage') {
+    const pane = panel.querySelector('[data-pane="' + CSS.escape(tabId) + '"]');
+    if (pane && !pane.dataset.loaded) {
+      _loadPluginPane(tabId, pane);
+    }
+  }
+}
+
+async function _loadPluginPane(slug, pane) {
+  pane.innerHTML = '<div class="mode-desc" style="padding:18px 20px;">Loading plugin…</div>';
+  let detail;
+  try {
+    const r = await fetch('/api/plugins/' + encodeURIComponent(slug),
+                          { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    detail = await r.json();
+  } catch (e) {
+    pane.innerHTML = '<div class="mode-desc" style="color:var(--red);">'
+      + 'Failed to load plugin: ' + escAttr(e.message) + '</div>';
+    return;
+  }
+  pane.innerHTML = renderPluginPane(slug, detail);
+  pane.dataset.loaded = '1';
+  wirePluginPaneHandlers(slug, pane, detail);
+}
+
+function renderPluginPane(slug, detail) {
+  // detail shape (v2): {slug, manifest: PluginJSON, runtime, secrets, is_remote}
+  const m = detail.manifest || {};
+  const rt = detail.runtime || {};
+  const cat = m.category || 'utility';
+  const homepage = m.homepage || null;
+  const enabled = !!rt.enabled;
+  const title = m.name || slug;
+
+  let h = '';
+
+  // Header card — same .card / .section-title chrome as Memory / Logs /
+  // SSL pages, with a right-aligned controls row inside the card body.
+  h += '<div class="card">';
+  h +=   '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--sp-3);flex-wrap:wrap;">';
+  h +=     '<div style="min-width:0;flex:1 1 320px;">';
+  h +=       '<div class="section-title" style="margin-bottom:4px;">'
+    +          escAttr(title)
+    +          ' <span style="color:var(--fg-secondary);font-weight:400;">v' + escAttr(m.version || '') + '</span>'
+    +        '</div>';
+  h +=       '<div style="display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;font-size:0.82rem;color:var(--fg-secondary);">';
+  h +=         '<span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(cat)) + '</span>';
+  if (homepage) {
+    h +=         ' <a href="' + escAttr(homepage) + '" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none;word-break:break-all;">'
+      +            escAttr(homepage) + '</a>';
+  }
+  h +=       '</div>';
+  if (m.description) {
+    h +=       '<div class="mode-desc" style="margin-top:var(--sp-2);">' + escAttr(m.description) + '</div>';
+  }
+  h +=     '</div>';
+  h +=     '<div style="display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;">';
+  h +=       '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' +
+              (enabled ? ' checked' : '') + '><span class="plugin-slider"></span></label>';
+  h +=       '<span style="font-size:0.82rem;color:var(--fg-secondary);min-width:60px;">'
+    +          (enabled ? 'Enabled' : 'Disabled') + '</span>';
+  h +=       '<button class="btn-secondary btn-danger" data-action="delete">Delete</button>';
+  h +=     '</div>';
+  h +=   '</div>';
+  h += '</div>';
+
+  // Configuration card.
+  h += '<div class="card" style="margin-top:var(--sp-3);">';
+  h +=   '<div class="section-title">Configuration</div>';
+  h +=   renderConfigForm(detail);
+  h +=   '<div class="cfg-save-row" style="margin-top:var(--sp-3);">';
+  h +=     '<button class="cfg-save-btn" data-action="save">Save</button>';
+  h +=     '<span class="cfg-result" data-role="save-result"></span>';
+  h +=   '</div>';
+  h += '</div>';
+
+  // Logs card.
+  h += '<div class="card" style="margin-top:var(--sp-3);">';
+  h +=   '<div class="section-title">Logs</div>';
+  h +=   '<div class="logs-controls">';
+  h +=     '<label>Lines: <select data-role="logs-lines">' +
+           '  <option value="100">100</option>' +
+           '  <option value="500" selected>500</option>' +
+           '  <option value="2000">2000</option>' +
+           '</select></label>';
+  h +=     '<button class="btn-secondary" data-role="logs-refresh">Refresh</button>';
+  h +=     '<label class="logs-auto-label"><input type="checkbox" data-role="logs-auto"> Auto-refresh (5 s)</label>';
+  h +=   '</div>';
+  h +=   '<div class="logs-output">';
+  h +=     '<h4>stderr</h4>';
+  h +=     '<pre data-role="logs-stdio" class="logs-pre"></pre>';
+  h +=     '<h4>events</h4>';
+  h +=     '<div data-role="logs-events" class="logs-events"></div>';
+  h +=   '</div>';
+  h += '</div>';
+
+  return h;
+}
+
+function wirePluginPaneHandlers(slug, pane, detail) {
+  const titleText = (detail.manifest && (detail.manifest.title || detail.manifest.name)) || slug;
+
+  // Enabled toggle — same flow as the Manage list rows.
+  const toggle = pane.querySelector('input[data-action="toggle-enabled"]');
+  if (toggle) {
+    toggle.addEventListener('change', async (ev) => {
+      const newState = ev.target.checked;
+      const path = newState ? 'enable' : 'disable';
+      ev.target.disabled = true;
+      try {
+        const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/' + path, {
+          method: 'POST', credentials: 'same-origin',
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        showToast(newState ? 'Plugin enabled' : 'Plugin disabled', 'success');
+        // Refresh the page so the tab strip reflects the muted state
+        // and the header card's enabled label updates.
+        await loadPluginsPage();
+      } catch (e) {
+        ev.target.checked = !newState;
+        showToast('Toggle failed: ' + e.message, 'error');
+      } finally {
+        ev.target.disabled = false;
+      }
+    });
+  }
+
+  // Delete from header card.
+  const deleteBtn = pane.querySelector('button[data-action="delete"]');
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', async () => {
+      const ok = confirm('Delete plugin ' + titleText + '? This will remove its configuration permanently.');
+      if (!ok) return;
+      try {
+        const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        showToast('Plugin deleted', 'success');
+        // Bounce back to the Manage tab — the per-plugin tab is gone.
+        _setPluginActiveSlug(null);
+        await loadPluginsPage();
+      } catch (e) {
+        showToast('Delete failed: ' + e.message, 'error');
+      }
+    });
+  }
+
+  // Save (Configuration card).
+  const saveBtn = pane.querySelector('button[data-action="save"]');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => savePluginRuntime(slug, pane));
+  }
+
+  // Logs controls.
+  const refreshBtn = pane.querySelector('[data-role="logs-refresh"]');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => fetchPluginLogsInto(slug, pane));
+  }
+  const autoEl = pane.querySelector('[data-role="logs-auto"]');
+  if (autoEl) {
+    autoEl.addEventListener('change', (ev) => {
+      if (_pluginLogsAutoTimer) {
+        clearInterval(_pluginLogsAutoTimer);
+        _pluginLogsAutoTimer = null;
+      }
+      if (ev.target.checked) {
+        _pluginLogsAutoTimer = setInterval(() => {
+          // Self-teardown when the operator switches to a different
+          // pane (or leaves the page entirely).
+          if (!pane.classList.contains('active') ||
+              !document.body.contains(pane) ||
+              _activeNavKey !== 'config.plugins') {
+            clearInterval(_pluginLogsAutoTimer);
+            _pluginLogsAutoTimer = null;
+            return;
+          }
+          fetchPluginLogsInto(slug, pane);
+        }, 5000);
+      }
+    });
+  }
+
+  // Initial logs fetch so the tab isn't empty on first open.
+  fetchPluginLogsInto(slug, pane);
+}
+
+async function fetchPluginLogsInto(slug, pane) {
+  const linesEl = pane.querySelector('[data-role="logs-lines"]');
+  const lines = linesEl ? linesEl.value : '500';
+  try {
+    const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/logs?lines=' + lines,
+                          { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const pre = pane.querySelector('[data-role="logs-stdio"]');
+    if (pre) pre.textContent = (data.stdio_log || []).join('');
+    const evDiv = pane.querySelector('[data-role="logs-events"]');
+    if (evDiv) {
+      evDiv.innerHTML = (data.events || []).map(e =>
+        '<div class="event-row event-' + escAttr(e.kind) + '">' +
+        '<span class="event-ts">' + escAttr(new Date(e.ts * 1000).toISOString()) + '</span> ' +
+        '<span class="event-kind">' + escAttr(e.kind) + '</span> ' +
+        '<span class="event-msg">' + escAttr(e.message || '') + '</span>' +
+        '</div>'
+      ).join('');
+    }
+  } catch (e) {
+    const pre = pane.querySelector('[data-role="logs-stdio"]');
+    if (pre) pre.textContent = 'Failed to load logs: ' + e.message;
+  }
+}
+
+async function savePluginRuntime(slug, pane) {
+  const form = pane.querySelector('[data-role="config-form"]');
+  const result = pane.querySelector('[data-role="save-result"]');
+  if (!form) return;
+
+  // v2 settings are flat — every non-secret setting routes through
+  // env_values; secrets through the secret bucket. The server-side
+  // _resolve_settings merges secrets over env_values at runtime.
+  const env_values = {};
+  const header_values = {};
+  const arg_values = {};
+  const secrets = {};
+
+  form.querySelectorAll('input, select').forEach(el => {
+    const name = el.name;
+    if (!name) return;
+    const isSecret = el.dataset.secret === '1';
+    let v;
+    if (el.type === 'checkbox') v = el.checked ? 'true' : 'false';
+    else v = el.value;
+    if (isSecret) {
+      // '***' or empty → preserve the existing server value via the
+      // sentinel; anything else is a real new secret.
+      if (v === '***' || v === '') {
+        secrets[name] = '***';
+      } else {
+        secrets[name] = v;
+      }
+      return;
+    }
+    env_values[name] = v;
+  });
+
+  if (result) {
+    result.textContent = 'Saving…';
+    result.style.color = 'var(--fg-secondary)';
+  }
+  try {
+    const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ env_values, header_values, arg_values, secrets }),
+    });
+    if (!r.ok) {
+      let msg;
+      try { msg = (await r.json()).error || ('HTTP ' + r.status); }
+      catch (_) { msg = 'HTTP ' + r.status; }
+      throw new Error(msg);
+    }
+    if (result) {
+      result.textContent = 'Saved';
+      result.style.color = '';
+    }
+    showToast('Plugin saved', 'success');
+  } catch (e) {
+    if (result) {
+      result.textContent = 'Save failed: ' + e.message;
+      result.style.color = 'var(--red)';
+    }
+  }
+}
+
+function renderPluginsOffNotice() {
+  return '<div class="mode-desc" style="padding:18px 20px;border:1px dashed var(--border-default);">'
+    + '<strong>Plugins disabled.</strong> Set <code>GLADOS_PLUGINS_ENABLED=true</code> in '
+    + 'docker-compose.yml and restart the container to enable.'
+    + '</div>';
+}
+
+function renderPluginsList(plugins) {
+  if (!plugins || plugins.length === 0) {
+    return '<div class="mode-desc" style="padding:18px 20px;">'
+      + 'No plugins installed yet. Upload a bundle below or browse the configured catalogs.'
+      + '</div>';
+  }
+  let h = '<div class="plugin-list">';
+  for (const p of plugins) {
+    const dotClass = p.enabled ? 'dot-on' : 'dot-off';
+    const toggleAttr = p.enabled ? ' checked' : '';
+    h += '<div class="plugin-row" data-slug="' + escAttr(p.slug) + '">';
+    h +=   '<span class="plugin-icon">' + _PLUGIN_ICO_PLUG + '</span>';
+    h +=   '<span class="plugin-name">' + escAttr(p.title || p.name) + '</span>';
+    h +=   '<span class="plugin-version">v' + escAttr(p.version) + '</span>';
+    h +=   '<span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(p.category)) + '</span>';
+    h +=   '<span class="plugin-status-dot ' + dotClass + '"></span>';
+    h +=   '<label class="plugin-switch"><input type="checkbox" data-action="toggle-enabled"' + toggleAttr + '><span class="plugin-slider"></span></label>';
+    h +=   '<button class="plugin-icon-btn plugin-icon-btn-danger" data-action="delete-plugin" title="Delete">' + _PLUGIN_ICO_TRASH + '</button>';
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function wirePluginRowHandlers(root) {
+  const scope = root || document;
+  scope.querySelectorAll('.plugin-row').forEach(row => {
+    const slug = row.getAttribute('data-slug');
+    const nameEl = row.querySelector('.plugin-name');
+    const displayName = nameEl ? nameEl.textContent : slug;
+
+    const toggle = row.querySelector('input[data-action="toggle-enabled"]');
+    if (toggle) {
+      toggle.addEventListener('change', async (ev) => {
+        const newState = ev.target.checked;
+        const path = newState ? 'enable' : 'disable';
+        ev.target.disabled = true;
+        try {
+          const r = await fetch('/api/plugins/' + encodeURIComponent(slug) + '/' + path, {
+            method: 'POST', credentials: 'same-origin',
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          showToast(newState ? 'Plugin enabled' : 'Plugin disabled', 'success');
+          await loadPluginsPage();
+        } catch (e) {
+          ev.target.checked = !newState;
+          showToast('Toggle failed: ' + e.message, 'error');
+        } finally {
+          ev.target.disabled = false;
+        }
+      });
+    }
+
+    const trash = row.querySelector('button[data-action="delete-plugin"]');
+    if (trash) {
+      trash.addEventListener('click', async () => {
+        const ok = confirm('Delete plugin ' + displayName + '? This will remove its configuration permanently.');
+        if (!ok) return;
+        try {
+          const r = await fetch('/api/plugins/' + encodeURIComponent(slug), {
+            method: 'DELETE', credentials: 'same-origin',
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          showToast('Plugin deleted', 'success');
+          await loadPluginsPage();
+        } catch (e) {
+          showToast('Delete failed: ' + e.message, 'error');
+        }
+      });
+    }
+  });
+}
+
+function schedulePluginsPoll() {
+  if (_pluginsPollTimer) clearInterval(_pluginsPollTimer);
+  _pluginsPollTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (_activeNavKey !== 'config.plugins') return;
+    // Only refresh while the Manage tab is active — otherwise a poll
+    // would clobber the operator's in-progress edits on the per-plugin
+    // Configuration form.
+    if (_pluginActiveSlug !== null) return;
+    loadPluginsPage();
+  }, 30000);
+}
+
+function renderConfigForm(detail) {
+  // v2 shape: detail.manifest.settings[] is the operator-friendly array
+  // synthesized identically for v1-on-disk and v2-native installs.
+  const settings = (detail.manifest && detail.manifest.settings) || [];
+  if (!settings.length) {
+    return '<div class="mode-desc" style="color:var(--fg-muted);">'
+         + 'This plugin has no operator-configurable settings.'
+         + '</div>';
+  }
+  const runtime = detail.runtime || {};
+  const secretMask = detail.secrets || {};
+  let h = '<form class="plugin-config-form" data-role="config-form" onsubmit="return false;">';
+  for (const setting of settings) {
+    h += renderFormField(setting, runtime, secretMask);
+  }
+  h += '</form>';
+  return h;
+}
+
+function renderFormField(setting, runtime, secretMask) {
+  // Save side merges env/header/arg buckets back together — all three
+  // map by the setting's key, so we just probe each bucket in order.
+  const envVals = runtime.env_values || {};
+  const hdrVals = runtime.header_values || {};
+  const argVals = runtime.arg_values || {};
+  const value = (envVals[setting.key] !== undefined) ? envVals[setting.key]
+              : (hdrVals[setting.key] !== undefined) ? hdrVals[setting.key]
+              : (argVals[setting.key] !== undefined) ? argVals[setting.key]
+              : '';
+  const requiredMark = setting.required ? '<span class="required-mark">*</span>' : '';
+  const placeholder = (setting.default !== undefined && setting.default !== null)
+    ? ('default: ' + String(setting.default)) : '';
+  const description = setting.description || '';
+  const labelText = setting.label || setting.key;
+
+  let inputHtml;
+  if (setting.type === 'secret') {
+    // Empty value + placeholder avoids the misleading "..." render of a
+    // 3-char mask in a password field, AND avoids leaking the stored
+    // length. Save handler treats blank as "preserve".
+    const hasStored = (secretMask[setting.key] !== undefined);
+    const secretPlaceholder = hasStored ? 'stored — leave blank to keep' : placeholder;
+    inputHtml = '<input type="password" name="' + escAttr(setting.key) +
+                '" data-secret="1" value="" placeholder="' + escAttr(secretPlaceholder) + '">';
+  } else if (setting.type === 'select') {
+    let opts = '<option value=""></option>';
+    for (const c of (setting.choices || [])) {
+      const sel = (String(c) === String(value)) ? ' selected' : '';
+      opts += '<option' + sel + ' value="' + escAttr(c) + '">' + escAttr(c) + '</option>';
+    }
+    inputHtml = '<select name="' + escAttr(setting.key) + '">' + opts + '</select>';
+  } else if (setting.type === 'url') {
+    inputHtml = '<input type="url" name="' + escAttr(setting.key) +
+                '" value="' + escAttr(value) +
+                '" placeholder="' + escAttr(placeholder) + '">';
+  } else if (setting.type === 'number') {
+    inputHtml = '<input type="number" name="' + escAttr(setting.key) +
+                '" value="' + escAttr(value) +
+                '" placeholder="' + escAttr(placeholder) + '">';
+  } else if (setting.type === 'boolean') {
+    const checked = (value === true || value === 'true') ? ' checked' : '';
+    inputHtml = '<input type="checkbox" name="' + escAttr(setting.key) + '"' + checked + '>';
+  } else {
+    inputHtml = '<input type="text" name="' + escAttr(setting.key) +
+                '" value="' + escAttr(value) +
+                '" placeholder="' + escAttr(placeholder) + '">';
+  }
+  return '<div class="form-field">' +
+         '  <label>' + escAttr(labelText) + requiredMark + '</label>' +
+         '  ' + inputHtml +
+         (description ? ('<div class="field-desc">' + escAttr(description) + '</div>') : '') +
+         '</div>';
+}
+
+function renderUploadCard() {
+  return '' +
+    '<div class="card" style="margin-top:var(--sp-3);">' +
+    '  <div class="section-title">Install plugin</div>' +
+    '  <div class="mode-desc" style="margin-bottom:10px;">' +
+    '    Upload a plugin bundle (.zip). The bundle must contain <code>plugin.json</code> at the top level.' +
+    '  </div>' +
+    '  <div class="upload-dropzone" data-role="upload-dropzone">' +
+    '    <div class="upload-prompt">Drop a .zip here, or <button class="btn-secondary" data-role="upload-pick">choose file</button></div>' +
+    '    <input type="file" data-role="upload-input" accept=".zip,application/zip" hidden>' +
+    '  </div>' +
+    '  <div data-role="upload-result" class="install-result" style="margin-top:8px;"></div>' +
+    '</div>';
+}
+
+function wireUploadHandlers(root) {
+  const scope = root || document;
+  const dropzone = scope.querySelector('[data-role="upload-dropzone"]');
+  const fileInput = scope.querySelector('[data-role="upload-input"]');
+  const pickBtn = scope.querySelector('[data-role="upload-pick"]');
+  const resultEl = scope.querySelector('[data-role="upload-result"]');
+  if (!dropzone || !fileInput || !pickBtn) return;
+
+  pickBtn.addEventListener('click', (ev) => { ev.preventDefault(); fileInput.click(); });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) handleUpload(fileInput.files[0]);
+  });
+
+  dropzone.addEventListener('dragover', (ev) => { ev.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    dropzone.classList.remove('dragover');
+    if (ev.dataTransfer.files.length) handleUpload(ev.dataTransfer.files[0]);
+  });
+
+  async function handleUpload(file) {
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      resultEl.textContent = 'File must be a .zip bundle';
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      resultEl.textContent = 'Bundle too large (max 50 MB)';
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    resultEl.textContent = 'Uploading…';
+    resultEl.style.color = '';
+
+    const fd = new FormData();
+    fd.append('bundle', file);
+    try {
+      const r = await fetch('/api/plugins/upload', {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: fd,
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      resultEl.textContent = '';
+      const installedName = data.manifest && data.manifest.name ? data.manifest.name : (data.name || 'plugin');
+      showToast('Plugin installed: ' + installedName, 'success');
+      // Backend response carries the internal directory name as `slug`
+      // (operator never sees this string — it's only used as the tab key
+      // so loadPluginsPage drops the operator straight into the new pane).
+      _setPluginActiveSlug(data.slug || data.internal_name || null);
+      await loadPluginsPage();
+    } catch (e) {
+      resultEl.textContent = 'Install failed: ' + e.message;
+      resultEl.style.color = 'var(--red)';
+    }
+  }
+}
+
+function renderBrowseCard() {
+  return '' +
+    '<div class="card" style="margin-top:var(--sp-3);">' +
+    '  <div class="section-title">Browse plugins</div>' +
+    '  <div class="mode-desc" style="margin-bottom:10px;">' +
+    '    Operator-managed list of <code>index.json</code> URLs. The Browse button ' +
+    '    merges all configured indexes into a catalog you can install from.' +
+    '  </div>' +
+    '  <details class="indexes-section">' +
+    '    <summary>Index URLs</summary>' +
+    '    <div data-role="indexes-list" style="margin-top:var(--sp-2);"></div>' +
+    '    <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2);">' +
+    '      <input type="url" data-role="index-add" placeholder="https://example.test/index.json" style="flex:1;">' +
+    '      <button class="btn-secondary" data-role="index-add-btn">Add</button>' +
+    '    </div>' +
+    '    <div data-role="indexes-result" style="margin-top:6px;font-size:0.8rem;"></div>' +
+    '  </details>' +
+    '  <div style="margin-top:var(--sp-4);">' +
+    '    <button class="cfg-save-btn" data-role="browse-btn">Browse</button>' +
+    '  </div>' +
+    '  <div data-role="browse-gallery" class="browse-gallery" style="margin-top:var(--sp-4);"></div>' +
+    '</div>';
+}
+
+async function wireBrowseHandlers(root) {
+  const scope = root || document;
+  const listEl = scope.querySelector('[data-role="indexes-list"]');
+  const addInput = scope.querySelector('[data-role="index-add"]');
+  const addBtn = scope.querySelector('[data-role="index-add-btn"]');
+  const browseBtn = scope.querySelector('[data-role="browse-btn"]');
+  const gallery = scope.querySelector('[data-role="browse-gallery"]');
+  if (!listEl || !browseBtn) return;
+
+  let urls = [];
+
+  async function refreshIndexes() {
+    try {
+      const r = await fetch('/api/plugins/indexes', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      urls = (await r.json()).urls || [];
+    } catch (e) {
+      listEl.innerHTML = '<div class="mode-desc">Failed to load: ' + escAttr(e.message) + '</div>';
+      return;
+    }
+    if (!urls.length) {
+      listEl.innerHTML = '<div class="mode-desc" style="font-style:italic;">'
+        + 'No index URLs configured. Add one to browse plugins.</div>';
+      return;
+    }
+    listEl.innerHTML = urls.map((u, i) =>
+      '<div class="index-row" style="display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2);padding:4px 0;">' +
+      '  <code style="font-size:0.85rem;word-break:break-all;">' + escAttr(u) + '</code>' +
+      '  <button class="plugin-icon-btn plugin-icon-btn-danger" data-index-idx="' + i + '" title="Remove">&times;</button>' +
+      '</div>'
+    ).join('');
+    listEl.querySelectorAll('button[data-index-idx]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.getAttribute('data-index-idx'), 10);
+        const next = urls.slice(0, idx).concat(urls.slice(idx + 1));
+        await saveIndexes(next);
+      });
+    });
+  }
+
+  async function saveIndexes(newUrls) {
+    const resultEl = scope.querySelector('[data-role="indexes-result"]');
+    resultEl.textContent = 'Saving…';
+    resultEl.style.color = '';
+    try {
+      const r = await fetch('/api/plugins/indexes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ urls: newUrls }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      urls = data.urls || newUrls;
+      resultEl.textContent = '';
+      await refreshIndexes();
+    } catch (e) {
+      resultEl.textContent = 'Save failed: ' + e.message;
+      resultEl.style.color = 'var(--red)';
+    }
+  }
+
+  addBtn.addEventListener('click', async () => {
+    const v = (addInput.value || '').trim();
+    if (!v) return;
+    if (!v.toLowerCase().startsWith('https://')) {
+      const resultEl = scope.querySelector('[data-role="indexes-result"]');
+      resultEl.textContent = 'URL must use https://';
+      resultEl.style.color = 'var(--red)';
+      return;
+    }
+    addInput.value = '';
+    await saveIndexes(urls.concat([v]));
+  });
+
+  browseBtn.addEventListener('click', async () => {
+    gallery.innerHTML = '<div class="mode-desc">Loading catalog…</div>';
+    try {
+      const r = await fetch('/api/plugins/browse', { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      renderBrowseGallery(gallery, data);
+    } catch (e) {
+      gallery.innerHTML = '<div class="mode-desc">Browse failed: ' + escAttr(e.message) + '</div>';
+    }
+  });
+
+  await refreshIndexes();
+}
+
+function renderBrowseGallery(host, data) {
+  if (!data.entries || !data.entries.length) {
+    let h = '';
+    if (data.errors && data.errors.length) {
+      h += '<div class="mode-desc" style="color:var(--red);margin-bottom:var(--sp-2);">' +
+           'Some indexes failed: ' +
+           escAttr(data.errors.map(e => e.url + ' — ' + e.error).join('; ')) +
+           '</div>';
+    }
+    h += '<div class="mode-desc">No plugins found in any configured index.</div>';
+    host.innerHTML = h;
+    return;
+  }
+  let h = '';
+  if (data.errors && data.errors.length) {
+    h += '<div class="mode-desc" style="color:var(--red);margin-bottom:var(--sp-2);">' +
+         'Some indexes failed: ' +
+         escAttr(data.errors.map(e => e.url + ' — ' + e.error).join('; ')) +
+         '</div>';
+  }
+  h += '<div class="browse-grid">';
+  for (const e of data.entries) {
+    // Catalog entries can carry either bundle_url (v2 zip) or
+    // server_json_url (legacy v1) — prefer bundle_url when present.
+    const bundleUrl = e.bundle_url || e.server_json_url || '';
+    h += '<div class="browse-card">';
+    h += '  <div class="browse-title"><strong>' + escAttr(e.title) + '</strong>' +
+         ' <span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(e.category)) + '</span></div>';
+    if (e.description) {
+      h += '  <div class="browse-desc">' + escAttr(e.description) + '</div>';
+    }
+    h += '  <div class="browse-source">from ' + escAttr(e.source_index) + '</div>';
+    h += '  <button class="cfg-save-btn" data-bundle-url="' + escAttr(bundleUrl) +
+         '" data-name="' + escAttr(e.name || e.title) + '">Install</button>';
+    h += '</div>';
+  }
+  h += '</div>';
+  host.innerHTML = h;
+
+  host.querySelectorAll('button[data-bundle-url]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const url = btn.getAttribute('data-bundle-url');
+      if (!url) {
+        showToast('Catalog entry has no installable bundle URL', 'error');
+        return;
+      }
+      btn.disabled = true; btn.textContent = 'Installing…';
+      try {
+        // Two-step install: fetch the bundle bytes, then POST as
+        // multipart upload — the legacy /api/plugins/install endpoint
+        // is gone in v2.
+        const bundleResp = await fetch(url);
+        if (!bundleResp.ok) throw new Error('bundle fetch HTTP ' + bundleResp.status);
+        const blob = await bundleResp.blob();
+        const fd = new FormData();
+        fd.append('bundle', blob, 'bundle.zip');
+        const r = await fetch('/api/plugins/upload', {
+          method: 'POST', credentials: 'same-origin', body: fd,
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        const installedName = data.manifest && data.manifest.name ? data.manifest.name : (data.name || 'plugin');
+        showToast('Installed: ' + installedName, 'success');
+        _setPluginActiveSlug(data.slug || data.internal_name || null);
+        await loadPluginsPage();
+      } catch (e) {
+        showToast('Install failed: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Install';
+      }
+    });
+  });
+}
+
 
 function cfgRenderServices(data, scope) {
   // Phase 6.2 (2026-04-22): scope filters the service grid.
@@ -4656,9 +5689,11 @@ async function memSweepRetention() {
 // Memory which have their own HTML).
 
 function _panelIdFor(key) {
-  if (key === 'config.system') return 'tab-config-system';
-  if (key === 'config.memory') return 'tab-config-memory';
-  if (key === 'config.logs')   return 'tab-config-logs';
+  if (key === 'config.system')  return 'tab-config-system';
+  if (key === 'config.memory')  return 'tab-config-memory';
+  if (key === 'config.logs')    return 'tab-config-logs';
+  if (key === 'config.logging') return 'tab-config-logging';
+  if (key === 'config.plugins') return 'tab-config-plugins';
   if (key && key.indexOf('config.') === 0) return 'tab-config';
   return 'tab-' + key;
 }
@@ -4754,6 +5789,10 @@ function navigateTo(key) {
     if (typeof memoryLoadAll === 'function') memoryLoadAll();
   } else if (key === 'config.logs') {
     if (typeof logsOnTabActivate === 'function') logsOnTabActivate();
+  } else if (key === 'config.logging') {
+    if (typeof loggingOnTabActivate === 'function') loggingOnTabActivate();
+  } else if (key === 'config.plugins') {
+    if (typeof loadPluginsPage === 'function') loadPluginsPage();
   } else if (key.indexOf('config.') === 0) {
     const section = key.substring('config.'.length);
     _cfgCurrentSection = section;
@@ -4779,6 +5818,10 @@ function switchTab(name) { navigateTo(_migrateLegacyKey(name)); }
 
 // Check auth on load, THEN restore saved tab (default: TTS for unauth, Chat for auth).
 checkAuth().then(() => {
+  // Plugins page is JS-injected — sidebar entry + tab-content host land
+  // here so the localStorage restore below finds them.
+  _ensurePluginsNavEntry();
+  _ensurePluginsPagePanel();
   let restored = false;
   try {
     const raw = localStorage.getItem('glados_active_tab');
@@ -6497,5 +7540,338 @@ async function trainingStop() {
   } catch(e) {
     showToast('Stop request failed', 'error');
   }
+}
+
+/* ============================================================================
+   Configuration → Logging page (Change 35 — per-group log filter)
+
+   The page renders a table of every log group with a per-row Enabled toggle
+   and Level dropdown, grouped by category. Bulk operations across categories
+   let the operator turn an entire subsystem on/off at once. A Raw YAML drawer
+   exposes configs/logging.yaml directly for power-user editing.
+
+   All endpoints under /api/log_groups/* require admin perms (handled
+   server-side in tts_ui.py before dispatch).
+   ============================================================================ */
+
+let _loggingState = null;            // last full payload from /api/log_groups
+let _loggingFilterText = '';
+let _loggingActivityTimer = null;    // setInterval handle for the activity column
+
+async function loggingOnTabActivate() {
+  // Auth gate: same pattern as the Logs tab.
+  const overlay = document.getElementById('loggingAuthOverlay');
+  const authed = (_currentRole === 'admin');
+  if (overlay) overlay.style.display = authed ? 'none' : 'flex';
+  if (!authed) return;
+
+  await loggingRefresh();
+
+  // Activity counts only refresh while the tab is open.
+  if (_loggingActivityTimer) clearInterval(_loggingActivityTimer);
+  _loggingActivityTimer = setInterval(() => {
+    if (_activeNavKey !== 'config.logging') {
+      clearInterval(_loggingActivityTimer);
+      _loggingActivityTimer = null;
+      return;
+    }
+    loggingRefreshActivityOnly();
+  }, 5000);
+}
+
+async function loggingRefresh() {
+  const status = document.getElementById('loggingStatus');
+  if (status) status.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/log_groups');
+    if (r.status === 401 || r.status === 403) {
+      if (status) status.textContent = 'Authentication required.';
+      return;
+    }
+    if (!r.ok) {
+      if (status) status.textContent = 'Load failed: HTTP ' + r.status;
+      return;
+    }
+    const payload = await r.json();
+    _loggingState = payload;
+    loggingRender();
+    if (status) status.textContent = '';
+  } catch(e) {
+    if (status) status.textContent = 'Load failed: ' + e.message;
+  }
+}
+
+async function loggingRefreshActivityOnly() {
+  // Lightweight repaint: just the recent_5min counts.
+  try {
+    const r = await fetch('/api/log_groups');
+    if (!r.ok) return;
+    const payload = await r.json();
+    if (!_loggingState) { _loggingState = payload; loggingRender(); return; }
+    // Patch counts onto existing state without redrawing the whole table.
+    const byId = {};
+    for (const g of payload.groups) byId[g.id] = g.recent_5min;
+    for (const g of _loggingState.groups) {
+      g.recent_5min = byId[g.id] || 0;
+      const el = document.querySelector(
+        '.logging-row[data-group-id="' + cssEscape(g.id) + '"] .logging-activity'
+      );
+      if (el) el.textContent = String(g.recent_5min);
+    }
+  } catch(e) { /* ignore — best-effort poll */ }
+}
+
+function loggingRender() {
+  if (!_loggingState) return;
+  const root = document.getElementById('loggingTable');
+  if (!root) return;
+
+  // Update default-level dropdown
+  const defSel = document.getElementById('loggingDefaultLevel');
+  if (defSel) defSel.value = _loggingState.default_level || 'SUCCESS';
+
+  // Override banner
+  const banner = document.getElementById('loggingOverrideBanner');
+  const ovLevel = document.getElementById('loggingOverrideLevel');
+  if (_loggingState.global_override_level) {
+    if (banner) banner.style.display = 'block';
+    if (ovLevel) ovLevel.textContent = _loggingState.global_override_level;
+  } else {
+    if (banner) banner.style.display = 'none';
+  }
+
+  // Group by category
+  const byCat = {};
+  for (const g of _loggingState.groups) {
+    const cat = g.category || 'Other';
+    if (!byCat[cat]) byCat[cat] = [];
+    byCat[cat].push(g);
+  }
+  // Stable category order: alpha
+  const cats = Object.keys(byCat).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+  let html = '';
+  const filterTokens = _loggingFilterText.toLowerCase().split(/\s+/).filter(Boolean);
+  for (const cat of cats) {
+    const groups = byCat[cat].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    const visible = groups.filter(g => {
+      if (filterTokens.length === 0) return true;
+      const hay = (g.id + ' ' + g.name + ' ' + (g.description || '')).toLowerCase();
+      return filterTokens.every(t => hay.indexOf(t) !== -1);
+    });
+    if (visible.length === 0) continue;
+    html += '<div class="logging-category">';
+    html += '<div class="logging-category-header">';
+    html += '<div class="logging-category-title">' + escHtml(cat)
+         + ' <span class="logging-category-count">' + visible.length + '</span></div>';
+    html += '<div class="logging-category-actions">';
+    html += '<button class="btn-tiny" onclick="loggingBulk(\'category_enable\', \'' + escAttr(cat) + '\')">Enable category</button>';
+    html += '<button class="btn-tiny" onclick="loggingBulk(\'category_disable\', \'' + escAttr(cat) + '\')">Disable category</button>';
+    html += '</div></div>';
+    html += '<div class="logging-category-rows">';
+    for (const g of visible) {
+      html += loggingRowHtml(g);
+    }
+    html += '</div></div>';
+  }
+  if (!html) html = '<div class="logging-empty">No groups match the filter.</div>';
+  root.innerHTML = html;
+}
+
+function loggingRowHtml(g) {
+  const lvls = (_loggingState && _loggingState.available_levels) || ['DEBUG','INFO','SUCCESS','WARNING'];
+  const lockedHint = g.locked ? ' <span class="logging-lock" title="Locked-on by policy — cannot be disabled.">&#128274;</span>' : '';
+  const enabledAttrs = g.locked ? 'disabled title="Locked-on by policy"' : '';
+  let opts = '';
+  for (const lv of lvls) {
+    opts += '<option value="' + lv + '"' + (lv === g.level ? ' selected' : '') + '>' + lv + '</option>';
+  }
+  return (
+    '<div class="logging-row" data-group-id="' + escAttr(g.id) + '">' +
+      '<div class="logging-row-name" title="' + escAttr(g.id) + '">' +
+        escHtml(g.name) + lockedHint +
+        '<div class="logging-row-id">' + escHtml(g.id) + '</div>' +
+        (g.description
+          ? '<div class="logging-row-desc">' + escHtml(g.description) + '</div>'
+          : '') +
+      '</div>' +
+      '<label class="logging-row-toggle">' +
+        '<input type="checkbox" ' + (g.enabled ? 'checked' : '') + ' ' + enabledAttrs +
+          ' onchange="loggingSaveRow(\'' + escAttr(g.id) + '\', this)">' +
+        '<span>' + (g.enabled ? 'On' : 'Off') + '</span>' +
+      '</label>' +
+      '<select class="logging-row-level" ' + enabledAttrs +
+        ' onchange="loggingSaveRowLevel(\'' + escAttr(g.id) + '\', this.value)">' +
+        opts +
+      '</select>' +
+      '<div class="logging-activity" title="Hits in the last 5 minutes">' + (g.recent_5min || 0) + '</div>' +
+    '</div>'
+  );
+}
+
+function loggingApplyFilter() {
+  const inp = document.getElementById('loggingFilter');
+  _loggingFilterText = inp ? inp.value || '' : '';
+  loggingRender();
+}
+
+async function loggingSaveRow(groupId, checkbox) {
+  const enabled = !!checkbox.checked;
+  await loggingPostUpdate({id: groupId, enabled: enabled});
+}
+
+async function loggingSaveRowLevel(groupId, level) {
+  await loggingPostUpdate({id: groupId, level: level});
+}
+
+async function loggingPostUpdate(body) {
+  try {
+    const r = await fetch('/api/log_groups/group', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showToast(d.error || ('HTTP ' + r.status), 'error');
+      // Roll back: re-fetch authoritative state.
+      await loggingRefresh();
+      return;
+    }
+    showToast('Saved', 'success');
+    // Patch local state so we don't need a full refresh.
+    if (_loggingState && d.group) {
+      for (const g of _loggingState.groups) {
+        if (g.id === d.group.id) {
+          if (typeof d.group.enabled === 'boolean') g.enabled = d.group.enabled;
+          if (typeof d.group.level === 'string') g.level = d.group.level;
+        }
+      }
+    }
+  } catch(e) {
+    showToast('Save failed: ' + e.message, 'error');
+    await loggingRefresh();
+  }
+}
+
+async function loggingSaveDefaultLevel() {
+  const sel = document.getElementById('loggingDefaultLevel');
+  if (!sel) return;
+  try {
+    const r = await fetch('/api/log_groups/bulk', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({op: 'set_default_level', level: sel.value}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showToast(d.error || ('HTTP ' + r.status), 'error');
+      await loggingRefresh();
+      return;
+    }
+    if (_loggingState) _loggingState.default_level = d.default_level;
+    showToast('Default level saved', 'success');
+  } catch(e) {
+    showToast('Save failed: ' + e.message, 'error');
+    await loggingRefresh();
+  }
+}
+
+async function loggingBulk(op, category) {
+  if (op === 'disable_all' || op === 'category_disable') {
+    if (!confirm('Disable all matching log groups? Locked-on groups (auth.audit) will stay enabled.')) return;
+  }
+  const body = {op: op};
+  if (category) body.category = category;
+  try {
+    const r = await fetch('/api/log_groups/bulk', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showToast(d.error || ('HTTP ' + r.status), 'error');
+      return;
+    }
+    showToast(op + ': ' + (d.affected ? d.affected.length : 0) + ' groups changed', 'success');
+    await loggingRefresh();
+  } catch(e) {
+    showToast('Bulk op failed: ' + e.message, 'error');
+  }
+}
+
+async function loggingResetDefaults() {
+  if (!confirm('Reset every log group to its built-in default state? This wipes your customisations.')) return;
+  try {
+    const r = await fetch('/api/log_groups/reset', {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showToast(d.error || ('HTTP ' + r.status), 'error');
+      return;
+    }
+    showToast('Reset to defaults', 'success');
+    await loggingRefresh();
+  } catch(e) {
+    showToast('Reset failed: ' + e.message, 'error');
+  }
+}
+
+function loggingToggleRaw() {
+  const body = document.getElementById('loggingRawBody');
+  const caret = document.getElementById('loggingRawCaret');
+  if (!body) return;
+  const open = (body.style.display !== 'none');
+  body.style.display = open ? 'none' : 'block';
+  if (caret) caret.innerHTML = open ? '&#9656;' : '&#9662;';
+}
+
+async function loggingLoadRaw() {
+  const ta = document.getElementById('loggingRawText');
+  const status = document.getElementById('loggingRawStatus');
+  if (status) status.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/log_groups/yaml');
+    const d = await r.json();
+    if (!r.ok) {
+      if (status) status.textContent = 'Load failed: HTTP ' + r.status;
+      return;
+    }
+    if (ta) ta.value = d.yaml || '';
+    if (status) status.textContent = 'Loaded ' + ((d.yaml || '').length) + ' bytes';
+  } catch(e) {
+    if (status) status.textContent = 'Load failed: ' + e.message;
+  }
+}
+
+async function loggingSaveRaw() {
+  const ta = document.getElementById('loggingRawText');
+  const status = document.getElementById('loggingRawStatus');
+  if (!ta) return;
+  const text = ta.value || '';
+  if (!confirm('Save the textarea contents to configs/logging.yaml? The file is validated before write.')) return;
+  if (status) status.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/log_groups/yaml', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({yaml: text}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      if (status) status.textContent = 'Save failed: ' + (d.error || ('HTTP ' + r.status));
+      return;
+    }
+    if (status) status.textContent = 'Saved.';
+    showToast('Raw YAML saved', 'success');
+    await loggingRefresh();
+  } catch(e) {
+    if (status) status.textContent = 'Save failed: ' + e.message;
+  }
+}
+
+// CSS-escape helper (simplistic — covers the IDs we generate).
+function cssEscape(s) {
+  return String(s).replace(/[^a-zA-Z0-9_\-\.]/g, '\\$&');
 }
 

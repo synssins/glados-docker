@@ -1,0 +1,111 @@
+"""Keyword-based plugin intent matcher.
+
+Phase 2c gate #1: zero-latency word-boundary match between the user's
+chat message and each enabled plugin's ``intent_keywords`` list. If
+any keyword hits, that plugin's tools get advertised to the LLM on
+the chitchat path. Multi-plugin matches are unioned -- the LLM
+disambiguates downstream.
+
+Stemming is intentionally minimal: suffix-strip only (``s``, ``es``,
+``ies`` -> singular; ``ing`` -> bare). Operators declare keywords in
+their canonical singular form ("movie", "torrent") and the matcher
+absorbs the most common English plural / progressive variants. We
+do NOT pull in a real stemmer (NLTK / Snowball) -- the dependency
+weight isn't worth it for a chat-time gate that has to run on every
+turn.
+"""
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
+
+from glados.observability import LogGroupId, group_logger
+
+_log_intent = group_logger(LogGroupId.PLUGIN.INTENT_MATCH)
+
+if TYPE_CHECKING:
+    from .loader import Plugin
+
+
+# Word-boundary tokenizer. Apostrophes are split on so "don't" becomes
+# ["don", "t"] -- that's fine, the false-negative on contractions is
+# preferable to maintaining a contraction lexicon.
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _stems(word: str) -> set[str]:
+    """Return every plausible canonical form for matching.
+
+    Suffix-strip only -- no morphological analysis. We emit MULTIPLE
+    candidates per word because suffixes are genuinely ambiguous:
+    "movies" could be "movie"+s or "mov"+ies->y. Returning both stems
+    and letting the keyword side also stem solves the ambiguity
+    without a real lexicon."""
+    out: set[str] = {word}
+    if len(word) > 4 and word.endswith("ies"):
+        out.add(word[:-3] + "y")  # stories -> story
+    if len(word) > 3 and word.endswith("ing"):
+        # "bring" stays "bring"; "running" -> "runn" which won't match
+        # "run" but we accept the false-negative here. The triage LLM
+        # is the safety net for stemmer misses.
+        out.add(word[:-3])
+    if len(word) > 3 and word.endswith("es"):
+        out.add(word[:-2])  # boxes -> box
+    if len(word) > 2 and word.endswith("s"):
+        out.add(word[:-1])  # movies -> movie
+    return out
+
+
+def _tokens(message: str) -> set[str]:
+    """Lowercase + word-split the message and emit every stem candidate.
+    Returns a set so repeat words don't multiply work downstream."""
+    out: set[str] = set()
+    for raw in _WORD_RE.findall(message.lower()):
+        out |= _stems(raw)
+    return out
+
+
+def match_plugins(message: str, plugins: Iterable["Plugin"]) -> list["Plugin"]:
+    """Return the subset of ``plugins`` whose ``intent_keywords`` match
+    a stemmed token in ``message``.
+
+    Each keyword is itself stemmed before comparison so an operator
+    can declare "movies" and still match a user query for "movie"
+    (and vice versa). Plugins with empty ``intent_keywords`` are
+    never matched here -- the triage LLM gate handles them.
+
+    Emits an INFO log for every match identifying the matching keyword
+    AND the user-message word that triggered it, so "why didn't my
+    plugin trigger" debugging is possible from container logs alone."""
+    if not message:
+        return []
+    msg_tokens = _tokens(message)
+    out: list["Plugin"] = []
+    for plugin in plugins:
+        keywords = getattr(plugin.manifest_v2, "intent_keywords", None) or []
+        if not keywords:
+            continue
+        for kw in keywords:
+            kw_stems = _stems(kw.lower())
+            hit = kw_stems & msg_tokens
+            if hit:
+                _log_intent.info(
+                    "intent: plugin {!r} matched keyword {!r} via stem {!r}",
+                    plugin.name, kw, sorted(hit)[0],
+                )
+                out.append(plugin)
+                break
+        else:
+            # No match for this plugin — log at DEBUG so toggling intent_match
+            # to DEBUG explains why a plugin DIDN'T fire, not just why one DID.
+            if keywords:
+                _log_intent.debug(
+                    "intent: plugin {!r} no match (tried {} keyword(s))",
+                    plugin.name, len(keywords),
+                )
+    if not out:
+        _log_intent.debug(
+            "intent: no plugin matched message tokens={}", sorted(msg_tokens)[:20],
+        )
+    return out

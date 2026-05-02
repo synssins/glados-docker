@@ -2,20 +2,19 @@
 :class:`glados.mcp.config.MCPServerConfig` so the existing
 ``MCPManager`` can spin up the plugin's tools without changes.
 
-Mapping rules:
+Mapping rules (all driven by ``plugin.manifest_v2.runtime.mode``):
 
-* ``remotes[].type == "streamable-http"`` → ``MCPServerConfig.transport == "http"``
-  (the manager's existing identifier for streamable-HTTP transport).
-* ``remotes[].type == "sse"`` → ``transport == "sse"``.
-* ``packages[].transport.type == "stdio"`` → ``transport == "stdio"``,
-  with ``command`` derived from the package's ``runtimeHint`` and
-  ``args`` from its ``identifier`` + ``packageArguments``.
+* ``remote`` -> ``MCPServerConfig.transport == "http"`` (streamable-HTTP);
+  url + headers from the synthesized PluginJSON.
+* ``registry`` -> ``transport == "stdio"`` with ``command`` derived from
+  the package's runtime hint (``uvx`` / ``npx`` / ``dnx``) and ``args``
+  from the package's identifier@version.
+* ``bundled`` -> ``transport == "stdio"`` with ``command`` and ``args``
+  copied verbatim from the manifest. ``GLADOS_PLUGIN_DIR`` is exported
+  so the spawned script can locate its own files.
 
-Subprocess spawning behavior for stdio plugins (the actual ``uvx`` /
-``npx`` invocation) is handled by ``MCPManager.start()`` once it
-receives the ``MCPServerConfig`` — this module just produces the
-config. The ``runtimeHint`` field of the manifest is what tells us
-which executable to invoke.
+Per-runtime cache routing (uvx ``--cache-dir`` flag, npx
+``npm_config_cache`` env) is applied for ``registry`` mode.
 """
 from __future__ import annotations
 
@@ -23,10 +22,9 @@ from glados.mcp.config import MCPServerConfig
 
 from .errors import ManifestError
 from .loader import Plugin
-from .manifest import InputArgument, Package, Remote
 
 
-_RUNTIME_COMMANDS: dict[str, str] = {
+_REGISTRY_COMMANDS: dict[str, str] = {
     "uvx": "uvx",
     "npx": "npx",
     "dnx": "dnx",
@@ -34,159 +32,110 @@ _RUNTIME_COMMANDS: dict[str, str] = {
 
 
 def plugin_to_mcp_config(plugin: Plugin) -> MCPServerConfig:
-    """Translate a :class:`Plugin` to an :class:`MCPServerConfig`.
-
-    Raises :class:`ManifestError` if the selected package or remote
-    can't be expressed as an MCPServerConfig (e.g. a stdio package
-    without a usable ``runtimeHint``)."""
-    if plugin.is_remote():
-        return _build_remote_config(plugin)
-    return _build_local_config(plugin)
-
-
-# ── Remote (HTTP/SSE) ────────────────────────────────────────────────
+    """Translate a :class:`Plugin` to an :class:`MCPServerConfig`."""
+    rt = plugin.manifest_v2.runtime
+    if rt.mode == "remote":
+        return _build_remote_v2(plugin, rt)
+    if rt.mode == "registry":
+        return _build_registry_v2(plugin, rt)
+    if rt.mode == "bundled":
+        return _build_bundled_v2(plugin, rt)
+    raise ManifestError(f"unsupported runtime mode {rt.mode!r}")
 
 
-def _build_remote_config(plugin: Plugin) -> MCPServerConfig:
-    assert plugin.runtime.remote_index is not None
-    remote: Remote = plugin.manifest.remotes[plugin.runtime.remote_index]
+# ── Remote (streamable-HTTP) ─────────────────────────────────────────
 
-    transport = "http" if remote.type == "streamable-http" else "sse"
 
-    # Resolve URL templating against runtime.yaml.arg_values + secrets +
-    # header_values. Spec lets remote URLs reference {variableName} from
-    # remotes[].variables. We do a simple {{key}}/{key} replacement.
-    url = _expand_template(remote.url, plugin.runtime.arg_values)
-
-    # Headers: combine non-secret runtime.header_values with secret
-    # overrides from secrets.env. secrets.env wins on key collision.
-    headers: dict[str, str] = {}
-    for header in remote.headers:
-        value = plugin.secrets.get(header.name) or plugin.runtime.header_values.get(header.name)
-        if value is None and header.default is not None:
-            value = header.default
-        if value is None and header.is_required:
-            raise ManifestError(
-                f"plugin {plugin.name} requires header {header.name!r} (set it in "
-                f"runtime.yaml.header_values or secrets.env)"
-            )
-        if value is not None:
-            headers[header.name] = value
-
+def _build_remote_v2(plugin: Plugin, rt) -> MCPServerConfig:
+    # URL templating: v1 plugins (synthesized) carry templates like
+    # ``https://{ha_host}/api/mcp`` and rely on
+    # ``runtime.yaml.arg_values`` for substitution. Preserve the
+    # behavior so v1-on-disk installs keep working.
+    url = _expand_template(str(rt.url), plugin.runtime.arg_values)
+    headers = _resolve_settings(plugin)
     return MCPServerConfig(
         name=plugin.name,
-        transport=transport,
+        transport="http",
         url=url,
         headers=headers or None,
     )
 
 
-# ── Local (stdio) ────────────────────────────────────────────────────
+# ── Registry (uvx / npx / dnx) ───────────────────────────────────────
 
 
-def _build_local_config(plugin: Plugin) -> MCPServerConfig:
-    assert plugin.runtime.package_index is not None
-    package: Package = plugin.manifest.packages[plugin.runtime.package_index]
-
-    if package.transport.type != "stdio":
-        # remotes[] is the right home for HTTP-transport plugins.
-        # If a package[] entry says streamable-http, it means the
-        # package itself runs an HTTP server locally; we don't
-        # support that shape yet — surface the gap explicitly.
+def _build_registry_v2(plugin: Plugin, rt) -> MCPServerConfig:
+    runtime_hint, _, pkg_with_ver = rt.package.partition(":")
+    if runtime_hint not in _REGISTRY_COMMANDS:
         raise ManifestError(
-            f"plugin {plugin.name}: packages[{plugin.runtime.package_index}].transport "
-            f"is {package.transport.type!r}; only 'stdio' packages are supported in "
-            "Phase 2 scaffolding (use remotes[] for HTTP-transport plugins)"
+            f"plugin {plugin.name}: unsupported runtime {runtime_hint!r} "
+            f"(supported: {sorted(_REGISTRY_COMMANDS)})"
         )
 
-    if not package.runtime_hint:
-        raise ManifestError(
-            f"plugin {plugin.name}: packages[{plugin.runtime.package_index}] missing "
-            "runtimeHint — required for stdio packages so we know how to invoke "
-            "the binary (uvx / npx / dnx)"
-        )
+    args: list[str] = [pkg_with_ver]
+    cache_dir = plugin.directory / ".uvx-cache"
+    if runtime_hint == "uvx":
+        # uvx accepts --cache-dir as a CLI flag.
+        args.extend(["--cache-dir", str(cache_dir)])
 
-    if package.runtime_hint not in _RUNTIME_COMMANDS:
-        raise ManifestError(
-            f"plugin {plugin.name}: unsupported runtimeHint {package.runtime_hint!r} "
-            f"(supported: {sorted(_RUNTIME_COMMANDS)})"
-        )
-
-    command = _RUNTIME_COMMANDS[package.runtime_hint]
-    args = _build_stdio_args(package, plugin)
-    env = _resolve_env(package, plugin)
+    env = _resolve_settings(plugin)
+    if runtime_hint == "npx":
+        # npx ignores --cache-dir; use the npm_config_cache env var.
+        env["npm_config_cache"] = str(cache_dir)
 
     return MCPServerConfig(
         name=plugin.name,
         transport="stdio",
-        command=command,
+        command=_REGISTRY_COMMANDS[runtime_hint],
         args=args,
         env=env or None,
     )
 
 
-def _build_stdio_args(package: Package, plugin: Plugin) -> list[str]:
-    """Build the argv list for an stdio plugin. For ``uvx`` /
-    ``npx``: ``[<package_identifier>@<version>, ...packageArguments]``.
-
-    Runtime arguments (e.g. Docker mounts) are skipped here — they only
-    apply when the package is actually a Docker image (registryType=oci),
-    which we don't run in-process today."""
-    args: list[str] = []
-
-    # The package identifier with version — runtime selects the right tool.
-    # uvx accepts ``--from <pkg>==<version> <entrypoint>`` style; the
-    # simpler ``<pkg>@<version>`` form works for most cases.
-    args.append(f"{package.identifier}@{package.version}")
-
-    for arg in package.package_arguments:
-        rendered = _render_argument(arg, plugin)
-        if rendered:
-            args.extend(rendered)
-
-    return args
+# ── Bundled (run from inside the unpacked bundle) ────────────────────
 
 
-def _render_argument(arg: InputArgument, plugin: Plugin) -> list[str]:
-    """Resolve a single ``packageArguments[]`` entry into argv tokens."""
-    value = plugin.runtime.arg_values.get(arg.name or "") if arg.name else None
-    if value is None:
-        value = arg.value
-    if value is None:
-        value = arg.default
-    if value is None:
-        if arg.is_required:
+def _build_bundled_v2(plugin: Plugin, rt) -> MCPServerConfig:
+    env = _resolve_settings(plugin)
+    # Subprocess can locate its own files via this pinned env var.
+    env["GLADOS_PLUGIN_DIR"] = str(plugin.directory)
+    return MCPServerConfig(
+        name=plugin.name,
+        transport="stdio",
+        command=rt.command,
+        args=list(rt.args),
+        env=env or None,
+    )
+
+
+# ── Settings resolution (env values + secrets + defaults) ────────────
+
+
+def _resolve_settings(plugin: Plugin) -> dict[str, str]:
+    """Merge ``runtime.yaml.env_values``/``header_values`` + ``secrets.env``
+    against the v2 settings list, applying defaults and raising on
+    missing required values."""
+    out: dict[str, str] = {}
+    runtime = plugin.runtime
+    # v1 used separate env_values and header_values; v2 collapses both
+    # under a single settings list. Look in both buckets so v1-on-disk
+    # plugins (synthesized to v2) still find their stored values.
+    for setting in plugin.manifest_v2.settings:
+        value = (
+            plugin.secrets.get(setting.key)
+            or runtime.env_values.get(setting.key)
+            or runtime.header_values.get(setting.key)
+        )
+        if value is None and setting.default is not None:
+            value = str(setting.default)
+        if value is None and setting.is_required:
             raise ManifestError(
-                f"plugin {plugin.name} requires argument {arg.name or arg.value_hint!r} "
-                "(set it in runtime.yaml.arg_values)"
-            )
-        return []
-
-    if arg.type == "named":
-        if not arg.name:
-            raise ManifestError(
-                f"plugin {plugin.name}: named argument missing name"
-            )
-        return [arg.name, value]
-    return [value]  # positional
-
-
-def _resolve_env(package: Package, plugin: Plugin) -> dict[str, str]:
-    """Merge runtime.yaml.env_values + secrets.env, applying defaults
-    from server.json for any unset env. Raise on missing required envs."""
-    env: dict[str, str] = {}
-    for ev in package.environment_variables:
-        value = plugin.secrets.get(ev.name) or plugin.runtime.env_values.get(ev.name)
-        if value is None and ev.default is not None:
-            value = ev.default
-        if value is None and ev.is_required:
-            raise ManifestError(
-                f"plugin {plugin.name} requires env {ev.name!r} (set it in "
-                f"runtime.yaml.env_values or secrets.env)"
+                f"plugin {plugin.name} requires setting {setting.label!r} "
+                "(set it in plugin configuration)"
             )
         if value is not None:
-            env[ev.name] = value
-    return env
+            out[setting.key] = value
+    return out
 
 
 # ── helpers ─────────────────────────────────────────────────────────

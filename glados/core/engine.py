@@ -51,11 +51,14 @@ from .text_listener import TextListener
 from .tool_executor import ToolExecutor
 from .tts_synthesizer import TextToSpeechSynthesizer
 
-try:
-    logger.remove(0)
-except ValueError:
-    pass  # No default handler to remove
-logger.add(sys.stderr, level="SUCCESS")
+# Wire the per-group log filter (see glados/observability/log_groups.py).
+# Replaces the prior single-sink hard-coded SUCCESS-floor — now each
+# subsystem's group can be toggled / re-levelled at runtime via the WebUI
+# Logging page or by editing configs/logging.yaml. The GLADOS_LOG_LEVEL
+# env var still works as a global override floor for one-shot debugging.
+from ..observability import install_loguru_sink as _install_loguru_sink  # noqa: E402
+
+_install_loguru_sink(sys.stderr)
 
 
 @dataclass(frozen=True)
@@ -307,6 +310,33 @@ class GladosConfig(BaseModel):
     def to_chat_messages(self) -> list[dict[str, str]]:
         """Convert personality preprompt to chat message format."""
         return [prompt.to_chat_message() for prompt in self.personality_preprompt]
+
+
+def _maybe_discover_plugin_configs() -> list[MCPServerConfig]:
+    """Discover plugins iff GLADOS_PLUGINS_ENABLED is truthy.
+
+    Returns an empty list when disabled or when the discovery layer
+    raises. Never propagates plugin-layer errors to the engine init.
+    """
+    enabled = os.environ.get("GLADOS_PLUGINS_ENABLED", "true").lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        logger.info("Plugins disabled by GLADOS_PLUGINS_ENABLED env")
+        return []
+
+    plugin_mcp_configs: list[MCPServerConfig] = []
+    try:
+        from glados.plugins import discover_plugins, plugin_to_mcp_config
+        for plugin in discover_plugins():
+            try:
+                plugin_mcp_configs.append(plugin_to_mcp_config(plugin))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Plugin {!s} failed to materialize MCP config; skipping: {}",
+                    plugin.name, exc,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Plugin discovery layer failed; skipping: {}", exc)
+    return plugin_mcp_configs
 
 
 class Glados:
@@ -612,6 +642,23 @@ class Glados:
         weather_cache.configure(weather_cache_path)
         # Configure context gates from YAML — add/remove keywords in configs/context_gates.yaml
         _gates_configure(Path("configs/context_gates.yaml"))
+
+        # Initialize authoritative time source (NTP-synced, tz from
+        # weather coords). Reads TimeGlobal from the config store and
+        # passes weather_cache.get_data as the tz lookup callable so a
+        # config reload that changes the weather location flows through
+        # to time_source automatically. Background NTP sync starts
+        # immediately and runs on the configured refresh interval.
+        from . import time_source as _time_source
+        from .config_store import cfg as _cfg_for_time
+        try:
+            _time_source.configure(
+                _cfg_for_time.global_.time,
+                weather_cache_getter=weather_cache.get_data,
+            )
+            _time_source.start()
+        except Exception as _ts_exc:
+            logger.warning("time_source init failed: {}", _ts_exc)
         # Weather context only injected when message is weather-related (saves ~200 tok/turn)
         self.context_builder.register(
             "weather",
@@ -700,20 +747,7 @@ class Glados:
         # add to the catalog rather than replacing it — operators can
         # mix YAML-configured MCP servers with installed plugins.
         # See docs/plugins-architecture.md for the plugin design.
-        plugin_mcp_configs: list[MCPServerConfig] = []
-        try:
-            from glados.plugins import discover_plugins, plugin_to_mcp_config
-            for plugin in discover_plugins():
-                try:
-                    plugin_mcp_configs.append(plugin_to_mcp_config(plugin))
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Plugin {!s} failed to materialize MCP config; skipping: {}",
-                        plugin.name, exc,
-                    )
-        except Exception as exc:  # noqa: BLE001
-            # Plugin layer must never block engine startup.
-            logger.warning("Plugin discovery failed: {}", exc)
+        plugin_mcp_configs = _maybe_discover_plugin_configs()
 
         all_mcp = list(self.mcp_servers or []) + plugin_mcp_configs
 

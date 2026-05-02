@@ -1,12 +1,15 @@
 import asyncio
 import fnmatch
+import os
 import subprocess
 import threading
 import time
+from collections import defaultdict, deque
 from collections.abc import Iterable
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -49,6 +52,22 @@ class _ResourceCacheEntry:
     expires_at: float
 
 
+def _rotate_log_if_needed(path: Path, max_bytes: int = 1 * 1024 * 1024) -> None:
+    """If `path` exists and is over `max_bytes`, rename to `path.1`
+    (overwriting any prior backup) so the next session starts a fresh log."""
+    try:
+        if not path.exists():
+            return
+        if path.stat().st_size <= max_bytes:
+            return
+        backup = path.with_suffix(path.suffix + ".1")
+        if backup.exists():
+            backup.unlink()
+        path.rename(backup)
+    except OSError as exc:
+        logger.warning("log rotation failed for {!s}: {}", path, exc)
+
+
 class MCPManager:
     def __init__(
         self,
@@ -65,6 +84,8 @@ class MCPManager:
         self._shutdown_async: asyncio.Event | None = None
         self._observability_bus = observability_bus
 
+        self._servers_lock = threading.Lock()
+
         self._tool_lock = threading.Lock()
         self._tool_registry: dict[str, MCPToolEntry] = {}
 
@@ -75,10 +96,24 @@ class MCPManager:
         self._session_tasks: dict[str, asyncio.Task[None]] = {}
         self._sessions: dict[str, ClientSession] = {}
 
+        # Phase 2b: per-plugin event ring (connect/disconnect/error/tools).
+        self._plugin_events: dict[str, deque[dict]] = defaultdict(
+            lambda: deque(maxlen=256)
+        )
+        self._plugin_events_lock = threading.Lock()
+
+        # Phase 2b: log dir for stdio plugin stderr.
+        self._plugin_log_dir = Path(
+            os.environ.get("GLADOS_PLUGIN_LOG_DIR", "/app/logs/plugins")
+        )
+
     def start(self) -> None:
-        if not self._servers:
-            return
         if ClientSession is None:
+            # If the mcp library isn't installed but no servers are configured,
+            # this is a no-op. Phase 2b add_server() will surface the error
+            # later if a server is actually registered.
+            if not self._servers:
+                return
             raise MCPError("MCP client library is not installed. Install the 'mcp' package to enable MCP support.")
         if self._thread.is_alive():
             return
@@ -95,10 +130,96 @@ class MCPManager:
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5.0)
 
-    def get_tool_definitions(self) -> list[dict[str, Any]]:
+    def add_server(self, config: MCPServerConfig) -> None:
+        """Thread-safe. Register a new server and schedule its session
+        runner on the manager's loop. Raises if a server with the same
+        name is already registered."""
+        if self._loop is None:
+            raise MCPError("MCP manager is not running.")
+        with self._servers_lock:
+            if config.name in self._servers:
+                raise MCPError(f"MCP server '{config.name}' is already registered.")
+            self._servers[config.name] = config
+
+        spawned = threading.Event()
+
+        def _spawn() -> None:
+            assert self._loop is not None
+            try:
+                task = self._loop.create_task(self._session_runner(config))
+                self._session_tasks[config.name] = task
+            finally:
+                spawned.set()
+
+        self._loop.call_soon_threadsafe(_spawn)
+        # Wait briefly for the task to register; the loop should run _spawn
+        # almost immediately. If the loop is dead this returns False and the
+        # caller will see no task in _session_tasks.
+        spawned.wait(timeout=2.0)
+
+    def remove_server(self, name: str, timeout: float = 5.0) -> None:
+        """Thread-safe. Cancel the session task for `name`, await up to
+        `timeout` seconds, drop from internal state. No-op if missing."""
+        if self._loop is None:
+            return
+        if name not in self._servers:
+            return
+
+        task = self._session_tasks.get(name)
+        future: asyncio.Future | None = None
+
+        def _cancel() -> None:
+            if task and not task.done():
+                task.cancel()
+
+        self._loop.call_soon_threadsafe(_cancel)
+
+        if task is not None:
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._await_task(task), self._loop,
+                )
+                future.result(timeout=timeout)
+            except FuturesTimeoutError:
+                logger.warning(
+                    "MCP: remove_server({!r}) cancellation did not finish in {} s; orphaning",
+                    name, timeout,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "MCP: remove_server({!r}) cleanup raised: {}", name, exc,
+                )
+
+        self._sessions.pop(name, None)
+        self._session_tasks.pop(name, None)
+        with self._servers_lock:
+            self._servers.pop(name, None)
+        self._remove_tools_for_server(name)
+        self._clear_resource_cache(name)
+
+    @staticmethod
+    async def _await_task(task: asyncio.Task) -> None:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("MCP: task cleanup raised: {}", exc)
+
+    def get_tool_definitions(
+        self,
+        server_filter: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        # server_filter lets the chitchat-path plugin gate advertise
+        # only matched plugins' tools (Phase 2c) instead of dumping the
+        # whole catalog into every prompt. Default None preserves the
+        # existing legacy HA-gate behavior of returning every tool.
         with self._tool_lock:
             entries = list(self._tool_registry.items())
         entries.sort(key=lambda item: item[0])
+        if server_filter is not None:
+            allow = set(server_filter)
+            entries = [(name, e) for (name, e) in entries if e.server in allow]
         return [self._tool_entry_to_definition(tool_name, entry) for tool_name, entry in entries]
 
     def get_context_messages(self, timeout: float = 5.0, block: bool = True) -> list[dict[str, str]]:
@@ -168,6 +289,36 @@ class MCPManager:
         entries.sort(key=lambda item: item["name"])
         return entries
 
+    def _record_event(self, server_name: str, *, kind: str, message: str,
+                      level: str = "info", meta: dict | None = None) -> None:
+        """Append an event to the per-plugin ring. Also bridges to the
+        ObservabilityBus when one is configured."""
+        entry = {
+            "ts": time.time(),
+            "kind": kind,
+            "level": level,
+            "message": message,
+            "meta": meta or {},
+        }
+        with self._plugin_events_lock:
+            self._plugin_events[server_name].append(entry)
+        if self._observability_bus:
+            self._observability_bus.emit(
+                source="mcp",
+                kind=kind,
+                message=message,
+                meta={"server": server_name, **(meta or {})},
+                level=level,
+            )
+
+    def get_plugin_events(self, server_name: str, limit: int = 200) -> list[dict]:
+        """Return up to `limit` recent events for `server_name`, oldest-first."""
+        with self._plugin_events_lock:
+            buf = self._plugin_events.get(server_name)
+            if not buf:
+                return []
+            return list(buf)[-limit:]
+
     def _run_loop(self) -> None:
         if self._loop is not None:
             return
@@ -196,13 +347,11 @@ class MCPManager:
                     async with ClientSession(read_stream, write_stream) as session:
                         await session.initialize()
                         self._sessions[config.name] = session
-                        if self._observability_bus:
-                            self._observability_bus.emit(
-                                source="mcp",
-                                kind="connect",
-                                message=f"{config.name} connected",
-                                meta={"transport": config.transport},
-                            )
+                        self._record_event(
+                            config.name, kind="connect",
+                            message=f"{config.name} connected",
+                            meta={"transport": config.transport},
+                        )
                         await self._refresh_tools(config, session)
                         await self._refresh_resources(config, session)
                         await self._shutdown_async.wait()
@@ -213,24 +362,19 @@ class MCPManager:
                 if hasattr(exc, 'exceptions'):
                     detail += " | sub-exceptions: " + "; ".join(str(e) for e in exc.exceptions)
                 logger.warning(f"MCP: server '{config.name}' connection failed: {detail}")
-                if self._observability_bus:
-                    self._observability_bus.emit(
-                        source="mcp",
-                        kind="error",
-                        message=trim_message(f"{config.name} failed: {exc}"),
-                        level="warning",
-                    )
+                self._record_event(
+                    config.name, kind="error", level="warning",
+                    message=trim_message(f"{config.name} failed: {exc}"),
+                )
                 await asyncio.sleep(retry_delay)
             finally:
                 self._sessions.pop(config.name, None)
                 self._remove_tools_for_server(config.name)
                 self._clear_resource_cache(config.name)
-                if self._observability_bus:
-                    self._observability_bus.emit(
-                        source="mcp",
-                        kind="disconnect",
-                        message=f"{config.name} disconnected",
-                    )
+                self._record_event(
+                    config.name, kind="disconnect",
+                    message=f"{config.name} disconnected",
+                )
 
     @asynccontextmanager
     async def _open_transport(self, config: MCPServerConfig):
@@ -238,10 +382,31 @@ class MCPManager:
             if not config.command:
                 raise MCPError(f"MCP server '{config.name}' requires a command for stdio transport.")
             params = StdioServerParameters(command=config.command, args=config.args, env=config.env)
-            # Suppress subprocess stderr to prevent MCP logs from corrupting TUI
-            async with stdio_client(params, errlog=subprocess.DEVNULL) as streams:
-                yield streams
-                return
+
+            # Phase 2b: per-plugin stderr log file with size-cap rotation.
+            # Falls back to DEVNULL if the log dir isn't writable.
+            log_fd = subprocess.DEVNULL
+            try:
+                self._plugin_log_dir.mkdir(parents=True, exist_ok=True)
+                log_path = self._plugin_log_dir / f"{config.name}.log"
+                _rotate_log_if_needed(log_path)
+                log_fd = open(log_path, "ab", buffering=0)
+            except OSError as exc:
+                logger.warning(
+                    "MCP: cannot open plugin log {!s}; using DEVNULL: {}",
+                    config.name, exc,
+                )
+
+            try:
+                async with stdio_client(params, errlog=log_fd) as streams:
+                    yield streams
+                    return
+            finally:
+                if log_fd is not subprocess.DEVNULL:
+                    try:
+                        log_fd.close()
+                    except Exception:
+                        pass
 
         if not config.url:
             raise MCPError(f"MCP server '{config.name}' requires a URL for {config.transport} transport.")

@@ -164,6 +164,16 @@ def _process_forecast(raw: dict[str, Any], config: Any = None) -> dict[str, Any]
 
     return {
         "updated_at": now.isoformat(timespec="seconds"),
+        # Open-Meteo returns the resolved IANA timezone (e.g.
+        # "America/Chicago") and abbreviation (e.g. "CST") at the
+        # response top level when the forecast is requested with
+        # ``timezone=auto``. Captured here so the time_source module
+        # can derive a tz-aware "current time" without a second API
+        # call or a polygon-lookup library. Fields are None if the
+        # response predates this capture or was generated outside
+        # the auto-tz path.
+        "timezone": raw.get("timezone"),
+        "timezone_abbreviation": raw.get("timezone_abbreviation"),
         "units": {"temperature": unit, "wind_speed": wind_unit},
         "current": current,
         "today": today,

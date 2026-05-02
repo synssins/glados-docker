@@ -35,11 +35,121 @@ from glados.core.command_resolver import get_resolver
 from glados.core.config_store import cfg
 from glados.core.source_context import SourceContext
 from glados.doorbell.screener import DoorbellScreener
-from glados.observability import AuditEvent, Origin, audit
+from glados.observability import AuditEvent, LogGroupId, Origin, audit, group_logger
+
+# Module-level grouped loggers for the chat path. Each call site picks
+# the appropriate group so the operator can dial individual surfaces
+# up/down via Configuration -> Logging without touching the global
+# loguru level. ERROR/CRITICAL records bypass per-group filtering.
+_log_chat_connect = group_logger(LogGroupId.CHAT.CONNECT_PATH)
+_log_chat_round1 = group_logger(LogGroupId.CHAT.ROUND1_STREAM)
+_log_chat_round1_raw = group_logger(LogGroupId.CHAT.ROUND1_RAW_BYTES)
+_log_chat_round2 = group_logger(LogGroupId.CHAT.ROUND2_STREAM)
+_log_chat_round2_raw = group_logger(LogGroupId.CHAT.ROUND2_RAW_BYTES)
+_log_chat_tool_call = group_logger(LogGroupId.CHAT.TOOL_CALL)
+_log_chat_tool_result = group_logger(LogGroupId.CHAT.TOOL_RESULT)
+_log_chat_filter = group_logger(LogGroupId.CHAT.FILTER_PIPELINE)
+_log_chat_sanitize = group_logger(LogGroupId.CHAT.SANITIZE_HISTORY)
+_log_chat_routing = group_logger(LogGroupId.CHAT.ROUTING_DECISION)
+_log_filter_think = group_logger(LogGroupId.FILTER.THINK_TAG)
+_log_filter_boilerplate = group_logger(LogGroupId.FILTER.BOILERPLATE)
+_log_memory_inject = group_logger(LogGroupId.MEMORY.CONTEXT_INJECT)
+_log_conversation_store = group_logger(LogGroupId.CONVERSATION.STORE)
 from glados import ha as _ha
 from glados import intent as _intent
 from glados import persona as _persona
 from glados.intent.rules import looks_like_home_command
+
+
+# ---------------------------------------------------------------------------
+# Command-lane routing helpers (chat path)
+# ---------------------------------------------------------------------------
+# Tool-using turns (route=plugin:* or is_home_command) get a separate
+# upstream model from the conversational lane. Operator preference: terse,
+# anti-fabrication, no persona overlay on command turns. Persona is reserved
+# for chitchat / weather / status / autonomy alerts.
+
+COMMAND_MODE_SYSTEM_PROMPT = (
+    "You are a tool-using command interface. Respond tersely with what "
+    "was done or found. No persona. No quips. State only facts grounded "
+    "in actual tool results. If a tool errors or returns nothing, say so "
+    "plainly. Never claim an action you did not invoke as a tool call in "
+    "this turn."
+)
+
+
+def _select_command_lane(
+    is_command_route: bool,
+    interactive_url: str,
+    interactive_model: str,
+    commands_endpoint: Any,
+) -> tuple[str, str, bool]:
+    """Pick (url, model, is_command_lane) for the chat upstream.
+
+    ``commands_endpoint`` is ``cfg.services.llm_commands`` (a
+    ``ServiceEndpoint``), or ``None``. When the route is non-command,
+    or the endpoint URL is empty/blank, falls back to the interactive
+    lane so deployments without a configured llm_commands keep working.
+    """
+    if not is_command_route or commands_endpoint is None:
+        return (interactive_url, interactive_model, False)
+    cmd_url = (getattr(commands_endpoint, "url", "") or "").strip()
+    if not cmd_url:
+        return (interactive_url, interactive_model, False)
+    cmd_model = getattr(commands_endpoint, "model", "") or interactive_model
+    return (cmd_url, cmd_model, True)
+
+
+def _strip_persona_for_command_lane(
+    messages: list[dict],
+    preprompt_count: int,
+) -> list[dict]:
+    """Rewrite messages for the command lane.
+
+    Two responsibilities:
+
+    1. Replaces the leading persona system message with the minimal
+       command-mode instruction (``COMMAND_MODE_SYSTEM_PROMPT``).
+    2. Drops ALL prior user/assistant turns — both the persona's
+       few-shot pairs AND any real conversation history.
+
+    The history drop is the load-bearing change: tool-using turns
+    inherit prior chitchat from the conversation_store, and small
+    instruction-tuned models do in-context learning on it. If the
+    last few assistant turns responded with text (which is what the
+    chat path produces today on chitchat / tier-1 fast-path / failed
+    tool turns), the model copies the pattern and emits text instead
+    of a tool_call. Diagnostic confirmed via LM Studio's input log:
+    every prior assistant turn in history primed the model to
+    fabricate.
+
+    The command lane is therefore stateless: each tool-using turn
+    is a clean (system + user) pair plus tools. The interactive lane
+    keeps the history for chat continuity ("brighter" → reference
+    last command). Cross-lane carry-over (e.g. "and what about the
+    sequel?" after a Radarr lookup) is not supported in this
+    iteration.
+
+    Non-persona system messages (memory context, weather, etc.) that
+    were already present pass through unchanged. New system messages
+    inserted downstream (turn guard, etc.) are not affected by this
+    function.
+    """
+    if not messages:
+        return messages
+    out: list[dict] = []
+    for i, m in enumerate(messages):
+        role = m.get("role")
+        if i == 0 and role == "system":
+            out.append({"role": "system", "content": COMMAND_MODE_SYSTEM_PROMPT})
+            continue
+        # Drop ALL user/assistant turns — both persona few-shots
+        # and real conversation history. See docstring above for why.
+        if role in ("user", "assistant"):
+            continue
+        out.append(m)
+    return out
+
 
 # Container-aware path resolution
 _GLADOS_ROOT = Path(os.environ.get("GLADOS_ROOT", "/app"))
@@ -1409,11 +1519,17 @@ def _sanitize_message_history(
             fixed["tool_calls"] = new_calls
         out.append(fixed)
     if repaired or filtered:
-        logger.warning(
+        _log_chat_sanitize.warning(
             "[{}] sanitized {} field(s), dropped {} autonomy-noise message(s) "
             "before Ollama POST",
             request_id, repaired, filtered,
         )
+    _log_chat_sanitize.debug(
+        "[{}] sanitize input msg roles={}, output msg roles={}",
+        request_id,
+        [m.get("role") for m in messages],
+        [m.get("role") for m in out],
+    )
     return out
 
 
@@ -1550,51 +1666,110 @@ def _stream_chat_sse_impl(
     # the preprompt isn't reliably followed by 8b alone.
     messages = _drop_parrot_anchors(messages, user_message, request_id)
 
-    # When tools are available AND we're in home-command mode, strip
-    # few-shot user/assistant examples from the personality preprompt.
-    # These examples show text-only responses which biases the model
-    # against generating <tool_call> XML. For chitchat we KEEP the
-    # few-shots on purpose — they show the desired conversational shape.
-    if glados.mcp_manager and is_home_command:
-        _preprompt_n = getattr(store, 'preprompt_count', 0)
-        if _preprompt_n > 1:
-            _filtered = []
-            for _i, _m in enumerate(messages):
-                if _i > 0 and _i < _preprompt_n and _m.get("role") in ("user", "assistant"):
-                    continue  # Skip few-shot examples
-                _filtered.append(_m)
-            messages = _filtered
+    # Phase 2c — run plugin intent BEFORE persona/few-shot manipulation
+    # and before the turn-guard append. Operator-declared keywords are a
+    # more specific signal than the legacy HA-shaped `is_home_command`
+    # classifier; when a plugin matches, that plugin owns the tool list
+    # regardless of whether the verb tripped is_home_command. Used here
+    # to compute ``route_is_command``, which drives the few-shot strip,
+    # the persona-replacement, the guard selection, and (downstream) the
+    # llm_commands lane URL/model override.
+    _matched_plugins: list = []
+    if glados.mcp_manager:
+        try:
+            from glados.plugins import discover_plugins
+            from glados.plugins.intent import match_plugins
+            from glados.plugins.triage import triage_plugins
+            _enabled_plugins = discover_plugins()
+            _matched_plugins = match_plugins(user_message, _enabled_plugins)
+            if _matched_plugins:
+                logger.info(
+                    "[{}] plugin intent: keyword matched: {}",
+                    request_id, [p.name for p in _matched_plugins],
+                )
+            else:
+                _triaged = triage_plugins(user_message, _enabled_plugins)
+                if _triaged:
+                    _matched_plugins = [
+                        p for p in _enabled_plugins if p.name in _triaged
+                    ]
+                    logger.info(
+                        "[{}] plugin intent: triage matched: {}",
+                        request_id, list(_triaged),
+                    )
+                else:
+                    logger.info("[{}] plugin intent: no match", request_id)
+        except Exception as _intent_exc:
+            logger.debug(
+                "[{}] plugin intent gate skipped: {}",
+                request_id, _intent_exc,
+            )
 
-    # Phase 8.3 — chitchat-path guard. On the is_home_command=False
-    # branch no tool was called, so the model must NOT narrate device
-    # actions, temperatures, or environmental status. Qwen3:8b was
-    # hallucinating full "the lights have been dimmed" responses to
-    # "Hey you" without any tool invocation. Inject a terse system
-    # message just before the user turn so it's the most recent
-    # instruction the model sees — matches the emotion-directive
-    # placement below so both ride together.
-    # SSE turn-guard: the canonical guard text lives in
-    # `glados/core/turn_guards.py` so the engine's ContextBuilder
-    # registration and this SSE block can't drift apart.
+    # Tool-using turns (plugin route OR is_home_command) take the
+    # command lane: terse, anti-fabrication, no persona overlay.
+    # Conversational turns (weather / status / direct chat / autonomy)
+    # keep the persona preprompt and the interactive lane.
+    route_is_command = bool(_matched_plugins or is_home_command)
+
+    # Resolve the upstream lane early so subsequent persona-flavoured
+    # injections (attitude directive, PAD TTS override, emotion
+    # directive, attitude SSE event) can guard on it. The actual
+    # ``compose_endpoint`` call still happens later, at the dispatch
+    # site, but the lane decision is needed up here.
+    _upstream_url, _upstream_model, _is_command_lane = _select_command_lane(
+        is_command_route=route_is_command,
+        interactive_url=str(glados.completion_url),
+        interactive_model=glados.llm_model,
+        commands_endpoint=getattr(cfg.services, "llm_commands", None),
+    )
+
+    # On the command lane: replace the persona system message with the
+    # minimal command-mode instruction and drop ALL prior user/assistant
+    # turns from history. The history drop is load-bearing: without it,
+    # small instruction-tuned models on the command lane do in-context
+    # learning on the conversation_store and copy whatever pattern the
+    # last few assistant turns took (typically text replies from
+    # chitchat / tier-1 fast-path / failed tool turns) — which
+    # suppresses tool_call emission entirely. The interactive lane
+    # keeps its history; cross-lane carry-over is not supported.
+    if _is_command_lane and glados.mcp_manager:
+        _preprompt_n = getattr(store, 'preprompt_count', 0)
+        messages = _strip_persona_for_command_lane(messages, _preprompt_n)
+
+    # Phase 8.3 — turn guard. Command lane gets HOME_COMMAND_GUARD ("use
+    # the provided tools, never narrate actions you didn't take");
+    # interactive lane gets CHITCHAT_GUARD ("no tool was called this
+    # turn, do not narrate device actions / temperatures"). Generalized
+    # from the previous is_home_command-only check so plugin routes get
+    # the tool-using guard too.
     from glados.core.turn_guards import CHITCHAT_GUARD, HOME_COMMAND_GUARD
-    if not is_home_command:
-        messages.append({"role": "system", "content": CHITCHAT_GUARD})
-    else:
+    if route_is_command:
         messages.append({"role": "system", "content": HOME_COMMAND_GUARD})
+    else:
+        messages.append({"role": "system", "content": CHITCHAT_GUARD})
 
     messages.append({"role": "user", "content": user_message})
 
-    # Roll an attitude directive for this turn (adds variety to responses)
-    attitude = roll_attitude()
-    attitude_directive = attitude.get("directive") if attitude else None
-    attitude_tts = attitude.get("tts", {}) if attitude else {}
-    if attitude_directive:
-        # Insert directive as a system message after any existing system messages
-        insert_idx = 0
-        while insert_idx < len(messages) and messages[insert_idx].get("role") == "system":
-            insert_idx += 1
-        messages.insert(insert_idx, {"role": "system", "content": attitude_directive})
-        logger.debug("[{}] Attitude: {} — {}", request_id, attitude.get("tag"), attitude_directive[:60])
+    # Roll an attitude directive for this turn (adds variety to responses).
+    # Skipped on the command lane: tool-using turns are voice-of-the-tool-
+    # result, not voice-of-GLaDOS — the attitude directive injects
+    # persona-flavoured language ("respond with theatrical exasperation")
+    # that leaks quips into terse confirmations.
+    if not _is_command_lane:
+        attitude = roll_attitude()
+        attitude_directive = attitude.get("directive") if attitude else None
+        attitude_tts = attitude.get("tts", {}) if attitude else {}
+        if attitude_directive:
+            # Insert directive as a system message after any existing system messages
+            insert_idx = 0
+            while insert_idx < len(messages) and messages[insert_idx].get("role") == "system":
+                insert_idx += 1
+            messages.insert(insert_idx, {"role": "system", "content": attitude_directive})
+            logger.debug("[{}] Attitude: {} — {}", request_id, attitude.get("tag"), attitude_directive[:60])
+    else:
+        attitude = None
+        attitude_directive = None
+        attitude_tts = {}
 
     # Phase Emotion-G: PAD override on TTS params. When the emotion state
     # is deep-negative, clobber the random attitude's Piper params with a
@@ -1605,21 +1780,31 @@ def _stream_chat_sse_impl(
     # Also publishes to the thread-local via set_pad_override() so
     # downstream TTS code reading get_tts_params() sees the same
     # values — not just the SSE attitude event.
-    try:
-        if glados._emotion_agent is not None and glados._emotion_agent.state is not None:
-            _es = glados._emotion_agent.state
-            _override = pad_to_tts_override(_es.pleasure, _es.arousal, _es.dominance)
-            if _override:
-                attitude_tts = _override
-                set_pad_override(_override)
-                logger.info(
-                    "[{}] PAD TTS override applied (P={:.2f}): {}",
-                    request_id, _es.pleasure, _override,
-                )
-            else:
+    #
+    # Skipped on the command lane: same rationale as the attitude
+    # directive above. Tool-result confirmations should not get
+    # menacing TTS modulation.
+    if not _is_command_lane:
+        try:
+            if glados._emotion_agent is not None and glados._emotion_agent.state is not None:
+                _es = glados._emotion_agent.state
+                _override = pad_to_tts_override(_es.pleasure, _es.arousal, _es.dominance)
+                if _override:
+                    attitude_tts = _override
+                    set_pad_override(_override)
+                    logger.info(
+                        "[{}] PAD TTS override applied (P={:.2f}): {}",
+                        request_id, _es.pleasure, _override,
+                    )
+                else:
+                    set_pad_override(None)
+        except Exception as _pad_exc:
+            logger.debug("[{}] PAD TTS override skipped: {}", request_id, _pad_exc)
+            try:
                 set_pad_override(None)
-    except Exception as _pad_exc:
-        logger.debug("[{}] PAD TTS override skipped: {}", request_id, _pad_exc)
+            except Exception:
+                pass
+    else:
         try:
             set_pad_override(None)
         except Exception:
@@ -1662,9 +1847,13 @@ def _stream_chat_sse_impl(
                 # ops signals that ARE worth seeing ride at this
                 # level. Same convention the rest of the codebase
                 # uses for "visible, not a warning."
-                logger.success(
+                _log_memory_inject.info(
                     "[{}] memory_context injected ({} chars)",
                     request_id, len(memory_prompt),
+                )
+                _log_memory_inject.debug(
+                    "[{}] memory_context content[:500]: {!r}",
+                    request_id, memory_prompt[:500],
                 )
     except Exception as _mem_exc:
         logger.warning("[{}] memory_context skipped: {}", request_id, _mem_exc)
@@ -1698,10 +1887,40 @@ def _stream_chat_sse_impl(
     except Exception as _canon_exc:
         logger.warning("[{}] canon_context skipped: {}", request_id, _canon_exc)
 
-    # Inject emotional state directive as the LAST system message before the user turn
-    # This ensures it's the most recent context GLaDOS reads before generating
+    # Inject current-time context when the user asks about time / date /
+    # day / clock. GLaDOS otherwise hallucinates the time outright
+    # (operator-flagged 2026-05-02). The time_source module syncs an
+    # offset against an NTP server (NIST default) at startup and
+    # resolves IANA tz from the operator's weather coordinates — see
+    # glados/core/time_source.py.
     try:
-        if glados._emotion_agent is not None and glados._emotion_agent.state is not None:
+        from glados.core import time_source
+        from glados.core.context_gates import needs_time_context
+        if needs_time_context(user_message):
+            time_prompt = time_source.as_prompt()
+            if time_prompt:
+                insert_idx = 0
+                while (
+                    insert_idx < len(messages)
+                    and messages[insert_idx].get("role") == "system"
+                ):
+                    insert_idx += 1
+                messages.insert(
+                    insert_idx,
+                    {"role": "system", "content": time_prompt},
+                )
+                logger.success(
+                    "[{}] time_context injected: {!r}",
+                    request_id, time_prompt,
+                )
+    except Exception as _time_exc:
+        logger.warning("[{}] time_context skipped: {}", request_id, _time_exc)
+
+    # Inject emotional state directive as the LAST system message before the user turn.
+    # Skipped on the command lane: the emotion directive is persona
+    # guidance for the conversational voice, not for tool-result echoes.
+    try:
+        if not _is_command_lane and glados._emotion_agent is not None and glados._emotion_agent.state is not None:
             directive = glados._emotion_agent.state.to_response_directive()
             # Insert just before the user message (after all other system messages)
             insert_idx = len(messages) - 1  # position of the user message
@@ -1710,14 +1929,19 @@ def _stream_chat_sse_impl(
     except Exception as _emo_exc:
         logger.debug("[{}] Emotion directive skipped: {}", request_id, _emo_exc)
 
-    # Determine endpoint. The system stores ``glados.completion_url`` as the
-    # bare ``scheme://host:port``; ``/v1/chat/completions`` is appended only
-    # at dispatch time so the operator never has to type or know about
-    # protocol-internal paths. ``compose_endpoint`` is forgiving — if a
-    # legacy installation still has ``/api/chat`` baked into the stored URL,
-    # the path component is stripped before the OpenAI suffix is appended.
+    # Compose the upstream endpoint. ``glados.completion_url`` (and the
+    # llm_commands URL) are stored as bare ``scheme://host:port``;
+    # ``/v1/chat/completions`` is appended only at dispatch time so the
+    # operator never has to type or know about protocol-internal paths.
+    # ``compose_endpoint`` is forgiving — if a legacy installation still
+    # has ``/api/chat`` baked into the stored URL, the path component
+    # is stripped before the OpenAI suffix is appended.
+    #
+    # ``_upstream_url`` / ``_upstream_model`` / ``_is_command_lane`` were
+    # picked earlier (right after route classification) so the
+    # persona-flavoured injections above could guard on the lane choice.
     from glados.core.url_utils import compose_endpoint
-    completion_url = compose_endpoint(str(glados.completion_url), "/v1/chat/completions")
+    completion_url = compose_endpoint(_upstream_url, "/v1/chat/completions")
     parsed_url = urlparse(completion_url)
 
     # ── Entity name resolver ─────────────────────────────────────────
@@ -1766,11 +1990,24 @@ def _stream_chat_sse_impl(
             logger.debug("Entity resolve failed: {}", _e)
         return args
 
-    # Reinforce tool use - the personality preprompt few-shot examples show
-    # text-only responses which biases the model against calling tools.
-    # SKIP for chitchat: the reinforcement message pushes the model toward
-    # device-oriented framing even when there's no device in play.
-    if glados.mcp_manager and is_home_command:
+    # Plugin intent matching has already run further up — its output
+    # (`_matched_plugins`) is what drove the few-shot strip and the
+    # turn guard selection. Reuse it here for tool catalogue selection.
+
+    # Build tool definitions. Plugin-intent wins; HA path is the no-plugin
+    # fallback. Chitchat with no plugin match gets an empty tool list.
+    tools: list[dict[str, Any]] = []
+    if _matched_plugins and glados.mcp_manager:
+        try:
+            tools = glados.mcp_manager.get_tool_definitions(
+                server_filter={p.name for p in _matched_plugins},
+            )
+        except Exception:
+            pass
+    elif glados.mcp_manager and is_home_command:
+        # Legacy HA path: no plugin matched, query smells home-command.
+        # Insert the HA-bias hint so the model favors HA-shaped tool calls,
+        # then advertise the full tool catalog + builtins.
         _tool_hint = {
             "role": "system",
             "content": (
@@ -1778,29 +2015,34 @@ def _stream_chat_sse_impl(
             ),
         }
         messages.insert(len(messages) - 1, _tool_hint)
-
-    # Build tool definitions - MCP/HA tools only (static tools like do_nothing,
-    # robot_move etc. are for the engine autonomy loop, not WebUI chat).
-    # Chitchat turns get an empty tool list — nothing to call, nothing to
-    # bloat the prompt with.
-    tools: list[dict[str, Any]] = []
-    if glados.mcp_manager and is_home_command:
         try:
             tools = glados.mcp_manager.get_tool_definitions()
         except Exception:
             pass
-    # Phase 8.3.4b — append the in-process built-in tools
-    # (search_entities, get_entity_details). Always available when
-    # we're on the home-command path, regardless of whether any
-    # remote MCP server is configured. Gives the Tier 3 planner a
-    # direct hook into the semantic retriever without having to
-    # ship a separate MCP server.
-    if is_home_command:
+        # Phase 8.3.4b builtins (search_entities, get_entity_details) — only
+        # on the legacy HA path. Plugin path uses plugin-declared tools only.
         try:
             from glados.core.builtin_tools import get_builtin_tool_definitions
             tools = list(tools) + get_builtin_tool_definitions()
         except Exception as exc:  # noqa: BLE001
             logger.debug("builtin tool registration skipped: {}", exc)
+
+    # Hard cap on the advertised tool catalog. Defensive workaround for an
+    # LM Studio runtime crash (Exit code 3221226505 = STATUS_STACK_BUFFER_
+    # OVERRUN) reproducible against qwen3-30b-a3b when the chat payload
+    # carries ~40+ tool definitions. Crash kills the response stream and
+    # the operator sees an empty bubble. Cap at 24 — comfortably above the
+    # typical plugin's tool count, below the observed crash threshold.
+    # Tools are kept in their existing order, so plugin-supplied catalogs
+    # land before the (long) HA tool list and the in-process builtins.
+    # Generic across all plugins / future tool sources.
+    _MAX_TOOLS_PER_TURN = 24
+    if len(tools) > _MAX_TOOLS_PER_TURN:
+        logger.warning(
+            "[{}] tool catalog truncated: {} → {} (LM Studio + qwen3 buffer overrun workaround)",
+            request_id, len(tools), _MAX_TOOLS_PER_TURN,
+        )
+        tools = tools[:_MAX_TOOLS_PER_TURN]
 
     # Build request payload
     # Stage 3 Phase A: model_options come from PersonalityConfig.model_options
@@ -1809,32 +2051,36 @@ def _stream_chat_sse_impl(
     # path (qwen2.5:14b-instruct vs the retired glados:latest Modelfile) —
     # persona strength is more sensitive to these parameters when no SYSTEM
     # is baked into the Modelfile.
-    # Phase 8.0.1 — Qwen3 thinking-mode suppression on the Tier 3 chat
-    # path. Prevents the model from emitting a long <think>…</think>
-    # prelude on each tool round, which was blowing the output budget
-    # before a user-visible answer could be produced (see the
-    # "It's too bright in the office" investigation in Change 14.3).
-    # Reasoning gate: home commands / tool-call turns benefit from the
-    # hybrid model's thinking mode (entity disambiguation, tool selection,
-    # multi-step planning). Pure chitchat turns short-circuit straight to
-    # /no_think for ~2-5 s replies instead of 30+ s reasoning chains. The
-    # hybrid Qwen3-30B-A3B (NOT the -thinking-2507 variant) honours both
-    # /think and /no_think directives at chat-template level.
+    # Thinking + tool selection trade-off: with thinking OFF, qwen3-30b
+    # produces neither tool_calls nor text on multi-tool catalogs (model
+    # needs deliberation to pick from 20+ tools). With thinking ON +
+    # 40+ tools, LM Studio crashes (Exit code 3221226505). The tool
+    # catalog cap below sits well under the crash threshold, so we can
+    # keep thinking enabled when tools are advertised — the model uses
+    # it to pick the right tool, then produces a tool_call + post-result
+    # final text within the 1024 num_predict budget. Pure chitchat
+    # (no tools) still skips thinking for fast 2-5 s replies.
+    _has_tools = bool(tools)
     from glados.core.llm_directives import apply_model_family_directives
     messages = apply_model_family_directives(
-        messages, glados.llm_model, enable_thinking=is_home_command,
+        messages, _upstream_model, enable_thinking=_has_tools,
     )
-    # 2026-04-20 — cap num_predict on Tier 3 so a confused model
-    # can't produce a 2000+ token essay when it mis-reads context
-    # (observed live: "What level is the desk lamp set to?" came
-    # back as a 2430-token markdown summary of the weather data
-    # that had bled in from autonomy writes). The preprompt asks
-    # for 1–2 sentences; 512 tokens is a 4x safety margin that
-    # still prevents runaway generation.
+    # num_predict budget. Two modes:
+    #   - command lane (qwen2.5-coder-7b on the dedicated lane): 512 is
+    #     sufficient. Tool-using command turns produce short tool_call
+    #     JSON + a terse confirmation; no <think> overhead, no persona
+    #     prose. Smaller budget keeps replies snappy.
+    #   - interactive lane: 1024 when tools are advertised (covers
+    #     <think> + tool_call + post-result final text across 1-3
+    #     rounds), else 512 for pure chitchat. Operators with heavier
+    #     catalogs can override via personality.model_options.num_predict.
     _streaming_options = dict(cfg.personality.model_options.to_ollama_options())
-    _streaming_options.setdefault("num_predict", 512)
+    if _is_command_lane:
+        _streaming_options.setdefault("num_predict", 512)
+    else:
+        _streaming_options.setdefault("num_predict", 1024 if _has_tools else 512)
     payload: dict[str, Any] = {
-        "model": glados.llm_model,
+        "model": _upstream_model,
         "stream": True,
         "messages": messages,
         "options": _streaming_options,
@@ -1847,10 +2093,22 @@ def _stream_chat_sse_impl(
         payload["stream_options"] = {"include_usage": True}
     if tools:
         payload["tools"] = tools
-    logger.success(
-        "[{}] SSE: {} msgs, {} tools (mode={})",
+    # Route marker reflects actual tool-routing decision, not just the
+    # legacy is_home_command flag (which can be true even when plugin
+    # intent overrides — confusing during debugging).
+    if _matched_plugins:
+        _route = "plugin:" + ",".join(p.name for p in _matched_plugins)
+    elif is_home_command:
+        _route = "ha"
+    else:
+        _route = "chitchat"
+    _lane = "commands" if _is_command_lane else "interactive"
+    _log_chat_routing.info(
+        "[{}] SSE: {} msgs, {} tools, num_predict={} (route={} lane={} "
+        "model={}) system_prompt_chars={} body_bytes_pending=true",
         request_id, len(messages), len(tools),
-        "home_command" if is_home_command else "chitchat",
+        _streaming_options.get("num_predict"), _route, _lane, _upstream_model,
+        sum(len(m.get("content") or "") for m in messages if m.get("role") == "system"),
     )
     body = json.dumps(payload).encode("utf-8")
 
@@ -1864,6 +2122,11 @@ def _stream_chat_sse_impl(
     # Connect to Ollama via http.client (no buffering)
     conn = None
     t_request_sent = time.time()  # TTFT: start timer BEFORE sending request
+    _log_chat_connect.info(
+        "[{}] LLM upstream connecting: {}:{} POST {} (body_bytes={})",
+        request_id, parsed_url.hostname or "localhost",
+        parsed_url.port or 11434, parsed_url.path, len(body),
+    )
     try:
         conn = _http.HTTPConnection(
             parsed_url.hostname or "localhost",
@@ -1872,9 +2135,20 @@ def _stream_chat_sse_impl(
         )
         conn.request("POST", parsed_url.path, body=body, headers=headers)
         api_resp = conn.getresponse()
+        _resp_headers = {k.lower(): v for k, v in api_resp.getheaders()}
+        _log_chat_connect.info(
+            "[{}] LLM upstream status={} reason={!r} content_type={!r} server={!r}",
+            request_id, api_resp.status, api_resp.reason,
+            _resp_headers.get("content-type", ""),
+            _resp_headers.get("server", ""),
+        )
 
         if api_resp.status >= 400:
-            err_body = api_resp.read().decode("utf-8", errors="replace")[:200]
+            err_body = api_resp.read().decode("utf-8", errors="replace")[:1000]
+            _log_chat_connect.warning(
+                "[{}] LLM upstream 4xx body[:1000]={!r}",
+                request_id, err_body,
+            )
             handler.send_response(200)
             handler.send_header("Content-Type", "text/event-stream")
             handler.send_header("Cache-Control", "no-cache")
@@ -1898,7 +2172,10 @@ def _stream_chat_sse_impl(
     except Exception as e:
         if conn:
             conn.close()
-        logger.error(f"[{request_id}] SSE stream connect error: {e}")
+        _log_chat_connect.error(
+            "[{}] SSE stream connect error: {} ({})",
+            request_id, type(e).__name__, e,
+        )
         handler._send_json(
             {"error": {"message": f"LLM connection error: {e}", "type": "server_error"}},
             502,
@@ -1923,6 +2200,88 @@ def _stream_chat_sse_impl(
         handler.wfile.flush()
 
     full_response: list[str] = []
+    _upstream_errors_emitted = False  # prevent duplicate emissions across rounds
+
+    def _merge_tool_call_delta(buf: dict, delta_calls: list) -> None:
+        """Accumulate streaming tool_call deltas by their ``index`` field.
+
+        The OpenAI-compat streaming surface emits a single logical tool
+        call across multiple chunks: the first delta carries
+        ``{index:0, id, type, function:{name}}``, subsequent deltas
+        carry ``{index:0, function:{arguments: "..."}}`` with the
+        argument JSON bytes split arbitrarily. The previous code did
+        ``pending_tool_calls.extend(_tc)`` on every delta, so seven
+        deltas for one logical call became seven fake calls — six of
+        which had empty name + empty args and dispatched to the
+        "only MCP tools supported" error branch, then round 2 sent a
+        malformed messages history and LM Studio responded 400.
+
+        Merge by ``index``. Caller flattens the buf into
+        ``pending_tool_calls`` once the stream ends.
+        """
+        for dc in delta_calls or []:
+            if not isinstance(dc, dict):
+                continue
+            idx = dc.get("index", 0)
+            slot = buf.setdefault(idx, {
+                "id": "", "type": "function",
+                "function": {"name": "", "arguments": ""},
+            })
+            if dc.get("id"):
+                slot["id"] = dc["id"]
+            if dc.get("type"):
+                slot["type"] = dc["type"]
+            fn = dc.get("function") or {}
+            if isinstance(fn, dict):
+                if fn.get("name"):
+                    slot["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+
+    def _emit_upstream_error_to_sse(error_payload: Any, *, round_label: str) -> None:
+        """Surface an LM Studio (or other upstream) error chunk into the
+        WebUI bubble as a visible content chunk + persist it as the
+        assistant turn.
+
+        Empty bubbles must never happen silently again. The chat-path
+        diag captures the error chunk; this helper makes it visible to
+        the operator without log-diving.
+
+        Tolerant: if the SSE client has already disconnected the write
+        will raise BrokenPipeError and we swallow it — the diag log has
+        the message anyway. ``full_response`` carries the user-facing
+        text so the conversation store has something better than '' to
+        save as the assistant turn.
+        """
+        nonlocal _upstream_errors_emitted
+        msg: str = ""
+        if isinstance(error_payload, dict):
+            msg = str(error_payload.get("message") or error_payload)
+        elif error_payload is not None:
+            msg = str(error_payload)
+        if not msg:
+            return
+        text = f"[Upstream error ({round_label}): {msg}]"
+        full_response.append(text)
+        chunk = {
+            "id": f"chatcmpl-{request_id}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": "glados",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": text},
+                "finish_reason": None,
+            }],
+        }
+        try:
+            handler.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            handler.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # Client disconnected — diag log still captured the message.
+            pass
+        _upstream_errors_emitted = True
+
     t_stream_start = time.time()
     t_first_token = None
     ollama_metrics: dict[str, Any] = {}
@@ -1963,6 +2322,10 @@ def _stream_chat_sse_impl(
                     break
                 i = next_close + close_tag_len
                 think_state["in_thinking"] = False
+                _log_filter_think.debug(
+                    "[{}] think_state: closing tag matched at idx {} (len={}); now NOT in_thinking",
+                    request_id, next_close, close_tag_len,
+                )
             else:
                 # Looking for an opening tag
                 next_open = -1
@@ -1985,54 +2348,172 @@ def _stream_chat_sse_impl(
                     out.append(buf[i:next_open])
                 i = next_open + open_tag_len
                 think_state["in_thinking"] = True
+                _log_filter_think.debug(
+                    "[{}] think_state: opening tag matched at idx {} (len={}); now in_thinking",
+                    request_id, next_open, open_tag_len,
+                )
         think_state["tail"] = buf[i:]
         return "".join(out)
 
+    # Round-1 stream diagnostics — every chunk shape this code has ever
+    # encountered (or might encounter) is counted independently so the
+    # diag dump unambiguously distinguishes:
+    #   - "stream sat empty"            (lines == 0)
+    #   - "stream emitted only role/init chunks" (chunks but no content)
+    #   - "stream emitted reasoning_content only"   (qwen3 reasoning shape)
+    #   - "stream emitted tool_calls"              (tool_deltas > 0)
+    #   - "stream emitted top-level error"         (error_payload set)
+    #   - "stream content was filtered into nothing visible"
+    #     (raw_chars > 0 but visible_chars == 0)
+    # Defensive: each counter increments BEFORE any optional parsing,
+    # so even malformed chunks register as 'something arrived'.
+    _r1_lines = 0
+    _r1_data_lines = 0
+    _r1_parsed = 0
+    _r1_parse_failures = 0
+    _r1_total_bytes = 0
+    _r1_chunks = 0
+    _r1_empty_content_chunks = 0
+    _r1_role_only_chunks = 0
+    _r1_raw_buf: list[str] = []
+    _r1_visible_buf: list[str] = []
+    _r1_reasoning_buf: list[str] = []
+    _r1_refusal_buf: list[str] = []
+    _r1_tool_deltas = 0
+    _r1_tc_buf: dict[int, dict] = {}
+    _r1_finish_reason = None
+    _r1_first_chunk_raw: str | None = None
+    _r1_delta_keys: set[str] = set()
+    _r1_top_level_keys: set[str] = set()
+    _r1_error_payload: dict | None = None
+    _r1_usage: dict | None = None
+    _r1_done_seen = False
+
+    _log_chat_round1.info("[{}] entering round-1 stream loop", request_id)
     try:
         while True:
             raw_line = api_resp.readline()
             if not raw_line:
                 break
 
+            _r1_total_bytes += len(raw_line)
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
             if not line:
                 continue
+            _r1_lines += 1
+
+            # Per-line raw bytes — DEBUG-level, gated by chat.round1_raw_bytes.
+            _log_chat_round1_raw.debug(
+                "[{}] r1 line[{:04d}]: {!r}", request_id, _r1_lines, line[:1000],
+            )
 
             # Parse the chunk (handle both Ollama and OpenAI formats)
             content = None
             done = False
 
             if line.startswith("data: "):
+                _r1_data_lines += 1
                 json_str = line[6:]
                 if json_str.strip() == "[DONE]":
                     done = True
+                    _r1_done_seen = True
                 else:
+                    if _r1_first_chunk_raw is None:
+                        _r1_first_chunk_raw = json_str[:1000]
                     try:
                         parsed = json.loads(json_str)
+                        _r1_parsed += 1
+                        if isinstance(parsed, dict):
+                            _r1_top_level_keys.update(parsed.keys())
+                        # LM Studio runtime errors arrive as
+                        # `data: {"error": {"message": "..."}}` with no
+                        # `choices` array. We were silently dropping these
+                        # before (parsed.get("choices") was empty, so the
+                        # whole chunk got ignored). Capture them so the
+                        # diag dump surfaces "Context size exceeded" and
+                        # similar runtime failures verbatim.
+                        if isinstance(parsed.get("error"), dict):
+                            _r1_error_payload = parsed["error"]
+                            _log_chat_round1.warning(
+                                "[{}] r1 upstream error chunk: {!r}",
+                                request_id, parsed["error"],
+                            )
+                            _emit_upstream_error_to_sse(
+                                parsed["error"], round_label="round 1"
+                            )
                         # OpenAI-compat sends `usage` in a terminal chunk
                         # with choices=[] when stream_options.include_usage
                         # is set. Map onto the same keys the metrics block
                         # below already reads from `ollama_metrics`.
                         _usage = parsed.get("usage")
                         if isinstance(_usage, dict):
+                            _r1_usage = _usage
                             if "prompt_tokens" in _usage:
                                 ollama_metrics["prompt_eval_count"] = _usage["prompt_tokens"]
                             if "completion_tokens" in _usage:
                                 ollama_metrics["eval_count"] = _usage["completion_tokens"]
                         _choices = parsed.get("choices") or []
                         if _choices:
-                            delta = _choices[0].get("delta", {})
+                            choice0 = _choices[0]
+                            delta = choice0.get("delta") or {}
+                            if isinstance(delta, dict):
+                                _r1_delta_keys.update(delta.keys())
                             content = delta.get("content")
+                            # Reasoning models (qwen3, DeepSeek-R1, etc.)
+                            # emit thinking via `delta.reasoning_content`
+                            # in the OpenAI-compat surface. Track this
+                            # separately — without it the empty-bubble
+                            # diag was unable to distinguish "model
+                            # generated nothing" from "model generated
+                            # only thinking which we never read".
+                            _rc = delta.get("reasoning_content")
+                            if isinstance(_rc, str) and _rc:
+                                _r1_reasoning_buf.append(_rc)
+                            _refusal = delta.get("refusal")
+                            if isinstance(_refusal, str) and _refusal:
+                                _r1_refusal_buf.append(_refusal)
+                            _fr = choice0.get("finish_reason")
+                            if _fr:
+                                _r1_finish_reason = _fr
                             _tc = delta.get("tool_calls")
                             if _tc:
-                                pending_tool_calls.extend(_tc)
+                                # Streaming tool_calls arrive as deltas
+                                # indexed by ``index`` — must merge, not extend.
+                                _merge_tool_call_delta(_r1_tc_buf, _tc)
+                                _r1_tool_deltas += len(_tc)
+                            # Role-only init chunks (delta == {"role":
+                            # "assistant"}) are extremely common at start
+                            # of stream — count them separately so the
+                            # operator can see "10 role-only chunks, 0
+                            # content" and know the model never emitted.
+                            if (
+                                not content
+                                and not _tc
+                                and not _rc
+                                and isinstance(delta, dict)
+                                and ("role" in delta and len(delta) == 1)
+                            ):
+                                _r1_role_only_chunks += 1
+                            elif content == "":
+                                _r1_empty_content_chunks += 1
                     except json.JSONDecodeError:
-                        pass
+                        _r1_parse_failures += 1
+                        _log_chat_round1.warning(
+                            "[{}] r1 JSON parse failure on data line[:200]={!r}",
+                            request_id, json_str[:200],
+                        )
             else:
+                # Ollama-native chunk (no "data: " SSE prefix)
                 try:
                     parsed = json.loads(line)
+                    _r1_parsed += 1
+                    if _r1_first_chunk_raw is None:
+                        _r1_first_chunk_raw = line[:1000]
+                    if isinstance(parsed, dict):
+                        _r1_top_level_keys.update(parsed.keys())
                     if parsed.get("done"):
                         done = True
+                        _r1_done_seen = True
                         # Ollama final chunk contains timing/token metrics
                         for key in ("eval_count", "prompt_eval_count",
                                      "eval_duration", "prompt_eval_duration",
@@ -2040,19 +2521,26 @@ def _stream_chat_sse_impl(
                             if key in parsed:
                                 ollama_metrics[key] = parsed[key]
                     else:
-                        msg = parsed.get("message", {})
+                        msg = parsed.get("message") or {}
+                        if isinstance(msg, dict):
+                            _r1_delta_keys.update(msg.keys())
                         content = msg.get("content")
                         _tc = msg.get("tool_calls")
                         if _tc:
                             pending_tool_calls.extend(_tc)
+                            _r1_tool_deltas += len(_tc)
                 except json.JSONDecodeError:
+                    _r1_parse_failures += 1
                     continue
 
             if content:
+                _r1_chunks += 1
+                _r1_raw_buf.append(content)
                 if t_first_token is None:
                     t_first_token = time.time()
                 visible = _filter_think_chunk(content)
                 if visible:
+                    _r1_visible_buf.append(visible)
                     full_response.append(visible)
                     # Emit SSE chunk in OpenAI format
                     chunk_data = {
@@ -2075,6 +2563,7 @@ def _stream_chat_sse_impl(
                 if think_state["tail"]:
                     tail_visible = "" if think_state["in_thinking"] else think_state["tail"]
                     if tail_visible:
+                        _r1_visible_buf.append(tail_visible)
                         full_response.append(tail_visible)
                         chunk_data = {
                             "id": f"chatcmpl-{request_id}",
@@ -2092,9 +2581,88 @@ def _stream_chat_sse_impl(
                     think_state["tail"] = ""
                 break
 
+        # Diagnostic dump — every chunk-shape counter so the operator
+        # can read this single block and know exactly what LM Studio
+        # sent back. Designed against the empty-bubble decision table:
+        # any combination of stream symptoms maps to a unique fingerprint
+        # here. Emitted at INFO so it's always visible when the
+        # chat.round1_stream group is enabled.
+        _r1_raw_full = "".join(_r1_raw_buf)
+        _r1_visible_full = "".join(_r1_visible_buf)
+        _r1_reasoning_full = "".join(_r1_reasoning_buf)
+        _r1_refusal_full = "".join(_r1_refusal_buf)
+        _log_chat_round1.info(
+            "[{}] round-1 diag: lines={} data_lines={} parsed={} "
+            "parse_fail={} bytes={} chunks={} role_only={} empty_content={} "
+            "raw_chars={} visible_chars={} reasoning_chars={} refusal_chars={} "
+            "tool_deltas={} finish_reason={!r} done_seen={} error={!r} usage={!r}",
+            request_id, _r1_lines, _r1_data_lines, _r1_parsed,
+            _r1_parse_failures, _r1_total_bytes, _r1_chunks,
+            _r1_role_only_chunks, _r1_empty_content_chunks,
+            len(_r1_raw_full), len(_r1_visible_full),
+            len(_r1_reasoning_full), len(_r1_refusal_full),
+            _r1_tool_deltas, _r1_finish_reason, _r1_done_seen,
+            _r1_error_payload, _r1_usage,
+        )
+        if _r1_top_level_keys or _r1_delta_keys:
+            _log_chat_round1.info(
+                "[{}] round-1 chunk shape: top_level_keys={} delta_keys={}",
+                request_id, sorted(_r1_top_level_keys), sorted(_r1_delta_keys),
+            )
+        if _r1_first_chunk_raw:
+            _log_chat_round1.info(
+                "[{}] round-1 first_chunk[:1000]: {!r}",
+                request_id, _r1_first_chunk_raw,
+            )
+        if _r1_raw_full:
+            _log_chat_round1.info(
+                "[{}] round-1 raw[:500]: {!r}",
+                request_id, _r1_raw_full[:500],
+            )
+        if _r1_visible_full:
+            _log_chat_round1.info(
+                "[{}] round-1 visible[:500]: {!r}",
+                request_id, _r1_visible_full[:500],
+            )
+        if _r1_reasoning_full:
+            _log_chat_round1.info(
+                "[{}] round-1 reasoning_content[:500]: {!r}",
+                request_id, _r1_reasoning_full[:500],
+            )
+        if _r1_refusal_full:
+            _log_chat_round1.warning(
+                "[{}] round-1 refusal[:500]: {!r}",
+                request_id, _r1_refusal_full[:500],
+            )
+
+        # Flush merged streaming tool_calls into pending_tool_calls.
+        # Each entry in _r1_tc_buf is a single complete tool call
+        # accumulated across however many delta chunks LM Studio sent.
+        if _r1_tc_buf:
+            for _idx in sorted(_r1_tc_buf):
+                _merged_call = _r1_tc_buf[_idx]
+                if not _merged_call.get("id"):
+                    _merged_call["id"] = f"call_{request_id}_{_idx}"
+                pending_tool_calls.append(_merged_call)
+            _log_chat_tool_call.info(
+                "[{}] round-1 merged {} streaming tool_call delta(s) into {} call(s): {}",
+                request_id, _r1_tool_deltas, len(_r1_tc_buf),
+                [c.get("function", {}).get("name", "?") for c in pending_tool_calls],
+            )
+
         # ── Agentic tool loop ─────────────────────────────────────
         _tool_round = 0
         _max_rounds = 5
+        if pending_tool_calls and glados.mcp_manager is None:
+            _log_chat_tool_call.warning(
+                "[{}] {} tool_calls queued but mcp_manager is None; agentic loop skipped",
+                request_id, len(pending_tool_calls),
+            )
+        elif pending_tool_calls:
+            _log_chat_tool_call.info(
+                "[{}] entering agentic tool loop with {} pending call(s)",
+                request_id, len(pending_tool_calls),
+            )
         while pending_tool_calls and _tool_round < _max_rounds and glados.mcp_manager:
             _tool_round += 1
             messages.append({"role": "assistant", "tool_calls": pending_tool_calls, "content": ""})
@@ -2124,7 +2692,11 @@ def _stream_chat_sse_impl(
                 # Pre-resolve fuzzy entity names against HA
                 if "HassTurn" in _tool_name or "HassLight" in _tool_name:
                     _tool_args = _resolve_entity_name(_tool_args)
-                logger.info("[{}] Streaming tool call: {} {} (round {})", request_id, _tool_name, _tool_args, _tool_round)
+                _tool_t0 = time.time()
+                _log_chat_tool_call.info(
+                    "[{}] tool dispatch (round {}): {} args={}",
+                    request_id, _tool_round, _tool_name, _tool_args,
+                )
                 try:
                     # Phase 8.3.4b — route the built-in
                     # search_entities / get_entity_details calls to
@@ -2135,69 +2707,202 @@ def _stream_chat_sse_impl(
                         invoke_builtin_tool, is_builtin_tool,
                     )
                     if is_builtin_tool(_tool_name):
+                        _log_chat_tool_call.debug(
+                            "[{}] tool path: builtin", request_id,
+                        )
                         _result = invoke_builtin_tool(_tool_name, _tool_args)
                     elif _tool_name.startswith("mcp."):
+                        _log_chat_tool_call.debug(
+                            "[{}] tool path: mcp", request_id,
+                        )
                         _result = glados.mcp_manager.call_tool(_tool_name, _tool_args, timeout=30)
                     else:
                         _result = "error: only MCP tools supported in streaming chat"
-                    logger.success("[{}] Tool done: {}", request_id, _tool_name)
+                        _log_chat_tool_call.warning(
+                            "[{}] tool path: unsupported (name={!r})",
+                            request_id, _tool_name,
+                        )
+                    _tool_ms = (time.time() - _tool_t0) * 1000.0
+                    _result_text = str(_result)
+                    _log_chat_tool_call.info(
+                        "[{}] tool done: {} latency={:.0f}ms result_chars={}",
+                        request_id, _tool_name, _tool_ms, len(_result_text),
+                    )
+                    _log_chat_tool_result.debug(
+                        "[{}] tool result body[:500] for {}: {!r}",
+                        request_id, _tool_name, _result_text[:500],
+                    )
                 except Exception as _te:
                     _result = f"error: {_te}"
-                    logger.error("[{}] Tool error: {} -> {}", request_id, _tool_name, _te)
+                    _tool_ms = (time.time() - _tool_t0) * 1000.0
+                    _log_chat_tool_call.error(
+                        "[{}] tool error: {} -> {} ({}) latency={:.0f}ms",
+                        request_id, _tool_name, type(_te).__name__, _te, _tool_ms,
+                    )
                 messages.append({"role": "tool", "tool_call_id": _tc_id, "content": str(_result)})
 
             pending_tool_calls = []
-            _p2 = {"model": glados.llm_model, "stream": True, "messages": messages}
+            # Round-2 dispatch uses the SAME upstream as round 1 — the
+            # tool result must travel back to the model that emitted the
+            # tool call (model identity matters: command-lane qwen2.5-coder
+            # vs interactive-lane qwen3-14b have different tool_call
+            # surfaces). parsed_url already points at the right host;
+            # _upstream_model is the matching model identifier.
+            _p2 = {"model": _upstream_model, "stream": True, "messages": messages}
             if tools:
                 _p2["tools"] = tools
             _b2 = json.dumps(_p2).encode("utf-8")
             _h2 = {"Content-Type": "application/json", "Content-Length": str(len(_b2))}
             if glados.api_key:
                 _h2["Authorization"] = f"Bearer {glados.api_key}"
+            # Diagnostic accumulators for the round-2 stream. Same shape
+            # as round-1, so the operator can compare both halves of the
+            # chat at a glance. Tracks every chunk variant LM Studio
+            # might emit (content / reasoning_content / tool_calls /
+            # role-only init / refusal / top-level error / usage / [DONE]).
+            _r2_lines = 0
+            _r2_data_lines = 0
+            _r2_parsed = 0
+            _r2_parse_failures = 0
+            _r2_total_bytes = 0
+            _r2_chunks = 0
+            _r2_empty_content_chunks = 0
+            _r2_role_only_chunks = 0
+            _r2_raw_buf: list[str] = []
+            _r2_visible_buf: list[str] = []
+            _r2_reasoning_buf: list[str] = []
+            _r2_refusal_buf: list[str] = []
+            _r2_tool_deltas = 0
+            _r2_tc_buf: dict[int, dict] = {}
+            _r2_finish_reason = None
+            _r2_first_chunk_raw: str | None = None
+            _r2_delta_keys: set[str] = set()
+            _r2_top_level_keys: set[str] = set()
+            _r2_error_payload: dict | None = None
+            _r2_usage: dict | None = None
+            _r2_done_seen = False
+            _log_chat_round2.info("[{}] entering round-2 stream loop", request_id)
             try:
                 _c2 = _http.HTTPConnection(parsed_url.hostname or "localhost", parsed_url.port or 11434, timeout=int(timeout))
                 _c2.request("POST", parsed_url.path, body=_b2, headers=_h2)
                 _r2 = _c2.getresponse()
+                _r2_resp_headers = {k.lower(): v for k, v in _r2.getheaders()}
+                _log_chat_round2.info(
+                    "[{}] round-2 upstream status={} reason={!r} content_type={!r}",
+                    request_id, _r2.status, _r2.reason,
+                    _r2_resp_headers.get("content-type", ""),
+                )
                 while True:
                     _raw2 = _r2.readline()
                     if not _raw2:
                         break
+                    _r2_total_bytes += len(_raw2)
                     _ln2 = _raw2.decode("utf-8", errors="replace").rstrip()
                     if not _ln2:
                         continue
+                    _r2_lines += 1
+                    _log_chat_round2_raw.debug(
+                        "[{}] r2 line[{:04d}]: {!r}", request_id, _r2_lines, _ln2[:1000],
+                    )
                     _content2 = None
                     _done2 = False
                     if _ln2.startswith("data: "):
+                        _r2_data_lines += 1
                         _js2 = _ln2[6:]
                         if _js2.strip() == "[DONE]":
                             _done2 = True
+                            _r2_done_seen = True
                         else:
+                            if _r2_first_chunk_raw is None:
+                                _r2_first_chunk_raw = _js2[:1000]
                             try:
                                 _pp2 = json.loads(_js2)
-                                _d2 = _pp2.get("choices", [{}])[0].get("delta", {})
-                                _content2 = _d2.get("content")
-                                _ttc = _d2.get("tool_calls")
-                                if _ttc:
-                                    pending_tool_calls.extend(_ttc)
+                                _r2_parsed += 1
+                                if isinstance(_pp2, dict):
+                                    _r2_top_level_keys.update(_pp2.keys())
+                                if isinstance(_pp2.get("error"), dict):
+                                    _r2_error_payload = _pp2["error"]
+                                    _log_chat_round2.warning(
+                                        "[{}] r2 upstream error chunk: {!r}",
+                                        request_id, _pp2["error"],
+                                    )
+                                    _emit_upstream_error_to_sse(
+                                        _pp2["error"], round_label="round 2"
+                                    )
+                                _u2 = _pp2.get("usage")
+                                if isinstance(_u2, dict):
+                                    _r2_usage = _u2
+                                    if "prompt_tokens" in _u2:
+                                        ollama_metrics["prompt_eval_count"] = _u2["prompt_tokens"]
+                                    if "completion_tokens" in _u2:
+                                        ollama_metrics["eval_count"] = _u2["completion_tokens"]
+                                _ch_list = _pp2.get("choices") or []
+                                if _ch_list:
+                                    _ch_obj = _ch_list[0]
+                                    _d2 = _ch_obj.get("delta") or {}
+                                    if isinstance(_d2, dict):
+                                        _r2_delta_keys.update(_d2.keys())
+                                    _content2 = _d2.get("content")
+                                    _rc2 = _d2.get("reasoning_content")
+                                    if isinstance(_rc2, str) and _rc2:
+                                        _r2_reasoning_buf.append(_rc2)
+                                    _refusal2 = _d2.get("refusal")
+                                    if isinstance(_refusal2, str) and _refusal2:
+                                        _r2_refusal_buf.append(_refusal2)
+                                    _fr = _ch_obj.get("finish_reason")
+                                    if _fr:
+                                        _r2_finish_reason = _fr
+                                    _ttc = _d2.get("tool_calls")
+                                    if _ttc:
+                                        # Same delta-by-index merge as
+                                        # round 1 — see _merge_tool_call_delta.
+                                        _merge_tool_call_delta(_r2_tc_buf, _ttc)
+                                        _r2_tool_deltas += len(_ttc)
+                                    if (
+                                        not _content2
+                                        and not _ttc
+                                        and not _rc2
+                                        and isinstance(_d2, dict)
+                                        and ("role" in _d2 and len(_d2) == 1)
+                                    ):
+                                        _r2_role_only_chunks += 1
+                                    elif _content2 == "":
+                                        _r2_empty_content_chunks += 1
                             except (json.JSONDecodeError, IndexError):
-                                pass
+                                _r2_parse_failures += 1
+                                _log_chat_round2.warning(
+                                    "[{}] r2 JSON parse failure on data line[:200]={!r}",
+                                    request_id, _js2[:200],
+                                )
                     else:
                         try:
                             _pp2 = json.loads(_ln2)
+                            _r2_parsed += 1
+                            if _r2_first_chunk_raw is None:
+                                _r2_first_chunk_raw = _ln2[:1000]
+                            if isinstance(_pp2, dict):
+                                _r2_top_level_keys.update(_pp2.keys())
                             if _pp2.get("done"):
                                 _done2 = True
+                                _r2_done_seen = True
                                 for _k in ("eval_count", "prompt_eval_count", "eval_duration", "prompt_eval_duration", "total_duration"):
                                     if _k in _pp2:
                                         ollama_metrics[_k] = _pp2[_k]
                             else:
-                                _m2 = _pp2.get("message", {})
+                                _m2 = _pp2.get("message") or {}
+                                if isinstance(_m2, dict):
+                                    _r2_delta_keys.update(_m2.keys())
                                 _content2 = _m2.get("content")
                                 _ttc = _m2.get("tool_calls")
                                 if _ttc:
                                     pending_tool_calls.extend(_ttc)
+                                    _r2_tool_deltas += len(_ttc)
                         except json.JSONDecodeError:
+                            _r2_parse_failures += 1
                             continue
                     if _content2:
+                        _r2_chunks += 1
+                        _r2_raw_buf.append(_content2)
                         if t_first_token is None:
                             t_first_token = time.time()
                         # Phase 8.0.1 — the tool-loop continuation
@@ -2210,6 +2915,7 @@ def _stream_chat_sse_impl(
                         # conversation_store save at the finally block.
                         _visible2 = _filter_think_chunk(_content2)
                         if _visible2:
+                            _r2_visible_buf.append(_visible2)
                             full_response.append(_visible2)
                             _cd2 = {"id": f"chatcmpl-{request_id}", "object": "chat.completion.chunk", "created": int(time.time()), "model": "glados", "choices": [{"index": 0, "delta": {"content": _visible2}, "finish_reason": None}]}
                             handler.wfile.write(f"data: {json.dumps(_cd2)}\n\n".encode())
@@ -2218,7 +2924,80 @@ def _stream_chat_sse_impl(
                         break
                 _c2.close()
             except Exception as _e2:
-                logger.error("[{}] Tool follow-up error: {}", request_id, _e2)
+                _log_chat_round2.error(
+                    "[{}] Tool follow-up error: {} ({})",
+                    request_id, type(_e2).__name__, _e2,
+                )
+            # Diagnostic dump — same comprehensive shape as round-1.
+            _r2_raw_full = "".join(_r2_raw_buf)
+            _r2_visible_full = "".join(_r2_visible_buf)
+            _r2_reasoning_full = "".join(_r2_reasoning_buf)
+            _r2_refusal_full = "".join(_r2_refusal_buf)
+            _log_chat_round2.info(
+                "[{}] round-2 diag: lines={} data_lines={} parsed={} "
+                "parse_fail={} bytes={} chunks={} role_only={} empty_content={} "
+                "raw_chars={} visible_chars={} reasoning_chars={} refusal_chars={} "
+                "tool_deltas={} finish_reason={!r} done_seen={} error={!r} usage={!r}",
+                request_id, _r2_lines, _r2_data_lines, _r2_parsed,
+                _r2_parse_failures, _r2_total_bytes, _r2_chunks,
+                _r2_role_only_chunks, _r2_empty_content_chunks,
+                len(_r2_raw_full), len(_r2_visible_full),
+                len(_r2_reasoning_full), len(_r2_refusal_full),
+                _r2_tool_deltas, _r2_finish_reason, _r2_done_seen,
+                _r2_error_payload, _r2_usage,
+            )
+            if _r2_top_level_keys or _r2_delta_keys:
+                _log_chat_round2.info(
+                    "[{}] round-2 chunk shape: top_level_keys={} delta_keys={}",
+                    request_id, sorted(_r2_top_level_keys), sorted(_r2_delta_keys),
+                )
+            if _r2_first_chunk_raw:
+                _log_chat_round2.info(
+                    "[{}] round-2 first_chunk[:1000]: {!r}",
+                    request_id, _r2_first_chunk_raw,
+                )
+            if _r2_raw_full:
+                _log_chat_round2.info(
+                    "[{}] round-2 raw[:500]: {!r}",
+                    request_id, _r2_raw_full[:500],
+                )
+            if _r2_visible_full:
+                _log_chat_round2.info(
+                    "[{}] round-2 visible[:500]: {!r}",
+                    request_id, _r2_visible_full[:500],
+                )
+            if _r2_reasoning_full:
+                _log_chat_round2.info(
+                    "[{}] round-2 reasoning_content[:500]: {!r}",
+                    request_id, _r2_reasoning_full[:500],
+                )
+            if _r2_refusal_full:
+                _log_chat_round2.warning(
+                    "[{}] round-2 refusal[:500]: {!r}",
+                    request_id, _r2_refusal_full[:500],
+                )
+            if _r2_tc_buf:
+                for _idx in sorted(_r2_tc_buf):
+                    _merged_call = _r2_tc_buf[_idx]
+                    if not _merged_call.get("id"):
+                        _merged_call["id"] = f"call_{request_id}_r2_{_idx}"
+                    pending_tool_calls.append(_merged_call)
+                _log_chat_tool_call.info(
+                    "[{}] round-2 merged {} streaming tool_call delta(s) into {} call(s): {}",
+                    request_id, _r2_tool_deltas, len(_r2_tc_buf),
+                    [c.get("function", {}).get("name", "?") for c in
+                     [_r2_tc_buf[i] for i in sorted(_r2_tc_buf)]],
+                )
+
+        # Diagnostic — if we hit max-rounds with the model still trying to
+        # tool-call, surface that explicitly. This was previously silent;
+        # the chat just truncated to whatever round-(_max_rounds) emitted.
+        if pending_tool_calls and _tool_round >= _max_rounds:
+            _log_chat_tool_call.warning(
+                "[{}] agentic loop hit _max_rounds={} with {} tool call(s) "
+                "still pending — chat will end with the last round's output",
+                request_id, _max_rounds, len(pending_tool_calls),
+            )
 
         t_stream_end = time.time()
 
@@ -2282,12 +3061,19 @@ def _stream_chat_sse_impl(
         conn.close()
         # Save to conversation store so follow-ups have context
         response_text = "".join(full_response)
+        _resp_pre_strip_chars = len(response_text)
         # Phase 8.0.1 belt — even with /no_think and per-chunk stream
         # filtering, strip any residual thinking tags from the final
         # persisted message. Any unmatched / partial tag (e.g. a
         # response truncated mid-think on token cap) would otherwise
         # end up in the UI's next history fetch.
         response_text = _strip_thinking(response_text)
+        _resp_post_thinking_chars = len(response_text)
+        if _resp_post_thinking_chars != _resp_pre_strip_chars:
+            _log_filter_think.info(
+                "[{}] _strip_thinking removed {} chars from final response",
+                request_id, _resp_pre_strip_chars - _resp_post_thinking_chars,
+            )
         # Phase 8.3 operator bug — strip Qwen3's trailing sign-off
         # tics ("I do not require further confirmation", etc.) from
         # both the stored message and the next persisted history
@@ -2295,11 +3081,21 @@ def _stream_chat_sse_impl(
         # backstop.
         from glados.core.llm_directives import strip_closing_boilerplate
         response_text = strip_closing_boilerplate(response_text)
+        if len(response_text) != _resp_post_thinking_chars:
+            _log_filter_boilerplate.info(
+                "[{}] strip_closing_boilerplate removed {} chars from final response",
+                request_id, _resp_post_thinking_chars - len(response_text),
+            )
         if response_text:
             store.append({"role": "user", "content": user_message})
             store.append({"role": "assistant", "content": response_text})
-            logger.info(
-                f"[{request_id}] SSE stream complete: {len(response_text)} chars saved to store"
+            _log_conversation_store.info(
+                "[{}] conversation_store appended: user={}chars assistant={}chars (final)",
+                request_id, len(user_message or ""), len(response_text),
+            )
+            _log_conversation_store.debug(
+                "[{}] conversation_store assistant content[:500]: {!r}",
+                request_id, response_text[:500],
             )
             # Push emotion event with repetition-aware severity tagging
             try:

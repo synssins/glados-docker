@@ -25,8 +25,9 @@ class TestStripUrlPath:
     @pytest.mark.parametrize("inp,expected", [
         ("http://host:11434", "http://host:11434"),
         ("http://host:11434/", "http://host:11434"),
-        ("http://host:11434/v1/chat/completions", "http://host:11434"),
-        ("http://host:11434/v1/chat/completions/", "http://host:11434"),
+        # Legacy paths that don't match the chat-completion suffix list
+        # still get stripped — preserves the bare-base contract for
+        # Ollama-native /api/chat, /api/tags, /v1/models, etc.
         ("http://host:11434/api/chat", "http://host:11434"),
         ("http://host:11434/api/tags", "http://host:11434"),
         ("http://host:11434/v1/models", "http://host:11434"),
@@ -34,6 +35,35 @@ class TestStripUrlPath:
         ("http://192.168.1.75:11434", "http://192.168.1.75:11434"),
     ])
     def test_path_is_stripped(self, inp: str, expected: str) -> None:
+        assert strip_url_path(inp) == expected
+
+    @pytest.mark.parametrize("inp,expected", [
+        # Canonical /v1/chat/completions is operationally equivalent to
+        # bare — every spec-compliant backend serves it and the dispatch
+        # site appends it anyway. Continues to strip.
+        ("http://host:11434/v1/chat/completions", "http://host:11434"),
+        ("http://host:11434/v1/chat/completions/", "http://host:11434"),
+    ])
+    def test_canonical_chat_path_still_strips(self, inp: str, expected: str) -> None:
+        """``/v1/chat/completions`` is the spec default — keeping the
+        bare-base storage contract for it preserves equivalence with
+        ``http://host:port`` and stops the reconciler from flagging
+        spurious config drift."""
+        assert strip_url_path(inp) == expected
+
+    @pytest.mark.parametrize("inp,expected", [
+        # NON-canonical chat-completion paths are PRESERVED — operator's
+        # explicit intent. Lets OpenVINO Model Server (which serves the
+        # OpenAI surface on /v3/v1/chat/completions and rejects the
+        # canonical /v1/) be configured by URL.
+        ("http://192.168.1.75:11434/v3/v1/chat/completions", "http://192.168.1.75:11434/v3/v1/chat/completions"),
+        ("http://host:11434/openai/v1/chat/completions", "http://host:11434/openai/v1/chat/completions"),
+        ("http://host:11434/v3/v1/chat/completions/", "http://host:11434/v3/v1/chat/completions"),
+    ])
+    def test_non_canonical_chat_paths_preserved(self, inp: str, expected: str) -> None:
+        """Operator-typed non-spec chat-completion endpoints win —
+        strip_url_path leaves them intact so OVMS-class backends route
+        correctly."""
         assert strip_url_path(inp) == expected
 
     @pytest.mark.parametrize("inp", ["", "   ", "\t\n", None])
@@ -74,6 +104,38 @@ class TestComposeEndpoint:
     def test_empty_base_returns_empty(self) -> None:
         assert compose_endpoint("", "/v1/chat/completions") == ""
         assert compose_endpoint(None, "/v1/chat/completions") == ""
+
+    @pytest.mark.parametrize("inp", [
+        "http://192.168.1.75:11434/v3/v1/chat/completions",
+        "http://host:11434/openai/v1/chat/completions",
+    ])
+    def test_non_canonical_path_preserved_verbatim(self, inp: str) -> None:
+        """When the URL already carries a non-spec chat-completion path,
+        compose_endpoint must respect it verbatim. This is the OVMS /
+        non-spec-backend escape hatch: OVMS rejects /v1/chat/completions
+        with "Invalid request URL" and only serves on /v3/v1/... — so
+        an operator-typed full URL has to survive the dispatch layer."""
+        assert compose_endpoint(inp, "/v1/chat/completions") == inp.rstrip("/")
+
+    def test_canonical_path_still_normalized_to_bare_then_appended(self) -> None:
+        """The canonical /v1/chat/completions is treated as equivalent
+        to bare — strip-and-append produces the same final URL anyway,
+        so this preserves the existing storage contract for spec-compliant
+        backends."""
+        assert (
+            compose_endpoint("http://host:11434/v1/chat/completions", "/v1/chat/completions")
+            == "http://host:11434/v1/chat/completions"
+        )
+
+    def test_legacy_api_chat_still_normalized_to_openai_path(self) -> None:
+        """Legacy Ollama-native /api/chat URLs should still be rewritten
+        to /v1/chat/completions. The escape hatch only kicks in for paths
+        that explicitly LOOK like a chat-completion endpoint AND aren't
+        the canonical /v1/chat/completions."""
+        assert (
+            compose_endpoint("http://host:11434/api/chat", "/v1/chat/completions")
+            == "http://host:11434/v1/chat/completions"
+        )
 
 
 class TestApiWrapperOutgoingUrl:
