@@ -4705,3 +4705,131 @@ fixed):**
   pronunciation-overrides queue (memory:
   ``project_tts_pronunciation_cases.md``).
 
+
+## Change 39 — Authoritative time source: NTP sync + tz-from-weather + System UI (2026-05-02)
+
+**Why.** The 2026-05-02 evening session closed Change 38's open follow-up
+on time hallucination. GLaDOS otherwise fabricates the current time
+when asked because no other context block carries a wall-clock
+reference (operator-flagged: "What time is it" returned "3:17 PM" when
+actual was 1:03 PM). Operator's design constraints: time pulled from
+NIST-style time servers (not the container's drifting system clock),
+timezone derived from the geo-coordinates already configured for
+weather forecasting (so DST is automatic via IANA tz database), and
+operator-tunable through the WebUI rather than YAML-only.
+
+**What landed.**
+
+1. **`weather_cache` captures the resolved IANA timezone.** Open-Meteo's
+   forecast response includes a top-level ``timezone`` (e.g.
+   ``"America/Chicago"``) and ``timezone_abbreviation`` when called
+   with ``timezone=auto`` — the container was previously discarding
+   both. Adding the capture in ``_process_forecast`` lets the new
+   time_source module derive a tz-aware wall-clock without a second
+   geocoding API call or a polygon-lookup library. Older cache files
+   parse cleanly: missing fields surface as None, not KeyError.
+
+2. **``TimeGlobal`` pydantic model under ``GlobalConfig.time``.** Five
+   operator-tunable fields: ``enabled`` (master toggle), ``ntp_servers``
+   (list, NIST defaults — ``time.nist.gov``, ``time-a-g.nist.gov``,
+   ``time-b-g.nist.gov``), ``refresh_interval_hours`` (6h default),
+   ``timezone_source`` (``auto | manual``), ``timezone_manual`` (IANA
+   name, used when source=manual). Pydantic ``Literal`` rejects unknown
+   ``timezone_source`` values like ``"magic"``.
+
+3. **New module ``glados/core/time_source.py``.** Background thread
+   syncs an offset against the configured NTP servers (tried in order
+   until one responds); ``now()`` returns ``datetime.fromtimestamp(time
+   .time() + offset, tz=resolved_tz)``. ``as_prompt()`` formats as
+   ``"Current time: Saturday 2026-05-02 13:03"`` (operator-requested
+   simplified format with weekday + date + 24h time, no tz suffix).
+   ``status()`` exposes sync state for the WebUI card. NTP failure
+   falls back to the system clock with a WARNING log — the chat path
+   still gets an answer rather than dropping the injection. Adds
+   ``ntplib>=0.4.0`` dep (~200 LOC pure Python).
+
+4. **``context_gates.needs_time_context()``.** Mirrors the weather and
+   canon gate shape — hardcoded default triggers + optional YAML
+   extras. Trigger set: ``what time``, ``what's the time``, ``what
+   hour``, ``current time``, ``time is it``, ``clock`` (word-boundary
+   to avoid ``clockwork``/``deadlock``), ``o'clock``, ``current
+   date``, ``today's date``, ``what's the date``, ``what day``, ``day
+   is it``, ``date is it``, ``what year``. Avoids firing on incidental
+   "time"/"day" mentions ("all the time", "good day", "out of date").
+
+5. **Chat path injection.** New block in
+   ``_stream_chat_sse_impl`` directly after the canon block,
+   mirroring the weather/memory/canon insertion shape. Gated on
+   ``needs_time_context``; content from ``time_source.as_prompt()``;
+   skipped silently with a WARNING log on any exception.
+
+6. **Engine wire-in.** ``time_source.configure()`` + ``start()`` are
+   called from the same engine init block that configures
+   ``weather_cache`` and ``context_gates`` — passes
+   ``weather_cache.get_data`` as the tz-lookup callable so the
+   resolved zone tracks operator weather-location changes. Init
+   failures are logged but never fatal; the chat path's injection
+   block already falls back to the system clock when time_source is
+   unconfigured.
+
+7. **WebUI System → Time tab.** New tab between Maintenance and
+   Account. Two cards:
+   - *Sync Status*: live read of ``time_source.status()`` — synced /
+     unsynced / disabled badge, last sync timestamp, offset in ms,
+     responding NTP server, resolved IANA zone. Refresh button
+     re-fetches without polling.
+   - *Configuration*: auto-rendered ``cfgBuildForm`` over
+     ``global.time.*`` with FIELD_META labels; ntp_servers as
+     comma-separated text input, timezone_source as auto/manual
+     dropdown, refresh_interval_hours behind the Advanced toggle.
+     Save dispatches through the existing
+     ``_cfgSaveSystemSubset`` helper so the partial-save / no-wipe
+     contract carries.
+
+8. **Backend endpoint.** ``GET /api/time/status`` returns
+   ``time_source.status()``; admin-gated via the existing
+   ``require_perm("admin")`` fall-through. Adjacent to
+   ``/api/ssl/status`` in the route table.
+
+**Files modified:**
+
+- ``glados/core/weather_cache.py`` — capture timezone fields
+- ``glados/core/config_store.py`` — TimeGlobal model + GlobalConfig.time
+- ``glados/core/time_source.py`` (new) — NTP sync + tz resolution
+- ``glados/core/context_gates.py`` — needs_time_context() + defaults
+- ``glados/core/api_wrapper.py`` — injection block in _stream_chat_sse_impl
+- ``glados/core/engine.py`` — configure + start time_source at init
+- ``glados/webui/pages/system.py`` — new Time tab HTML
+- ``glados/webui/static/ui.js`` — FIELD_META + render/save/status helpers
+- ``glados/webui/tts_ui.py`` — GET /api/time/status route + handler
+- ``pyproject.toml`` — ntplib>=0.4.0 dep
+- New tests: ``tests/test_weather_cache.py``,
+  ``tests/test_time_source.py``, ``tests/test_time_context_gate.py``;
+  TimeGlobal cases added to ``tests/test_config_defaults.py``
+
+**Verification (dev_webui preview, port 28052):**
+
+- Time tab button + panel render under System.
+- ``GET /api/time/status`` returns the expected shape (enabled /
+  synced / last_sync_at / last_sync_server / offset_seconds / timezone).
+- ``GET /api/config/global`` includes the ``time`` block with TimeGlobal
+  defaults: ``enabled=true``, NIST server list, ``refresh_interval_hours
+  =6.0``, ``timezone_source="auto"``, empty ``timezone_manual``.
+- Form auto-renders all five fields with correct types
+  (bool/array/number/select-with-options/string) and pre-fills the
+  default values.
+- No JS console errors.
+
+**Tests:** 1697 → 1754 (+57), 0 regressions. ``pytest -q`` runs in ~56 s.
+
+**Out of scope (deferred):**
+
+- Live-reload on config save: the engine reads TimeGlobal at init time,
+  so changes to NTP servers / timezone source require a container
+  restart — same recompose-required pattern weather_cache,
+  context_gates, and the rest of the boot-time configure() calls
+  already follow.
+- ``get_current_time`` builtin tool (Option 2 from
+  ``project_glados_time_hallucination.md``): not implemented;
+  system-message injection covers the hallucination case end-to-end and
+  matches the established weather/memory/canon pattern.
