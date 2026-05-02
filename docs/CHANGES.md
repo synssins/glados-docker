@@ -4616,3 +4616,92 @@ explicitly out of scope and remains queued.
 
 **Tests:** 1667 → 1680 (13 new), 0 regressions. ``pytest -q`` runs in
 ~57 s.
+
+## Change 38 — AIBox LLM stack swap to OpenVINO Model Server + URL helper fix (2026-05-02)
+
+**Why.** The prior LM Studio + Ollama-IPEX stack on AIBox had been
+producing layered failures for weeks (`STATUS_STACK_BUFFER_OVERRUN`
+on Vulkan + Qwen3 MoE, `response_format=json_object` rejected with
+HTTP 400, JIT/manual-load theatre, the Ollama-IPEX fork operator-
+flagged as effectively abandoned). Operator authorised a complete
+rip-out and a clean-slate replacement with a stable + actively
+maintained + Intel-Arc-supporting + OpenAI-compatible engine.
+
+**What landed.**
+
+1. **AIBox: complete LM Studio + Ollama-IPEX wipe.** All four NSSM
+   services removed (`LMStudioAutoload`, `ollama-ipex-llm`,
+   `ollama-glados`, `ollama-vision`); `~133 GB` of installs +
+   models reclaimed. Pre-wipe inventory archived at
+   `C:\AI\llm_inventory_2026-05-01_pre_wipe.md` so re-pulls have a
+   reference. ``C:\AI\nssm.exe`` and the non-LLM services (Speaches
+   TTS, Open-WebUI, glados-vision) preserved.
+2. **Replacement engine: OpenVINO Model Server (OVMS) 2026.1.** Intel-
+   first-party, native Windows binary install at ``C:\AI\ovms``,
+   NSSM-wrapped service ``ovms`` listening on ``0.0.0.0:11434``.
+   Auto-starts on boot. Talks to the Intel Arc Pro B60 directly via
+   Level Zero on Windows native — no WSL2 / no Docker / no Linux VM
+   needed. Loaded model: ``OpenVINO/Qwen3-30B-A3B-int4-ov``
+   (16.34 GB INT4, MoE with ~3B active params per token). Tool
+   parser ``hermes3`` + reasoning parser ``qwen3`` configured. KV
+   cache compressed to u8 to fit comfortably in 24 GB VRAM.
+3. **Performance baseline:** 39.8 tok/s steady-state on 1024-token
+   decode (memory-bandwidth-bound on the 16 GB of streamed weights;
+   speculative decoding evaluated and ruled out — MoE-A3B's
+   non-deterministic per-token routing breaks the verify-N-tokens
+   speedup pattern, observed 5× regression to 8.2 tok/s with a
+   0.6B draft).
+4. **OpenAI compliance gap fix.** OVMS exposes the OpenAI surface on
+   ``/v3/chat/completions`` AND ``/v3/v1/chat/completions``, NOT on
+   the standard ``/v1/chat/completions`` path. The container's
+   ``compose_endpoint`` and ``strip_url_path`` helpers were
+   strip-and-rewriting any operator-typed path back to bare and
+   appending ``/v1/chat/completions``, breaking dispatch even when
+   ``services.yaml`` carried the correct full URL. Both helpers now
+   share a ``_path_is_authoritative`` predicate: a URL whose path
+   ends in ``/chat/completions`` AND is something other than the
+   spec-canonical ``/v1/chat/completions`` is treated as an explicit
+   operator endpoint and preserved verbatim. The canonical path
+   continues to strip-to-bare so legacy storage equivalence (and the
+   engine reconciler's drift detection) keeps working. Legacy
+   Ollama-style ``/api/chat`` URLs still get the strip-and-reappend
+   behaviour.
+5. **TTS endpoint port fix.** ``services.yaml`` had ``tts.url``,
+   ``stt.url``, and ``api_wrapper.url`` set to
+   ``http://localhost:8015`` — the operator-facing port. With SSL
+   enabled, port 8015 is HTTPS-wrapped and rejects plain HTTP with a
+   connection reset, breaking the WebUI's TTS-chunk synthesis path.
+   Restored these to the schema default ``http://127.0.0.1:18015``
+   (the always-plain-HTTP loopback listener), which is SSL-state-
+   independent. TTS streams now generate audio chunks correctly.
+
+**Files modified:**
+
+- ``glados/core/url_utils.py`` — ``_path_is_authoritative`` predicate
+  shared by ``strip_url_path`` and ``compose_endpoint``; non-canonical
+  chat-completion paths preserved verbatim through the dispatch chain.
+- ``tests/test_url_utils.py`` — expanded to pin the canonical-path
+  strips and the non-canonical-path preserve cases. 13 new tests.
+
+**Files NOT modified (intentional scope discipline):**
+
+- The legacy ``Glados.completion_url`` / ``Glados.llm_model`` /
+  ``Glados.autonomy.*`` fields in ``glados_config.yaml`` remain
+  scheduled for the separate single-source-of-truth refactor.
+- The container's HTTP/HTTPS port-binding logic is unchanged. The TTS
+  fix routes around the SSL-conditional port instead of touching the
+  binding code.
+
+**Tests:** 1680 → 1697 (17 new), 0 regressions. ``pytest -q`` runs in
+~58 s.
+
+**Open follow-ups surfaced 2026-05-02 (operator-flagged, not yet
+fixed):**
+
+- *Time hallucination*: "What time is it" returned "3:17 PM" when the
+  actual was 1:03 PM. No time-injection or ``get_current_time``
+  builtin tool. Fix path TBD (memory: ``project_glados_time_hallucination.md``).
+- *TTS pronunciation*: "P.M." spoken as "Pem". Adds to the existing
+  pronunciation-overrides queue (memory:
+  ``project_tts_pronunciation_cases.md``).
+

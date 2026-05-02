@@ -112,10 +112,42 @@ require explicit confirmation.
   operator pushback — it flipped lights in a household with people
   sleeping. Anything that commands real devices runs under manual
   dispatch only.
-- **Operator owns deploys.** Claude commits, pushes, and deploys
-  via `scripts/deploy_ghcr.py` using the credentials in
-  `C:\src\SESSION_STATE.md`. Do not hand the operator shell
-  commands when automation exists.
+- **Operator runs nothing. Claude executes everything.** Commits,
+  pushes, deploys, SSH to the docker host (`192.168.1.150` —
+  credentials in `C:\src\SESSION_STATE.md` §"Credentials / Secrets
+  State"), `lms.exe` / `ovms.exe` / NSSM service control on AIBox,
+  reading container logs, editing remote `services.yaml`, restarting
+  containers — all of it. Do NOT hand the operator shell commands
+  to run; that defeats the whole point of the agent. Use
+  `scripts/_local_deploy.py` (with `MSYS_NO_PATHCONV=1` to avoid
+  Git Bash path mangling on the Windows host) for container deploys.
+  Use paramiko-via-Python for ad-hoc SSH operations.
+- **NSSM safe-form rule.** Never invoke `nssm` or any subcommand with
+  insufficient args — `nssm` (no args), `nssm set` (no args),
+  `nssm install <name>` (no app), `nssm edit <name>`, and
+  `nssm remove <name>` (without trailing `confirm`) **all open a
+  blocking GUI dialog** that pins the host until physically
+  dismissed. Repeated offence; see
+  `feedback_nssm_gui_traps.md` in auto-memory for the full safe-vs-
+  unsafe form list. Always pass `<servicename> <parameter>` minimum
+  for set/get, `<servicename> <app>` for install, `<servicename>
+  confirm` for remove.
+- **Verify Windows compat BEFORE recommending tools.** If the host
+  OS is Windows, do not recommend Linux-only tools (vLLM, TGI,
+  SGLang, mainline Ollama). Check the project's supported-platform
+  list before naming it. The "OpenAI compliance + actively
+  maintained" filter doesn't matter if the tool can't run on this
+  hardware.
+- **Intel Arc Pro B60 is the only GPU path.** No T4 / NVIDIA / CUDA
+  recommendations even though both T4s are physically present in
+  the box — operator has explicitly scoped them out. See
+  `feedback_no_t4_options.md` in auto-memory.
+- **Don't hardcode against current state.** When fixing config
+  (URLs, ports, SSL, etc.), the fix must work in BOTH "feature on"
+  and "feature off" modes. Example: route internal calls through
+  `127.0.0.1:18015` (always plain HTTP loopback) rather than the
+  external `0.0.0.0:8015` (SSL-conditional) — the latter breaks
+  the moment SSL toggles.
 - **Cost discipline** (per `subagent-cost-control` skill): Opus
   orchestrates, Sonnet executes, Haiku scouts. Exploratory
   codebase queries and grep sweeps go to Haiku subagents;
@@ -140,6 +172,22 @@ For exploratory / "what should we do about X?" questions, respond
 in 2–3 sentences with a recommendation and the main tradeoff.
 Present it as something the operator can redirect. Do not
 implement without agreement.
+
+**Research before recommending.** When asked which tool / engine /
+library to use, hit the actual project pages with `WebSearch` and
+`WebFetch`, verify (a) it runs on the operator's actual platform,
+(b) it's actively maintained, (c) it satisfies the explicit
+requirements. Do not name a tool just because it has the right
+buzzwords ("OpenAI compliant", "actively maintained") — the
+filters compose; one disqualifying check kills the recommendation.
+The vLLM-on-Windows misfire of 2026-05-01 cost an hour because the
+Windows-incompatibility check came after the recommendation
+instead of before it.
+
+**Be honest about your evidence.** Don't say "documented bug" when
+all you have is one local repro. Don't say "this works" when you
+haven't actually run it. When you misspeak, retract clearly and
+name what you actually have.
 
 ---
 
