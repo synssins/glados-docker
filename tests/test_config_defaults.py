@@ -23,6 +23,7 @@ from glados.core.config_store import (
     NetworkGlobal,
     PathsGlobal,
     ServicesConfig,
+    TimeGlobal,
     TuningGlobal,
     WeatherGlobal,
 )
@@ -593,6 +594,57 @@ def test_config_loads_new_llm_keys(tmp_path):
     store.load(configs_dir=cfgs)
     assert store.services.llm_interactive.model == "qwen3-30b-a3b"
     assert store.services.llm_triage.model == "llama-3.2-1b-instruct"
+
+
+# ── TimeGlobal (System page time-source config, 2026-05-02) ───────────
+
+
+def test_time_global_defaults() -> None:
+    """Fresh install: NTP enabled, NIST defaults, 6-hour refresh, tz
+    follows the operator's weather coords. No manual zone configured."""
+    t = TimeGlobal()
+    assert t.enabled is True
+    assert t.ntp_servers == [
+        "time.nist.gov",
+        "time-a-g.nist.gov",
+        "time-b-g.nist.gov",
+    ]
+    assert t.refresh_interval_hours == 6.0
+    assert t.timezone_source == "auto"
+    assert t.timezone_manual == ""
+
+
+def test_time_global_in_global_config_section() -> None:
+    """``GlobalConfig.time`` is the canonical mount point. The System
+    page form binds to ``global.time.*``; if the field renames or moves,
+    the WebUI loses the card."""
+    g = GlobalConfig()
+    assert isinstance(g.time, TimeGlobal)
+    assert g.time.enabled is True
+
+
+def test_time_global_manual_timezone_round_trips() -> None:
+    t = TimeGlobal.model_validate({
+        "timezone_source": "manual",
+        "timezone_manual": "America/Chicago",
+    })
+    assert t.timezone_source == "manual"
+    assert t.timezone_manual == "America/Chicago"
+
+
+def test_time_global_rejects_unknown_timezone_source() -> None:
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        TimeGlobal.model_validate({"timezone_source": "magic"})
+
+
+def test_time_global_custom_ntp_list_round_trips() -> None:
+    """Operator can replace the default NIST list with any servers
+    (corporate NTP, pool.ntp.org, an internal stratum-1, etc.)."""
+    t = TimeGlobal.model_validate({
+        "ntp_servers": ["pool.ntp.org", "time.cloudflare.com"],
+    })
+    assert t.ntp_servers == ["pool.ntp.org", "time.cloudflare.com"]
 
 
 def test_llm_triage_default():
