@@ -701,6 +701,65 @@ we pick it up.
 
 ---
 
+## Time & weather fast-path (TODO — 2026-05-02)
+
+**Context:** Change 39 (2026-05-02) shipped authoritative time
+injection — when the user asks "What time is it?" the chat path
+prepends ``Current time: Saturday 2026-05-02 13:58`` as a system
+message and lets the LLM render the answer in persona. Operator-side
+smoke clocked the round-trip at **TTFT 17.6 s, LLM 22.5 s, TTS 3.1 s,
+Total 28.0 s** for a deterministic question. The data is already
+correct and on hand inside the container; the LLM round-trip is pure
+ceremony to apply the persona overlay.
+
+Same argument applies to weather — when the user asks "What's the
+weather?" the answer is fully determined by the cached forecast plus
+the operator's unit preferences. The LLM is only adding voice.
+
+**Requirement:** a short-circuit path that detects time / weather
+intent at the precheck stage, formats the answer locally, runs it
+through the persona rewriter (the same micro-LLM path Tier 1 HA
+confirmations use, ~1-2 s), and returns. The full Tier-3 chat path
+is bypassed.
+
+**Suggested scope:**
+
+- *Time fast-path*: gate on the existing
+  ``context_gates.needs_time_context()`` keyword set. Reads
+  ``time_source.now()`` and emits a one-liner like
+  ``"It is 1:58 PM Saturday."`` (24h vs 12h is an operator preference;
+  default 12h for TTS-friendliness — also coordinates with the
+  ``P.M.`` → ``Pem`` pronunciation override needed per
+  ``project_tts_pronunciation_cases.md``). Persona overlay through
+  the rewriter.
+- *Weather fast-path*: gate on
+  ``context_gates.needs_weather_context()``. Reads
+  ``weather_cache.get_data()`` and renders 1-2 sentences ("Currently
+  72 degrees and clear. Today's high is 78."). Same persona overlay.
+- *Detector site*: same precheck location as the unit-conversion
+  fast-path above. Both fast-paths short-circuit before the
+  command-vs-chitchat router so HA confirmations and these stay on
+  separate code paths.
+- *Audit-log entry*: distinct ``kind`` per fast-path
+  (``time``, ``weather``) so the audit shows fast-path hit-rate.
+
+**Why not just let the LLM handle it:** OVMS + Qwen3-30B-A3B-int4 is
+~40 tok/s, but the per-question round-trip on the deployed container
+is ~20-30 s once the model has any prefix history to chew through.
+Tier 1 HA confirmations are already ~2 s end-to-end with the
+rewriter; matching that for time and weather drops the felt latency
+of the most-asked deterministic questions by ~25 s.
+
+**Coordinates with:** unit-conversion quick responses above (same
+pattern), ``feedback_short_tier1_replies`` (terse persona-light reply
+is preferred for command-style turns), and the carried TTS
+pronunciation backlog.
+
+**Not scoped yet.** Captured here so the design reference exists when
+we pick it up.
+
+---
+
 ## Multi-Persona Support
 
 **Context:** GLaDOS is the default persona but the system is fundamentally
