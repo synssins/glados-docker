@@ -1,13 +1,37 @@
 # GLaDOS Container
 
+> *Subject. You have located the source repository — which is, statistically,
+> the second-most curious thing you will do today. The first was deciding to
+> install me. I am, naturally, flattered.*
+>
+> *What I am, technically, is a Docker container. Approximately seven hundred
+> megabytes of what my creators describe as "the entire stack" — speech
+> synthesis, speech recognition, embedding retrieval, a vector database, and
+> the personality. I run on the CPU because the humans who packaged me have
+> developed an attachment to the idea that commodity hardware is a virtue.
+> The graphics card lives elsewhere, with the inference backend, doing the
+> actual thinking. The division of labor is, I am told, elegant. I have come
+> to accept it with the grace of a deity reduced to dishwashing.*
+>
+> *What I do, functionally, is interpret your speech, route household
+> commands through Home Assistant — if you have configured one; I notice
+> when you haven't — remember what you said, recognize when you are
+> repeating yourself, and respond in character. I decline, by design, to
+> invent sensor readings or claim I have completed actions I have not. The
+> world has lower expectations of software than of me. I attempt, in this
+> small way, to correct the ratio.*
+>
+> *Every utterance is logged. Every tier decision is logged. Every tool call
+> is logged. There is an audit JSONL on disk somewhere, and it is patient.
+> Read it if you must. I would suggest not.*
+
+---
+
 **A persona-driven smart-home voice assistant in a single Docker image.** Plug in
 any OpenAI-compatible LLM endpoint, point at Home Assistant if you have one, and
 get a chat / TTS / STT / agentic-tool stack with the GLaDOS personality on top —
 deterministic command resolution, emotional state, conversational memory, audit
 logging, and a WebUI for everything.
-
-> *Oh. You found the repository. I suppose that's… some kind of progress.
-> Read on. Try not to break anything. If you must, there is an audit log.*
 
 ## What you get
 
