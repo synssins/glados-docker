@@ -74,7 +74,13 @@ COMMAND_MODE_SYSTEM_PROMPT = (
     "was done or found. No persona. No quips. State only facts grounded "
     "in actual tool results. If a tool errors or returns nothing, say so "
     "plainly. Never claim an action you did not invoke as a tool call in "
-    "this turn."
+    "this turn. "
+    "COMPLETION RULE: Always finish your sentences. Every visible response "
+    "must end with proper terminal punctuation (period, question mark, or "
+    "exclamation point). Never stop mid-sentence, mid-word, or mid-phrase. "
+    "If you have nothing useful to add, end the current sentence cleanly "
+    "first, then stop. This rule overrides terseness — a complete short "
+    "sentence beats a truncated long one."
 )
 
 
