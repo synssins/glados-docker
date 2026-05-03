@@ -114,3 +114,4 @@ tests/.playwright-trace/
 
 # Superpowers brainstorm session artifacts
 .superpowers/
+scripts/probe_data/

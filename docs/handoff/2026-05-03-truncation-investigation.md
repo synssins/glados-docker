@@ -1,4 +1,31 @@
-# 2026-05-03 — Chat-path truncation investigation (open)
+# 2026-05-03 — Chat-path truncation investigation (CLOSED)
+
+**Status:** ROOT CAUSE IDENTIFIED AND FIXED. Commit `d2e638d` on `main`
+ships the fix; `c3435fb` reverts the debug instrumentation. Deployed
+to image SHA `e4ea26eb6b15…` on the docker host. Verified with 3
+tool-using chat trials — all complete with terminal punctuation.
+
+**Root cause:** Round-2's stream loop in `_stream_chat_sse_impl`
+(`glados/core/api_wrapper.py`) was missing the `think_state["tail"]`
+flush at end-of-stream that round-1 already had (lines 2611-2629).
+The think-tag filter `_filter_think_chunk` holds back the last
+`_MAX_TAIL_LEN` (12) chars of the buffer between chunks so it can
+detect a `</think>` / `</thinking>` / `</reasoning>` tag that splits
+across chunk boundaries. Without an end-of-stream flush, those last
+12 chars stranded in the buffer never reached the user — producing
+the mid-sentence truncation on tool-using chat turns (which go
+through round-2).
+
+Symptom was specific to tool-using turns because plain chitchat
+goes through round-1 only, which already had the flush.
+
+This document is preserved for the audit trail. The next-step probes
+section was the actual investigation script — P1 + P2 were combined
+in commit `dace14b` (later reverted in `c3435fb`).
+
+---
+
+## Original document (pre-resolution) — preserved for the audit trail
 
 **Status when handoff written:** truncation cause NOT yet identified. Multiple
 fixes shipped that addressed adjacent issues (real bugs found and corrected),
@@ -277,6 +304,100 @@ contexts.
 * Personality.yaml: `temperature=0.85, top_p=0.9, num_ctx=16384,
   repeat_penalty=1.0`. Preprompt has the operator-acknowledged completion rule.
 * Truncation behavior: OPERATOR-VISIBLE, ~67-100% on tool-using turns.
+
+---
+
+## Resolution (added 2026-05-03 evening)
+
+### How the probes played out
+
+**P1 (byte-hash verification) — H2 dead.**
+- Commit `dace14b` added P1+P2 instrumentation: hash + binary-mode dump of
+  `_b2` at the wire boundary, plus binary-mode dump of OpenArc's full
+  response stream.
+- Triggered chat: "Suggest a movie from my library that I should watch
+  tonight." Request id `b116182c`.
+- Wire bytes: 16253 bytes, sha256 `4de9f8eb…`. Re-hashing the dumped
+  binary file matched exactly. Bytes preserved by the binary dump.
+- → H2 (subtle byte difference) is dead.
+
+**P2 (response-stream byte capture) — H4 alive in a specific form.**
+- OpenArc's actual streamed response: 55909 bytes, 247 SSE lines,
+  ending with three content tokens `" request"`, `" now"`, `"?"` then
+  `finish_reason: "stop"` + `[DONE]`. **Complete sentence, terminal
+  punctuation.**
+- Container's diag: `visible_chars=224 raw_chars=1201 done_seen=True
+  finish_reason='stop'`. Operator-visible output ended at `"…retry the "`.
+- → OpenArc sent the full reply; the relay dropped exactly 12 trailing
+  characters (`request now?` = 12 chars = `_MAX_TAIL_LEN`).
+
+**P3 (in-container replay) — confirmed not network/lib.**
+- Replayed `round2_b2_b116182c.bin` from inside the container against
+  OpenArc 3 times: all produced 1696 visible chars, complete sentences.
+- Same network namespace as the live chat-flow round-2, same library,
+  same bytes — and the replay completes cleanly.
+- → H3 (HTTP-level differences) is dead.
+
+### Root cause
+
+`_filter_think_chunk` (api_wrapper.py:2349) holds back the last
+`_MAX_TAIL_LEN` (12) chars of the buffer between chunks so it can detect
+a `</think>` / `</thinking>` / `</reasoning>` tag that splits across chunk
+boundaries.
+
+Round-1's stream loop flushes that tail at end-of-stream (lines 2611-2629
+inside `if done:`). Round-2's loop did not — `if _done2: break` jumped
+straight to teardown without flushing. So up to 12 trailing visible chars
+were stranded in the filter and never reached the user.
+
+This is precisely why the symptom was tool-using-chat-specific: only
+those go through round-2.
+
+### Fix (commit `d2e638d`)
+
+Mirrored round-1's flush block into round-2's `if _done2:` branch.
+25 lines added; no other changes.
+
+### Verification (post-deploy, image SHA `e4ea26eb6b15…`)
+
+Three tool-using chat trials, each via `127.0.0.1:18015` from inside the
+container with `X-GLaDOS-Origin: webui_chat`:
+
+| Trial | Prompt | Last 80 chars | Terminal punct |
+|---|---|---|---|
+| 1 | "Suggest a movie from my library that I should watch tonight." | "…strong choice for a cinematic experience. Would you like details about other titles?" | ✅ `?` |
+| 2 | "What TV shows are on my Sonarr server?" | "…seriesId\`. Would you like to search for a particular show?" | ✅ `?` |
+| 3 | "Recommend something fun to watch from my movie library." | "…critique films. Let me know if you'd like details about either!" | ✅ `!` |
+
+Pre-fix: 224 chars cut mid-word at `"…retry the "`. Post-fix: 213/271/376
+chars all ending in proper terminal punctuation.
+
+Round-2 diag for trial 1: `visible_chars=211 raw_chars=840 done_seen=True
+finish_reason='stop'`. Round-2 diag for trial 3: `visible_chars=374
+raw_chars=1608 done_seen=True finish_reason='stop'`. Visible matches
+captured output exactly.
+
+### Hypotheses status
+
+- **H1** (request-history-dependent state) — moot. The "longer external
+  replay" was sampling variance (Qwen3 at temp=0.85 produces variable-
+  length output); not state-dependence.
+- **H2** (byte difference) — dead. P1 confirmed bytes preserved exactly.
+- **H3** (HTTP-level differences) — dead. P3 in-container replay completes.
+- **H4** (relay drop) — confirmed in a specific form: not full-chunk drop,
+  but a 12-char tail strand in the think-filter at end-of-stream.
+- **H5** (concurrent autonomy traffic) — moot. Not the cause.
+
+### Captured probe data
+
+Local copies preserved at `scripts/probe_data/`:
+- `round2_b2_b116182c.bin` — wire request bytes (16253 bytes)
+- `round2_resp_b116182c.bin` — OpenArc's full response stream (55909 bytes)
+- `external_replay_trial{1,2,3}.bin` — three external replays of the
+  request bytes against OpenArc directly
+
+These are .gitignore territory — not committed. Useful if a future
+investigation needs to re-test against captured payloads.
 
 ---
 
