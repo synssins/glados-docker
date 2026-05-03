@@ -2164,6 +2164,23 @@ def _stream_chat_sse_impl(
         request_id, parsed_url.hostname or "localhost",
         parsed_url.port or 11434, parsed_url.path, len(body),
     )
+    # TEMP DEBUG (truncation investigation 2026-05-03): dump payload sampling
+    # params + last assistant/tool message so we can see exactly what reaches
+    # OpenArc. Revert after capture.
+    _log_chat_connect.info(
+        "[{}] DEBUG payload keys={} max_tokens={} temperature={} top_p={} top_k={} repetition_penalty={} options={} stream_opts={} msg_count={} last_msg_role={}",
+        request_id,
+        sorted(payload.keys()),
+        payload.get("max_tokens"),
+        payload.get("temperature"),
+        payload.get("top_p"),
+        payload.get("top_k"),
+        payload.get("repetition_penalty"),
+        payload.get("options"),
+        payload.get("stream_options"),
+        len(payload.get("messages", [])),
+        payload["messages"][-1].get("role") if payload.get("messages") else None,
+    )
     try:
         conn = _http.HTTPConnection(
             parsed_url.hostname or "localhost",
