@@ -4922,3 +4922,124 @@ config (harmless, unused — OVMS isn't reading it now). Future
 sessions revisiting this should mirror the prod topology in shadow
 testing (two distinct ``graph.pbtxt`` files, not two name-aliases
 for one) before any prod write.
+
+## Change 41 — AIBox LLM swap to OpenArc (multi-model serving) (2026-05-03)
+
+**Why.** Change 40 shipped the triage bypass as a workaround for
+the OVMS multi-LLM limitation surfaced earlier the same day. The
+operator subsequently surfaced [OpenArc](https://github.com/SearchSavior/OpenArc),
+an OpenVINO-backed inference server explicitly designed for "Model
+concurrency: load and infer multiple models at once" on Intel
+devices via OpenAI-compatible endpoints. After two-phase shadow
+validation (single-model and dual-name routing on ``:11435``) plus
+a hand-launch validation on ``:11434`` covering tool calls and 30B
+performance on GPU.0, OpenArc was promoted to production.
+
+**What landed (host side — AIBox).**
+
+1. **Model dirs moved** to a clean OpenArc-owned tree:
+   - ``C:\AI\models\OpenVINO\Qwen3-30B-A3B-int4-ov`` → ``C:\OpenVino\models\Qwen3-30B-A3B-int4-ov``
+   - ``C:\AI\models\OpenVINO\Qwen3-0.6B-int4-ov`` → ``C:\OpenVino\models\Qwen3-0.6B-int4-ov``
+   - On-volume rename, instant. ``graph.pbtxt`` (OVMS-only) and
+     other OVMS artifacts inside the model dirs removed.
+2. **OVMS NSSM service stopped and removed** (``nssm remove ovms confirm``).
+   Force-killed the lingering ovms.exe parent process (NSSM stop did
+   not propagate cleanly).
+3. **OpenArc install completed** at ``C:\OpenVino\OpenArc\`` (operator-
+   cloned). Build issues fixed:
+   - ``uv sync`` was failing on ``gpu-metrics`` (a local pybind11 C++
+     extension needing ``level_zero/ze_api.h``). The Level Zero SDK
+     was already installed at ``C:\Program Files\LevelZeroSDK\1.26.1\``;
+     the gpu-metrics setup.py hardcodes Linux include paths and
+     never looks there. Fixed by setting ``INCLUDE`` and ``LIB`` env
+     vars before re-running ``uv sync``. (Same fix would work upstream
+     via a setup.py patch — left as an open OpenArc issue rather
+     than a local change.)
+   - Post-sync optimum-intel pin (git HEAD) needed to fix a torch
+     ABI mismatch (``cannot import name '_attention_scale'``).
+   - Post-sync openvino-genai nightly pin needed to match the
+     openvino 2026.1 → 2026.2 ABI bump optimum-intel pulled in.
+4. **Models registered in OpenArc** with original names (so
+   ``services.yaml::model`` doesn't change):
+   - ``OpenVINO/Qwen3-30B-A3B-int4-ov`` → GPU.0,
+     ``runtime_config={KV_CACHE_PRECISION: u8, CACHE_DIR: C:/OpenVino/cache}``
+     (mirrors OVMS tuning).
+   - ``OpenVINO/Qwen3-0.6B-int4-ov`` → CPU.
+5. **NSSM ``openarc`` service** registered:
+   - App: ``C:\OpenVino\OpenArc\.venv\Scripts\openarc.exe``
+   - Args: ``serve start --port 11434 --load-models OpenVINO/Qwen3-30B-A3B-int4-ov OpenVINO/Qwen3-0.6B-int4-ov``
+   - AppDirectory: ``C:\OpenVino\OpenArc``
+   - AppStdout/AppStderr: ``C:\OpenVino\OpenArc\logs\service-{stdout,stderr}.log``
+   - Start: SERVICE_AUTO_START
+6. **Old OVMS install nuked**: ``C:\AI\ovms\``, ``C:\AI\ovms-cache\``,
+   ``C:\AI\ovms-logs\``, ``C:\AI\ovms-venv\``, ``C:\AI\ovms_2026.1.0.zip``,
+   ``C:\AI\models\``. Per operator directive after live validation.
+
+**What landed (container side).**
+
+7. **``services.yaml`` URL paths updated** for all 5 LLM slots
+   (``llm_interactive``, ``llm_autonomy``, ``llm_vision``,
+   ``llm_triage``, ``llm_commands``):
+   - ``http://192.168.1.75:11434/v3/v1/chat/completions``
+     → ``http://192.168.1.75:11434/v1/chat/completions``
+   - The ``/v3/`` prefix was OVMS's non-canonical
+     OpenAI-compat path; OpenArc serves the standard ``/v1/`` path.
+8. **``services.yaml::llm_triage.model`` updated**:
+   - ``OpenVINO/Qwen3-30B-A3B-int4-ov`` → ``OpenVINO/Qwen3-0.6B-int4-ov``
+   - This is consumed by the autonomy Tier 2 disambiguator (a real
+     code path, separate from the ``triage_plugins`` bypass shipped
+     in Change 40). The 0.6B classifies in <1 s on CPU vs. 11–25 s
+     warm on the 30B.
+9. **Container restarted** to pick up the config. Healthy in ~80 s.
+10. **services.yaml backup** preserved at
+    ``…/configs/services.yaml.bak.pre-openarc-2026-05-03`` on the
+    docker host for rollback.
+
+**Compatibility verification.**
+
+- **Tool calls**: OpenArc parses hermes-style ``<tool_call>...</tool_call>``
+  tags and emits OpenAI-standard ``finish_reason: tool_calls`` +
+  ``tool_calls: [{id, type: function, function: {name, arguments}}]``.
+  Identical shape to OVMS's ``--tool_parser hermes3`` output. No
+  container-side changes needed.
+- **Reasoning content**: OpenArc keeps ``<think>...</think>`` inline
+  in ``content`` (no separate ``reasoning_content`` field). Container's
+  existing ``llm_processor._extract_thinking_standard`` handles the
+  inline form already (THINKING_OPEN_TAGS includes ``<think>``).
+- **Performance**: 30B on GPU.0 measured at **42.0 tok/s decode,
+  1.01 s TTFT** (vs. OVMS baseline 39.8 tok/s). 0.6B on CPU at
+  **0.44 s TTFT, ~9 tok/s decode**.
+- **NSSM-managed restart**: 30B reload from OpenVINO model cache hit
+  in **9.6 s** (cold first load was 53.7 s). Substantially faster
+  than the 70 s OVMS cold start.
+
+**Live-probe evidence.**
+
+- ``GET /v1/models`` returns both model entries on loopback and on
+  the LAN bind (``192.168.1.75:11434``).
+- ``/openarc/status`` reports ``total_loaded: 2`` with 30B@GPU.0 +
+  0.6B@CPU.
+- Container ``Tier 2 disambiguator`` boot log confirms the new
+  config: ``ollama=http://192.168.1.75:11434/v1/chat/completions
+  model=OpenVINO/Qwen3-0.6B-int4-ov (slot=llm_triage)``.
+- Container autonomy ``Behavior Observer`` agent successfully
+  invoked the 30B post-restart (``Slot update: Behavior Observer ->
+  adjusted``).
+- OpenArc request log shows ``status=200`` chat completions from
+  ``192.168.1.150`` (the docker host).
+
+**Open follow-ups.**
+
+- **Revert Change 40 triage bypass.** With the 0.6B model now
+  reachable in <1 s, ``triage_plugins`` can call the LLM again and
+  recover the prompt-token optimization (chat sees only relevant
+  plugins per turn). Deferred until next session — the bypass is
+  doing its job, no urgency.
+- **gpu-metrics setup.py upstream fix.** OpenArc hardcodes Linux
+  paths in the gpu-metrics extension's setup.py. A 5-line patch to
+  add Windows defaults would make the install one-step. Worth a PR
+  to ``SearchSavior/OpenArc``.
+- **OpenArc benchmarking under sustained load.** Today's perf
+  measurement is a single-shot cold-warm probe. The OVMS baseline
+  of 39.8 tok/s came from a 1024-token decode benchmark; the
+  current OpenArc numbers may shift under longer contexts.
