@@ -4833,3 +4833,92 @@ operator-tunable through the WebUI rather than YAML-only.
   ``project_glados_time_hallucination.md``): not implemented;
   system-message injection covers the hallucination case end-to-end and
   matches the established weather/memory/canon pattern.
+
+## Change 40 — Plugin triage: bypass LLM, advertise all enabled plugins (2026-05-03)
+
+**Why.** Phase 2c (Change 31, 2026-04-29) added an LLM-driven triage
+step on the chat path: when the keyword pre-filter misses, ask a
+small fast model to pick which plugins are relevant. The design
+assumed warm classification in 300–500 ms and an inline budget of
+~1.5 s. Reality on the post-Change-38 OVMS-on-Qwen3-30B / Intel Arc
+Pro B60 deployment: warm 30B is **11–25 s for 4 tokens**. Triage
+running on the same model ate ~50% of plugin chat turns at the 15 s
+ceiling — the chat path fell through to chitchat with no plugin
+tools loaded, so newly-shipped plugins like Spotify (Change 39
+follow-on, 2026-05-03 morning) appeared "unknown" to GLaDOS even
+though the plugin runtime was healthy and the operator's chat was
+literally about Spotify.
+
+The 2026-05-03 morning session attempted to solve the underlying
+"30B is too slow for triage" problem by serving a small fast model
+(``OpenVINO/Qwen3-0.6B-int4-ov``, CPU) alongside the 30B on the
+same OVMS instance. That attempt is documented in
+``feedback_ovms_multi_model_attempt.md`` in auto-memory; in short:
+``model_config_list`` doesn't drive HTTP routing for LLMs at all
+(legacy KFServing surface), and ``mediapipe_config_list`` works
+for one LLM and for two name-aliases pointing at the same graph
+but **does not** route two distinct LLM graphs in one OVMS
+instance. The HTTP layer registers the first graph and silently
+skips subsequent ones. ``ovms_serve.bat`` was reverted to the
+``--source_model`` single-model 30B configuration.
+
+**Operator directive (2026-05-03 morning):** "Do B [multi-model
+OVMS]. Then do A [bypass triage] if B does not resolve." B did
+not resolve.
+
+**What landed.**
+
+1. **``triage_plugins`` returns every enabled plugin's name** when
+   ``GLADOS_PLUGIN_TRIAGE_ENABLED`` is truthy and inputs are
+   non-degenerate. The chat LLM gets the full plugin tool catalog
+   on every turn that the keyword pre-filter missed. Trades a
+   small bump in prompt tokens (the chat model reads N plugin
+   tool descriptions instead of zero or one) for reliable plugin
+   reachability — a pure regression-of-feature is the wrong
+   tradeoff when the alternative is a 15 s stall and a refusal.
+2. **No LLM call.** Imports of ``llm_call``, ``LLMConfig``,
+   ``json``, ``time``, schema construction, sentinel handling,
+   and dedup logic are removed. The original code remains in git
+   history for revival when a fast triage model lands on this
+   hardware.
+3. **Env gate preserved.** ``GLADOS_PLUGIN_TRIAGE_ENABLED=false``
+   still skips the function entirely and returns ``[]`` so
+   deployments that don't want plugin tools advertised on the
+   chat path can opt out without code changes.
+4. **``timeout_s`` parameter accepted but ignored.** Back-compat
+   for the existing call site in
+   ``glados/core/api_wrapper.py:1691`` — no caller change needed.
+
+**Files touched.**
+
+- ``glados/plugins/triage.py`` — body replaced; imports trimmed;
+  docstring rewritten to explain bypass mode and the why.
+- ``tests/test_plugins_triage.py`` — 13 LLM-mocking tests removed
+  (mocks no longer test anything real); 14 bypass-mode tests
+  added covering: returns-all-names, content-independence, order
+  preservation, env-gate, env-falsy variants (parametrized over
+  6 strings), empty-plugin-list, empty-message,
+  empty-string-message, ``timeout_s`` accepted-but-ignored.
+
+**Tests:** 1754 → 1755 (+1 net, 13 removed + 14 added). 0
+regressions. ``pytest -q`` runs in ~57 s.
+
+**Live state (2026-05-03):**
+
+- Container image SHA ``2caa358a2c76``. ``glados`` healthy on
+  docker host ``192.168.1.150``.
+- In-container probe confirms bypass mode active:
+  ``triage_plugins("any", [spotify, arr-stack])`` returns
+  ``["spotify", "arr-stack"]``; log line
+  ``plugin triage: bypass mode, advertising all 2 enabled plugins:
+  ['spotify', 'arr-stack']`` emits at ``INFO``.
+- AIBox OVMS reverted to single-model 30B
+  (``ovms_serve.bat`` matches ``ovms_serve.bat.bak``).
+
+**Open follow-up.** Multi-LLM OVMS serving is deferred. The 0.6B
+model is downloaded at ``C:\AI\models\OpenVINO\Qwen3-0.6B-int4-ov\``
+on AIBox; ``C:\AI\models\config.json`` holds the failed multi-LLM
+config (harmless, unused — OVMS isn't reading it now). Future
+sessions revisiting this should mirror the prod topology in shadow
+testing (two distinct ``graph.pbtxt`` files, not two name-aliases
+for one) before any prod write.
