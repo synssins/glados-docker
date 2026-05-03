@@ -2164,23 +2164,6 @@ def _stream_chat_sse_impl(
         request_id, parsed_url.hostname or "localhost",
         parsed_url.port or 11434, parsed_url.path, len(body),
     )
-    # TEMP DEBUG (truncation investigation 2026-05-03): dump payload sampling
-    # params + last assistant/tool message so we can see exactly what reaches
-    # OpenArc. Revert after capture.
-    _log_chat_connect.info(
-        "[{}] DEBUG payload keys={} max_tokens={} temperature={} top_p={} top_k={} repetition_penalty={} options={} stream_opts={} msg_count={} last_msg_role={}",
-        request_id,
-        sorted(payload.keys()),
-        payload.get("max_tokens"),
-        payload.get("temperature"),
-        payload.get("top_p"),
-        payload.get("top_k"),
-        payload.get("repetition_penalty"),
-        payload.get("options"),
-        payload.get("stream_options"),
-        len(payload.get("messages", [])),
-        payload["messages"][-1].get("role") if payload.get("messages") else None,
-    )
     try:
         conn = _http.HTTPConnection(
             parsed_url.hostname or "localhost",
@@ -2805,6 +2788,29 @@ def _stream_chat_sse_impl(
             _p2 = {"model": _upstream_model, "stream": True, "messages": messages}
             if tools:
                 _p2["tools"] = tools
+            # Mirror round-1's sampling-param translation onto round-2 so
+            # the operator's personality.model_options actually reach the
+            # post-tool-result final-answer turn. Without this, round-2
+            # silently runs on OpenArc/OV-GenAI defaults
+            # (temperature=1.0, repetition_penalty=1.0, default seed,
+            # max_tokens=16384) — diverges from round-1 in ways that
+            # produced reproducible mid-word truncation operator-flagged
+            # 2026-05-03. Same /v1/-only gating logic as the round-1
+            # payload construction site.
+            if "/v1/" in parsed_url.path:
+                if "temperature" in _streaming_options:
+                    _p2["temperature"] = _streaming_options["temperature"]
+                if "top_p" in _streaming_options:
+                    _p2["top_p"] = _streaming_options["top_p"]
+                if "top_k" in _streaming_options:
+                    _p2["top_k"] = _streaming_options["top_k"]
+                if "num_predict" in _streaming_options:
+                    _p2["max_tokens"] = _streaming_options["num_predict"]
+                if "repeat_penalty" in _streaming_options:
+                    _p2["repetition_penalty"] = _streaming_options["repeat_penalty"]
+                _p2["stream_options"] = {"include_usage": True}
+            else:
+                _p2["options"] = _streaming_options
             _b2 = json.dumps(_p2).encode("utf-8")
             _h2 = {"Content-Type": "application/json", "Content-Length": str(len(_b2))}
             if glados.api_key:
