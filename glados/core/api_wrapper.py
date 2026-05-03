@@ -69,6 +69,53 @@ from glados.intent.rules import looks_like_home_command
 # anti-fabrication, no persona overlay on command turns. Persona is reserved
 # for chitchat / weather / status / autonomy alerts.
 
+def _apply_streaming_options(
+    payload: dict[str, Any],
+    streaming_options: dict[str, Any],
+    url_path: str,
+) -> None:
+    """Translate the Ollama-style ``streaming_options`` dict (temperature,
+    top_p, top_k, num_predict, repeat_penalty) into the right transport
+    shape for ``payload`` based on ``url_path``.
+
+    Single source of truth for sampling params on the chat path. Both the
+    initial chat turn and round-2+ of the agentic tool loop must call this
+    so all rounds receive the operator's tuned ``personality.model_options``.
+    Skipping it on any round was the root cause of the 2026-05-03
+    operator-flagged mid-word truncation: the post-tool-result final-answer
+    turn silently ran on OpenArc/OV-GenAI defaults (temperature=1.0,
+    repetition_penalty=1.0, default seed=0, max_tokens=16384) while
+    round-1 had the operator's tuned params applied. Mutates ``payload``
+    in place.
+
+    Translation rules:
+    * On ``/v1/`` paths: promote to OpenAI-spec top-level fields (LM
+      Studio, vLLM, OpenArc, OpenAI-proper-compat-extensions all accept
+      these). Adds ``stream_options.include_usage=true`` so the final
+      ``usage`` chunk is emitted (without it, OpenAI-compat servers omit
+      counters).
+    * On non-``/v1/`` paths (Ollama-native ``/api/chat``): keep the
+      original ``options`` dict shape — Ollama reads from there and may
+      reject unknown top-level fields.
+    """
+    if "/v1/" in url_path:
+        if "temperature" in streaming_options:
+            payload["temperature"] = streaming_options["temperature"]
+        if "top_p" in streaming_options:
+            payload["top_p"] = streaming_options["top_p"]
+        if "top_k" in streaming_options:
+            payload["top_k"] = streaming_options["top_k"]
+        if "num_predict" in streaming_options:
+            payload["max_tokens"] = streaming_options["num_predict"]
+        if "repeat_penalty" in streaming_options:
+            # Ollama field name → OpenAI-spec equivalent. OpenArc, vLLM,
+            # LM Studio all accept ``repetition_penalty`` directly.
+            payload["repetition_penalty"] = streaming_options["repeat_penalty"]
+        payload["stream_options"] = {"include_usage": True}
+    else:
+        payload["options"] = streaming_options
+
+
 COMMAND_MODE_SYSTEM_PROMPT = (
     "You are a tool-using command interface. Respond tersely with what "
     "was done or found. No persona. No quips. State only facts grounded "
@@ -2091,43 +2138,7 @@ def _stream_chat_sse_impl(
         "stream": True,
         "messages": messages,
     }
-    # Model parameters travel one of two ways:
-    #   - Ollama-native (``/api/chat``) reads them from the ``options`` dict.
-    #   - OpenAI-compat (``/v1/chat/completions``) expects them as
-    #     top-level fields (``temperature``, ``top_p``, ``max_tokens``, etc.)
-    #     and silently drops unknown fields.
-    # The container historically only sent the Ollama form, so on every
-    # OpenAI-compat backend (LM Studio, OVMS, OpenArc) the operator's
-    # personality.model_options were ignored and the backend's defaults
-    # applied. This was latent until OpenArc landed (Change 41) — its
-    # defaults (temperature=1.0, no repetition penalty, default seed)
-    # produced reproducible truncated chat responses (operator-flagged
-    # 2026-05-03 "Suggest a movie from my library" stopping mid-sentence
-    # at "Would you like more"). Translate the relevant options into the
-    # OpenAI-spec field names for /v1/ paths; keep the options dict for
-    # Ollama-native paths.
-    if "/v1/" in parsed_url.path:
-        if "temperature" in _streaming_options:
-            payload["temperature"] = _streaming_options["temperature"]
-        if "top_p" in _streaming_options:
-            payload["top_p"] = _streaming_options["top_p"]
-        if "top_k" in _streaming_options:
-            payload["top_k"] = _streaming_options["top_k"]
-        if "num_predict" in _streaming_options:
-            payload["max_tokens"] = _streaming_options["num_predict"]
-        if "repeat_penalty" in _streaming_options:
-            # Ollama field name → OpenAI-spec equivalent. OpenArc accepts
-            # ``repetition_penalty`` directly.
-            payload["repetition_penalty"] = _streaming_options["repeat_penalty"]
-        # OpenAI-compat servers (LM Studio, vLLM, OpenArc) emit a final
-        # ``usage`` chunk only when stream_options.include_usage=true.
-        payload["stream_options"] = {"include_usage": True}
-    else:
-        # Ollama-native path keeps the options dict as-is. The /api/chat
-        # endpoint reads model parameters from there and reports counters
-        # in its own ``done`` chunk; it may reject unknown top-level
-        # fields like ``temperature`` or ``stream_options``.
-        payload["options"] = _streaming_options
+    _apply_streaming_options(payload, _streaming_options, parsed_url.path)
     if tools:
         payload["tools"] = tools
     # Route marker reflects actual tool-routing decision, not just the
@@ -2788,29 +2799,11 @@ def _stream_chat_sse_impl(
             _p2 = {"model": _upstream_model, "stream": True, "messages": messages}
             if tools:
                 _p2["tools"] = tools
-            # Mirror round-1's sampling-param translation onto round-2 so
-            # the operator's personality.model_options actually reach the
-            # post-tool-result final-answer turn. Without this, round-2
-            # silently runs on OpenArc/OV-GenAI defaults
-            # (temperature=1.0, repetition_penalty=1.0, default seed,
-            # max_tokens=16384) — diverges from round-1 in ways that
-            # produced reproducible mid-word truncation operator-flagged
-            # 2026-05-03. Same /v1/-only gating logic as the round-1
-            # payload construction site.
-            if "/v1/" in parsed_url.path:
-                if "temperature" in _streaming_options:
-                    _p2["temperature"] = _streaming_options["temperature"]
-                if "top_p" in _streaming_options:
-                    _p2["top_p"] = _streaming_options["top_p"]
-                if "top_k" in _streaming_options:
-                    _p2["top_k"] = _streaming_options["top_k"]
-                if "num_predict" in _streaming_options:
-                    _p2["max_tokens"] = _streaming_options["num_predict"]
-                if "repeat_penalty" in _streaming_options:
-                    _p2["repetition_penalty"] = _streaming_options["repeat_penalty"]
-                _p2["stream_options"] = {"include_usage": True}
-            else:
-                _p2["options"] = _streaming_options
+            # Single source of truth for sampling params — same helper
+            # round-1 used. Without this, round-2 falls back to backend
+            # defaults and the operator's personality.model_options
+            # silently fail to reach the post-tool-result turn.
+            _apply_streaming_options(_p2, _streaming_options, parsed_url.path)
             _b2 = json.dumps(_p2).encode("utf-8")
             _h2 = {"Content-Type": "application/json", "Content-Length": str(len(_b2))}
             if glados.api_key:
