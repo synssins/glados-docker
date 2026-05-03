@@ -15,13 +15,22 @@ of the system context — the operator hit this on
 a function to retrieve the current time"* despite the time-injection
 context block being present (Change 39 + Change 40 bypass interaction).
 
-5 s timeout -- triage runs INLINE on the chat path, so the budget
-needs to stay tight. The 0.6B classifier on OpenArc's CPU lane runs
-~0.5 s warm for the classifier prompt; 5 s is a comfortable upper
-bound that catches stalls without inflating chat latency. Any
-failure (timeout, network error, malformed JSON, names outside the
-enabled set) returns ``[]`` so the chitchat path falls back to the
-existing no-tools behavior. Never raises.
+10 s timeout -- triage runs INLINE on the chat path, so the budget
+needs to stay tight. Why 10 s on a 0.6B classifier: OpenArc's
+``OpenAIChatCompletionRequest`` model
+(``src/server/models/requests_openai.py``) does NOT define a
+``response_format`` field, so the schema-constrained decoding
+``response_format: {"type": "json_schema", ...}`` we send is
+silently dropped by pydantic. Without grammar enforcement Qwen3-0.6B
+on CPU emits ~130-180 tokens of unconstrained output (some thinking
+prefix + JSON answer) before stopping, which takes 5-7 s warm. 10 s
+gives comfortable headroom for that and catches genuine stalls.
+Optimization is captured as an open follow-up: either add
+``response_format`` support to OpenArc upstream, or pass
+``max_tokens`` to ``llm_call`` so the cap is enforced client-side.
+Any failure (timeout, network error, malformed JSON, names outside
+the enabled set) returns ``[]`` so the chitchat path falls back to
+the existing no-tools behavior. Never raises.
 
 Globally toggleable via ``GLADOS_PLUGIN_TRIAGE_ENABLED`` env. Default
 ``true``; any falsy value (``"false"``, ``"0"``, ``"no"``, ``"off"``)
@@ -112,7 +121,7 @@ def _build_user_prompt(message: str, plugins: Iterable["Plugin"]) -> str:
 def triage_plugins(
     message: str,
     plugins: list["Plugin"],
-    timeout_s: float = 5.0,
+    timeout_s: float = 10.0,
 ) -> list[str]:
     """Ask the triage LLM which plugins are relevant for ``message``.
 

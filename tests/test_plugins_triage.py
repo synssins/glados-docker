@@ -1,7 +1,8 @@
 """LLM-backed plugin intent triage (Phase 2c gate #2).
 
-The triage call runs INLINE on the chitchat path with a 5 s budget
-(against the 0.6B target on OpenArc; see triage.py docstring), so
+The triage call runs INLINE on the chitchat path with a 10 s budget
+(against the 0.6B target on OpenArc; see triage.py docstring for
+the response_format-not-honored constraint that drives this), so
 the contract is: never raise, always return a clean list of names
 that exist in the enabled plugin set, and respect the
 GLADOS_PLUGIN_TRIAGE_ENABLED env switch.
