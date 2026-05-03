@@ -2808,21 +2808,6 @@ def _stream_chat_sse_impl(
             _h2 = {"Content-Type": "application/json", "Content-Length": str(len(_b2))}
             if glados.api_key:
                 _h2["Authorization"] = f"Bearer {glados.api_key}"
-            # TEMP DEBUG (P1, truncation 2026-05-03): hash + binary-mode dump
-            # of the bytes about to be sent on the wire. Lets us byte-compare
-            # capture vs wire (hypothesis H2) and replay the exact wire bytes
-            # externally. Revert after capture.
-            try:
-                import hashlib as _hashlib_p1
-                _h_b2 = _hashlib_p1.sha256(_b2).hexdigest()
-                with open(f"/app/logs/round2_b2_{request_id}.bin", "wb") as _fp_p1:
-                    _fp_p1.write(_b2)
-                logger.warning(
-                    "[{}] DEBUG_P1 wire bytes len={} sha256={}",
-                    request_id, len(_b2), _h_b2,
-                )
-            except Exception as _e_p1:
-                logger.warning("[{}] DEBUG_P1 failed: {!r}", request_id, _e_p1)
             # Diagnostic accumulators for the round-2 stream. Same shape
             # as round-1, so the operator can compare both halves of the
             # chat at a glance. Tracks every chunk variant LM Studio
@@ -2849,9 +2834,6 @@ def _stream_chat_sse_impl(
             _r2_error_payload: dict | None = None
             _r2_usage: dict | None = None
             _r2_done_seen = False
-            # TEMP DEBUG (P2, truncation 2026-05-03): collect raw response
-            # bytes for byte-level diff vs external replay. Revert after capture.
-            _p2_resp_chunks: list[bytes] = []
             _log_chat_round2.info("[{}] entering round-2 stream loop", request_id)
             try:
                 _c2 = _http.HTTPConnection(parsed_url.hostname or "localhost", parsed_url.port or 11434, timeout=int(timeout))
@@ -2868,7 +2850,6 @@ def _stream_chat_sse_impl(
                     if not _raw2:
                         break
                     _r2_total_bytes += len(_raw2)
-                    _p2_resp_chunks.append(_raw2)  # TEMP DEBUG (P2)
                     _ln2 = _raw2.decode("utf-8", errors="replace").rstrip()
                     if not _ln2:
                         continue
@@ -3025,20 +3006,6 @@ def _stream_chat_sse_impl(
                     "[{}] Tool follow-up error: {} ({})",
                     request_id, type(_e2).__name__, _e2,
                 )
-            # TEMP DEBUG (P2, truncation 2026-05-03): dump raw response
-            # bytes + hash. Revert after capture.
-            try:
-                import hashlib as _hashlib_p2
-                _r2_blob = b"".join(_p2_resp_chunks)
-                with open(f"/app/logs/round2_resp_{request_id}.bin", "wb") as _fp_p2:
-                    _fp_p2.write(_r2_blob)
-                logger.warning(
-                    "[{}] DEBUG_P2 wire response len={} sha256={} chunks={}",
-                    request_id, len(_r2_blob),
-                    _hashlib_p2.sha256(_r2_blob).hexdigest(), len(_p2_resp_chunks),
-                )
-            except Exception as _e_p2:
-                logger.warning("[{}] DEBUG_P2 failed: {!r}", request_id, _e_p2)
             # Diagnostic dump — same comprehensive shape as round-1.
             _r2_raw_full = "".join(_r2_raw_buf)
             _r2_visible_full = "".join(_r2_visible_buf)
