@@ -56,6 +56,7 @@ def _enabled() -> bool:
 _NONE_SENTINEL = "__none__"
 
 _SYSTEM_PROMPT = (
+    "/no_think\n\n"
     "You are a tool-routing classifier. Given a user message and a "
     "catalog of plugins, decide which plugin (if any) the user "
     "actually needs to satisfy the request. Reply with strict JSON: "
@@ -101,7 +102,7 @@ def _build_user_prompt(message: str, plugins: Iterable["Plugin"]) -> str:
 def triage_plugins(
     message: str,
     plugins: list["Plugin"],
-    timeout_s: float = 5.0,
+    timeout_s: float = 15.0,
 ) -> list[str]:
     """Ask the triage LLM which plugins are relevant for ``message``.
 
