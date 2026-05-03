@@ -2993,6 +2993,31 @@ def _stream_chat_sse_impl(
                             handler.wfile.write(f"data: {json.dumps(_cd2)}\n\n".encode())
                             handler.wfile.flush()
                     if _done2:
+                        # Flush any held think-filter tail. Mirrors round-1
+                        # logic. Without this, up to _MAX_TAIL_LEN (12)
+                        # trailing visible chars get stranded in the filter's
+                        # lookback buffer at end-of-stream, producing the
+                        # operator-visible mid-sentence truncation on
+                        # tool-using chat turns.
+                        if think_state["tail"]:
+                            tail_visible = "" if think_state["in_thinking"] else think_state["tail"]
+                            if tail_visible:
+                                _r2_visible_buf.append(tail_visible)
+                                full_response.append(tail_visible)
+                                _cd2_tail = {
+                                    "id": f"chatcmpl-{request_id}",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": "glados",
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"content": tail_visible},
+                                        "finish_reason": None,
+                                    }],
+                                }
+                                handler.wfile.write(f"data: {json.dumps(_cd2_tail)}\n\n".encode())
+                                handler.wfile.flush()
+                            think_state["tail"] = ""
                         break
                 _c2.close()
             except Exception as _e2:
