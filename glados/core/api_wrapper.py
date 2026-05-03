@@ -114,21 +114,6 @@ def _apply_streaming_options(
         payload["stream_options"] = {"include_usage": True}
     else:
         payload["options"] = streaming_options
-    # TEMP DEBUG (truncation investigation 2026-05-03): one log line per
-    # call so we can compare round-1 vs round-2 vs any future caller's
-    # final outgoing sampling params. logger.success bypasses the
-    # SUCCESS-level loguru sink filter (legacy engine.py:58 behavior).
-    # Revert after verification.
-    logger.success(
-        "_apply_streaming_options: path={} max_tokens={} temperature={} top_p={} top_k={} repetition_penalty={} options_kept={}",
-        url_path,
-        payload.get("max_tokens"),
-        payload.get("temperature"),
-        payload.get("top_p"),
-        payload.get("top_k"),
-        payload.get("repetition_penalty"),
-        "options" in payload,
-    )
 
 
 COMMAND_MODE_SYSTEM_PROMPT = (
