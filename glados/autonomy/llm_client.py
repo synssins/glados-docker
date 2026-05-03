@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import requests
 from loguru import logger
@@ -85,11 +85,18 @@ def llm_call(
     user_prompt: str,
     json_response: bool = False,
     json_schema: dict | None = None,
+    max_tokens: int | None = None,
 ) -> str | None:
     """
     Make a simple LLM call.
 
     Returns the assistant's response text, or None on error.
+
+    ``max_tokens``: optional defensive cap on output length. Passed
+    through as the OpenAI-spec ``max_tokens`` field. Useful when the
+    backend doesn't honor schema constraints (e.g. OpenArc silently
+    drops ``response_format``) and a small classifier model can ramble
+    well past any useful answer. Leave ``None`` for the backend default.
     """
     # Budget enforcement — autonomy callers occasionally pass a
     # decade of conversation history. Truncate to the most-recent
@@ -116,11 +123,25 @@ def llm_call(
     from glados.core.llm_directives import apply_model_family_directives
     messages = apply_model_family_directives(messages, config.model)
 
-    data = {
+    data: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
         "stream": False,
     }
+    if max_tokens is not None:
+        # Defensive cap. Some backends (e.g. OpenArc) do not honor
+        # schema-constrained decoding and the model can run on for
+        # hundreds of tokens of <think> content even with /no_think
+        # in the system prompt. The cap bounds the request budget;
+        # the existing tolerant JSON parser handles partial output.
+        data["max_tokens"] = max_tokens
+    # NOTE: do not pass ``temperature: 0.0``. OpenArc / OpenVINO GenAI
+    # defaults ``do_sample=true`` from the model's generation_config.json;
+    # combined with ``temperature=0`` the sampler divides by zero and
+    # crashes the worker, which OpenArc then auto-unloads with no
+    # auto-reload. Use the model default temperature (omit the field)
+    # or pass a small positive value (e.g. 0.1) if determinism is
+    # required.
 
     if json_schema is not None:
         # Schema-constrained decoding: LM Studio's llama.cpp runtime

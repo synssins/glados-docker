@@ -201,3 +201,19 @@ def test_empty_message_short_circuits():
         out = triage_plugins("   ", plugins)
     assert out == []
     call.assert_not_called()
+
+
+def test_passes_max_tokens_defensive_cap():
+    """Defensive cap on output length. OpenArc silently drops
+    response_format json_schema constraints, so the small classifier
+    can ramble through hundreds of <think> tokens at default
+    temperature regardless of /no_think. ``max_tokens=256`` bounds
+    runaway outputs without changing typical-case behavior."""
+    from glados.plugins.triage import triage_plugins
+    plugins = [_plugin("arr-stack", "movies")]
+    with patch(
+        "glados.plugins.triage.llm_call",
+        return_value='{"relevant": ["arr-stack"]}',
+    ) as call:
+        triage_plugins("any", plugins)
+    assert call.call_args.kwargs.get("max_tokens") == 256

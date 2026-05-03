@@ -184,6 +184,13 @@ def triage_plugins(
             _SYSTEM_PROMPT,
             _build_user_prompt(message, plugins),
             json_schema=triage_schema,
+            # Defensive cap — OpenArc doesn't honor json_schema, so the
+            # model can ramble through 130-180 tokens of <think> at
+            # default temperature regardless of /no_think. 256 leaves
+            # room for typical think + JSON, catches runaway. Removing
+            # the runaway is the visible win; the typical-case latency
+            # is bounded by the model's natural decode time, not this.
+            max_tokens=256,
         )
     except Exception as exc:  # noqa: BLE001
         _log_triage.warning(
