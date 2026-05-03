@@ -2083,14 +2083,44 @@ def _stream_chat_sse_impl(
         "model": _upstream_model,
         "stream": True,
         "messages": messages,
-        "options": _streaming_options,
     }
-    # OpenAI-compat servers (LM Studio, vLLM) emit a final `usage` chunk
-    # only when stream_options.include_usage=true. Ollama-native (`/api/chat`)
-    # reports the same counters in its own `done` chunk and may reject
-    # unknown top-level fields, so gate on path.
+    # Model parameters travel one of two ways:
+    #   - Ollama-native (``/api/chat``) reads them from the ``options`` dict.
+    #   - OpenAI-compat (``/v1/chat/completions``) expects them as
+    #     top-level fields (``temperature``, ``top_p``, ``max_tokens``, etc.)
+    #     and silently drops unknown fields.
+    # The container historically only sent the Ollama form, so on every
+    # OpenAI-compat backend (LM Studio, OVMS, OpenArc) the operator's
+    # personality.model_options were ignored and the backend's defaults
+    # applied. This was latent until OpenArc landed (Change 41) — its
+    # defaults (temperature=1.0, no repetition penalty, default seed)
+    # produced reproducible truncated chat responses (operator-flagged
+    # 2026-05-03 "Suggest a movie from my library" stopping mid-sentence
+    # at "Would you like more"). Translate the relevant options into the
+    # OpenAI-spec field names for /v1/ paths; keep the options dict for
+    # Ollama-native paths.
     if "/v1/" in parsed_url.path:
+        if "temperature" in _streaming_options:
+            payload["temperature"] = _streaming_options["temperature"]
+        if "top_p" in _streaming_options:
+            payload["top_p"] = _streaming_options["top_p"]
+        if "top_k" in _streaming_options:
+            payload["top_k"] = _streaming_options["top_k"]
+        if "num_predict" in _streaming_options:
+            payload["max_tokens"] = _streaming_options["num_predict"]
+        if "repeat_penalty" in _streaming_options:
+            # Ollama field name → OpenAI-spec equivalent. OpenArc accepts
+            # ``repetition_penalty`` directly.
+            payload["repetition_penalty"] = _streaming_options["repeat_penalty"]
+        # OpenAI-compat servers (LM Studio, vLLM, OpenArc) emit a final
+        # ``usage`` chunk only when stream_options.include_usage=true.
         payload["stream_options"] = {"include_usage": True}
+    else:
+        # Ollama-native path keeps the options dict as-is. The /api/chat
+        # endpoint reads model parameters from there and reports counters
+        # in its own ``done`` chunk; it may reject unknown top-level
+        # fields like ``temperature`` or ``stream_options``.
+        payload["options"] = _streaming_options
     if tools:
         payload["tools"] = tools
     # Route marker reflects actual tool-routing decision, not just the
