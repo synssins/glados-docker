@@ -22,10 +22,18 @@ order BEFORE doing anything else:
    hallucination fix). Today's session did NOT add a new Change number
    — only in-container hot-patches and one repo commit to `triage.py`.
 5. `C:\Users\Administrator\.claude\projects\C--src\memory\MEMORY.md` —
-   auto-loaded. Pay particular attention to `feedback_nssm_gui_traps`,
-   `feedback_no_t4_options`, `feedback_deploy_ownership`,
-   `feedback_no_secrets_in_commits`, `feedback_no_local_docker`, plus
-   any new `feedback_research_ovms_before_changes` if it lands.
+   auto-loaded. Pay particular attention to:
+   - `feedback_nssm_gui_traps`
+   - `feedback_no_t4_options`
+   - `feedback_deploy_ownership`
+   - `feedback_no_secrets_in_commits`
+   - `feedback_no_local_docker`
+   - **`feedback_research_before_prod_writes`** — NEW. Captures the
+     2026-05-03 OVMS-edit failure mode and the artifact-or-don't-write
+     rule. Read this BEFORE touching any running service config.
+   - **`feedback_ovms_multi_model_attempt`** — NEW. Concrete record
+     of the failed multi-LLM attempt: what was tried, why it didn't
+     route, where to look next time. Don't repeat the same approach.
 
 ## Core operating rules (also in CLAUDE.md §2)
 
@@ -49,6 +57,27 @@ order BEFORE doing anything else:
   without first verifying the new flags / config actually serve the
   models you intend — last session lost ~1 hr on `--add_to_config`
   registering models for the wrong code path.
+- **Production writes need an artifact, not a hunch** (CLAUDE.md §2,
+  earned by the 2026-05-03 OVMS failure). Before any write to a
+  running production service config — `ovms_serve.bat`, NSSM service
+  params, the live container's `services.yaml` / `plugin.json` /
+  in-container python patches, GHCR image build — the change must
+  pass at least ONE of:
+  1. Tested on a parallel non-prod port/instance and verified to
+     do what's intended (e.g. spin up a second OVMS on `:11435`
+     pointing at the candidate config; confirm both models route
+     before swapping into the `:11434` service).
+  2. Backed by an upstream doc citation that names this exact use
+     case (URL + the relevant snippet), not just a flag's existence
+     in `--help`.
+  3. Operator-acknowledged with the specific change spelled out
+     before execution. Don't paraphrase intent ("set up a small
+     model") into a different concrete action ("replace
+     `--source_model` with `--config_path`") — restate the literal
+     mutation and get sign-off.
+  Phrases like "the flag exists", "the syntax parsed", "the log
+  says AVAILABLE" are NOT evidence the change does what's intended.
+  The "always research" rule applies per-mutation, not per-task.
 - Don't hardcode against current state (SSL on/off, port-binding).
   Route internal calls through the always-stable 127.0.0.1:18015.
 - Research before recommending. Hit project pages with WebSearch +

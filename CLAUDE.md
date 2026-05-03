@@ -138,6 +138,33 @@ require explicit confirmation.
   list before naming it. The "OpenAI compliance + actively
   maintained" filter doesn't matter if the tool can't run on this
   hardware.
+- **Production writes need an artifact, not a hunch.** Before any
+  write to a running production service config — `ovms_serve.bat`,
+  NSSM service params, the live container's `services.yaml` /
+  `plugin.json` / `wrapper.mjs` / patched python in `/app/`, GHCR
+  image build, anything that shapes how a running daemon serves
+  requests — the change must pass at least ONE of:
+  1. **Tested on a parallel non-prod port/instance** and verified
+     to do what's intended (e.g. spin up a second OVMS on `:11435`
+     pointing at the candidate config; confirm both models route
+     before swapping into the `:11434` service).
+  2. **Backed by an upstream doc citation** that names this exact
+     use case (URL + the relevant snippet in scratch notes), not
+     just a flag's existence in `--help`.
+  3. **Operator-acknowledged with the specific change spelled out**
+     before execution. "Set up a small triage model" is not
+     acknowledgement of "replace `--source_model` with
+     `--config_path` in `ovms_serve.bat`" — restate the actual
+     mutation and get sign-off.
+  The phrases **"the flag exists", "the syntax parsed", "the log
+  says AVAILABLE", "the tool didn't error"** are NOT evidence the
+  change does what's intended. They confirm that a thing happened,
+  not that the right thing happened. The "always research" rule in
+  §3 fires per-mutation, not per-task — a research pass at the
+  start of work doesn't cover later sub-steps. See
+  `feedback_research_before_prod_writes.md` and
+  `feedback_ovms_multi_model_attempt.md` in auto-memory for the
+  failure cases that earned this rule.
 - **Intel Arc Pro B60 is the only GPU path.** No T4 / NVIDIA / CUDA
   recommendations even though both T4s are physically present in
   the box — operator has explicitly scoped them out. See
