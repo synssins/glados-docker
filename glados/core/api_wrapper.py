@@ -2066,17 +2066,24 @@ def _stream_chat_sse_impl(
         messages, _upstream_model, enable_thinking=_has_tools,
     )
     # num_predict budget. Two modes:
-    #   - command lane (qwen2.5-coder-7b on the dedicated lane): 512 is
-    #     sufficient. Tool-using command turns produce short tool_call
-    #     JSON + a terse confirmation; no <think> overhead, no persona
-    #     prose. Smaller budget keeps replies snappy.
-    #   - interactive lane: 1024 when tools are advertised (covers
-    #     <think> + tool_call + post-result final text across 1-3
-    #     rounds), else 512 for pure chitchat. Operators with heavier
-    #     catalogs can override via personality.model_options.num_predict.
+    #   - command lane: when ``llm_commands`` resolves to a small,
+    #     non-thinking model like qwen2.5-coder-7b, 512 is sufficient
+    #     (short tool_call JSON + terse confirmation, no <think> over-
+    #     head). When the deployment points ``llm_commands`` at the
+    #     same big thinking model as the interactive lane (which is
+    #     what's live on this host as of Change 41 — both slots route
+    #     to OpenArc Qwen3-30B), 512 isn't enough: the 30B's <think>
+    #     block for a tool-using turn easily eats 300-500 tokens before
+    #     it even reaches the tool_call, and the chat path silently
+    #     produced empty visible responses. So mirror the interactive-
+    #     with-tools budget (1024) — covers <think> + tool_call + post-
+    #     result final text across 1-3 rounds.
+    #   - interactive lane: 1024 when tools are advertised, else 512
+    #     for pure chitchat. Operators with heavier catalogs can
+    #     override via personality.model_options.num_predict.
     _streaming_options = dict(cfg.personality.model_options.to_ollama_options())
     if _is_command_lane:
-        _streaming_options.setdefault("num_predict", 512)
+        _streaming_options.setdefault("num_predict", 1024)
     else:
         _streaming_options.setdefault("num_predict", 1024 if _has_tools else 512)
     payload: dict[str, Any] = {
