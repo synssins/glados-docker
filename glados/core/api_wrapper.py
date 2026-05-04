@@ -125,6 +125,45 @@ COMMAND_MODE_SYSTEM_PROMPT = (
 )
 
 
+def build_plugin_guidance_message(matched_plugins: list) -> dict | None:
+    """Build a single system message carrying tool-selection guidance from
+    every matched plugin that defines `tool_guidance` in its manifest.
+
+    Returns None when no matched plugin supplies guidance, so the caller
+    can `if msg: messages.append(msg)` without conditionals.
+
+    Per-plugin guidance lives in the plugin's `plugin.json`
+    (`PluginJSON.tool_guidance`); each plugin owns its own disambiguation
+    text. Operators without the plugin pay zero token cost — the manifest
+    field is absent, this helper returns None, no system message is
+    appended.
+
+    Format:
+        Tool selection guidance:
+
+        [Plugin A]
+        ...A's guidance text...
+
+        [Plugin B]
+        ...B's guidance text...
+    """
+    blocks: list[str] = []
+    for plugin in matched_plugins:
+        manifest = getattr(plugin, "manifest_v2", None)
+        if manifest is None:
+            continue
+        guidance = getattr(manifest, "tool_guidance", None)
+        if not guidance:
+            continue
+        blocks.append(f"[{plugin.name}]\n{guidance.strip()}")
+    if not blocks:
+        return None
+    return {
+        "role": "system",
+        "content": "Tool selection guidance:\n\n" + "\n\n".join(blocks),
+    }
+
+
 def _select_command_lane(
     is_command_route: bool,
     interactive_url: str,
@@ -1792,6 +1831,14 @@ def _stream_chat_sse_impl(
     from glados.core.turn_guards import CHITCHAT_GUARD, HOME_COMMAND_GUARD
     if route_is_command:
         messages.append({"role": "system", "content": HOME_COMMAND_GUARD})
+        # Per-plugin tool-selection guidance — only fires when at least
+        # one matched plugin actually defines `tool_guidance` in its
+        # manifest. Operators without the plugin pay zero token cost.
+        # Lives next to the home-command guard because both are tool-
+        # using-route system messages.
+        _plugin_guidance = build_plugin_guidance_message(_matched_plugins)
+        if _plugin_guidance:
+            messages.append(_plugin_guidance)
     else:
         messages.append({"role": "system", "content": CHITCHAT_GUARD})
 

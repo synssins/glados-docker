@@ -100,6 +100,15 @@ class PluginJSON(BaseModel):
     # to re-normalize on every turn. Empty list = plugin opts out of
     # the keyword pre-filter (triage LLM still considers it).
     intent_keywords: list[str] = Field(default_factory=list)
+    # Optional plugin-supplied system-prompt addendum, injected only when
+    # this plugin is the active route (matched by intent or triage). Lets
+    # the plugin disambiguate tool semantics that aren't obvious from each
+    # tool's individual description (e.g. "use *_get_* for what's in the
+    # library; *_search returns candidates to ADD"). Bounded so the per-
+    # turn prompt overhead stays small. Operators without the plugin pay
+    # zero token cost — the field is absent, the chat-path injection is
+    # never triggered.
+    tool_guidance: str | None = Field(default=None, max_length=600)
 
     @field_validator("schema_version")
     @classmethod
