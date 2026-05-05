@@ -85,7 +85,7 @@ catalogue and VRAM math.
 | **Embeddings** | Local BGE-small-en-v1.5 ONNX for semantic entity retrieval and lore RAG. |
 | **Vector store** | ChromaDB via `PersistentClient` at `/app/data/chromadb/` — in-process, no sidecar. |
 | **Three-tier command matcher** | HA conversation engine → LLM disambiguator → full agentic loop. See "Architecture" below. |
-| **Persona rewriter** | Restyles plain text into GLaDOS voice — serves Tier 1 HA confirmations, doorbell screening, and the time/weather fast-path. Configurable via `REWRITER_URL` / `REWRITER_MODEL` env (defaults to the `llm_autonomy` slot). ~1-2 s on a small fast instruction-tuned model (3-4B class recommended). |
+| **Persona rewriter** | Restyles plain text into GLaDOS voice — serves Tier 1 HA confirmations, doorbell screening, and the time/weather fast-path. **Inherits the `llm_triage` slot** by default (configured via WebUI System → Services → LLM (Triage) — the rewriter and the Tier 2 disambiguator share one slot since they want the same model class). `REWRITER_URL` / `REWRITER_MODEL` env vars override the slot if needed. ~1-2 s on a small fast instruction-tuned model (3-4B class recommended). |
 | **Tool execution loop** | OpenAI agentic loop with MCP tool dispatch (HA + plugins). |
 | **Autonomy loop** | Background agents: HA sensor watcher, weather, camera, news. |
 | **Time + weather fast-path** | Time / weather / forecast queries answer from in-container data sources (NTP-synced clock + Open-Meteo cache) with persona overlay, bypassing the chat LLM entirely. ~1-2 s end-to-end vs. 20-30 s through the chat path. Renders today, tomorrow, day-after-tomorrow, weekday names, weekend, "next N days" up to 16, and morning/afternoon/evening hourly slices. |
@@ -205,14 +205,26 @@ fast instruction-tuned model.
 
 The rewriter wire format is OpenAI chat-completions (request body uses
 top-level `temperature` / `top_p` / `max_tokens`; response parses
-`choices[0].message.content`). Configurable via two env vars:
+`choices[0].message.content`).
 
-- **`REWRITER_URL`** — bare `scheme://host:port` of the rewriter
-  endpoint. Defaults to the `llm_autonomy` slot's URL when unset,
-  which lets the rewriter share the autonomy endpoint by default but
-  pin to a dedicated fast model when set.
-- **`REWRITER_MODEL`** — the model name as the endpoint reports it.
-  Defaults to the `llm_autonomy` slot's model when unset.
+**The rewriter inherits the `llm_triage` slot URL + model by default**,
+configured via the WebUI's **System → Services → LLM (Triage)** field.
+The Tier 2 disambiguator already uses this slot, and both consumers
+want the same shape of model (small fast instruction-tuned, short
+prompt, terse output) — so they share. Changing the Triage slot in
+the WebUI routes both consumers together. This is the single source
+of truth for the rewriter; no env-var configuration is required for
+the common path.
+
+Two env vars remain as escape hatches symmetric to
+`DISAMBIGUATOR_OLLAMA_URL` / `DISAMBIGUATOR_MODEL` — set them only
+when pinning the rewriter to a different endpoint than the triage
+slot:
+
+- **`REWRITER_URL`** — bare `scheme://host:port` override. Falls
+  back to the triage slot URL when unset.
+- **`REWRITER_MODEL`** — model-name override. Falls back to the
+  triage slot model when unset.
 
 Recommended: a 3-4B class instruction-tuned model on a dedicated
 endpoint (e.g. `Qwen3-4B-Instruct-2507-Q5_K_M.gguf` on llama.cpp
@@ -551,11 +563,10 @@ A single endpoint can host every slot; operators with a dedicated
 GPU/accelerator per role can split them onto separate URLs. Unset
 slots fall back to `llm_interactive`.
 
-A separate **persona rewriter** endpoint can be pinned via
-`REWRITER_URL` + `REWRITER_MODEL` env vars (see
-"Persona rewriter" above) — useful for putting the rewriter on a
-faster small model than the autonomy lane uses, without splitting
-autonomy off `llm_interactive`.
+The **persona rewriter** inherits the `llm_triage` slot URL + model
+by default (the rewriter and disambiguator both want the same shape
+of model). Operators rarely need to split them. `REWRITER_URL` /
+`REWRITER_MODEL` env vars are escape hatches when you do.
 
 See [docs/models.md](docs/models.md) for VRAM math, throughput
 numbers (steady-state on OpenArc + Arc B60 ~42 tok/s decode for the
@@ -593,8 +604,8 @@ Selected env vars worth knowing:
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | LLM endpoint (named for legacy reasons — anything OpenAI-compat works). Used for chat + autonomy + vision unless split. |
 | `OLLAMA_AUTONOMY_URL` | `OLLAMA_URL` | Optional split — autonomy / Tier 2 endpoint |
 | `OLLAMA_VISION_URL` | `OLLAMA_URL` | Optional split — vision endpoint |
-| `REWRITER_URL` | unset (falls back to `llm_autonomy` slot URL) | Bare `scheme://host:port` for the persona rewriter endpoint. Lets you point the rewriter at a dedicated small/fast model without disturbing autonomy. |
-| `REWRITER_MODEL` | unset (falls back to `llm_autonomy` slot model) | Model name as the rewriter endpoint reports it. |
+| `REWRITER_URL` | unset (falls back to **`llm_triage` slot URL** — configured via WebUI) | Bare `scheme://host:port` override for the persona rewriter endpoint. Set only when pinning the rewriter to a different endpoint than the WebUI-configured triage slot. |
+| `REWRITER_MODEL` | unset (falls back to **`llm_triage` slot model** — configured via WebUI) | Model-name override. Same fallback story as `REWRITER_URL`. |
 | `REWRITER_TIMEOUT_S` | `8` | Per-call timeout for the persona rewriter. On timeout the original plain text returns unchanged. |
 | `VISION_URL` | unset | External vision service (image classification, camera analysis); features simply unavailable when unset |
 | `GLADOS_INTERNAL_API_PORT` | `18015` | Loopback-only plain-HTTP port for in-container callers (TTS / STT / api_wrapper). Bound to `127.0.0.1`. |
