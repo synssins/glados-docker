@@ -305,19 +305,27 @@ def _init_ha_client() -> None:
         )
 
         # Persona rewriter for Tier 1 hits (HA's plain "Turned off the
-        # light." -> GLaDOS-voiced restyling). Same Ollama as the
-        # disambiguator; smaller models work well here since the input
-        # is short and the output is constrained to one or two sentences.
-        # Rewriter defaults to the same autonomy model + URL as the
-        # disambiguator. Two env-var overrides let the operator pin the
-        # rewriter to a different model or endpoint independent of the
-        # chat / autonomy choice — e.g., to point at a llama.cpp T4
-        # service without disturbing autonomy reasoning. REWRITER_URL
-        # should be the bare base URL (scheme://host:port); the
-        # rewriter appends /v1/chat/completions itself.
-        rewriter_model = os.environ.get("REWRITER_MODEL", "").strip() \
-            or cfg.service_model("llm_autonomy", fallback="qwen3:8b")
+        # light." -> GLaDOS-voiced restyling, doorbell screener output,
+        # time/weather fast-path). The rewriter wants a small fast
+        # instruction-tuned model with short prompts and one-or-two-
+        # sentence output — the SAME shape the Tier 2 disambiguator
+        # wants. So both consumers share the ``llm_triage`` slot's
+        # URL + model by default; the WebUI's "LLM (Triage)" field is
+        # the single source of truth, and changing it routes both the
+        # disambiguator and the rewriter together (which is the right
+        # default — they want the same model class).
+        #
+        # REWRITER_URL / REWRITER_MODEL env vars remain as escape
+        # hatches symmetric to DISAMBIGUATOR_OLLAMA_URL /
+        # DISAMBIGUATOR_MODEL — set them only if you need to pin the
+        # rewriter to a DIFFERENT endpoint than the triage slot
+        # without splitting the WebUI Triage configuration.
         rewriter_url = os.environ.get("REWRITER_URL", "").strip() or ollama_url
+        rewriter_model = (
+            os.environ.get("REWRITER_MODEL", "").strip()
+            or triage_cfg.model
+            or "qwen3:8b"
+        )
         rewriter = PersonaRewriter(ollama_url=rewriter_url, model=rewriter_model)
         init_rewriter(rewriter)
         logger.info("Persona rewriter ready; url={} model={}", rewriter_url, rewriter_model)

@@ -53,18 +53,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - TZ=${TZ:-UTC}
-      # Persona rewriter URL + model overrides. Without these, the
-      # rewriter borrows the Autonomy slot's URL+model (typically a
-      # 30B chat model on OpenArc) — the rewriter prompt is short
-      # and runs every Tier 1 turn (HA confirmations, doorbell, time
-      # / weather fast-path), so a small instruction-tuned model on
-      # a dedicated endpoint gives sub-second persona overlay.
-      # Currently pinned at the AIBox llama.cpp T4 service hosting
-      # Qwen3-4B-Instruct-2507 (via NSSM service `llama-rewriter`).
-      # Rollback = swap URL/MODEL to the OpenArc 0.6B values
-      # (http://192.168.1.75:11434 / OpenVINO/Qwen3-0.6B-int4-ov).
-      - REWRITER_URL=http://192.168.1.75:11436
-      - REWRITER_MODEL=Qwen3-4B-Instruct-2507-Q5_K_M.gguf
+      # Persona rewriter URL + model are NOT env-overridden here —
+      # the rewriter inherits the WebUI-configured `llm_triage` slot
+      # by default (System → Services → LLM (Triage)). The rewriter
+      # and the Tier 2 disambiguator both want a small fast
+      # instruction-tuned model, so sharing the slot is the
+      # intentional default. Set REWRITER_URL / REWRITER_MODEL here
+      # only if you need to pin the rewriter to a different endpoint
+      # than the triage slot.
     env_file:
       - ../.env
     extra_hosts:
