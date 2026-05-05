@@ -3544,7 +3544,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"daily=temperature_2m_max,temperature_2m_min,weather_code&"
                 f"hourly=temperature_2m,weather_code&"
                 f"temperature_unit={temp_unit}&wind_speed_unit={wind_unit}&"
-                f"forecast_days=7&timezone=auto"
+                f"forecast_days={wcfg.forecast_days}&timezone=auto"
             )
             req = urllib.request.Request(url, headers={"User-Agent": "GLaDOS/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:

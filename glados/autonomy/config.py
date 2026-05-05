@@ -102,7 +102,7 @@ class WeatherJobConfig(BaseModel):
     wind_speed_unit: str = "mph"
     precipitation_unit: str = "inch"
     fetch_timeout_s: float = 8.0
-    forecast_days: int = 7
+    forecast_days: int = 16
     weather_cache_path: str = "data/weather_cache.json"
 
 

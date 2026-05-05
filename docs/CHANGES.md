@@ -5043,3 +5043,95 @@ performance on GPU.0, OpenArc was promoted to production.
   measurement is a single-shot cold-warm probe. The OVMS baseline
   of 39.8 tok/s came from a 1024-token decode benchmark; the
   current OpenArc numbers may shift under longer contexts.
+
+---
+
+## Change 42 — Time + weather fast-path (2026-05-04)
+
+**Why.** Operator-flagged 2026-05-04 with a screenshot:
+"What is the forecast today" took 26.4 s end-to-end (TTFT 24.2 s,
+LLM 24.9 s, TTS 0.3 s). Stats showed 2326 input tokens →
+31 output tokens at 43.8 tok/s decode, which means the bulk of the
+TTFT was prompt processing — the persona preprompt + tool catalogue
++ weather context block + history all add up, and on Qwen3-30B-A3B
+via OpenArc/B60 prompt processing runs ~95–100 tok/s. So a
+deterministic question that the container could have answered from
+its own ``weather_cache.get_data()`` ate 24 seconds of LLM ceremony.
+
+The roadmap entry "Time & weather fast-path (TODO — 2026-05-02)"
+specced exactly this short-circuit. Change 39 had already shipped
+context injection for time keywords (good for accuracy, no help on
+latency); this change makes the queries bypass the chat LLM entirely.
+
+**What landed.**
+
+1. **New package ``glados/fastpath/``** with one module ``local.py``
+   exposing ``try_time(message)`` and ``try_weather(message)``. Both
+   return ``Optional[str]`` — a literal one-line answer when the
+   utterance is a time/weather query, ``None`` to fall through.
+   Pure functions; the only state read is ``time_source.now()``,
+   ``weather_cache.get_data()``, and the existing
+   ``context_gates.needs_*_context()`` keyword detectors.
+
+2. **Weather time-range parser.** Resolves "today", "tomorrow",
+   "day after tomorrow", a specific weekday name, "this weekend",
+   "next N days" (digits or words 1..16), "this/next week", "later
+   this week", "tonight"/"this evening", "tomorrow morning|
+   afternoon|evening|night". Bare "later" defaults to today's
+   forecast per operator preference (2026-05-04 spec sign-off).
+   Compound utterances containing a home-command verb ("what's the
+   weather and turn on the lights") return ``None`` — chat path
+   handles those so both halves get serviced.
+
+3. **Hook in ``glados/core/api_wrapper.py``** at both streaming and
+   non-streaming chat-completion entry points, *before*
+   ``_try_tier1_fast_path`` / ``_try_tier1_nonstreaming``. New
+   helper ``_try_local_fastpath(handler, user_message, origin, *,
+   streaming)`` calls the parsers, runs the result through
+   ``PersonaRewriter.rewrite()`` for character voice (best-effort —
+   falls back to plain factual text on failure), emits SSE or JSON
+   matching the existing chat-completion shape, audits with
+   ``kind="time"`` or ``kind="weather"``, and persists the exchange
+   to the conversation store as Tier 1 for multi-turn carry-over.
+
+4. **Renamed ``_emit_tier1_sse_response`` → ``_emit_local_response``**
+   (the SSE emit helper now serves a non-HA caller too). All call
+   sites updated.
+
+5. **``WeatherJobConfig.forecast_days`` default raised 7 → 16** so
+   "next ten days" / "next two weeks" queries have data to render.
+   Open-Meteo's free API ceiling is 16. WebUI test-refresh endpoint
+   in ``tts_ui.py`` no longer hardcodes ``forecast_days=7`` — reads
+   from ``wcfg.forecast_days`` so it can't overwrite the live cache
+   with a shorter window.
+
+**Tests.** ``tests/test_fastpath_local.py`` — 36 cases covering
+detection gates, range parsing, render shapes, ambiguous-phrase
+defaults, compound-utterance fall-through, and helper internals.
+All pass.
+
+**Performance.** Replaces ~24 s of prompt processing + LLM decode
+with ~1–2 s persona-rewriter call. Time queries: similar order of
+magnitude. The screenshot's 26.4 s "what is the forecast today"
+should now land in 2–3 s end-to-end. Live-probe pending operator
+deploy.
+
+**Audit.** New audit kinds ``time`` and ``weather`` so
+``audit.jsonl`` shows fast-path hit-rate independently from chat
+turns. Useful for measuring how much the fast-path actually
+displaces (the operator should expect a substantial fraction of
+chat traffic to drop into these two kinds).
+
+**Side effects to watch.**
+
+- Multi-turn anaphora ("and tomorrow?" after a weather turn) is NOT
+  in v1 scope. The detection gate requires an explicit weather
+  keyword; bare follow-ups fall through to chat as before.
+- Persona rewriter is the same fast-autonomy LLM the Tier 1 HA
+  rewriter uses — about 1–2 s on a 3B model. If the rewriter's
+  upstream is slow or down, the fast-path falls back to plain text
+  ("It is 1:58 PM, Monday.") rather than dropping the response.
+- The chat-path's existing weather/time context injection
+  (api_wrapper.py:1909, :1992) is unchanged — it still fires for
+  utterances that DON'T match the fast-path (compound queries,
+  anaphoric follow-ups). Belt-and-suspenders coverage.

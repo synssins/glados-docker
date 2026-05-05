@@ -701,7 +701,14 @@ we pick it up.
 
 ---
 
-## Time & weather fast-path (TODO — 2026-05-02)
+## Time & weather fast-path ✅ Shipped in Change 42 (2026-05-04)
+
+The roadmap entry below is preserved for design-context reference;
+implementation is live. See ``docs/CHANGES.md`` Change 42 for the
+landing details.
+
+### Original spec (preserved for reference)
+
 
 **Context:** Change 39 (2026-05-02) shipped authoritative time
 injection — when the user asks "What time is it?" the chat path

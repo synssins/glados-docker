@@ -1281,13 +1281,16 @@ def _append_tier_exchange(
         logger.debug("Tier {} conversation persist failed: {}", tier, exc)
 
 
-def _emit_tier1_sse_response(
+def _emit_local_response(
     handler: "APIHandler", request_id: str, text: str,
 ) -> None:
     """Send `text` to the client as an OpenAI-compatible streaming SSE
     response (one content chunk + finish + [DONE]). Shape matches the
     explicit-memory short-circuit elsewhere in this file so the WebUI
-    frontend renders it identically to a real LLM response."""
+    frontend renders it identically to a real LLM response.
+
+    Renamed from _emit_tier1_sse_response 2026-05-04 — also serves the
+    time/weather fast-path now, not just Tier 1 HA confirmations."""
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Cache-Control", "no-cache")
@@ -1311,6 +1314,90 @@ def _emit_tier1_sse_response(
     handler.wfile.write(f"data: {done}\n\n".encode())
     handler.wfile.write(b"data: [DONE]\n\n")
     handler.wfile.flush()
+
+
+def _try_local_fastpath(
+    handler: "APIHandler",
+    user_message: str,
+    origin: str,
+    *,
+    streaming: bool,
+) -> bool:
+    """Try the time/weather fast-paths.
+
+    Returns True when the fast-path handled the request and a response
+    was written. False means the chat / Tier 1 path should take over.
+
+    The fast-paths short-circuit deterministic queries (the data is
+    fully on hand inside the container — ``time_source`` and
+    ``weather_cache`` — so the LLM round-trip is pure ceremony).
+    Persona overlay is applied via ``PersonaRewriter.rewrite()`` so
+    the answer matches the GLaDOS voice; rewriter failure falls back
+    to the plain factual sentence rather than dropping the response.
+
+    See ``glados/fastpath/local.py`` for the parser/renderer details
+    and ``docs/CHANGES.md`` Change N for the design decisions.
+    """
+    from glados.fastpath import try_time, try_weather
+
+    plain: str | None = try_time(user_message)
+    kind = "time" if plain else None
+    if not plain:
+        plain = try_weather(user_message)
+        if plain:
+            kind = "weather"
+    if not plain or not kind:
+        return False
+
+    # Persona overlay (best-effort; falls back to plain on failure).
+    rewriter = _persona.get_rewriter()
+    rewritten = plain
+    rewrite_ms: int | None = None
+    if rewriter is not None:
+        try:
+            result = rewriter.rewrite(plain, context_hint=user_message)
+            rewrite_ms = result.latency_ms
+            if result.success and result.text:
+                rewritten = result.text
+        except Exception as exc:
+            logger.warning("fastpath persona rewrite failed: {}", exc)
+
+    request_id = uuid.uuid4().hex[:12]
+    try:
+        if streaming:
+            _emit_local_response(handler, request_id, rewritten)
+        else:
+            handler._send_json({
+                "id": f"chatcmpl-{request_id}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "glados",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": rewritten},
+                    "finish_reason": "stop",
+                }],
+            })
+    except Exception as exc:
+        logger.warning("fastpath response write failed ({}): {}",
+                       "sse" if streaming else "json", exc)
+        return False
+
+    # Audit + persist exchange so multi-turn anaphora ("and tomorrow?")
+    # at least sees the prior assistant turn in conversation history.
+    audit(AuditEvent(
+        ts=time.time(),
+        origin=origin,
+        kind=kind,
+        utterance=user_message,
+        result="ok",
+        latency_ms=rewrite_ms,
+        extra={"streaming": streaming, "rendered": plain},
+    ))
+    _append_tier_exchange(
+        user_message, rewritten, origin=origin, tier=1,
+    )
+    return True
 
 
 def _build_source_context(
@@ -1374,7 +1461,7 @@ def _resolve_home_intent(
 
     try:
         if emit == "sse":
-            _emit_tier1_sse_response(handler, request_id, speech)
+            _emit_local_response(handler, request_id, speech)
         else:
             handler._send_json({
                 "id": f"chatcmpl-{request_id}",
@@ -4485,6 +4572,15 @@ class APIHandler(BaseHTTPRequestHandler):
                 extra={"streaming": True},
             ))
 
+            # Local fast-path: time / weather queries answer from
+            # in-container data sources (time_source, weather_cache)
+            # with a small persona-rewrite call. Bypasses the chat LLM
+            # entirely. See glados/fastpath/local.py.
+            if _try_local_fastpath(
+                self, user_message, origin, streaming=True,
+            ):
+                return
+
             # Stage 3 Phase 7: single entry point. CommandResolver
             # tries HA's conversation API (Tier 1) and the LLM
             # disambiguator (Tier 2) behind one call, with session
@@ -4520,6 +4616,15 @@ class APIHandler(BaseHTTPRequestHandler):
             utterance=user_message,
             extra={"streaming": False},
         ))
+
+        # Local fast-path: time / weather queries answer from
+        # in-container data sources, bypass the chat LLM. Same as the
+        # streaming branch above; this branch services non-streaming
+        # API callers that want a single JSON response.
+        if _try_local_fastpath(
+            self, user_message, origin, streaming=False,
+        ):
+            return
 
         # Stage 3 Phase 7: CommandResolver handles Tier 1 + Tier 2
         # + learned-context behind one call for both streaming and
