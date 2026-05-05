@@ -96,8 +96,8 @@ class TestPersonaRewriter:
     def test_success_returns_rewritten(self) -> None:
         rw = PersonaRewriter("http://fake", "x")
 
-        # Patch urlopen to return a canned Ollama response.
-        canned = '{"message":{"content":"Kitchen illumination, terminated."}}'
+        # Patch urlopen to return a canned OpenAI chat-completions response.
+        canned = '{"choices":[{"message":{"role":"assistant","content":"Kitchen illumination, terminated."}}]}'
         class _Resp:
             def __enter__(self): return self
             def __exit__(self, *a): pass
@@ -113,7 +113,7 @@ class TestPersonaRewriter:
     def test_long_output_truncated(self) -> None:
         rw = PersonaRewriter("http://fake", "x")
         long_response = "a" * 1000
-        canned = '{"message":{"content":"' + long_response + '"}}'
+        canned = '{"choices":[{"message":{"role":"assistant","content":"' + long_response + '"}}]}'
         class _Resp:
             def __enter__(self): return self
             def __exit__(self, *a): pass
@@ -126,7 +126,7 @@ class TestPersonaRewriter:
 
     def test_empty_llm_response_is_failure(self) -> None:
         rw = PersonaRewriter("http://fake", "x")
-        canned = '{"message":{"content":""}}'
+        canned = '{"choices":[{"message":{"role":"assistant","content":""}}]}'
         class _Resp:
             def __enter__(self): return self
             def __exit__(self, *a): pass
@@ -140,7 +140,7 @@ class TestPersonaRewriter:
     def test_strips_outer_quotes_from_llm(self) -> None:
         rw = PersonaRewriter("http://fake", "x")
         # Some small models wrap their output in quotes; rewriter strips them.
-        canned = '{"message":{"content":"\\"Kitchen darkened.\\""}}'
+        canned = '{"choices":[{"message":{"role":"assistant","content":"\\"Kitchen darkened.\\""}}]}'
         class _Resp:
             def __enter__(self): return self
             def __exit__(self, *a): pass

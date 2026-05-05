@@ -94,16 +94,20 @@ class PersonaRewriter:
         # not a think-block prelude that eats num_predict=200.
         from glados.core.llm_directives import apply_model_family_directives
         messages = apply_model_family_directives(messages, self._model)
+        # OpenAI chat-completions request shape — flat sampling params at
+        # the top level. Historical note: this used to send the Ollama
+        # `options` block, but every backend GLaDOS talks to today
+        # (OpenArc, llama.cpp) speaks OpenAI-compat at /v1/chat/completions
+        # and silently ignores `options`, so sampling defaults applied
+        # instead of the configured values. Fixed 2026-05-04 alongside
+        # the response-shape fix below.
         body = json.dumps({
             "model": self._model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": 0.6,    # some creativity, not chaos
-                "top_p": 0.9,
-                "num_ctx": 1024,
-                "num_predict": 200,    # cap output token count
-            },
+            "temperature": 0.6,    # some creativity, not chaos
+            "top_p": 0.9,
+            "max_tokens": 200,     # cap output token count
         }).encode("utf-8")
         # ``_ollama_url`` is the bare ``scheme://host:port`` from the LLM &
         # Services WebUI; append the OpenAI chat-completions path at dispatch.
@@ -124,7 +128,14 @@ class PersonaRewriter:
                 error=str(exc),
             )
 
-        out = (data.get("message") or {}).get("content", "") or ""
+        # OpenAI chat-completions response shape: choices[0].message.content.
+        # Historical note: this used to read top-level `data["message"]`
+        # (Ollama's native shape), which silently returned None against
+        # both OpenArc and llama.cpp — making every rewriter call zero
+        # out to "" and fall through to the plain text. Fixed 2026-05-04.
+        choices = data.get("choices") or []
+        out = (choices[0].get("message") or {}).get("content", "") if choices else ""
+        out = out or ""
         # Phase 8.0.1 — Qwen3 with /no_think still emits empty
         # <think>…</think> tags around the actual response on plain-
         # format calls (confirmed against Ollama). Strip before the
