@@ -1500,6 +1500,26 @@ def _try_tier1_nonstreaming(
         )
 
 
+def _should_run_command_resolver(user_message: str) -> bool:
+    """Whether to invoke the Tier 1 + Tier 2 home-command resolver
+    for this utterance. False → skip the resolver, fall through to
+    chat (Tier 3) directly.
+
+    Mirrors the precheck Tier 2 already uses internally
+    (``looks_like_home_command``); calling it one level earlier
+    additionally elides Tier 1's HA conversation round-trip when the
+    utterance carries no home-command signal at all.
+
+    Strictly subtractive: True (any signal) → behavior unchanged from
+    before the gate; False → both Tier 1 and Tier 2 are skipped and
+    the chat path goes directly to Tier 3. State queries like "what
+    lights are on?" still pass this gate (because "lights" is a
+    domain keyword) so the resolver's internal `_is_state_query`
+    short-circuit is preserved.
+    """
+    return looks_like_home_command(user_message)
+
+
 def _try_tier1_fast_path(
     handler: "APIHandler", user_message: str, origin: str,
 ) -> bool:
@@ -4586,8 +4606,14 @@ class APIHandler(BaseHTTPRequestHandler):
             # disambiguator (Tier 2) behind one call, with session
             # memory + learned-context carry-over handled internally.
             # On miss → Tier 3 chitchat.
-            if _try_tier1_fast_path(self, user_message, origin):
-                return
+            #
+            # Chat-shape gate: skip Tier 1 + Tier 2 entirely when the
+            # utterance carries no home-command signal. Saves the ~5 s
+            # cost of Tier 1's HA round-trip + Tier 2's disambiguator
+            # call on chat-flavored questions where both would miss.
+            if _should_run_command_resolver(user_message):
+                if _try_tier1_fast_path(self, user_message, origin):
+                    return
 
             # Chat path goes directly to LLM. GLaDOS uses HA MCP tools
             # to control devices herself when the resolver falls through.
@@ -4628,9 +4654,12 @@ class APIHandler(BaseHTTPRequestHandler):
 
         # Stage 3 Phase 7: CommandResolver handles Tier 1 + Tier 2
         # + learned-context behind one call for both streaming and
-        # non-streaming paths.
-        if _try_tier1_nonstreaming(self, user_message, origin):
-            return
+        # non-streaming paths. Same chat-shape gate as the streaming
+        # branch — skip the resolver when the utterance carries no
+        # home-command signal.
+        if _should_run_command_resolver(user_message):
+            if _try_tier1_nonstreaming(self, user_message, origin):
+                return
 
         # --- Command interceptor removed from chat path ---
         # GLaDOS uses HA MCP tools directly. Interceptor remains active only
