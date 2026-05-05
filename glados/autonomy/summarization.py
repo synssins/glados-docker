@@ -87,8 +87,12 @@ def summarize_messages(
     """
     Use LLM to summarize a list of conversation messages.
 
-    Routes to the ``llm_triage`` service slot — pure summarization is a
-    perfect fit for the small fast triage model (no persona involvement).
+    Routes to the ``llm_autonomy`` service slot. Summarization is a
+    background-agent task and belongs on whatever lane the operator has
+    configured for autonomy — typically a small fast classifier (e.g.
+    Qwen3-4B), not the heavy chat model. Avoids poisoning the chat LLM
+    with multi-thousand-token compaction prompts (which is exactly what
+    happened on 2026-05-05 when summarization shared the chat lane).
 
     Returns a concise summary preserving key information.
     """
@@ -130,7 +134,7 @@ These are looked up on demand, not memorized."""
 
     user_prompt = f"Summarize this conversation:\n\n{conversation}"
 
-    llm_config = LLMConfig.for_slot("llm_triage")
+    llm_config = LLMConfig.for_slot("llm_autonomy")
     response = llm_call(llm_config, system_prompt, user_prompt)
     if not response:
         return response
@@ -150,8 +154,8 @@ def extract_facts(
     """
     Use LLM to extract factual information from messages.
 
-    Routes to the ``llm_triage`` service slot — fact extraction is a
-    classification task that belongs on the small fast triage model.
+    Routes to the ``llm_autonomy`` service slot. Same rationale as
+    summarize_messages — background agentic work, kept off the chat lane.
 
     Returns a list of discrete facts worth remembering.
     """
@@ -213,7 +217,7 @@ Do not output "No important facts" or any other explanation — just NONE."""
 
     user_prompt = f"Extract facts from this conversation:\n\n{conversation}"
 
-    llm_config = LLMConfig.for_slot("llm_triage")
+    llm_config = LLMConfig.for_slot("llm_autonomy")
     response = llm_call(llm_config, system_prompt, user_prompt)
     if not response:
         return []

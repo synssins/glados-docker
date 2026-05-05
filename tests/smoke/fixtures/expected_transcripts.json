@@ -1,0 +1,7 @@
+{
+  "query_what_time.wav": {
+    "expected": "what time is it",
+    "tolerance_levenshtein": 5,
+    "notes": "Sentinel utterance — must NOT trigger HA automations."
+  }
+}

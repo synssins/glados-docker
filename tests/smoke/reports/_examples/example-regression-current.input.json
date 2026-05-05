@@ -1,0 +1,105 @@
+{
+  "run_id": "20260505-141204",
+  "started_at": "2026-05-05T14:12:04Z",
+  "finished_at": "2026-05-05T14:12:43Z",
+  "duration_sec": 39.4,
+  "target_host": "glados.example.com",
+  "scheme": "https",
+  "git_commit": "b7c1e84a92341cd8f9402176abc4c19288d77f10",
+  "suite_version": "1.0.0",
+  "summary": {
+    "total": 6,
+    "passed": 4,
+    "failed": 1,
+    "skipped": 0,
+    "errors": 0,
+    "overall": "FAIL"
+  },
+  "tiers": [
+    {
+      "name": "tier1",
+      "status": "PASS",
+      "duration_sec": 1.9,
+      "tests": [
+        {
+          "id": "tier1::login_succeeds",
+          "name": "test_tier1_login_succeeds",
+          "status": "PASS",
+          "duration_sec": 0.34,
+          "summary": "Logged in as 'admin' on glados.example.com",
+          "details": {"checked": "POST /login", "expected": "200/302", "actual": "session issued"},
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::api_health_ok",
+          "name": "test_tier1_api_health_ok",
+          "status": "PASS",
+          "duration_sec": 0.18,
+          "summary": "API on :8015 reports engine running",
+          "details": {"checked": "GET /health", "expected": "ok", "actual": "ok"},
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::webui_health_public_ok",
+          "name": "test_tier1_webui_health_public_ok",
+          "status": "PASS",
+          "duration_sec": 1.4,
+          "summary": "All 4 services ok",
+          "details": {"checked": "GET /api/health/public", "expected": "all ok", "actual": "all ok"},
+          "logs": null,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "tier2",
+      "status": "FAIL",
+      "duration_sec": 37.5,
+      "tests": [
+        {
+          "id": "tier2::tts_synth_smoke",
+          "name": "test_tier2_tts_synth_smoke",
+          "status": "PASS",
+          "duration_sec": 3.1,
+          "summary": "TTS returned 47521 bytes of audio/wav",
+          "details": {"checked": "POST /v1/audio/speech", "expected": "audio/* + >1024 B", "actual": "audio/wav 47521 B"},
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::ha_entities_present",
+          "name": "test_tier2_ha_entities_present",
+          "status": "FAIL",
+          "duration_sec": 0.5,
+          "summary": "entity cache empty — HA WS may not be authenticated",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/entities",
+            "expected": "200 + non-empty entity collection",
+            "actual": "200 (list[0])",
+            "extras": {"entity_count": 0}
+          },
+          "logs": [
+            "2026-05-05 14:11:50 | SUCCESS  | ha.ws_client | connecting to ws://homeassistant.local:8123/api/websocket",
+            "2026-05-05 14:11:51 | ERROR    | ha.ws_client | auth_invalid: token does not exist"
+          ],
+          "error": {
+            "type": "FAIL",
+            "message": "AssertionError: entity cache is empty — HA WS may not be authenticated\nassert 0 > 0"
+          }
+        },
+        {
+          "id": "tier2::semantic_status",
+          "name": "test_tier2_semantic_status",
+          "status": "PASS",
+          "duration_sec": 0.06,
+          "summary": "Semantic index status endpoint responding",
+          "details": {"checked": "GET /api/semantic/status", "expected": "200", "actual": "200"},
+          "logs": null,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

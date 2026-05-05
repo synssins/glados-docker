@@ -1,0 +1,72 @@
+# GLaDOS smoke suite configuration (committed defaults).
+#
+# This file ships with placeholder values. Drop your operator-specific
+# overrides into `tests/smoke/config.local.yaml` (gitignored) — that
+# file is deep-merged on top of this one at suite start.
+#
+# NO secrets in this file. Credentials come from env vars
+# (GLADOS_SMOKE_USER / GLADOS_SMOKE_PASS). Real LAN IPs and personal
+# domains belong in config.local.yaml, not here.
+#
+# Example config.local.yaml:
+#   host: "glados.your.domain"
+#   verify_tls: true     # if the cert matches `host`
+
+host: "glados.example.com"
+
+ports:
+  api: 8015
+  webui: 8052
+  audio: 5051
+
+# https is the prod expectation. http triggers a warning, not a failure.
+scheme: "https"
+
+# Verify the TLS chain against `host`. Default true — pair with a
+# `host` value that matches the cert's CN/SAN. Set to false (or env
+# GLADOS_SMOKE_INSECURE=1) when targeting the bare IP and the cert
+# was issued for a domain.
+verify_tls: true
+
+auth:
+  username_env: "GLADOS_SMOKE_USER"
+  password_env: "GLADOS_SMOKE_PASS"
+  default_username: "admin"
+  default_password: "glados"
+
+timeouts:
+  default_request_s: 5
+  tts_synth_s: 8     # higher to absorb cold ONNX load
+  log_tail_s: 10
+  ha_aggregate_s: 6  # the handler internally probes 4 services @3s each
+
+fixtures:
+  audio_dir: "fixtures"
+
+# Tier 3 sentinel — must NOT trigger HA automations.
+sentinel:
+  utterance: "what time is it"
+
+# Anything with this severity or higher in container logs counts as
+# "recent error". WARNING is allowed; ERROR/CRITICAL/Traceback are not.
+log_severity_threshold: "ERROR"
+log_baseline_lookback_lines: 200
+
+# Tier 4 regression
+regression:
+  latency_factor: 2.0
+  length_band: 0.5    # ±50% length swing is acceptable
+  prompts:
+    - id: "time"
+      prompt: "what time is it"
+    - id: "weather"
+      prompt: "what's the weather"
+    - id: "fun_fact"
+      prompt: "tell me a fun fact about portals"
+
+# Per-test enable/disable. Add a stable test ID (e.g. "tier2::stt_route_alive")
+# to skip it without editing test code. Empty list = all tests enabled.
+disabled_tests: []
+
+# Reports retention — older runs are pruned (never touches _examples/ or baselines/).
+reports_keep: 30

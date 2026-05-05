@@ -1,0 +1,150 @@
+{
+  "run_id": "20260505-141204",
+  "started_at": "2026-05-05T14:12:04Z",
+  "finished_at": "2026-05-05T14:12:43Z",
+  "duration_sec": 39.4,
+  "target_host": "glados.example.com",
+  "scheme": "https",
+  "git_commit": "b7c1e84a92341cd8f9402176abc4c19288d77f10",
+  "suite_version": "1.0.0",
+  "summary": {
+    "total": 7,
+    "passed": 5,
+    "failed": 1,
+    "skipped": 1,
+    "errors": 0,
+    "overall": "FAIL"
+  },
+  "tiers": [
+    {
+      "name": "tier1",
+      "status": "PASS",
+      "duration_sec": 4.1,
+      "tests": [
+        {
+          "id": "tier1::scheme_is_https",
+          "name": "test_tier1_scheme_is_https",
+          "status": "PASS",
+          "duration_sec": 0.001,
+          "summary": "Target glados.example.com is HTTPS as expected",
+          "details": {"checked": "config.yaml `scheme` value", "expected": "https", "actual": "https"},
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::login_succeeds",
+          "name": "test_tier1_login_succeeds",
+          "status": "PASS",
+          "duration_sec": 0.34,
+          "summary": "Logged in as 'admin' on glados.example.com",
+          "details": {
+            "checked": "POST https://glados.example.com:8052/login with configured credentials",
+            "expected": "200/302 + Set-Cookie: glados_session=...",
+            "actual": "glados_session cookie issued"
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::api_health_ok",
+          "name": "test_tier1_api_health_ok",
+          "status": "PASS",
+          "duration_sec": 0.18,
+          "summary": "API on :8015 reports engine running",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/health",
+            "expected": "200 + {\"status\": \"ok\", \"engine\": \"running\"}",
+            "actual": "200 {'status': 'ok', 'engine': 'running'}"
+          },
+          "logs": null,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "tier2",
+      "status": "FAIL",
+      "duration_sec": 35.3,
+      "tests": [
+        {
+          "id": "tier2::tts_voices_listed",
+          "name": "test_tier2_tts_voices_listed",
+          "status": "PASS",
+          "duration_sec": 0.21,
+          "summary": "1 voice(s) listed; glados present",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/v1/voices",
+            "expected": "voices list contains \"glados\"",
+            "actual": {"voices": ["glados"]},
+            "extras": {"voice_ids": ["glados"]}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::ha_entities_present",
+          "name": "test_tier2_ha_entities_present",
+          "status": "PASS",
+          "duration_sec": 0.45,
+          "summary": "164 HA entities reachable via cache",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/entities",
+            "expected": "200 + non-empty entity collection",
+            "actual": "200 (list[164])",
+            "extras": {"entity_count": 164}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::vision_url_configured",
+          "name": "test_tier2_vision_url_configured",
+          "status": "SKIP",
+          "duration_sec": 0.09,
+          "summary": "Vision feature disabled by config",
+          "details": {
+            "checked": "GET /api/config/services (auth) — vision.url",
+            "expected": "vision.url non-empty OR feature disabled",
+            "actual": {"services": {"vision": {"url": ""}}},
+            "extras": {"vision_url": ""}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::no_recent_errors",
+          "name": "test_tier2_no_recent_errors",
+          "status": "FAIL",
+          "duration_sec": 1.2,
+          "summary": "Found 3 error line(s) in container logs",
+          "details": {
+            "checked": "GET /api/logs/tail?source=container&lines=200 (auth)",
+            "expected": "0 ERROR/CRITICAL/Traceback lines since baseline",
+            "actual": "scanned 200 lines; 3 matched",
+            "extras": {
+              "scanned_lines": 200,
+              "error_lines": [
+                "2026-05-05 14:11:52 | ERROR    | autonomy.agents.camera_watcher | Vision URL unreachable: http://glados.example.com:8016",
+                "2026-05-05 14:11:53 | ERROR    | autonomy.agents.camera_watcher | retry 1/3 failed",
+                "2026-05-05 14:11:55 | CRITICAL | autonomy.agents.camera_watcher | giving up after 3 attempts"
+              ]
+            }
+          },
+          "logs": [
+            "2026-05-05 14:11:50 | INFO     | engine | request received",
+            "2026-05-05 14:11:51 | SUCCESS  | engine | LLM round-trip 412 ms",
+            "2026-05-05 14:11:52 | ERROR    | autonomy.agents.camera_watcher | Vision URL unreachable: http://glados.example.com:8016",
+            "2026-05-05 14:11:53 | ERROR    | autonomy.agents.camera_watcher | retry 1/3 failed",
+            "2026-05-05 14:11:55 | CRITICAL | autonomy.agents.camera_watcher | giving up after 3 attempts",
+            "2026-05-05 14:11:55 | WARNING  | autonomy | watcher exited with non-zero status",
+            "2026-05-05 14:11:55 | SUCCESS  | autonomy | restart scheduled in 30s"
+          ],
+          "error": {
+            "type": "FAIL",
+            "message": "AssertionError: 3 error/Traceback lines in recent logs:\n2026-05-05 14:11:52 | ERROR    | autonomy.agents.camera_watcher | Vision URL unreachable: http://glados.example.com:8016\n2026-05-05 14:11:53 | ERROR    | autonomy.agents.camera_watcher | retry 1/3 failed\n2026-05-05 14:11:55 | CRITICAL | autonomy.agents.camera_watcher | giving up after 3 attempts\nassert False"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,365 @@
+{
+  "run_id": "20260505-091523",
+  "started_at": "2026-05-05T09:15:23Z",
+  "finished_at": "2026-05-05T09:16:01Z",
+  "duration_sec": 38.2,
+  "target_host": "glados.example.com",
+  "scheme": "https",
+  "git_commit": "896cc822f311aa901c0fb3d211aab9e84b8a7d20",
+  "suite_version": "1.0.0",
+  "summary": {
+    "total": 16,
+    "passed": 14,
+    "failed": 0,
+    "skipped": 2,
+    "errors": 0,
+    "overall": "PASS"
+  },
+  "tiers": [
+    {
+      "name": "tier1",
+      "status": "PASS",
+      "duration_sec": 4.2,
+      "tests": [
+        {
+          "id": "tier1::scheme_is_https",
+          "name": "test_tier1_scheme_is_https",
+          "status": "PASS",
+          "duration_sec": 0.001,
+          "summary": "Target glados.example.com is HTTPS as expected",
+          "details": {"checked": "config.yaml `scheme` value", "expected": "https", "actual": "https"},
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::login_succeeds",
+          "name": "test_tier1_login_succeeds",
+          "status": "PASS",
+          "duration_sec": 0.34,
+          "summary": "Logged in as 'admin' on glados.example.com",
+          "details": {
+            "checked": "POST https://glados.example.com:8052/login with configured credentials",
+            "expected": "200/302 + Set-Cookie: glados_session=...",
+            "actual": "glados_session cookie issued"
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::api_health_ok",
+          "name": "test_tier1_api_health_ok",
+          "status": "PASS",
+          "duration_sec": 0.18,
+          "summary": "API on :8015 reports engine running",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/health",
+            "expected": "200 + {\"status\": \"ok\", \"engine\": \"running\"}",
+            "actual": "200 {'status': 'ok', 'engine': 'running'}"
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::webui_health_ok",
+          "name": "test_tier1_webui_health_ok",
+          "status": "PASS",
+          "duration_sec": 0.09,
+          "summary": "WebUI on :8052 healthy",
+          "details": {"checked": "GET https://glados.example.com:8052/health", "expected": "200", "actual": "200"},
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::webui_health_public_ok",
+          "name": "test_tier1_webui_health_public_ok",
+          "status": "PASS",
+          "duration_sec": 1.4,
+          "summary": "All 4 services ok (API, TTS, STT, HA)",
+          "details": {
+            "checked": "GET https://glados.example.com:8052/api/health/public (probes API/TTS/STT/HA)",
+            "expected": "200 + every service status='ok'",
+            "actual": "200 {'services': [{'name': 'API', 'status': 'ok'}, {'name': 'TTS', 'status': 'ok'}, {'name': 'STT', 'status': 'ok'}, {'name': 'HA', 'status': 'ok'}]}",
+            "extras": {
+              "services": [
+                {"name": "API", "status": "ok"},
+                {"name": "TTS", "status": "ok"},
+                {"name": "STT", "status": "ok"},
+                {"name": "HA", "status": "ok"}
+              ]
+            }
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::audio_server_responding",
+          "name": "test_tier1_audio_server_responding",
+          "status": "PASS",
+          "duration_sec": 0.12,
+          "summary": "Audio file server on :5051 responded 200",
+          "details": {
+            "checked": "GET https://glados.example.com:5051/ (HA audio file server)",
+            "expected": "any HTTP response (200/403/404)",
+            "actual": "200"
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier1::log_baseline_capture",
+          "name": "test_tier1_log_baseline_capture",
+          "status": "PASS",
+          "duration_sec": 0.0,
+          "summary": "Log diff baseline anchored at 2026-05-05T09:15:23Z",
+          "details": {
+            "checked": "session-start log baseline",
+            "expected": "ISO timestamp captured",
+            "actual": "2026-05-05T09:15:23Z",
+            "extras": {"captured_at_iso": "2026-05-05T09:15:23Z"}
+          },
+          "logs": null,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "tier2",
+      "status": "PASS",
+      "duration_sec": 32.4,
+      "tests": [
+        {
+          "id": "tier2::tts_voices_listed",
+          "name": "test_tier2_tts_voices_listed",
+          "status": "PASS",
+          "duration_sec": 0.21,
+          "summary": "1 voice(s) listed; glados present",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/v1/voices",
+            "expected": "voices list contains \"glados\"",
+            "actual": {"voices": ["glados"]},
+            "extras": {"voice_ids": ["glados"]}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::tts_synth_smoke",
+          "name": "test_tier2_tts_synth_smoke",
+          "status": "PASS",
+          "duration_sec": 3.1,
+          "summary": "TTS returned 47521 bytes of audio/wav",
+          "details": {
+            "checked": "POST https://glados.example.com:8015/v1/audio/speech with input='smoke test', voice='glados'",
+            "expected": "200 + Content-Type starts with 'audio/' + body > 1024 B",
+            "actual": "200 ct='audio/wav' bytes=47521",
+            "extras": {"content_type": "audio/wav", "bytes": 47521}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::stt_route_alive",
+          "name": "test_tier2_stt_route_alive",
+          "status": "PASS",
+          "duration_sec": 0.08,
+          "summary": "STT route registered (400); fixture-based decode in Tier 3",
+          "details": {
+            "checked": "POST https://glados.example.com:8015/v1/audio/transcriptions with no file field",
+            "expected": "4xx (route exists, rejects malformed input)",
+            "actual": "400 {\"error\":\"missing audio\"}"
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::llm_models_listed",
+          "name": "test_tier2_llm_models_listed",
+          "status": "PASS",
+          "duration_sec": 0.07,
+          "summary": "1 model(s) listed; glados present",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/v1/models",
+            "expected": "200 + data[].id contains 'glados'",
+            "actual": {"data": [{"id": "glados"}]},
+            "extras": {"model_ids": ["glados"]}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::llm_slots_configured",
+          "name": "test_tier2_llm_slots_configured",
+          "status": "PASS",
+          "duration_sec": 0.13,
+          "summary": "All four LLM slots configured (4 entries)",
+          "details": {
+            "checked": "GET https://glados.example.com:8052/api/config/llm (auth)",
+            "expected": "interactive/autonomy/triage/vision slots all have url",
+            "actual": {"interactive": "...", "autonomy": "...", "triage": "...", "vision": "..."}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::ha_entities_present",
+          "name": "test_tier2_ha_entities_present",
+          "status": "PASS",
+          "duration_sec": 0.45,
+          "summary": "164 HA entities reachable via cache",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/entities",
+            "expected": "200 + non-empty entity collection",
+            "actual": "200 (list[164])",
+            "extras": {"entity_count": 164}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::ha_aggregate_ok",
+          "name": "test_tier2_ha_aggregate_ok",
+          "status": "PASS",
+          "duration_sec": 1.1,
+          "summary": "HA reachable via aggregate health probe",
+          "details": {
+            "checked": "GET https://glados.example.com:8052/api/health/aggregate (auth)",
+            "expected": "services.HA == ok",
+            "actual": {"services": [{"name": "HA", "status": "ok"}]}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::chromadb_writable",
+          "name": "test_tier2_chromadb_writable",
+          "status": "PASS",
+          "duration_sec": 1.0,
+          "summary": "ChromaDB store writable",
+          "details": {
+            "checked": "GET /api/health/aggregate (auth) — ChromaDB row",
+            "expected": "services.ChromaDB == ok",
+            "actual": {"services": [{"name": "ChromaDB", "status": "ok"}]}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::mcp_plugins_listed",
+          "name": "test_tier2_mcp_plugins_listed",
+          "status": "PASS",
+          "duration_sec": 0.16,
+          "summary": "3 MCP plugin(s) configured",
+          "details": {
+            "checked": "GET https://glados.example.com:8052/api/plugins (auth)",
+            "expected": "200 + list-shaped body",
+            "actual": "200 (list[3])",
+            "extras": {"plugin_count": 3}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::vision_url_configured",
+          "name": "test_tier2_vision_url_configured",
+          "status": "SKIP",
+          "duration_sec": 0.09,
+          "summary": "Vision feature disabled by config",
+          "details": {
+            "checked": "GET https://glados.example.com:8052/api/config/services (auth) — vision.url",
+            "expected": "vision.url non-empty OR feature disabled",
+            "actual": {"services": {"vision": {"url": ""}}},
+            "extras": {"vision_url": ""}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::api_attitudes_loaded",
+          "name": "test_tier2_api_attitudes_loaded",
+          "status": "PASS",
+          "duration_sec": 0.07,
+          "summary": "8 attitude(s) loaded",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/api/attitudes",
+            "expected": "200 + non-empty collection",
+            "actual": "200 (dict(['neutral', 'happy', 'sad', 'angry', 'curious', 'sarcastic']))",
+            "extras": {"count": 8}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::api_emotion_state",
+          "name": "test_tier2_api_emotion_state",
+          "status": "PASS",
+          "duration_sec": 0.07,
+          "summary": "Emotion state alive (keys: arousal, dominance, pleasure)",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/api/emotion/state",
+            "expected": "200 + dict with at least one PAD-style key",
+            "actual": {"pleasure": 0.1, "arousal": 0.0, "dominance": 0.5}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::api_semantic_status",
+          "name": "test_tier2_api_semantic_status",
+          "status": "PASS",
+          "duration_sec": 0.06,
+          "summary": "Semantic index status endpoint responding",
+          "details": {
+            "checked": "GET https://glados.example.com:8015/api/semantic/status",
+            "expected": "200 + valid JSON",
+            "actual": {"ready": true, "entity_count": 164}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::auth_status_admin",
+          "name": "test_tier2_auth_status_admin",
+          "status": "PASS",
+          "duration_sec": 0.07,
+          "summary": "Session authenticated as 'admin'",
+          "details": {
+            "checked": "GET /api/auth/status (auth)",
+            "expected": "authenticated=true; role consistent with smoke user",
+            "actual": {"authenticated": true, "username": "admin", "role": "admin"}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::log_groups_readable",
+          "name": "test_tier2_log_groups_readable",
+          "status": "PASS",
+          "duration_sec": 0.08,
+          "summary": "23 log group(s) registered",
+          "details": {
+            "checked": "GET /api/log_groups (auth)",
+            "expected": "200 + non-empty list",
+            "actual": "200 (list[23])",
+            "extras": {"group_count": 23}
+          },
+          "logs": null,
+          "error": null
+        },
+        {
+          "id": "tier2::no_recent_errors",
+          "name": "test_tier2_no_recent_errors",
+          "status": "SKIP",
+          "duration_sec": 0.5,
+          "summary": "log endpoint unavailable",
+          "details": {
+            "checked": "GET /api/logs/tail?source=container&lines=200 (auth)",
+            "expected": "0 ERROR/CRITICAL/Traceback lines since baseline",
+            "actual": "500 — docker socket likely not mounted"
+          },
+          "logs": null,
+          "error": null
+        }
+      ]
+    }
+  ]
+}
