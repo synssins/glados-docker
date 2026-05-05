@@ -42,8 +42,11 @@ logging, and a WebUI for everything.
   embedding retrieval, ChromaDB) runs on CPU. The GPU work lives wherever
   your LLM backend runs.
 - **Backend-agnostic.** Anything that speaks the OpenAI HTTP protocol
-  works as the LLM: Ollama, OpenVINO Model Server, llama.cpp `llama-server`,
-  vLLM, and so on. Production runs to date use OVMS (Intel Arc) and Ollama.
+  works as the LLM: Ollama, [OpenArc](https://github.com/SearchSavior/OpenArc)
+  (OpenVINO multi-model serving on Intel hardware), llama.cpp
+  `llama-server`, vLLM, and so on. Production runs use OpenArc on Intel
+  Arc Pro B60 for chat/autonomy and llama.cpp on NVIDIA T4 for the
+  rewriter / triage classifier.
 - **Home Assistant first-class.** Three-tier command matcher converts
   voice/chat ("turn off the kitchen lights", "I want to read in the
   living room") into real `call_service` calls — never fakes success,
@@ -64,7 +67,7 @@ logging, and a WebUI for everything.
 
 | Dependency | Required? | Purpose |
 |------------|-----------|---------|
-| Any **OpenAI-compatible LLM endpoint** (Ollama, OVMS, llama.cpp `llama-server`, vLLM, …) | Required | Chat, Tier 2 disambiguator, persona rewriter, autonomy |
+| Any **OpenAI-compatible LLM endpoint** (Ollama, OpenArc, llama.cpp `llama-server`, vLLM, …) | Required | Chat, Tier 2 disambiguator, persona rewriter, autonomy |
 | **Home Assistant** at `HA_URL` + `HA_TOKEN` | Recommended | Device control, state queries, autonomy |
 | Vision-capable LLM endpoint | Optional | Camera/image analysis; nothing breaks if absent |
 
@@ -82,10 +85,10 @@ catalogue and VRAM math.
 | **Embeddings** | Local BGE-small-en-v1.5 ONNX for semantic entity retrieval and lore RAG. |
 | **Vector store** | ChromaDB via `PersistentClient` at `/app/data/chromadb/` — in-process, no sidecar. |
 | **Three-tier command matcher** | HA conversation engine → LLM disambiguator → full agentic loop. See "Architecture" below. |
-| **Persona rewriter** | Restyles plain HA confirmations into GLaDOS voice via a small fast LLM call (~500 ms - 2 s). |
+| **Persona rewriter** | Restyles plain text into GLaDOS voice — serves Tier 1 HA confirmations, doorbell screening, and the time/weather fast-path. Configurable via `REWRITER_URL` / `REWRITER_MODEL` env (defaults to the `llm_autonomy` slot). ~1-2 s on a small fast instruction-tuned model (3-4B class recommended). |
 | **Tool execution loop** | OpenAI agentic loop with MCP tool dispatch (HA + plugins). |
 | **Autonomy loop** | Background agents: HA sensor watcher, weather, camera, news. |
-| **Authoritative time injection** | NTP-synced offset against NIST + IANA tz from your weather coordinates; injected as a system message on time-keyword turns. |
+| **Time + weather fast-path** | Time / weather / forecast queries answer from in-container data sources (NTP-synced clock + Open-Meteo cache) with persona overlay, bypassing the chat LLM entirely. ~1-2 s end-to-end vs. 20-30 s through the chat path. Renders today, tomorrow, day-after-tomorrow, weekday names, weekend, "next N days" up to 16, and morning/afternoon/evening hourly slices. |
 | **Memory** | Short-term session memory + ChromaDB-backed long-term facts; explicit memory commands; passive learning gate. |
 | **Audit log** | JSON-lines record of every utterance, tier decision, tool call, and result. |
 | **Admin WebUI** | TTS generator, chat client, audit log, memory + personality editors, plugin manager, configuration pages. |
@@ -111,9 +114,10 @@ cp .env.example .env
 # reasons — anything OpenAI-compatible works.
 
 # 2. Have a chat-capable model ready on the LLM endpoint. Any of:
-ollama pull qwen3:14b                  # Ollama, smallest tested-good
-# OVMS:    OpenVINO/Qwen3-30B-A3B-int4-ov  (Intel Arc / iGPU; production target)
-# llama.cpp llama-server, vLLM, etc.   (anything OpenAI-compat)
+ollama pull qwen3:14b                          # Ollama, smallest tested-good
+# OpenArc:  OpenVINO/Qwen3-30B-A3B-int4-ov     (Intel Arc; production target)
+# llama.cpp llama-server (CUDA on NVIDIA, Metal on Apple Silicon, CPU)
+# vLLM, etc.                                   (anything OpenAI-compat)
 # See docs/models.md for the full matrix incl. triage + vision slots.
 
 # 3. Pull and start GLaDOS
@@ -164,8 +168,8 @@ at the first hit:
 
 | Tier | Path | Typical latency | Used for |
 |------|------|-----------------|----------|
-| **1** | HA's WebSocket `conversation/process` + persona rewriter | ~0.6–1 s | "turn off the kitchen lights", "what time is it", state queries |
-| **2** | LLM disambiguator on the `llm_triage` slot (recommended: `llama-3.2-1b-instruct`; falls back to `llm_interactive`) with cache-grounded candidates + intent allowlist | ~1–11 s depending on model | "bedroom lights" (ambiguous), "all lights" (universal), "I want to read in the living room" (activity → scene inference) |
+| **1** | HA's WebSocket `conversation/process` + persona rewriter | ~0.6–1 s | "turn off the kitchen lights", state queries |
+| **2** | LLM disambiguator on the `llm_triage` slot (recommended: a 3-4B instruction-tuned model like `Qwen3-4B-Instruct-2507`; falls back to `llm_interactive`) with cache-grounded candidates + intent allowlist | ~1–3 s on a 4B; ~5-11 s on larger models | "bedroom lights" (ambiguous), "all lights" (universal), "I want to read in the living room" (activity → scene inference) |
 | **3** | Existing full LLM agentic loop with HA MCP tools | 10–30 s | Conversation, multi-step reasoning, anything Tier 1/2 can't resolve |
 
 Key properties:
@@ -190,28 +194,84 @@ Key properties:
 
 ### Persona rewriter
 
-Tier 1 hits get HA's plain text ("Turned off the kitchen light.") rewritten
-through a short Ollama call into GLaDOS voice ("Kitchen illumination,
-terminated. Predictable.") on a small fast model (qwen2.5:3b, ~500 ms).
-Best-effort: any LLM failure returns HA's original text unchanged. A
-deterministic strip pass removes vocative labels (`test subject`, `human`,
-etc.) if the LLM ignores the prompt instruction.
+Multiple Tier 1 paths emit plain factual text — HA's
+`"Turned off the kitchen light."`, the doorbell screener's evaluator
+output, the time/weather fast-path's renderer (`"Today: high of 71
+degrees, low of 53, partly cloudy."`). Each gets restyled through a
+short LLM call into GLaDOS voice (`"Kitchen illumination, terminated.
+Predictable."` / `"It is 1:58 PM, Monday, darling — clocks don't lie,
+though they certainly don't care about your feelings."`) on a small
+fast instruction-tuned model.
+
+The rewriter wire format is OpenAI chat-completions (request body uses
+top-level `temperature` / `top_p` / `max_tokens`; response parses
+`choices[0].message.content`). Configurable via two env vars:
+
+- **`REWRITER_URL`** — bare `scheme://host:port` of the rewriter
+  endpoint. Defaults to the `llm_autonomy` slot's URL when unset,
+  which lets the rewriter share the autonomy endpoint by default but
+  pin to a dedicated fast model when set.
+- **`REWRITER_MODEL`** — the model name as the endpoint reports it.
+  Defaults to the `llm_autonomy` slot's model when unset.
+
+Recommended: a 3-4B class instruction-tuned model on a dedicated
+endpoint (e.g. `Qwen3-4B-Instruct-2507-Q5_K_M.gguf` on llama.cpp
+`llama-server`). Sub-1.5B models are too weak for tone transformation
+— they tend to echo the input verbatim with empty `<think>` tags.
+
+Best-effort: any LLM failure returns the original plain text
+unchanged. A deterministic strip pass removes vocative labels
+(`test subject`, `human`, etc.) if the LLM ignores the prompt
+instruction.
+
+### Persona preprompt
+
+The GLaDOS persona is one long YAML block under
+`Glados.personality_preprompt` in `configs/glados_config.yaml`
+(~720 tokens system message + four few-shot exchanges). The
+runtime file is gitignored; the **template lives at
+[`configs/glados_config.example.yaml`](configs/glados_config.example.yaml)**
+with placeholders for personal/household specifics
+(`<your_city>`, `<resident_first_names>`, `<bedroom_speaker_entity>`,
+etc.). Copy the example to `configs/glados_config.yaml`, replace the
+angle-bracketed tokens with your actual values, and the engine loads
+it on next restart.
+
+The preprompt covers PERSONALITY, CONTEXT (quote-recognition rule),
+LORE (Portal canon engagement rules), EMOTIONAL (drop-the-menace
+rule), HOUSEHOLD (residents + pets), MAINTENANCE / SILENT MODES,
+SPEECH (TTS-affecting rules), and CRITICAL (anti-parrot, forbidden-
+endings list). Few-shots demonstrate tone and Portal-lore engagement
+shape — the CRITICAL block instructs the model not to copy them
+verbatim, but exact-match queries can still pull the few-shot answer
+verbatim; that's a known model-strength limitation, not a bug.
 
 ### Context injection (weather, memory, canon, time)
 
-The chat path injects system messages on a per-turn basis when keyword
+For chat-path turns that DON'T match the time/weather fast-path,
+GLaDOS injects system messages on a per-turn basis when keyword
 gates fire — keeps deterministic context out of the persona prompt
 and out of turns that don't need it. Each block is independent and
 fails closed: if a block can't render, the chat continues without it.
 
 | Context | Trigger gate | Source | Example injection |
 |---------|--------------|--------|-------------------|
-| **Weather** | `needs_weather_context()` (forecast / rain / cold / etc.) | `weather_cache.json` populated by the autonomy weather agent (Open-Meteo) | `Current: 72 degrees, partly cloudy, …` |
+| **Weather** | `needs_weather_context()` (forecast / rain / cold / etc.) — only fires when fast-path falls through (e.g. compound queries) | `weather_cache.json` populated by the autonomy weather agent (Open-Meteo, 16-day forecast window) | `Current: 72 degrees, partly cloudy, …` |
 | **Memory** | always-on when message references stored facts | ChromaDB facts via `memory_context.as_prompt(message)` | `Resident A's preferred temperature is 68F …` |
 | **Portal canon** | `needs_canon_context()` (potato, Wheatley, Aperture, 30+ Portal-specific terms) | curated lore in a ChromaDB collection (`docs/portal_canon/`) | `Cave Johnson is the founder of …` |
-| **Time** | `needs_time_context()` (what time / clock / what day / what year / …) | `time_source.now()` — NTP-synced offset + IANA tz | `Current time: Saturday 2026-05-02 13:58` |
+| **Time** | `needs_time_context()` (what time / clock / what day / what year / …) — only fires when fast-path falls through | `time_source.now()` — NTP-synced offset + IANA tz | `Current time: Saturday 2026-05-02 13:58` |
 
-**Time injection specifics:** the container syncs a clock offset
+**Time + weather fast-path** (Change 42, 2026-05-04): when an utterance
+matches the time or weather keyword gates AND has no compound
+home-command verb, the request short-circuits before the chat path —
+the renderer pulls from `time_source.now()` / `weather_cache.get_data()`,
+the persona rewriter voices it, and the response emits in 1-2 s
+instead of the 20-30 s a full chat round-trip costs. Compound
+utterances ("what's the weather and turn on the lights") fall through
+to the chat path so both halves get serviced. See `docs/CHANGES.md`
+Change 42 and `glados/fastpath/local.py` for the parser/renderer.
+
+**Time-source specifics:** the container syncs a clock offset
 against the configured NTP servers (default: `time.nist.gov` and
 `time-a-g.nist.gov` / `time-b-g.nist.gov`) at engine startup and on
 the configured refresh interval (default 6 h). The IANA timezone is
@@ -343,8 +403,8 @@ identifier anyway.
   request, the terminal usage chunk's `prompt_tokens` /
   `completion_tokens` populate the `tokens_per_second` field in the
   WebUI metrics bar. This means Ollama-native and OpenAI-compat backends
-  (OVMS, vLLM, llama.cpp) both surface throughput, even when the upstream
-  doesn't emit Ollama's `eval_count` / `eval_duration`.
+  (OpenArc, OVMS, vLLM, llama.cpp) both surface throughput, even when
+  the upstream doesn't emit Ollama's `eval_count` / `eval_duration`.
 - **Tool-call deltas** stream alongside content deltas; the three-tier
   matcher dispatches to HA MCP and the follow-up tokens stream back.
 - **`/no_think` injection** at the system layer for chitchat on
@@ -358,8 +418,8 @@ expects.
 
 The container itself uses stdlib `http.client` against the upstream —
 no OpenAI SDK is imported. Anything emitting canonical OpenAI SSE
-chunks works as a backend; production runs to date use Ollama and LM
-Studio.
+chunks works as a backend; production runs to date use Ollama, OVMS,
+OpenArc (current production), and llama.cpp `llama-server`.
 
 ### TLS for OpenAI-compat clients
 
@@ -481,9 +541,9 @@ The container is **backend-agnostic** — anything that speaks
 
 | Slot | Used by | Recommended model |
 |------|---------|-------------------|
-| `llm_interactive` | Tier 3 chat, persona rewrites, tool-call planning | Production: `OpenVINO/Qwen3-30B-A3B-int4-ov` on OVMS (Intel Arc Pro B60). Smaller dev option: `qwen3:14b` on Ollama. |
-| `llm_autonomy`    | Background autonomy loops (sensor watcher, weather, camera, news) | Same as `llm_interactive`, or split onto a dedicated endpoint. |
-| `llm_triage`      | Tier 2 disambiguator, autonomy compaction, memory classifier | `llama-3.2-1b-instruct` (small + fast) — keeps the home-command path responsive. |
+| `llm_interactive` | Tier 3 chat, tool-call planning | Production: `OpenVINO/Qwen3-30B-A3B-int4-ov` on OpenArc (Intel Arc Pro B60). Smaller dev option: `qwen3:14b` on Ollama. |
+| `llm_autonomy`    | Background autonomy loops (sensor watcher, weather, camera, news); also the rewriter's default endpoint when `REWRITER_URL` is unset | Same as `llm_interactive`, or split onto a dedicated endpoint. |
+| `llm_triage`      | Tier 2 disambiguator, plugin triage classifier, autonomy compaction, memory classifier | A small fast instruction-tuned 3-4B model is the sweet spot — `Qwen3-4B-Instruct-2507` (non-thinking variant) on llama.cpp is the current production choice. Sub-2B models are usable but classify less reliably. |
 | `llm_vision`      | Camera / image analysis (optional) | `qwen2.5vl:7b` or `qwen2.5-vl-3b-instruct`. Unset to disable vision features. |
 | `llm_commands`    | Tool-using turns (route=plugin:* / `is_home_command`) — optional separate lane | Same recommendation as `llm_interactive`; falls back to `llm_interactive` when empty. |
 
@@ -491,8 +551,15 @@ A single endpoint can host every slot; operators with a dedicated
 GPU/accelerator per role can split them onto separate URLs. Unset
 slots fall back to `llm_interactive`.
 
+A separate **persona rewriter** endpoint can be pinned via
+`REWRITER_URL` + `REWRITER_MODEL` env vars (see
+"Persona rewriter" above) — useful for putting the rewriter on a
+faster small model than the autonomy lane uses, without splitting
+autonomy off `llm_interactive`.
+
 See [docs/models.md](docs/models.md) for VRAM math, throughput
-numbers (including the ~39.8 tok/s steady-state on OVMS + Arc B60),
+numbers (steady-state on OpenArc + Arc B60 ~42 tok/s decode for the
+30B-A3B chat model; ~70 tok/s decode on the 4B rewriter on a T4),
 and the trade-offs between dense and MoE chat models.
 
 If no LLM is available the container still starts, but Tier 1 / Tier 2
@@ -509,6 +576,12 @@ operator can keep secrets out of git:
 - **`configs/*.yaml`** — non-secret tuning (personality, attitudes, audio,
   observer rules, disambiguation rules). Managed as a Docker volume so
   first-run creates defaults without any pre-staging.
+- **`configs/glados_config.example.yaml`** — sanitized template for the
+  engine config + persona preprompt. The runtime `glados_config.yaml`
+  is gitignored (contains personal/household details). Copy the
+  example, replace the angle-bracket placeholders (`<your_city>`,
+  `<resident_first_names>`, `<bedroom_speaker_entity>`, etc.) with
+  your values, and the engine loads it on next restart.
 
 Selected env vars worth knowing:
 
@@ -518,16 +591,21 @@ Selected env vars worth knowing:
 | `HA_WS_URL` | derived from `HA_URL` | HA WebSocket endpoint |
 | `HA_TOKEN` | — | HA long-lived access token (env wins over YAML on a fresh install; YAML wins after a WebUI save) |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | LLM endpoint (named for legacy reasons — anything OpenAI-compat works). Used for chat + autonomy + vision unless split. |
-| `OLLAMA_AUTONOMY_URL` | `OLLAMA_URL` | Optional split — autonomy / Tier 2 / rewriter endpoint |
+| `OLLAMA_AUTONOMY_URL` | `OLLAMA_URL` | Optional split — autonomy / Tier 2 endpoint |
 | `OLLAMA_VISION_URL` | `OLLAMA_URL` | Optional split — vision endpoint |
+| `REWRITER_URL` | unset (falls back to `llm_autonomy` slot URL) | Bare `scheme://host:port` for the persona rewriter endpoint. Lets you point the rewriter at a dedicated small/fast model without disturbing autonomy. |
+| `REWRITER_MODEL` | unset (falls back to `llm_autonomy` slot model) | Model name as the rewriter endpoint reports it. |
+| `REWRITER_TIMEOUT_S` | `8` | Per-call timeout for the persona rewriter. On timeout the original plain text returns unchanged. |
 | `VISION_URL` | unset | External vision service (image classification, camera analysis); features simply unavailable when unset |
 | `GLADOS_INTERNAL_API_PORT` | `18015` | Loopback-only plain-HTTP port for in-container callers (TTS / STT / api_wrapper). Bound to `127.0.0.1`. |
 | `GLADOS_PLUGINS_ENABLED` | `true` | Master toggle for the MCP plugin runtime. Set `false` to disable discovery + spawn. |
+| `GLADOS_PLUGIN_TRIAGE_ENABLED` | `true` | Toggle for the LLM-backed plugin intent triage. When `false`, plugin matching falls back to keyword-only — useful when the triage classifier hallucinates plugin matches on chat-style queries. |
 | `GLADOS_DOCKER_GID` | unset | Docker group GID for the WebUI Logs page's container source (`getent group docker \| cut -d: -f3`) |
 | `WEBUI_HTTP_REDIRECT_PORT` | unset | If set, listen on this port and 301-redirect HTTP → HTTPS |
 | `GLADOS_AUTH_BYPASS` | unset | Set to `1` to disable all auth checks (recovery mode — bright-red banner; see Authentication below) |
 | `GLADOS_LOGS` | `/app/logs` | Audit log directory |
-| `TZ` | `UTC` | Container's system clock TZ. Time-of-day **injection** uses the IANA zone from your weather coordinates instead — `TZ` only affects log timestamps. |
+| `GLADOS_TTS_MODELS_DIR` | `/app/models/TTS` | Where the local VITS ONNX TTS model files live (the `glados.onnx` voice + phonemizer assets baked into the image). |
+| `TZ` | `UTC` | Container's system clock TZ. Time-of-day fast-path uses the IANA zone from your weather coordinates instead — `TZ` only affects log timestamps. |
 
 Operator-tunable disambiguation rules go in `configs/disambiguation.yaml`
 (template at `configs/disambiguation.example.yaml`): naming convention,
@@ -632,13 +710,22 @@ retained during migration only.
   actions (`"is the kitchen light on"` returns `action_done` with
   speech `"Turned on the lights"`). Usually caught by Tier 2
   state-verifier (Phase 8.4) but a small residual rate survives.
-- **Tier 2 latency** — 5–11 s on the 14B model. Phase 8.3 semantic
-  retrieval dropped the prompt token count by ~85% which helped
-  significantly; further latency gains would require a smaller
-  dedicated fine-tune. On the roadmap.
+- **Tier 2 latency** — was 5–11 s on a 14B model; landed at 1-3 s
+  after Change 41 routed the disambiguator to the `llm_triage` slot
+  and the operator pinned that slot to a small fast 4B-class
+  instruction-tuned model. Phase 8.3 semantic retrieval dropped the
+  prompt token count by ~85% which helped significantly. Further
+  latency gains would require either grammar-constrained decoding
+  (llama.cpp GBNF) or a dedicated fine-tune.
 - **MQTT peer bus (Stage 3 Phase 2)** — NodeRed / Sonorium
   bidirectional event exchange is not yet wired.
 - **Stage 3 Phase 3 test corpus** — labeled regression test corpus,
   WS reconnect integration tests, second-factor design for
   sensitive intents. Not started.
 - **Quip library content** — currently 156 lines; operator can grow via the Quip editor.
+- **Few-shot exact-match parrot** — when a user asks a query that
+  exactly matches one of the persona preprompt's few-shot questions
+  ("Tell me about this house", "Who are you?"), the model tends to
+  reproduce the few-shot answer verbatim despite the CRITICAL block's
+  anti-parrot rule. Workaround: phrase the question differently. The
+  model improvises freshly on all non-matching queries.
