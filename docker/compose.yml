@@ -53,6 +53,16 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - TZ=${TZ:-UTC}
+      # Persona rewriter model override. Without this, the rewriter
+      # borrows whichever model is configured for the Autonomy slot
+      # (typically a 30B chat model) — the rewriter prompt is short
+      # and runs every Tier 1 turn (HA confirmations, doorbell, time
+      # / weather fast-path), so a small model gives sub-second voice
+      # overlay. Pin to the 0.6B already loaded in OpenArc until the
+      # planned Qwen3-4B-Instruct-2507 lane lands; switch this var
+      # to the 4B model+endpoint at that point. Rollback = revert to
+      # this 0.6B value.
+      - REWRITER_MODEL=OpenVINO/Qwen3-0.6B-int4-ov
     env_file:
       - ../.env
     extra_hosts:
