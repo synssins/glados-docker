@@ -308,15 +308,19 @@ def _init_ha_client() -> None:
         # light." -> GLaDOS-voiced restyling). Same Ollama as the
         # disambiguator; smaller models work well here since the input
         # is short and the output is constrained to one or two sentences.
-        # Rewriter defaults to the same autonomy model as the
-        # disambiguator. Env var REWRITER_MODEL is kept as an explicit
-        # override for operators who want to pin the rewriter to a
-        # small/fast model independent of the chat / autonomy choice.
+        # Rewriter defaults to the same autonomy model + URL as the
+        # disambiguator. Two env-var overrides let the operator pin the
+        # rewriter to a different model or endpoint independent of the
+        # chat / autonomy choice — e.g., to point at a llama.cpp T4
+        # service without disturbing autonomy reasoning. REWRITER_URL
+        # should be the bare base URL (scheme://host:port); the
+        # rewriter appends /v1/chat/completions itself.
         rewriter_model = os.environ.get("REWRITER_MODEL", "").strip() \
             or cfg.service_model("llm_autonomy", fallback="qwen3:8b")
-        rewriter = PersonaRewriter(ollama_url=ollama_url, model=rewriter_model)
+        rewriter_url = os.environ.get("REWRITER_URL", "").strip() or ollama_url
+        rewriter = PersonaRewriter(ollama_url=rewriter_url, model=rewriter_model)
         init_rewriter(rewriter)
-        logger.info("Persona rewriter ready; model={}", rewriter_model)
+        logger.info("Persona rewriter ready; url={} model={}", rewriter_url, rewriter_model)
 
         # CommandResolver — the single entry point for home-control
         # intents. Sits in front of Tier 1 / Tier 2 and adds short-term
