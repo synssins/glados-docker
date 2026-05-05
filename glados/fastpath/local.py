@@ -365,7 +365,7 @@ def _render_current(data: dict[str, Any], intent: str) -> Optional[str]:
     if today_high is not None:
         return (
             f"It is currently {temp} and {cond}. "
-            f"Today's high is {_temp_str(today_high).split(' ')[0]}."
+            f"Today's high is {_temp_str(today_high)}."
         )
     return f"It is currently {temp} and {cond}."
 
@@ -376,11 +376,14 @@ def _render_today(data: dict[str, Any], intent: str) -> Optional[str]:
     if not today:
         return _render_current(data, intent)
 
-    high = _temp_str(today.get("high")).split(" ")[0]
-    low = _temp_str(today.get("low")).split(" ")[0]
+    high = _temp_str(today.get("high"))
+    low = _temp_str(today.get("low"))
     cond = today.get("condition") or "unknown"
 
-    base = f"Today: high {high}, low {low}, {cond}."
+    # Natural-language framing — "high of N degrees, low of M degrees"
+    # rather than "high N, low M" so TTS reads cleanly and the operator
+    # gets the explicit unit word on every temperature.
+    base = f"Today: high of {high}, low of {low}, {cond}."
     if cur and cur.get("temperature") is not None:
         cur_temp = _temp_str(cur.get("temperature"))
         base += f" Currently {cur_temp}."
@@ -394,10 +397,10 @@ def _render_day_offset(data: dict[str, Any], offset: int) -> Optional[str]:
         return None
     day = daily[offset]
     label = _day_label(day, offset)
-    high = _temp_str(day.get("high")).split(" ")[0]
-    low = _temp_str(day.get("low")).split(" ")[0]
+    high = _temp_str(day.get("high"))
+    low = _temp_str(day.get("low"))
     cond = day.get("condition") or "unknown"
-    return f"{label}: high {high}, low {low}, {cond}."
+    return f"{label}: high of {high}, low of {low}, {cond}."
 
 
 def _render_weekday(data: dict[str, Any], target_wd: int) -> Optional[str]:
@@ -409,10 +412,10 @@ def _render_weekday(data: dict[str, Any], target_wd: int) -> Optional[str]:
             continue
         if dt.weekday() == target_wd:
             name = dt.strftime("%A")
-            high = _temp_str(day.get("high")).split(" ")[0]
-            low = _temp_str(day.get("low")).split(" ")[0]
+            high = _temp_str(day.get("high"))
+            low = _temp_str(day.get("low"))
             cond = day.get("condition") or "unknown"
-            return f"{name}: high {high}, low {low}, {cond}."
+            return f"{name}: high of {high}, low of {low}, {cond}."
     return None
 
 
@@ -423,15 +426,17 @@ def _render_weekend(data: dict[str, Any]) -> Optional[str]:
     parts: list[str] = []
     if sat:
         parts.append(
-            f"Saturday {_temp_str(sat.get('high')).split(' ')[0]} {sat.get('condition', 'unknown')}"
+            f"Saturday will be {_temp_str(sat.get('high'))} and "
+            f"{sat.get('condition', 'unknown')}"
         )
     if sun:
         parts.append(
-            f"Sunday {_temp_str(sun.get('high')).split(' ')[0]} {sun.get('condition', 'unknown')}"
+            f"Sunday will be {_temp_str(sun.get('high'))} and "
+            f"{sun.get('condition', 'unknown')}"
         )
     if not parts:
         return None
-    return ", ".join(parts) + "."
+    return ". ".join(parts) + "."
 
 
 def _render_range(data: dict[str, Any], start: int, end: int) -> Optional[str]:
@@ -443,7 +448,10 @@ def _render_range(data: dict[str, Any], start: int, end: int) -> Optional[str]:
         return None
     # Cap output length: long ranges become unwieldy as TTS. Hard
     # ceiling at 7 days in the rendered string; if the user asked for
-    # more, summarise the overflow.
+    # more, summarise the overflow. Each entry is full-sentence so the
+    # TTS reads naturally instead of like a stock-ticker — operator
+    # feedback 2026-05-04: "Monday 63 overcast" reads as shorthand;
+    # "Monday: 63 degrees and overcast" is the desired shape.
     items: list[str] = []
     rendered_end = min(end, start + 6)
     for i in range(start, rendered_end + 1):
@@ -453,9 +461,9 @@ def _render_range(data: dict[str, Any], start: int, end: int) -> Optional[str]:
             label = dt.strftime("%A")
         except (ValueError, TypeError):
             label = day.get("date", f"day {i}")
-        high = _temp_str(day.get("high")).split(" ")[0]
+        high = _temp_str(day.get("high"))
         cond = day.get("condition") or "unknown"
-        items.append(f"{label} {high} {cond}")
+        items.append(f"{label}: {high}, {cond}")
     out = ". ".join(items) + "."
     if rendered_end < end:
         remaining = end - rendered_end
