@@ -99,6 +99,25 @@ def _drop_parrot_anchors(
     return [m for i, m in enumerate(messages) if i not in dropped_indices]
 
 
+def _should_include_mcp_context(autonomy_mode: bool, is_chitchat: bool) -> bool:
+    """Whether to inject the MCP context resources (HA entity catalog,
+    plugin context blocks, etc.) as system messages on this turn.
+
+    Drop for:
+      • chitchat turns — entity-catalog dumps bias the LLM toward
+        tool-refusal framings on lore questions.
+      • autonomy turns — the autonomy loop fires every ~30 s and adds
+        ~16 K tokens per call when the catalog is dumped, with the
+        LLM still deciding `do_nothing` 100 % of the time. Tools
+        remain available (autonomy can still call HA tools); only
+        the catalog as static system text is dropped.
+
+    Strictly subtractive: home-command chat turns still get the
+    catalog (unchanged behaviour).
+    """
+    return not autonomy_mode and not is_chitchat
+
+
 def _strip_autonomy_noise(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -758,8 +777,12 @@ class LanguageModelProcessor:
         # MCP context is handled separately (returns list of messages).
         # Skip for chitchat turns — the entity/device catalog resources
         # bias the model toward tool-refusal framings on pure lore
-        # questions.
-        if self.mcp_manager and not _is_chitchat:
+        # questions. Also skip for autonomy turns — the loop fires every
+        # ~30 s and the catalog (~16 K tokens) was eating the entire
+        # autonomy lane to produce do_nothing decisions; tool definitions
+        # remain available so autonomy can still act when warranted.
+        # See `_should_include_mcp_context` for the gate logic.
+        if self.mcp_manager and _should_include_mcp_context(autonomy_mode, _is_chitchat):
             try:
                 extra_messages.extend(self.mcp_manager.get_context_messages(block=False))
             except Exception as e:
