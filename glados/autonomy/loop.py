@@ -176,7 +176,12 @@ class AutonomyLoop:
         return self._vision_state.snapshot()
 
     def _task_summary(self) -> str:
-        slots = self._slot_store.list_slots()
+        # Filter out passive monitoring noise (compaction, idle, error)
+        # so the autonomy tick prompt stays small and the chat-shape
+        # tool filter sees only actionable signal. See
+        # `glados.core.llm_processor._should_render_slot`.
+        from glados.core.llm_processor import _should_render_slot
+        slots = [s for s in self._slot_store.list_slots() if _should_render_slot(s)]
         if not slots:
             return "none"
         lines = []

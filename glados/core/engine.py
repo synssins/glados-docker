@@ -2323,10 +2323,18 @@ class Glados:
         return "\n".join(lines)
 
     def _format_slots(self) -> str | None:
-        """Format task slots for LLM context."""
+        """Format task slots for LLM context.
+
+        Filters out passive monitoring noise (compaction monitoring,
+        camera watcher in error state, etc.) — the autonomy LLM has
+        nothing to act on for those, and including them in the prompt
+        burns tokens AND trips the chat-shape tool filter via slot
+        names that happen to be domain keywords.
+        """
+        from .llm_processor import _should_render_slot
         if not self.autonomy_slots:
             return None
-        slots = self.autonomy_slots.list_slots()
+        slots = [s for s in self.autonomy_slots.list_slots() if _should_render_slot(s)]
         if not slots:
             return None
         lines = ["[tasks]"]

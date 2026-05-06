@@ -13,6 +13,7 @@ from loguru import logger
 from pydantic import HttpUrl  # If HttpUrl is used by config
 import requests
 from ..autonomy import ConstitutionalState, TaskSlotStore
+from ..autonomy.slots import TaskSlot
 from .attitude import roll_attitude, get_attitude_directive, get_current_attitude, get_tts_params
 from .context import ContextBuilder
 from .conversation_store import ConversationStore
@@ -97,6 +98,52 @@ def _drop_parrot_anchors(
     if not dropped_indices:
         return messages
     return [m for i, m in enumerate(messages) if i not in dropped_indices]
+
+
+def _autonomy_has_actionable_slot(slot_store: "TaskSlotStore | None") -> bool:
+    """True iff at least one autonomy slot is actionable — has
+    ``importance >= 0.6``, the threshold called out in the autonomy
+    system prompt: *"If any task shows importance >= 0.60, you MUST
+    call `speak` to announce it."* When False, autonomy has nothing
+    to act on and the MCP/HA tool catalog is safely strippable.
+
+    Used by the autonomy-specific tool-filter gate to prevent
+    persistent passive-slot names (e.g. "Camera Watcher" → trips
+    the 'camera' domain keyword) from keeping the full ~95-tool
+    catalog every routine tick. Severity-based gate is immune to
+    slot wording.
+    """
+    if slot_store is None:
+        return False
+    for slot in slot_store.list_slots():
+        importance = slot.importance
+        if importance is not None and importance >= 0.6:
+            return True
+    return False
+
+
+_PASSIVE_SLOT_STATUSES: frozenset[str] = frozenset({
+    "monitoring", "idle", "done", "error", "stopped", "running",
+})
+
+
+def _should_render_slot(slot: "TaskSlot") -> bool:
+    """Whether to include this slot's line in the autonomy tick
+    prompt's ``Tasks:`` summary. Filter out passive monitoring noise
+    (compaction at 1700/6000 tokens, camera watcher in error state,
+    etc.) so routine ticks become small and the chat-shape filter
+    doesn't trip on persistent slot-name keywords.
+
+    Keep when:
+      • importance is set AND >= 0.4 (routine threshold or higher), OR
+      • status is NOT one of the passive lifecycle states
+        (``monitoring``, ``idle``, ``done``, ``error``, ``stopped``,
+        ``running``).
+    """
+    importance = slot.importance
+    if importance is not None and importance >= 0.4:
+        return True
+    return slot.status not in _PASSIVE_SLOT_STATUSES
 
 
 def _should_include_mcp_context(autonomy_mode: bool, is_chitchat: bool) -> bool:
@@ -900,18 +947,25 @@ class LanguageModelProcessor:
                 allow_tools = bool(llm_input.get("_allow_tools", True))
                 tools = self._build_tools(autonomy_mode) if allow_tools else []
                 # Apply the chat-shape tool filter on every user-role
-                # turn — chat AND autonomy. Autonomy was previously
-                # bypassed, but routine autonomy ticks (status-only
-                # slot summaries) carry no HA-noun keywords; passing
-                # the full ~95-tool MCP catalog through every ~30 s
-                # tick was the dominant cost driver (44K chars of
-                # tool defs per tick). The filter keeps tools when
-                # the slot summary mentions an HA noun (door, light,
-                # person, etc.), preserving real-time action capability
-                # for event-driven ticks.
+                # turn — chat AND autonomy. For autonomy specifically,
+                # the content-keyword gate is too permissive on this
+                # operator's slot setup (e.g. a persistent "Camera
+                # Watcher" slot trips 'camera' every tick), so add
+                # a stricter severity gate on top: when no slot is
+                # actionable (importance >= 0.6), force-strip MCP
+                # tools regardless of keyword match. Routine ticks
+                # become small and fast; event-driven ticks (where a
+                # slot has actually flagged something) keep the full
+                # catalog so autonomy can act in real time.
                 if tools and llm_message.get("role") == "user":
                     content = str(llm_message.get("content", ""))
-                    tools = self._filter_tools_for_message(tools, content)
+                    if autonomy_mode and not _autonomy_has_actionable_slot(self.slot_store):
+                        # Force strict-strip via empty content (the
+                        # filter's `looks_like_home_command("")` is
+                        # False → all MCP/HA dotted-name tools drop).
+                        tools = self._filter_tools_for_message(tools, "")
+                    else:
+                        tools = self._filter_tools_for_message(tools, content)
                 tool_names = {
                     tool.get("function", {}).get("name", "")
                     for tool in tools
