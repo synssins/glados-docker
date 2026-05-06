@@ -10,6 +10,7 @@ import pytest
 from glados.core.builtin_tools import (
     TOOL_LOOK_AT_CAMERA,
     get_builtin_tool_definitions,
+    get_image_yielding_tool_definitions,
     invoke_image_yielding_tool,
     is_image_yielding_tool,
 )
@@ -24,6 +25,14 @@ def test_predicate_matches_only_look_at_camera():
 def test_definition_present_in_builtin_list():
     names = [d["function"]["name"] for d in get_builtin_tool_definitions()]
     assert TOOL_LOOK_AT_CAMERA in names
+
+
+def test_image_yielding_helper_returns_only_camera_tool():
+    defs = get_image_yielding_tool_definitions()
+    names = [d["function"]["name"] for d in defs]
+    assert names == [TOOL_LOOK_AT_CAMERA]
+    assert "search_entities" not in names
+    assert "get_entity_details" not in names
 
 
 def test_happy_path_returns_description_and_image():

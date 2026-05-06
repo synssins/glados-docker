@@ -2239,6 +2239,25 @@ def _stream_chat_sse_impl(
         except Exception as exc:  # noqa: BLE001
             logger.debug("builtin tool registration skipped: {}", exc)
 
+    # Image-yielding tools (currently: look_at_camera) are chat-shape, not
+    # HA-shape. "What do you see in the back yard?" doesn't trip
+    # looks_like_home_command, so the HA-gated builtins block above won't
+    # add it. Inject unconditionally on the chat path; idempotent against
+    # the case where look_at_camera already came in via the home-command
+    # branch.
+    try:
+        from glados.core.builtin_tools import (
+            get_image_yielding_tool_definitions,
+        )
+        _existing_names = {t.get("function", {}).get("name") for t in tools}
+        for _img_tool in get_image_yielding_tool_definitions():
+            _name = _img_tool.get("function", {}).get("name")
+            if _name and _name not in _existing_names:
+                tools.append(_img_tool)
+                _existing_names.add(_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("image-yielding tool registration skipped: {}", exc)
+
     # Hard cap on the advertised tool catalog. Defensive workaround for an
     # LM Studio runtime crash (Exit code 3221226505 = STATUS_STACK_BUFFER_
     # OVERRUN) reproducible against qwen3-30b-a3b when the chat payload

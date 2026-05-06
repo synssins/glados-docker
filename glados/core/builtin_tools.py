@@ -179,6 +179,23 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
+def get_image_yielding_tool_definitions() -> list[dict[str, Any]]:
+    """Return only the image-yielding builtin tools (currently:
+    ``look_at_camera``).
+
+    Distinct from ``get_builtin_tool_definitions()`` because the chat
+    path injects HA-shape tools (``search_entities``,
+    ``get_entity_details``) only on home-command-shape queries — but
+    image-yielding tools fire on chat-shape questions like *"What do
+    you see in the back yard?"* which never trip ``looks_like_home_command``.
+    Callers append this list unconditionally on the chat lane.
+    """
+    return [
+        d for d in get_builtin_tool_definitions()
+        if is_image_yielding_tool(d["function"]["name"])
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations. Each returns a JSON string so the chat loop
 # can append it as `{"role": "tool", "content": <str>}` without
@@ -461,6 +478,7 @@ __all__ = [
     "TOOL_SEARCH_ENTITIES",
     "ImageEmission",
     "get_builtin_tool_definitions",
+    "get_image_yielding_tool_definitions",
     "invoke_builtin_tool",
     "invoke_image_yielding_tool",
     "is_builtin_tool",
