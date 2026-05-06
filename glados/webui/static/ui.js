@@ -6268,6 +6268,8 @@ function renderChat() {
           imgEl.src = img_entry.image_url;
           imgEl.alt = 'Camera snapshot';
           imgEl.dataset.toolCallId = img_entry.tool_call_id;
+          imgEl.title = 'Click to expand';
+          imgEl.addEventListener('click', () => openInlineImageLightbox(img_entry.image_url));
           msgEl.appendChild(imgEl);
         }
       }
@@ -7901,5 +7903,183 @@ async function loggingSaveRaw() {
 // CSS-escape helper (simplistic — covers the IDs we generate).
 function cssEscape(s) {
   return String(s).replace(/[^a-zA-Z0-9_\-\.]/g, '\\$&');
+}
+
+// ---------------------------------------------------------------------------
+// Inline-image lightbox: click a camera snapshot in chat to expand it,
+// scroll-wheel or buttons to zoom, drag to pan when zoomed past fit.
+// One overlay re-used across openings; lazy-built on first call.
+// ---------------------------------------------------------------------------
+
+let _inlineLightbox = null;
+
+function _buildInlineLightbox() {
+  const overlay = document.createElement('div');
+  overlay.className = 'chat-image-lightbox';
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.innerHTML = `
+    <div class="chat-image-lightbox-stage" data-role="stage">
+      <img class="chat-image-lightbox-img" data-role="img" alt="Camera snapshot — full resolution" />
+    </div>
+    <div class="chat-image-lightbox-toolbar" data-role="toolbar">
+      <button type="button" class="lightbox-btn" data-action="zoom-out" title="Zoom out">−</button>
+      <button type="button" class="lightbox-btn" data-action="zoom-reset" title="Reset (fit)">⛶</button>
+      <button type="button" class="lightbox-btn" data-action="zoom-in" title="Zoom in">+</button>
+      <span class="lightbox-zoom-label" data-role="zoom-label">100%</span>
+      <span class="lightbox-spacer"></span>
+      <button type="button" class="lightbox-btn lightbox-close" data-action="close" title="Close (Esc)" aria-label="Close">×</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const stage = overlay.querySelector('[data-role="stage"]');
+  const img = overlay.querySelector('[data-role="img"]');
+  const zoomLabel = overlay.querySelector('[data-role="zoom-label"]');
+
+  const state = {
+    scale: 1,
+    minScale: 0.1,
+    maxScale: 8,
+    tx: 0,
+    ty: 0,
+    natW: 0,
+    natH: 0,
+    fitScale: 1,
+    dragging: false,
+    dragStartX: 0,
+    dragStartY: 0,
+    dragStartTx: 0,
+    dragStartTy: 0,
+  };
+
+  function applyTransform() {
+    img.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
+    zoomLabel.textContent = Math.round((state.scale / state.fitScale) * 100) + '%';
+    img.classList.toggle('is-zoomed', state.scale > state.fitScale * 1.001);
+  }
+
+  function computeFitScale() {
+    if (!state.natW || !state.natH) return 1;
+    const stageW = stage.clientWidth;
+    const stageH = stage.clientHeight;
+    return Math.min(stageW / state.natW, stageH / state.natH, 1);
+  }
+
+  function reset() {
+    state.fitScale = computeFitScale();
+    state.scale = state.fitScale;
+    // Center the image within stage at fit scale.
+    state.tx = (stage.clientWidth - state.natW * state.scale) / 2;
+    state.ty = (stage.clientHeight - state.natH * state.scale) / 2;
+    state.minScale = state.fitScale * 0.5;
+    applyTransform();
+  }
+
+  function zoomBy(factor, originX, originY) {
+    const newScale = Math.max(state.minScale, Math.min(state.maxScale, state.scale * factor));
+    if (newScale === state.scale) return;
+    // Zoom centered on (originX, originY) in stage coordinates.
+    const ratio = newScale / state.scale;
+    state.tx = originX - (originX - state.tx) * ratio;
+    state.ty = originY - (originY - state.ty) * ratio;
+    state.scale = newScale;
+    applyTransform();
+  }
+
+  function close() {
+    overlay.classList.remove('is-open');
+    overlay.setAttribute('aria-hidden', 'true');
+    document.removeEventListener('keydown', onKey);
+    img.removeAttribute('src');
+  }
+
+  function onKey(ev) {
+    if (ev.key === 'Escape') { ev.preventDefault(); close(); }
+    else if (ev.key === '+' || ev.key === '=') { zoomBy(1.25, stage.clientWidth/2, stage.clientHeight/2); }
+    else if (ev.key === '-' || ev.key === '_') { zoomBy(1/1.25, stage.clientWidth/2, stage.clientHeight/2); }
+    else if (ev.key === '0') { reset(); }
+  }
+
+  // Toolbar
+  overlay.querySelector('[data-role="toolbar"]').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-action]');
+    if (!btn) return;
+    ev.stopPropagation();
+    const cx = stage.clientWidth / 2;
+    const cy = stage.clientHeight / 2;
+    switch (btn.dataset.action) {
+      case 'zoom-in': zoomBy(1.25, cx, cy); break;
+      case 'zoom-out': zoomBy(1/1.25, cx, cy); break;
+      case 'zoom-reset': reset(); break;
+      case 'close': close(); break;
+    }
+  });
+
+  // Wheel zoom centered on cursor
+  stage.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const rect = stage.getBoundingClientRect();
+    const ox = ev.clientX - rect.left;
+    const oy = ev.clientY - rect.top;
+    const factor = ev.deltaY < 0 ? 1.15 : 1/1.15;
+    zoomBy(factor, ox, oy);
+  }, { passive: false });
+
+  // Drag to pan (only when zoomed past fit; native cursor reflects state)
+  stage.addEventListener('pointerdown', (ev) => {
+    if (state.scale <= state.fitScale * 1.001) return;
+    state.dragging = true;
+    state.dragStartX = ev.clientX;
+    state.dragStartY = ev.clientY;
+    state.dragStartTx = state.tx;
+    state.dragStartTy = state.ty;
+    stage.setPointerCapture(ev.pointerId);
+    stage.classList.add('is-dragging');
+  });
+  stage.addEventListener('pointermove', (ev) => {
+    if (!state.dragging) return;
+    state.tx = state.dragStartTx + (ev.clientX - state.dragStartX);
+    state.ty = state.dragStartTy + (ev.clientY - state.dragStartY);
+    applyTransform();
+  });
+  function endDrag(ev) {
+    if (!state.dragging) return;
+    state.dragging = false;
+    try { stage.releasePointerCapture(ev.pointerId); } catch (_) {}
+    stage.classList.remove('is-dragging');
+  }
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
+
+  // Click outside the image (on the dim backdrop) to close — but ignore
+  // clicks on the stage that landed on the image itself or on a drag.
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) close();
+  });
+
+  return {
+    overlay, stage, img, state,
+    open(src) {
+      img.src = src;
+      const onload = () => {
+        state.natW = img.naturalWidth || 1;
+        state.natH = img.naturalHeight || 1;
+        reset();
+      };
+      if (img.complete && img.naturalWidth) {
+        onload();
+      } else {
+        img.addEventListener('load', onload, { once: true });
+      }
+      overlay.classList.add('is-open');
+      overlay.setAttribute('aria-hidden', 'false');
+      document.addEventListener('keydown', onKey);
+    },
+  };
+}
+
+function openInlineImageLightbox(imageUrl) {
+  if (!_inlineLightbox) _inlineLightbox = _buildInlineLightbox();
+  _inlineLightbox.open(imageUrl);
 }
 

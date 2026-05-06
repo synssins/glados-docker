@@ -500,6 +500,120 @@ a.dl-link:hover { background: var(--orange-dim); color: #fff; }
   border-radius: 6px;
   border: 1px solid var(--orange, #ff9d00);
   object-fit: cover;
+  cursor: zoom-in;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+.chat-inline-image:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+/* ---- Inline-image lightbox ---- */
+.chat-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.88);
+  display: none;
+  /* Stage + toolbar share the same fixed overlay; use grid so the
+     toolbar can sit at the bottom without affecting stage layout. */
+  grid-template-rows: 1fr auto;
+  align-items: stretch;
+  justify-items: stretch;
+}
+.chat-image-lightbox.is-open {
+  display: grid;
+}
+.chat-image-lightbox-stage {
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  /* Allow wheel-zoom + drag without browser page-zoom interfering */
+  touch-action: none;
+  user-select: none;
+}
+.chat-image-lightbox-stage.is-dragging { cursor: grabbing; }
+.chat-image-lightbox-img {
+  position: absolute;
+  top: 0; left: 0;
+  transform-origin: 0 0;
+  /* Smooth zoom transitions, but only when not dragging */
+  transition: transform 0.08s ease-out;
+  pointer-events: none;
+  max-width: none;
+  max-height: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+.chat-image-lightbox-stage.is-dragging .chat-image-lightbox-img {
+  transition: none;
+}
+.chat-image-lightbox-img.is-zoomed {
+  /* When zoomed past fit, the stage shows grab cursor; the image
+     itself doesn't intercept events so the stage handles the drag. */
+}
+.chat-image-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin: 0 auto 14px auto;
+  /* Centered horizontally, fixed at bottom of overlay grid row */
+  background: rgba(20, 20, 20, 0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+  /* Width hugs content; centered via auto margins */
+  width: max-content;
+  max-width: 90vw;
+  pointer-events: auto;
+}
+.chat-image-lightbox .lightbox-btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f0f0f0;
+  border-radius: 50%;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.chat-image-lightbox .lightbox-btn:hover {
+  background: rgba(255, 255, 255, 0.20);
+  border-color: rgba(255, 255, 255, 0.30);
+}
+.chat-image-lightbox .lightbox-btn:active {
+  background: rgba(255, 255, 255, 0.28);
+}
+.chat-image-lightbox .lightbox-zoom-label {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: center;
+  padding: 0 4px;
+  user-select: none;
+}
+.chat-image-lightbox .lightbox-spacer {
+  /* Pushes the close button to the far right of the bar. */
+  width: 18px;
+}
+.chat-image-lightbox .lightbox-close {
+  background: rgba(180, 60, 60, 0.30);
+  border-color: rgba(255, 120, 120, 0.30);
+  font-size: 22px;
+}
+.chat-image-lightbox .lightbox-close:hover {
+  background: rgba(220, 80, 80, 0.55);
+  border-color: rgba(255, 140, 140, 0.55);
 }
 .chat-input-row {
   display: flex; gap: 0.5rem; align-items: flex-end;
