@@ -5135,3 +5135,161 @@ chat traffic to drop into these two kinds).
   (api_wrapper.py:1909, :1992) is unchanged — it still fires for
   utterances that DON'T match the fast-path (compound queries,
   anaphoric follow-ups). Belt-and-suspenders coverage.
+
+---
+
+## Change 43 — Camera vision Slice 1: on-demand chat camera vision (2026-05-06)
+
+**Operator-visible feature.** "What do you see in the back yard?" in
+the WebUI chat → GLaDOS calls a built-in `look_at_camera` tool →
+fetches the snapshot from HA → describes it via a local Qwen2.5-VL
+multimodal model on AIBox T4 #1 → returns a persona-wrapped chat
+reply with the snapshot rendered inline in the assistant bubble.
+Click the thumbnail to expand into a full-screen lightbox with
+zoom + pan.
+
+**Architecture.** Three new module trees + one new tool + one new
+SSE event type:
+
+- ``glados/vision/client.py`` — minimal OpenAI-multimodal client
+  pointed at ``cfg.services.llm_vision``. ``describe_images(images,
+  prompt)`` POSTs ``[{image_url}, {text}]``, returns the raw text.
+  Vendor-agnostic — the slot URL/model live entirely in the WebUI
+  services tab. Pillow resize to 1280px max edge before base64
+  (avoids llama.cpp's ~1MB HTTP body limit on raw 4K snapshots).
+- ``glados/cameras/discovery.py`` — 60-second-TTL cache of HA's
+  ``camera.*`` entities. Fuzzy-resolves friendly names ("back yard"
+  → ``camera.backyard_high_resolution_channel``).
+- ``glados/cameras/snapshot.py`` — ``fetch_snapshot(entity_id) ->
+  bytes`` via HA's ``/api/camera_proxy/<id>``.
+- ``glados/core/builtin_tools.py`` (modified) — adds
+  ``TOOL_LOOK_AT_CAMERA`` + ``invoke_image_yielding_tool`` /
+  ``is_image_yielding_tool`` predicate +
+  ``get_image_yielding_tool_definitions()`` helper. The tool returns
+  ``{description}`` text only; image bytes flow out-of-band.
+- ``glados/core/api_wrapper.py:_stream_chat_sse_impl`` (modified) —
+  PREPENDS ``look_at_camera`` to the chat tool list (so the
+  ``_MAX_TOOLS_PER_TURN = 24`` cap can never truncate it on the
+  legacy HA path). Adds a system-prompt hint forcing tool use on
+  camera-shape queries (mirrors the HA tool_hint pattern at line
+  2225). Emits a new ``event: image`` SSE chunk keyed by
+  ``tool_call_id`` AT TOOL DISPATCH TIME, BEFORE the
+  ``{"role":"tool"}`` history entry — so the data URL never enters
+  LLM context (would otherwise replay on every subsequent turn,
+  blowing the context window).
+- ``glados/webui/tts_ui.py:_chat_stream`` (modified) — proxy now
+  forwards arbitrary unknown ``event: <name>`` SSE chunks verbatim
+  by default; only ``event: attitude`` (TTS params) and
+  ``event: metrics`` (LLM stats) are intercepted. Future SSE
+  additions don't need parallel proxy changes. (Earlier in this
+  change `event: image` was added explicitly; the
+  default-passthrough refactor superseded that.)
+- ``glados/webui/static/ui.js`` (modified) — chat SSE consumer
+  handles ``event: image`` chunks, attaches them to the in-progress
+  assistant bubble via a per-bubble ``inline_images[]`` array.
+  Click-to-expand opens a lightbox: object-fit-driven fit at
+  ``scale: 1``, cursor-anchored wheel zoom, click+drag pan when
+  zoomed, bottom-pill toolbar with translucent buttons.
+
+**Plus a doorbell-screener follow-up.** ``glados/doorbell/screener.py``
+gains an optional ``camera_entity_id`` config field. When set, a
+parallel daemon thread fires snapshot+VLM at session start; round-1
+``_evaluate`` prepends the description as ``[scene] <text>`` so the
+screener LLM classifies on audio + visual together (example: "UPS
+uniform with a small box" → ``delivery``, no ask-back). Disabled by
+default; degrades gracefully on snapshot/VLM failure.
+
+**Cleanup.** Deleted the dead in-process VLM queue path:
+``glados/tools/vision_look.py``,
+``glados/vision/{vision_request,vision_state,vision_config}.py``,
+the lazy-stub ``VisionProcessor`` import in ``vision/__init__.py``.
+Rewired the ~58 grep hits across ``engine.py``, ``llm_processor.py``,
+``autonomy/loop.py``, ``tools/__init__.py``, ``vision/constants.py``.
+Net diff: −4 modules, 58 → 0 references.
+
+**Operator-deploy artifact.** New NSSM service ``llamacpp-vision`` on
+AIBox port 11437, T4 #1 isolated via ``CUDA_VISIBLE_DEVICES=1``.
+Loads ``Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf`` + ``mmproj-Q8_0.gguf``
+(downloaded from ``ggml-org/Qwen2.5-VL-3B-Instruct-GGUF``).
+Auto-start. Reaches steady-state describe-latency ~3-5s end-to-end.
+The container code knows nothing about T4 / NVIDIA / CUDA / llama.cpp
+— only ``cfg.services.llm_vision.url`` (pointed at ``:11437`` via
+the WebUI services tab).
+
+**Iteration helper.** ``scripts/_hot_copy.py`` — ``docker cp``
+worktree files into the running container's writable layer +
+``docker restart`` (~17s) instead of full ``_local_deploy.py``
+(~3-5min). Hard discipline in the docstring: never use without a
+corresponding source edit; always end the session with a full
+deploy. Used five times during this slice's live-probe iteration
+loop.
+
+**Live-probe bugs caught + fixed in-flight (none surfaced in unit
+tests):**
+
+1. ``look_at_camera`` was being injected into the chat tool list
+   only on the home-command branch. Camera-shape questions don't
+   trip ``looks_like_home_command``, so the chat LLM literally never
+   saw the tool. Fix: unconditional injection on the chat path.
+2. The tool was APPENDED at the tail. The ``_MAX_TOOLS_PER_TURN =
+   24`` cap was silently chopping it off when HA contributed 30+
+   tools on the legacy HA branch. Fix: PREPEND so the cap can't
+   truncate.
+3. ``slot.api_key`` raised ``AttributeError`` on the live
+   ``ServiceEndpoint`` pydantic model (no such field). Tests passed
+   because ``MagicMock`` synthesizes attributes on access. Fix:
+   ``getattr(slot, "api_key", None)``.
+4. The vision client's URL was double-suffixed when the WebUI's slot
+   URL already carried ``/v1/chat/completions``. Fix: route through
+   the existing ``compose_endpoint`` helper that other slot
+   consumers already use.
+5. 4K snapshots (~2 MB) tripped llama.cpp server's HTTP body limit
+   (TCP RST mid-handshake, no log). Fix: client-side Pillow resize
+   to 1280px max edge before base64.
+6. qwen3-30b on chitchat-shape queries didn't reliably emit
+   tool_calls even with the tool present. Fix: system-prompt hint
+   instructing the model to always call ``look_at_camera`` on
+   camera questions. Plus: wiped the conversation store mid-
+   iteration to clear poisoned history.
+7. The WebUI's ``/api/chat/stream`` proxy was an event-allowlist —
+   silently dropped ``event: image`` chunks. Initial fix added an
+   explicit ``image`` branch; the default-passthrough refactor in
+   this same Change supersedes it.
+8. The lightbox opened with a black overlay and ``NaN%`` zoom label
+   when the cached image was ready synchronously (before ``display:
+   grid`` reflow). Fix: switched from JS-measured fit-scale math to
+   CSS ``object-fit: contain`` with ``transform: scale(1)`` == fit.
+   No measurement, no NaN reachable.
+
+**Tests.** +31 new (vision_client 7, cameras_discovery 7,
+cameras_snapshot 4, look_at_camera_builtin 6 + image_yielding helper
+1, event_image_sse 7, doorbell_scene_prepend 5). Full suite
+1882 → 1887 passed / 5 skipped. ~57s.
+
+**Branch / PR.** ``camera-vision-slice-1`` on origin. Rebases onto
+``main`` cleanly once ``chat-resolver-gate`` merges. PR will follow
+that order.
+
+**Side effects to watch.**
+
+- ``camera_watcher`` autonomy agent's polling of the disabled
+  ``glados-vision`` validation service at ``:8016`` is adjacent
+  technical debt — flagged as a separate follow-up, not bundled into
+  this change.
+- Persistent inline thumbnails on chat-history reload: out of scope
+  (Phase 2). Currently snapshots vanish on F5 (description still
+  persists in history; only the image bytes are non-persistent).
+- The lightbox shows the resized 1280px image, not the original 4K
+  snapshot. Phase 2: a small image store keyed by ``message_id`` /
+  ``tool_call_id`` would let the lightbox refetch the original on
+  open. Not bundled.
+- Operator-curated camera aliases (``"front door"`` →
+  ``camera.g4_doorbell_high``) — fuzzy resolver matches only against
+  HA's ``friendly_name``. Phase 2 enrichment.
+
+**Companion documentation.** Outside the repo: ``C:\TTS\TvOverlay-
+Camera-Notifications-Setup-Guide.md`` (also ``C:\src\``) — guide for
+a non-technical user replicating the camera-event-to-TV-notification
+HA setup that needed rescuing this same session (unrelated to
+Slice 1's substrate but surfaced during deploy testing and got
+fixed in passing).

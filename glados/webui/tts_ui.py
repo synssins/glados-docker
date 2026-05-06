@@ -2797,14 +2797,19 @@ class Handler(BaseHTTPRequestHandler):
                     pending_event_type = None
                     continue
 
-                # Pass-through `event: image` SSE chunks emitted by the
-                # API wrapper for the look_at_camera tool. The chunk
-                # carries `{tool_call_id, image_url}` (a base64 data URL);
-                # the browser-side ui.js consumer pairs it to the
-                # in-progress assistant bubble and renders an inline
-                # thumbnail. Forward unchanged — never enters chat history.
-                if pending_event_type == "image":
-                    _sse_write(f"event: image\ndata: {line[6:]}\n\n".encode("utf-8"))
+                # Default passthrough: any other named `event: <name>`
+                # chunk is forwarded to the browser verbatim. The proxy
+                # only intercepts attitude (TTS params) + metrics
+                # (logging) above; everything else (e.g. event:image
+                # for the look_at_camera tool, or future event types
+                # we haven't added yet) is the upstream's contract
+                # with the browser-side ui.js consumer. Avoids parallel
+                # changes here every time a new SSE event is added in
+                # api_wrapper.
+                if pending_event_type:
+                    _sse_write(
+                        f"event: {pending_event_type}\ndata: {line[6:]}\n\n".encode("utf-8")
+                    )
                     pending_event_type = None
                     continue
 
