@@ -1,0 +1,73 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-06-camera-vision-slice-3-event-cascade.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 1: Audit Origin extensions (event_rule + vision_tool)",
+      "status": "pending",
+      "description": "**Goal:** Add Origin.EVENT_RULE and Origin.VISION_TOOL constants and include in Origin.ALL.\n\n**Files:**\n- Modify: glados/observability/audit.py\n- Test: tests/observability/test_audit_origins.py\n\n**Acceptance Criteria:**\n- Origin.EVENT_RULE == 'event_rule'\n- Origin.VISION_TOOL == 'vision_tool'\n- Both in Origin.ALL\n- AuditEvent round-trips without UNKNOWN normalization\n\n**Verify:** pytest tests/observability/test_audit_origins.py -v\n\n```json:metadata\n{\"files\": [\"glados/observability/audit.py\", \"tests/observability/test_audit_origins.py\"], \"verifyCommand\": \"pytest tests/observability/test_audit_origins.py -v\", \"acceptanceCriteria\": [\"event_rule constant + ALL\", \"vision_tool constant + ALL\", \"round-trips JSON\"]}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 2: HAWebSocketHub — extract shared singleton",
+      "status": "pending",
+      "description": "**Goal:** Pull HA WS connection out of ha_sensor_watcher into multi-consumer hub. Both ha_sensor_watcher and EventRouter become consumers.\n\n**Files:**\n- Create: glados/ha_ws/__init__.py, glados/ha_ws/hub.py\n- Modify: glados/autonomy/agents/ha_sensor_watcher.py, glados/core/engine.py\n- Test: tests/ha_ws/test_hub.py\n\n**Acceptance Criteria:**\n- One WS connection, fan-out dispatch to all consumers\n- subscribe/unsubscribe by token\n- Consumer exception doesn't break others\n- Exponential-backoff reconnect preserved\n- ha_sensor_watcher still passes its tests with hub injected\n\n**Verify:** pytest tests/ha_ws/test_hub.py tests/autonomy/test_ha_sensor_watcher.py -v\n\n```json:metadata\n{\"files\": [\"glados/ha_ws/__init__.py\", \"glados/ha_ws/hub.py\", \"glados/autonomy/agents/ha_sensor_watcher.py\", \"glados/core/engine.py\", \"tests/ha_ws/__init__.py\", \"tests/ha_ws/test_hub.py\"], \"verifyCommand\": \"pytest tests/ha_ws/test_hub.py tests/autonomy/ -k sensor -v\", \"acceptanceCriteria\": [\"subscribe returns token\", \"dispatch reaches all consumers\", \"exception isolated\", \"reconnect backoff\", \"sensor_watcher still works\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 3: events.yaml schema + loader",
+      "status": "pending",
+      "description": "**Goal:** Pydantic models for events.yaml + loader with line-pinpointed validation errors.\n\n**Files:**\n- Create: glados/events/__init__.py, glados/events/config.py, configs/events.yaml (starter, all disabled)\n- Test: tests/events/test_config.py\n\n**Acceptance Criteria:**\n- EventRule fields per spec\n- action_kind in {audio_random, llm, vision_cascade}\n- vision_cascade requires vlm_camera\n- cooldown_s default 30, min_clear_s default 10\n- Missing file → empty config (not error)\n- Duplicate IDs rejected\n\n**Verify:** pytest tests/events/test_config.py -v\n\n```json:metadata\n{\"files\": [\"glados/events/__init__.py\", \"glados/events/config.py\", \"configs/events.yaml\", \"tests/events/__init__.py\", \"tests/events/test_config.py\"], \"verifyCommand\": \"pytest tests/events/test_config.py -v\", \"acceptanceCriteria\": [\"missing file → empty\", \"audio_random parses\", \"vision_cascade requires camera\", \"invalid action_kind rejected\", \"duplicate ids rejected\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 4: EventRouter — match + dispatch + debounce",
+      "status": "pending",
+      "blockedBy": [0, 1, 2],
+      "description": "**Goal:** Class consuming hub events, matching against rules, applying cooldown / min_clear / per-camera lockout, dispatching to action handlers.\n\n**Files:**\n- Create: glados/events/router.py\n- Test: tests/events/test_router.py\n\n**Acceptance Criteria:**\n- Matching event dispatches\n- Disabled rule does not dispatch\n- to_state mismatch does not dispatch\n- cooldown_s blocks second fire\n- min_clear_s blocks oscillation flap\n- per-camera lockout drops second event during in-flight\n- audit() logged with Origin.EVENT_RULE\n\n**Verify:** pytest tests/events/test_router.py -v\n\n```json:metadata\n{\"files\": [\"glados/events/router.py\", \"tests/events/test_router.py\"], \"verifyCommand\": \"pytest tests/events/test_router.py -v\", \"acceptanceCriteria\": [\"matching dispatches\", \"disabled skipped\", \"cooldown enforced\", \"min_clear flap rejected\", \"per-camera lockout\", \"audit on fire\"]}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 5: audio_random action — pre-recorded clip play",
+      "status": "pending",
+      "blockedBy": [2],
+      "description": "**Goal:** Random pick from ${GLADOS_AUDIO}/<category>/<emotion>/, play via HA media_player.play_media. Returns clip stem.\n\n**Files:**\n- Create: glados/events/actions/__init__.py, glados/events/actions/audio_random.py\n- Test: tests/events/test_action_audio_random.py\n\n**Acceptance Criteria:**\n- Picks from ${GLADOS_AUDIO}/<cat>/<emo>/ uniformly\n- Falls back to neutral/ if emotion empty\n- Missing category → AudioRandomError\n- Empty fallback → AudioRandomError 'no stall clips'\n- POST to HA media_player.play_media reuses _play_maintenance_wav pattern\n\n**Verify:** pytest tests/events/test_action_audio_random.py -v\n\n```json:metadata\n{\"files\": [\"glados/events/actions/__init__.py\", \"glados/events/actions/audio_random.py\", \"tests/events/test_action_audio_random.py\"], \"verifyCommand\": \"pytest tests/events/test_action_audio_random.py -v\", \"acceptanceCriteria\": [\"picks + posts to HA\", \"fallback to neutral\", \"missing category raises\", \"empty raises\"]}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 6: llm action — text-only LLM round",
+      "status": "pending",
+      "blockedBy": [2],
+      "description": "**Goal:** Single LLM round at operator-configured slot; result enqueues to TTS.\n\n**Files:**\n- Create: glados/events/actions/llm.py\n- Test: tests/events/test_action_llm.py\n\n**Acceptance Criteria:**\n- Result enqueues to tts_queue\n- LLM null/empty → no enqueue, WARNING log\n\n**Verify:** pytest tests/events/test_action_llm.py -v\n\n```json:metadata\n{\"files\": [\"glados/events/actions/llm.py\", \"tests/events/test_action_llm.py\"], \"verifyCommand\": \"pytest tests/events/test_action_llm.py -v\", \"acceptanceCriteria\": [\"happy path enqueues\", \"empty response no enqueue\"]}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 7: vision_cascade action",
+      "status": "pending",
+      "blockedBy": [3, 4],
+      "description": "**Goal:** Stall (audio_random) + parallel snapshot+VLM + persona LLM continuation with stall-aware prompt; releases per-camera lockout when done.\n\n**Files:**\n- Create: glados/events/actions/vision_cascade.py\n- Test: tests/events/test_action_vision_cascade.py\n\n**Acceptance Criteria:**\n- Stall fires within ~10ms\n- Snapshot + VLM run in parallel\n- LLM continuation uses {stall_text} + {vlm_output} substitution\n- Snapshot/VLM failure → continuation receives apology context\n- All paths release lockout via release_camera()\n\n**Verify:** pytest tests/events/test_action_vision_cascade.py -v\n\n```json:metadata\n{\"files\": [\"glados/events/actions/vision_cascade.py\", \"tests/events/test_action_vision_cascade.py\"], \"verifyCommand\": \"pytest tests/events/test_action_vision_cascade.py -v\", \"acceptanceCriteria\": [\"happy: stall + continuation\", \"snapshot fail → apology\", \"all paths release lockout\"]}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 8: WebUI Integrations → Events tab (admin-only)",
+      "status": "pending",
+      "blockedBy": [3],
+      "description": "**Goal:** Admin-only tab listing rules; CRUD + test-fire.\n\n**Files:**\n- Modify: glados/webui/tts_ui.py, glados/webui/static/ui.js, glados/webui/static/ui.css\n- Test: tests/webui/test_integrations_events_api.py\n\n**Acceptance Criteria:**\n- GET /api/integrations/events returns rules (admin-only)\n- POST creates; PUT updates; DELETE removes\n- /test_fire posts synthetic state_changed to router\n- 400 on validation errors\n- 403 on non-admin\n- update_config hot-swaps router rules\n\n**Verify:** pytest tests/webui/test_integrations_events_api.py -v + hand-test\n\n```json:metadata\n{\"files\": [\"glados/webui/tts_ui.py\", \"glados/webui/static/ui.js\", \"glados/webui/static/ui.css\", \"tests/webui/test_integrations_events_api.py\"], \"verifyCommand\": \"pytest tests/webui/test_integrations_events_api.py -v\", \"acceptanceCriteria\": [\"GET admin only\", \"non-admin 403\", \"POST creates\", \"validation 400\", \"test_fire dispatches\"]}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 9: WebUI Stall Clips tab (admin-only)",
+      "status": "pending",
+      "blockedBy": [4],
+      "description": "**Goal:** Admin-only upload/list/delete clips at ${GLADOS_AUDIO}/<cat>/<emo>/.\n\n**Files:**\n- Modify: glados/webui/tts_ui.py, glados/webui/static/ui.js, glados/webui/static/ui.css\n- Test: tests/webui/test_integrations_stall_clips_api.py\n\n**Acceptance Criteria:**\n- GET lists clips\n- POST uploads MP3/WAV\n- DELETE removes\n- 403 non-admin; 400 on path-traversal; 413 on >10MB\n- Path validation rejects ../, abs paths\n- UI: drop-target + preview + delete\n\n**Verify:** pytest tests/webui/test_integrations_stall_clips_api.py -v + hand-test\n\n```json:metadata\n{\"files\": [\"glados/webui/tts_ui.py\", \"glados/webui/static/ui.js\", \"glados/webui/static/ui.css\", \"tests/webui/test_integrations_stall_clips_api.py\"], \"verifyCommand\": \"pytest tests/webui/test_integrations_stall_clips_api.py -v\", \"acceptanceCriteria\": [\"list/upload/delete admin-gated\", \"path traversal blocked\", \"10MB cap\", \"UI uploader works\"]}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 10: Engine wiring + health slots + deploy + smoke",
+      "status": "pending",
+      "blockedBy": [5, 6, 7, 8],
+      "description": "**Goal:** Construct EventRouter at startup; bind hub consumer; expose Event Router + Vision Endpoint health slots. Deploy + smoke.\n\n**Files:**\n- Modify: glados/core/engine.py, glados/autonomy/<slot-store>, docs/CHANGES.md\n\n**Acceptance Criteria:**\n- Startup logs: HAWebSocketHub started + authenticated + subscribed; EventRouter loaded N rules\n- /health 200 after deploy\n- Live: trigger entity → stall plays in ~500ms; LLM continuation in ~3-5s\n- Audit log line: kind=tool_call origin=event_rule rule_id=<id>\n- Both health slots visible in WebUI System health panel; importance=0 when healthy\n\n**Verify:** Operator-witnessed.\n\n```json:metadata\n{\"files\": [\"glados/core/engine.py\", \"docs/CHANGES.md\"], \"verifyCommand\": \"manual live-probe with HA event\", \"acceptanceCriteria\": [\"startup logs correct\", \"health 200\", \"stall + continuation timing\", \"audit log row\", \"slots in WebUI panel\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-05-06T00:00:00Z"
+}

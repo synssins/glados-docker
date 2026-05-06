@@ -1,0 +1,72 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-06-camera-vision-slice-1-on-demand-chat.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 1: AIBox stand-up of llamacpp-vision (operator-deploy)",
+      "status": "pending",
+      "description": "**Goal:** A reachable OpenAI-compatible VLM endpoint at http://aibox:11437/v1/chat/completions serving Qwen2.5-VL-3B.\n\n**Files:** None in repo (operator-side NSSM service).\n\n**Acceptance Criteria:**\n- NSSM service llamacpp-vision is Running\n- :11437/v1/models returns 200 with the model id\n- Multimodal POST returns a non-empty description\n- Shadow :11438 verified before promoting to :11437\n\n**Verify:** Live shadow probe with a known JPEG fixture; promote to :11437 only after pass.\n\n```json:metadata\n{\"files\": [], \"verifyCommand\": \"curl -sf http://aibox:11437/v1/models\", \"acceptanceCriteria\": [\"NSSM service running\", \"/v1/models returns 200\", \"Multimodal probe returns non-empty description\", \"Shadow verified before promote\"]}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 2: glados/vision/client.py — VLM HTTP client",
+      "status": "pending",
+      "description": "**Goal:** describe_images(images, prompt) -> str POSTs OpenAI-multimodal to llm_vision slot and returns description text.\n\n**Files:**\n- Create: glados/vision/client.py\n- Test: tests/vision/test_client.py\n\n**Acceptance Criteria:**\n- describe_images([jpeg], prompt) returns choices[0].message.content\n- Multi-image POSTs N image_url parts + 1 text part in order\n- Authorization Bearer header passes through when api_key set\n- Non-200 raises VisionClientError with status + body\n- Timeout raises VisionClientError with URL\n\n**Verify:** pytest tests/vision/test_client.py -v\n\n```json:metadata\n{\"files\": [\"glados/vision/client.py\", \"tests/vision/test_client.py\"], \"verifyCommand\": \"pytest tests/vision/test_client.py -v\", \"acceptanceCriteria\": [\"happy path returns text\", \"multi-image preserves order\", \"api_key passed in Authorization\", \"non-200 raises\", \"timeout raises\", \"empty list raises ValueError\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 3: glados/cameras/discovery.py — HA camera discovery cache",
+      "status": "pending",
+      "description": "**Goal:** 60-second-TTL cache of HA camera.* entities with friendly-name resolution.\n\n**Files:**\n- Create: glados/cameras/__init__.py, glados/cameras/discovery.py\n- Test: tests/cameras/test_discovery.py\n\n**Acceptance Criteria:**\n- list_cameras() returns [(entity_id, friendly_name)] from /api/states\n- Repeated calls within 60s use cache\n- After TTL refreshes\n- resolve_camera_name fuzzy-matches friendly_name + entity_id\n- HA non-200 raises CameraDiscoveryError\n\n**Verify:** pytest tests/cameras/test_discovery.py -v\n\n```json:metadata\n{\"files\": [\"glados/cameras/__init__.py\", \"glados/cameras/discovery.py\", \"tests/cameras/__init__.py\", \"tests/cameras/test_discovery.py\"], \"verifyCommand\": \"pytest tests/cameras/test_discovery.py -v\", \"acceptanceCriteria\": [\"filters to camera domain\", \"caches within TTL\", \"refreshes after TTL\", \"resolves friendly + entity_id\", \"non-200 raises\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 4: glados/cameras/snapshot.py — HA snapshot fetch",
+      "status": "pending",
+      "description": "**Goal:** fetch_snapshot(entity_id) -> bytes via HA /api/camera_proxy/<id>.\n\n**Files:**\n- Create: glados/cameras/snapshot.py\n- Test: tests/cameras/test_snapshot.py\n\n**Acceptance Criteria:**\n- 200 with image/* content-type returns bytes\n- Non-200 raises with status + entity_id\n- Non-image content-type raises\n- Timeout raises with URL\n\n**Verify:** pytest tests/cameras/test_snapshot.py -v\n\n```json:metadata\n{\"files\": [\"glados/cameras/snapshot.py\", \"tests/cameras/test_snapshot.py\"], \"verifyCommand\": \"pytest tests/cameras/test_snapshot.py -v\", \"acceptanceCriteria\": [\"200 returns bytes\", \"non-200 raises\", \"non-image rejected\", \"timeout surfaces URL\"]}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 5: look_at_camera built-in tool",
+      "status": "pending",
+      "blockedBy": [1, 2, 3],
+      "description": "**Goal:** Register OpenAI tool definition + dispatch in glados/core/builtin_tools.py. Returns {description} text only; image bytes flow out-of-band.\n\n**Files:**\n- Modify: glados/core/builtin_tools.py\n- Test: tests/core/test_builtin_tools_look_at_camera.py\n\n**Acceptance Criteria:**\n- is_image_yielding_tool predicate works\n- invoke_image_yielding_tool returns (json_str, ImageEmission)\n- Camera miss returns {error} + None emission\n- Snapshot/VLM fail returns {error} + None\n- Tool defn appears in get_builtin_tool_definitions()\n- No regressions in existing builtin tests\n\n**Verify:** pytest tests/core/test_builtin_tools_look_at_camera.py tests/core/ -k builtin -v\n\n```json:metadata\n{\"files\": [\"glados/core/builtin_tools.py\", \"tests/core/test_builtin_tools_look_at_camera.py\"], \"verifyCommand\": \"pytest tests/core/test_builtin_tools_look_at_camera.py tests/core/ -k builtin -v\", \"acceptanceCriteria\": [\"predicate matches only look_at_camera\", \"definition in builtin list\", \"happy path returns description + image\", \"camera miss → error no emission\", \"snapshot fail → error no emission\", \"vlm fail → error no emission\"]}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 6: SSE event:image emission in _stream_chat_sse_impl",
+      "status": "pending",
+      "blockedBy": [4],
+      "description": "**Goal:** When chat LLM calls look_at_camera, write event:image SSE chunk before appending tool result to LLM history. Chunk carries {tool_call_id, image_url}.\n\n**Files:**\n- Modify: glados/core/api_wrapper.py (lines 2902-2944)\n- Test: tests/core/test_api_wrapper_chat_image_sse.py\n\n**Acceptance Criteria:**\n- look_at_camera emits exactly one event:image frame with data URL\n- Non-image-yielding tools emit no event:image\n- {role:tool} history contains only {description} JSON, never bytes\n- Errors from look_at_camera produce no event:image frame\n\n**Verify:** pytest tests/core/test_api_wrapper_chat_image_sse.py tests/core/ -k chat -v\n\n```json:metadata\n{\"files\": [\"glados/core/api_wrapper.py\", \"tests/core/test_api_wrapper_chat_image_sse.py\"], \"verifyCommand\": \"pytest tests/core/test_api_wrapper_chat_image_sse.py tests/core/ -k chat -v\", \"acceptanceCriteria\": [\"event:image frame emitted on success\", \"data URL not in LLM history\", \"non-image tools emit nothing\", \"errors emit nothing\"]}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 7: WebUI render event:image chunks inline",
+      "status": "pending",
+      "blockedBy": [5],
+      "description": "**Goal:** Chat SSE consumer adds event:image branch; appends img.chat-inline-image to in-progress assistant bubble keyed by tool_call_id.\n\n**Files:**\n- Modify: glados/webui/static/ui.js\n\n**Acceptance Criteria:**\n- event:image chunk renders one inline thumbnail in assistant bubble\n- Multiple tool_call_ids in one turn render multiple images\n- Duplicate tool_call_id renders only once\n- Malformed chunks ignored gracefully\n- Page reload does NOT re-render the inline image\n\n**Verify:** Hand-test in browser after deploy.\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\"], \"verifyCommand\": \"manual browser hand-test\", \"acceptanceCriteria\": [\"chunk renders inline thumbnail\", \"multiple chunks render multiple\", \"duplicate id idempotent\", \"malformed ignored\", \"reload drops inline image\"]}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 8: WebUI inline-image styles",
+      "status": "pending",
+      "blockedBy": [6],
+      "description": "**Goal:** .chat-inline-image renders at 320x240 max with rounded corners and GLaDOS-orange border.\n\n**Files:**\n- Modify: glados/webui/static/ui.css\n\n**Acceptance Criteria:**\n- max-width 320, max-height 240\n- 6px border-radius, 8px vertical margin\n- Plays well with both bubble backgrounds\n\n**Verify:** Hand-check after Task 7.\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.css\"], \"verifyCommand\": \"manual visual check\", \"acceptanceCriteria\": [\"size limit honored\", \"border-radius + margin\", \"background-compatible\"]}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 9: Cleanup of dead vision-queue code",
+      "status": "pending",
+      "blockedBy": [4],
+      "description": "**Goal:** Remove lazy-stub VisionProcessor, in-process VisionRequest/State/Config queue path, vision_look legacy tool, and rewire call sites.\n\n**Files:**\n- Delete: glados/tools/vision_look.py, glados/vision/vision_request.py, glados/vision/vision_state.py, glados/vision/vision_config.py\n- Rewrite: glados/vision/__init__.py\n- Modify: glados/tools/__init__.py, glados/core/engine.py, glados/core/llm_processor.py, glados/autonomy/loop.py, glados/vision/constants.py\n\n**Acceptance Criteria:**\n- Zero references to VisionProcessor/Request/State/Config + vision_look in glados/\n- python -c 'import glados.vision' clean\n- pytest -q passes (no test count regression)\n\n**Verify:** pytest -q && python -c 'import glados.vision; import glados.engine'\n\n```json:metadata\n{\"files\": [\"glados/tools/vision_look.py\", \"glados/vision/vision_request.py\", \"glados/vision/vision_state.py\", \"glados/vision/vision_config.py\", \"glados/vision/__init__.py\", \"glados/tools/__init__.py\", \"glados/core/engine.py\", \"glados/core/llm_processor.py\", \"glados/autonomy/loop.py\", \"glados/vision/constants.py\"], \"verifyCommand\": \"pytest -q\", \"acceptanceCriteria\": [\"zero dead-symbol references\", \"vision import clean\", \"full suite passes\"]}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 10: Live-probe smoke + slice closeout",
+      "status": "pending",
+      "blockedBy": [0, 7, 8],
+      "description": "**Goal:** Confirm deployed container handles a real chat turn against live :11437 + real HA camera.\n\n**Files:** None (verification only).\n\n**Acceptance Criteria:**\n- /health 200 on 8015 + 8052\n- 'What do you see in the back yard?' returns text + inline image\n- Container logs show look_at_camera with image-yielding builtin path\n- Negative test: nonexistent camera returns graceful error with available list\n- No tracebacks from cameras/discovery, snapshot, or vision/client\n\n**Verify:** Operator-witnessed.\n\n```json:metadata\n{\"files\": [], \"verifyCommand\": \"manual live-probe in WebUI chat\", \"acceptanceCriteria\": [\"deploy healthy\", \"happy-path chat works\", \"negative test graceful\", \"no tracebacks\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-05-06T00:00:00Z"
+}

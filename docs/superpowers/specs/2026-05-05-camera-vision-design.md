@@ -83,10 +83,13 @@ Persona handling is the only path-specific bit:
     ├─ resolve "back yard" → camera.backyard_high (HA discovery cache)
     ├─ GET /api/camera_proxy/camera.backyard_high → bytes
     ├─ POST llm_vision: [{image_url}, {text:"describe"}] → description text
-    └─ return tool result {description, snapshot_data_url} to chat LLM
+    ├─ emit `event: image` SSE chunk `{tool_call_id, image_url: data-url}` onto the chat stream (PARALLEL to the LLM token stream; never enters LLM context)
+    └─ return tool result `{description}` (text only) to chat LLM
 4. chat LLM continues, persona-wraps the description → SSE text stream
-5. WebUI receives text deltas + new event:image SSE chunk with snapshot data URL
+5. WebUI pairs the `event: image` chunk to the in-progress assistant bubble by `tool_call_id` and renders the inline thumbnail
 6. WebUI renders text bubble + inline image
+
+**Why split the channel.** A 1080p PNG base64-encodes to ~1–2 MB. If we returned the data URL through the tool result, it would land in chat history and be replayed in every subsequent turn's prompt — context-window-blowing and wasteful. Out-of-band SSE keyed by `tool_call_id` keeps the LLM seeing only `{description}` while the WebUI still gets the bytes for inline render.
 ```
 
 ### Feature B — event-triggered cascade flow
@@ -96,7 +99,7 @@ Persona handling is the only path-specific bit:
 2. EventRouter (subscribed to HA WS) matches rule front_door_approach
 3. action_kind: vision_cascade fires:
     A. INSTANT (parallel start, t≈0):
-       └─ play random pre-recorded clip from configs/sounds/front_door_approach/
+       └─ play random pre-recorded clip from `${GLADOS_AUDIO}/front_door_approach/<emotion>/`
           → audio playing in 200–400 ms (bypasses TTS entirely)
     B. CONCURRENT (parallel start, t≈0):
        ├─ GET /api/camera_proxy/<configured camera>
@@ -173,10 +176,10 @@ This is an AIBox prod-write — needs explicit per-action sign-off on the litera
 | `glados/cameras/discovery.py` | HA camera-entity discovery + friendly-name → entity_id map; cached, refresh every 60 s; exposes `list_cameras()` + `resolve_camera_name(query: str)`. |
 | `glados/cameras/snapshot.py` | `fetch_snapshot(entity_id) -> bytes` via HA `/api/camera_proxy/<entity_id>` with `HA_TOKEN`. |
 | `glados/vision/client.py` | OpenAI-multimodal POST to `llm_vision` slot URL; `describe_images(imgs: list[bytes], prompt: str) -> str`; replaces vestigial `glados/vision/__init__.py`. |
-| `glados/tools/look_at_camera.py` | Replaces dead `vision_look.py`; takes `camera_name`; calls discovery + snapshot + vision client; returns `{description, snapshot_data_url}` to chat LLM. |
-| `glados/events/router.py` | Subscribes to HA WebSocket once at boot; matches state changes against `configs/events.yaml` rules; dispatches actions. |
+| `glados/tools/look_at_camera.py` | Replaces dead `vision_look.py`; takes `camera_name`; calls discovery + snapshot + vision client; returns `{description}` (text only) to chat LLM. Snapshot bytes are pushed to the WebUI out-of-band as a parallel `event: image` SSE chunk keyed by `tool_call_id` — see §2 Feature A. Registered via the existing builtin-tool path (`glados/core/builtin_tools.py`); exposed to the **chat lane only** (autonomy excluded — would inflate autonomy tool budget for no use case); gated by the same chat-shape filter as other chat-only tools. |
+| `glados/events/router.py` | Hosts the rule matcher + dispatcher. **Consumes `state_changed` events from a shared HA-WS singleton** (Note A below) — does NOT open a second connection. Matches incoming events against `configs/events.yaml` rules and dispatches actions. |
 | `glados/events/actions/vision_cascade.py` | The cascade implementation: pick stall clip, fire snapshot+VLM in parallel, persona LLM continuation with stall-aware prompt, debounce per-rule + per-camera lockout. |
-| `glados/events/actions/audio_random.py` | Wraps existing chime/quip random-pick logic for events; lifts the operator-curated `configs/sounds/<category>/` directory pattern. |
+| `glados/events/actions/audio_random.py` | Wraps existing chime/quip random-pick logic for events; reads stall clips from `${GLADOS_AUDIO}/<category>/<emotion>/*.{mp3,wav}` per the audio-root convention (`feedback_audio_paths.md`). Existing `configs/sounds/`-writing callers (TTS-Save-to-library + `sound_categories.yaml` indexer at [config_store.py:882](glados-container/glados/core/config_store.py:882) / [tts_ui.py:2334](glados-container/glados/webui/tts_ui.py:2334)) are tracked separately as a cleanup ticket — NOT bundled into this MVP. |
 | `glados/events/actions/llm.py` | Existing `llm_preset` action_kind sketched in `sound_categories.yaml` — concrete implementation. |
 
 ### Container — modified existing code
@@ -193,7 +196,7 @@ This is an AIBox prod-write — needs explicit per-action sign-off on the litera
 | File | Schema |
 |---|---|
 | `configs/events.yaml` | List of event rules: `id, enabled, source, trigger, action_kind, category, vlm_camera?, llm_continuation_prompt?, cooldown_s, min_clear_s, speaker?`. |
-| `configs/sounds/<category>/*.{mp3,wav}` | Operator-curated stall clips per category. Existing `configs/sound_categories.yaml` already defines categories. WebUI upload tab. |
+| `${GLADOS_AUDIO}/<category>/<emotion>/*.{mp3,wav}` | Operator-curated stall clips, indexed by `Category/emotion` per the audio-root convention (NOT under `configs/`). Existing `configs/sound_categories.yaml` already declares categories — config-only, no audio bytes. WebUI Stall-Clips uploader writes here. |
 
 ### WebUI — new operator surfaces
 
@@ -201,6 +204,48 @@ This is an AIBox prod-write — needs explicit per-action sign-off on the litera
 - **Integrations → Stall Clips tab** (new or merged with Events): drag-drop MP3 uploader keyed by category; preview/play; remove.
 - **Chat input** (existing): paste/drop/upload affordance + thumbnail chips + send-with-images. Max 4 images; JPG/PNG/WebP only; 5 MB per image, 20 MB total.
 - **Configuration → Services** (existing, no UI change): `llm_vision` slot already exists; operator sets URL/model after the AIBox stand-up.
+
+### Note A — HA WebSocket sharing strategy
+
+[`glados/autonomy/agents/ha_sensor_watcher.py`](glados-container/glados/autonomy/agents/ha_sensor_watcher.py) already maintains a persistent HA WebSocket connection consuming `state_changed`. The new EventRouter must NOT open a second one.
+
+**MVP plan (this spec):** extract a shared `HAWebSocketHub` singleton owning the connection + reconnect loop. Both `ha_sensor_watcher` and `events.router` register as fan-out consumers of the same incoming event stream. One TCP connection, two consumers. Smallest mutation that keeps both lanes healthy.
+
+**Phase 2 (deferred):** fold `ha_sensor_watcher`'s rule logic into `events.router` so the router is the single subscriber and autonomy becomes a downstream consumer of the router's higher-level events (e.g. `room_occupancy_changed`). Tracked as a follow-up; not in this MVP.
+
+### Auth / RBAC
+
+The auth rebuild from 2026-04-25 (`project_auth_rebuild_complete.md`) is live. New surfaces follow this matrix:
+
+| Surface | Required role |
+|---|---|
+| Integrations → Events tab (CRUD on `events.yaml` rules + test-fire) | **admin** only |
+| Integrations → Stall Clips tab (upload / preview / delete clips under `${GLADOS_AUDIO}`) | **admin** only |
+| Chat input image attach (paste / drop / picker, send-with-images) | any authenticated user with chat permission (existing chat scope) |
+| `/api/chat/stream` `images:` field (server-side acceptance) | same scope as `/api/chat/stream` text path |
+| `look_at_camera` tool invocation by chat LLM | implicit via chat scope; tool itself enforces no per-camera ACL in MVP |
+
+Per-user / per-camera ACLs (e.g. "only admin can ask about the back yard camera") are a Phase 2 hook — out of scope.
+
+### Image data lifecycle
+
+User-attached images (Feature C) and snapshot data URLs from `look_at_camera` (Feature A) are **NOT persisted in conversation history** for MVP. Specifically:
+
+- `images:` field on `/api/chat/stream` lives only for the request lifetime — VLM-described, then dropped. The user's next-turn history contains the operator's text + the assistant's reply + (optionally) the VLM description as a system-context block; the raw image bytes are gone.
+- `event: image` SSE chunks render to the in-progress assistant bubble in the live tab. On page reload, the historical assistant turn re-renders with the persona text only — the inline image disappears.
+- This means: descriptions persist, image bytes do not. Persistent inline thumbnails on history reload is a Phase 2 hook (small image store keyed by `message_id` under `${GLADOS_AUDIO}/../chat_attachments/` or similar — out of scope here).
+
+### Server-side request budgets
+
+| Endpoint | New limit | Behavior on overflow |
+|---|---|---|
+| `/api/chat/stream` (when `images:` present) | 25 MB total request body | `413 Request Entity Too Large` with explicit cause; no partial processing. |
+| Per-image (server-side double-check of client validation) | 5 MB | `400 Bad Request` with the offending image index. |
+| Image count | 4 | `400 Bad Request` listing the count received. |
+
+### Content-Security-Policy
+
+If the WebUI sets a CSP `img-src` directive (audit at plan time — current state likely no CSP), it must include `data:` so inline image data URLs render. If no CSP today, no change needed; flag for the auth/security review pass.
 
 ### Cleanup (deletion / rewrite of existing dead code)
 
@@ -240,13 +285,14 @@ Per `feedback_no_silent_fallback.md`, every failure surfaces with cause.
 | A | `llm_vision` slot timeout / 5xx | Tool returns `error: vision endpoint <url> failed: <reason>`; chat LLM relays. URL included so operator knows where to look. |
 | A | VLM produces empty / suspicious-short response | Tool returns the raw description with `low_confidence: true` flag; chat LLM may add hedge language. NOT silently substituted. |
 | B | HA WebSocket disconnect | EventRouter logs `WARNING` once per disconnect, retries with backoff; while disconnected, `Event Router` slot status = `disconnected` with importance=0.3. |
-| B | Stall clip directory empty for matched category | Action logs `WARNING [event_id] no stall clips in configs/sounds/<category>/`; falls through to LLM-only continuation. Visible failure mode. |
+| B | Stall clip directory empty for matched category | Action logs `WARNING [event_id] no stall clips in ${GLADOS_AUDIO}/<category>/<emotion>/`; falls through to LLM-only continuation. Visible failure mode. |
 | B | VLM call fails mid-cascade | Stall already played. LLM continuation generated from system message `[scene description failed: <reason>]` — chat LLM produces a graceful "I heard something at the front door but couldn't see what." |
 | B | `vlm_camera` entity not in HA states | Action errors at rule-load time (rule fails validation); operator sees error in WebUI Events tab. Rule disabled until fixed. |
 | B | Persona LLM (chat lane) timeout for continuation | Stall already played. Continuation skipped; log `WARNING`; surface to Slot Store with importance=0.3. |
 | C | Image format unsupported (HEIC, GIF, etc.) | Client-side rejected before send with clear message ("Only JPG/PNG/WebP supported"). |
 | C | Per-image > 5 MB or total > 20 MB | Client-side rejected before send. |
 | C | VLM endpoint refuses multimodal payload | Server returns `502 vision endpoint <url> failed: <reason>` with explicit cause; WebUI shows it as a system message in chat. |
+| C | Request body > 25 MB / per-image > 5 MB / count > 4 | `413` or `400` per the §3 budget table; explicit cause string. |
 
 ### Cross-cutting
 
@@ -258,7 +304,9 @@ Per `feedback_no_silent_fallback.md`, every failure surfaces with cause.
 - **Debounce edges.**
   - `cooldown_s` (per-rule): minimum elapsed seconds since last fire of THIS rule. Default 30 s.
   - `min_clear_s` (per-rule): trigger entity must be in **off** state for N seconds before re-arming. Kills oscillation flap. Default 10 s.
-  - **Per-camera lockout** (cross-rule): no two `vision_cascade` actions overlap on the same camera. Second event dropped, logged with `WARNING`.
+  - **Per-camera lockout** (cross-rule): no two `vision_cascade` actions overlap on the same camera. **Lockout key = literal `vlm_camera` entity_id string** (e.g. `camera.front_door_high`). Aliasing two physical-same cameras under different entity IDs is operator-managed (out of scope). Second event dropped, logged with `WARNING [event_id] camera <id> locked by <prior_event_id>`.
+- **`vlm_camera` runtime validation.** Rule fails at load time if the entity isn't in HA's discovered camera list. The discovery cache also re-runs validation on its 60 s refresh — if a previously-valid `vlm_camera` disappears (HA integration removed), the rule auto-disables and surfaces in the WebUI Events tab as `[disabled — camera <id> not in HA]`. Re-enables automatically on next refresh once the entity returns.
+- **Audio queue ordering for cascades.** The container's existing Speakers / Piper output queue is FIFO and serial; cascade actions enqueue (i) the stall clip, then (ii) the persona LLM continuation, in that order. Continuation playback waits naturally for stall completion via the existing queue — no new sequencing primitive needed. (Plan task: confirm during integration that the Speakers queue exposes a stable `enqueue(category, payload)` entrypoint; if not, lift one.)
 
 ---
 
@@ -354,7 +402,7 @@ Same shape as the autonomy/TTS investigation in this session — explicit timing
 
 ## Appendix B — Related work shipped in this session
 
-- `chat-resolver-gate` branch HEAD `fb89684` carries:
+- `chat-resolver-gate` branch carries 6 fix commits ending at `fb89684`; `0bd46e3` is this spec doc on top:
   - Tier 1+2 home-command resolver gated on `looks_like_home_command` (saves ~5 s on chat-flavored questions).
   - Autonomy MCP context-resource cull (small win).
   - R1 severity gate + R3 passive-slot filter for autonomy tool-filter.

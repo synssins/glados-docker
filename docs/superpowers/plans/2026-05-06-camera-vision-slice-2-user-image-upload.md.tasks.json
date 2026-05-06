@@ -1,0 +1,40 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-06-camera-vision-slice-2-user-image-upload.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 1: Server-side body-size guard + images: field parsing",
+      "status": "pending",
+      "description": "**Goal:** Reject oversize requests with 413; validate images: field count/size/format; leave no-images path unchanged.\n\n**Files:**\n- Modify: glados/core/api_wrapper.py:_handle_chat_completions (around line 4543)\n- Test: tests/core/test_api_wrapper_chat_images_validation.py\n\n**Acceptance Criteria:**\n- Content-Length > 25MB → 413\n- > 4 images → 400 'max 4 images'\n- > 5MB per image → 400 'image N exceeds 5 MB'\n- Unsupported MIME → 400 'unsupported image format'\n- No images: field → unchanged behavior\n\n**Verify:** pytest tests/core/test_api_wrapper_chat_images_validation.py -v\n\n```json:metadata\n{\"files\": [\"glados/core/api_wrapper.py\", \"tests/core/test_api_wrapper_chat_images_validation.py\"], \"verifyCommand\": \"pytest tests/core/test_api_wrapper_chat_images_validation.py -v\", \"acceptanceCriteria\": [\"25MB cap → 413\", \"5 images → 400\", \"6MB image → 400\", \"HEIC → 400\", \"no-images regression-free\"]}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 2: Two-round VLM→chat flow when images: present",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** When image_blobs non-empty, run VLM round once with all images, inject description as system message, continue normal chat-stream flow.\n\n**Files:**\n- Modify: glados/core/api_wrapper.py:_stream_chat_sse_impl\n- Test: tests/core/test_api_wrapper_chat_two_round_vlm.py\n\n**Acceptance Criteria:**\n- 1 image → describe_images called once with [blob]\n- 2 images → describe_images called once with [a, b]\n- Round 2 sees [image_descriptions] system msg before user turn\n- Chat round still uses chat lane (llm_interactive)\n- VLM failure → graceful chat reply containing cause\n- No images → no describe_images call (no regression)\n\n**Verify:** pytest tests/core/test_api_wrapper_chat_two_round_vlm.py tests/core/ -k chat -v\n\n```json:metadata\n{\"files\": [\"glados/core/api_wrapper.py\", \"tests/core/test_api_wrapper_chat_two_round_vlm.py\"], \"verifyCommand\": \"pytest tests/core/test_api_wrapper_chat_two_round_vlm.py -v\", \"acceptanceCriteria\": [\"single VLM call covers all images\", \"system msg injected before user turn\", \"VLM failure surfaces in context\", \"no-images path unchanged\"]}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 3: WebUI chat-input attachment queue",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** Operator can paste / drop / pick 1-4 images. Thumbnail chips with remove-X. Send POSTs images: array.\n\n**Files:**\n- Modify: glados/webui/static/ui.js\n\n**Acceptance Criteria:**\n- Ctrl+V image attaches\n- Drag-drop image attaches\n- File-picker button opens multi-select\n- Up to 4 chips with remove-X\n- 5th attempt shows inline 'max 4' notice\n- Per-image >5MB or unsupported MIME rejected client-side\n- Send clears queue + renders user-bubble thumbnails\n\n**Verify:** Hand-test in browser.\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.js\"], \"verifyCommand\": \"manual browser hand-test\", \"acceptanceCriteria\": [\"paste/drop/picker work\", \"chip queue with remove-X\", \"max-4 enforcement\", \"size + format guards\", \"send renders user bubble inline\"]}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 4: WebUI styles for attachment chips",
+      "status": "pending",
+      "blockedBy": [2],
+      "description": "**Goal:** .chat-attachment-row + .chat-attachment-chip + .chat-attachment-remove styles.\n\n**Files:**\n- Modify: glados/webui/static/ui.css\n\n**Acceptance Criteria:**\n- 40x40 chips, 6px gap, wraps narrow widths\n- Inner img object-fit: cover\n- Remove-X button overlaid top-right\n- .chat-user-bubble reuses Slice 1 .chat-inline-image class\n\n**Verify:** Hand-check.\n\n```json:metadata\n{\"files\": [\"glados/webui/static/ui.css\"], \"verifyCommand\": \"manual visual check\", \"acceptanceCriteria\": [\"chip size + gap correct\", \"remove-X positioned\", \"user-bubble reuses Slice 1 class\"]}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 5: Live-probe smoke + slice closeout",
+      "status": "pending",
+      "blockedBy": [3],
+      "description": "**Goal:** Confirm deployed container handles real image-bearing chat turn end-to-end.\n\n**Files:** None (verification only).\n\n**Acceptance Criteria:**\n- Drop JPEG → user thumbnail + GLaDOS describes\n- Container log: vlm preflight: 1 image(s), description NN chars\n- Drop 5 images → 5th client-side rejected\n- 6MB JPEG → client-side rejected\n- curl with 5 images → 400 'max 4 images'\n- curl with 6MB image → 400 'image 0 exceeds 5 MB'\n- curl with Content-Length 30MB → 413\n\n**Verify:** Operator-witnessed.\n\n```json:metadata\n{\"files\": [], \"verifyCommand\": \"manual live-probe + curl scripts\", \"acceptanceCriteria\": [\"happy path describes\", \"client guards work\", \"server guards return 4xx\", \"413 for oversize body\"]}\n```"
+    }
+  ],
+  "lastUpdated": "2026-05-06T00:00:00Z"
+}
