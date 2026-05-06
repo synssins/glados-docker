@@ -35,7 +35,6 @@ class ContextBuilder:
         context = ContextBuilder()
         context.register("preferences", preferences_store.as_prompt, priority=10)
         context.register("emotion", emotion_state.to_prompt, priority=5)
-        context.register("vision", vision_state.as_message, priority=0)
 
         # Build context for LLM request
         messages = context.build_system_messages()

@@ -22,7 +22,6 @@ from .llm_tracking import InFlightCounter
 from ..mcp import MCPManager
 from ..observability import ObservabilityBus, trim_message
 from ..tools import tool_definitions
-from ..vision.vision_state import VisionState
 
 
 # Prefixes written by the autonomy loop to the shared conversation
@@ -239,7 +238,6 @@ class LanguageModelProcessor:
         processing_active_event: threading.Event,  # To check if we should stop streaming
         shutdown_event: threading.Event,
         pause_time: float = 0.05,
-        vision_state: VisionState | None = None,
         slot_store: TaskSlotStore | None = None,
         preferences_store: Store[Any] | None = None,
         constitutional_state: ConstitutionalState | None = None,
@@ -264,7 +262,6 @@ class LanguageModelProcessor:
         self.processing_active_event = processing_active_event
         self.shutdown_event = shutdown_event
         self.pause_time = pause_time
-        self.vision_state = vision_state
         self.slot_store = slot_store
         self.preferences_store = preferences_store
         self.constitutional_state = constitutional_state
@@ -527,7 +524,7 @@ class LanguageModelProcessor:
             # MCP / HA tools have dotted names like "home_assistant.turn_on"
             # or a leading "search_entities" / "get_entity_details" etc.
             # Built-in engine tools have bare names (speak, do_nothing,
-            # vision_look, robot_move, etc.). When the utterance isn't
+            # robot_move, etc.). When the utterance isn't
             # a home command, drop anything that looks like an HA/MCP
             # tool — the model shouldn't be weighing them.
             if not is_home:
@@ -835,12 +832,6 @@ class LanguageModelProcessor:
             except Exception as e:
                 logger.warning(f"LLM Processor: Failed to load MCP context messages: {e}")
 
-        # Vision context is handled separately (has special formatting)
-        if self.vision_state:
-            vision_message = self.vision_state.as_message()
-            if vision_message:
-                extra_messages.append(vision_message)
-
         if extra_messages:
             insert_index = 0
             while insert_index < len(messages) and messages[insert_index].get("role") == "system":
@@ -853,8 +844,6 @@ class LanguageModelProcessor:
     def _build_tools(self, autonomy_mode: bool) -> list[dict[str, Any]]:
         """Return the tool list for the LLM request."""
         tools = list(tool_definitions)
-        if self.vision_state is None:
-            tools = [tool for tool in tools if tool.get("function", {}).get("name") != "vision_look"]
         # Exclude robot tools when robot subsystem is not enabled
         try:
             from glados.core.config_store import cfg as _cfg
@@ -869,7 +858,6 @@ class LanguageModelProcessor:
                 for tool in tools
                 if tool.get("function", {}).get("name") not in {"speak", "do_nothing"}
             ]
-            tools = [tool for tool in tools if tool.get("function", {}).get("name") != "vision_look"]
         if self.mcp_manager:
             try:
                 tools.extend(self.mcp_manager.get_tool_definitions())

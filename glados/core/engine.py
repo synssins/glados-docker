@@ -33,8 +33,6 @@ from ..autonomy.llm_client import LLMConfig
 from ..autonomy.summarization import estimate_tokens
 from ..mcp import MCPManager, MCPServerConfig
 from ..observability import MindRegistry, ObservabilityBus, trim_message
-from ..vision import VisionConfig, VisionState
-from ..vision.constants import SYSTEM_PROMPT_VISION_HANDLING
 from .audio_data import AudioMessage
 from .context import ContextBuilder
 from .audio_state import AudioState
@@ -253,7 +251,6 @@ class GladosConfig(BaseModel):
     personality_preprompt: list[PersonalityPrompt]
     slow_clap_audio_path: str = "data/slow-clap.mp3"
     tool_timeout: float = 30.0
-    vision: VisionConfig | None = None
     autonomy: AutonomyConfig | None = None
     mcp_servers: list[MCPServerConfig] | None = None
     ha_audio: HAAudioConfig | None = None
@@ -371,7 +368,6 @@ class Glados:
         personality_preprompt: tuple[dict[str, str], ...] = DEFAULT_PERSONALITY_PREPROMPT,
         tool_config: dict[str, Any] | None = None,
         tool_timeout: float = 30.0,
-        vision_config: VisionConfig | None = None,
         autonomy_config: AutonomyConfig | None = None,
         mcp_servers: list[MCPServerConfig] | None = None,
         input_mode: Literal["audio", "text", "both"] = "audio",
@@ -404,7 +400,6 @@ class Glados:
             personality_preprompt (tuple[dict[str, str], ...]): Initial personality preprompt messages.
             tool_config (dict[str, Any] | None): Configuration for tools (e.g., audio paths).
             tool_timeout (float): Timeout in seconds for tool execution.
-            vision_config (VisionConfig | None): Optional vision configuration.
             autonomy_config (AutonomyConfig | None): Optional autonomy configuration.
             mcp_servers (list[MCPServerConfig] | None): Optional MCP server configurations.
             tts_enabled (bool): Whether TTS audio output is enabled at startup.
@@ -481,10 +476,7 @@ class Glados:
                 self._retention_agent.start()
             except Exception as exc:
                 logger.warning("RetentionAgent init failed: {}", exc)
-        self.vision_config = vision_config
         self.autonomy_config = autonomy_config or AutonomyConfig()
-        self.vision_state: VisionState | None = VisionState() if self.vision_config else None
-        self.vision_request_queue: queue.Queue | None = queue.Queue() if self.vision_config else None
         self.autonomy_event_bus: EventBus | None = None
         self.autonomy_loop: AutonomyLoop | None = None
         self.autonomy_slots: TaskSlotStore | None = None
@@ -697,26 +689,6 @@ class Glados:
                 self.tts_queue: queue.Queue[str] = queue.Queue()
                 self._register_subagents()
 
-        if self.vision_config:
-            # Add instructions to system prompt to correctly handle [vision] marked messages
-            messages = self._conversation_store.snapshot()
-            vision_prompt_added = False
-            for i, message in enumerate(messages):
-                if message.get("role") == "system" and isinstance(message.get("content"), str):
-                    self._conversation_store.modify_message(
-                        i,
-                        {"content": f"{message['content']} {SYSTEM_PROMPT_VISION_HANDLING}"}
-                    )
-                    vision_prompt_added = True
-                    break
-            if not vision_prompt_added:
-                # Prepend a new system message with vision handling instructions
-                current_messages = self._conversation_store.snapshot()
-                self._conversation_store.replace_all(
-                    [{"role": "system", "content": SYSTEM_PROMPT_VISION_HANDLING}] + current_messages
-                )
-
-
         # Initialize spoken text converter, that converts text to spoken text. eg. 12 -> "twelve"
         # Phase 8.10: thread operator-editable pronunciation overrides
         # from cfg.tts_pronunciation so ``AI`` is read ``"Aye Eye"``
@@ -810,7 +782,6 @@ class Glados:
             processing_active_event=self.processing_active_event,
             shutdown_event=self.shutdown_event,
             pause_time=self.PAUSE_TIME,
-            vision_state=self.vision_state,
             slot_store=self.autonomy_slots,
             preferences_store=self.preferences_store,
             constitutional_state=self.constitutional_state,
@@ -844,7 +815,6 @@ class Glados:
                     processing_active_event=self.processing_active_event,
                     shutdown_event=self.shutdown_event,
                     pause_time=self.PAUSE_TIME,
-                    vision_state=self.vision_state,
                     slot_store=self.autonomy_slots,
                     preferences_store=self.preferences_store,
                     constitutional_state=self.constitutional_state,
@@ -880,8 +850,6 @@ class Glados:
             shutdown_event=self.shutdown_event,
             tool_config={
                 **self.tool_config,
-                "vision_request_queue": self.vision_request_queue,
-                "vision_tool_timeout": self.tool_timeout,
                 "tts_queue": self.tts_queue,
                 "preferences_store": self.preferences_store,
                 "slot_store": self.autonomy_slots,
@@ -940,19 +908,6 @@ class Glados:
                 observability_bus=self.observability_bus,
             )
 
-        self.vision_processor = None
-        if self.vision_config:
-            from ..vision import VisionProcessor
-            self.vision_processor = VisionProcessor(
-                vision_state=self.vision_state,
-                processing_active_event=self.processing_active_event,
-                shutdown_event=self.shutdown_event,
-                config=self.vision_config,
-                request_queue=self.vision_request_queue,
-                event_bus=self.autonomy_event_bus,
-                observability_bus=self.observability_bus,
-            )
-
         self.autonomy_ticker_thread: threading.Thread | None = None
         if self.autonomy_config.enabled:
             assert self.autonomy_event_bus is not None
@@ -961,7 +916,6 @@ class Glados:
                 config=self.autonomy_config,
                 event_bus=self.autonomy_event_bus,
                 interaction_state=self.interaction_state,
-                vision_state=self.vision_state,
                 slot_store=self.autonomy_slots,
                 llm_queue=self.llm_queue_autonomy,
                 processing_active_event=self.processing_active_event,
@@ -971,12 +925,11 @@ class Glados:
                 inflight_counter=self._autonomy_inflight,
                 pause_time=self.PAUSE_TIME,
             )
-            if not self.vision_config:
-                self.autonomy_ticker_thread = threading.Thread(
-                    target=self._run_autonomy_ticker,
-                    name="AutonomyTicker",
-                    daemon=True,
-                )
+            self.autonomy_ticker_thread = threading.Thread(
+                target=self._run_autonomy_ticker,
+                name="AutonomyTicker",
+                daemon=True,
+            )
 
         # Define thread configurations with daemon settings and shutdown priorities
         # daemon=True: Can be killed without waiting (pure input, stateless)
@@ -1034,13 +987,6 @@ class Glados:
                 True,  # Can safely abandon
                 ShutdownPriority.BACKGROUND,
                 None,
-            )
-        if self.vision_processor:
-            thread_configs["VisionProcessor"] = (
-                self.vision_processor.run,
-                True,  # Can safely abandon
-                ShutdownPriority.BACKGROUND,
-                self.vision_request_queue,
             )
         if self.autonomy_ticker_thread:
             self.component_threads.append(self.autonomy_ticker_thread)
@@ -1509,7 +1455,6 @@ class Glados:
             personality_preprompt=tuple(config.to_chat_messages()),
             tool_config={"slow_clap_audio_path": config.slow_clap_audio_path},
             tool_timeout=config.tool_timeout,
-            vision_config=config.vision,
             autonomy_config=config.autonomy,
             mcp_servers=config.mcp_servers,
             input_mode=config.input_mode,
@@ -1900,14 +1845,6 @@ class Glados:
         )
         register(
             CommandSpec(
-                name="vision",
-                description="Show latest vision snapshot",
-                usage="/vision",
-                handler=self._cmd_vision,
-            )
-        )
-        register(
-            CommandSpec(
                 name="config",
                 description="Show config summary",
                 usage="/config",
@@ -1942,14 +1879,12 @@ class Glados:
 
     def _cmd_status(self, _args: list[str]) -> str:
         autonomy_enabled = self.autonomy_config.enabled
-        vision_enabled = self.vision_config is not None
         jobs_enabled = bool(self.autonomy_config.jobs.enabled) if self.autonomy_config else False
         return (
             f"input_mode={self.input_mode}, "
             f"asr_muted={self.asr_muted_event.is_set()}, "
             f"tts_muted={self.tts_muted_event.is_set()}, "
             f"autonomy_enabled={autonomy_enabled}, "
-            f"vision_enabled={vision_enabled}, "
             f"jobs_enabled={jobs_enabled}"
         )
 
@@ -2129,12 +2064,6 @@ class Glados:
         lines.append(f"Modifier History: {len(state.modifier_history)} changes")
         return "\n".join(lines)
 
-    def _cmd_vision(self, _args: list[str]) -> str:
-        if not self.vision_state:
-            return "Vision is disabled."
-        snapshot = self.vision_state.snapshot()
-        return snapshot or "Vision has no snapshot yet."
-
     def _cmd_mcp(self, args: list[str]) -> str:
         if not self.mcp_manager:
             return "MCP is disabled."
@@ -2179,8 +2108,7 @@ class Glados:
             f"input_mode={self.input_mode}, "
             f"autonomy.enabled={self.autonomy_config.enabled}, "
             f"autonomy.jobs.enabled={jobs_enabled}, "
-            f"autonomy.coalesce_ticks={self.autonomy_config.coalesce_ticks}, "
-            f"vision.enabled={self.vision_config is not None}"
+            f"autonomy.coalesce_ticks={self.autonomy_config.coalesce_ticks}"
         )
 
     def _cmd_knowledge(self, args: list[str]) -> str:

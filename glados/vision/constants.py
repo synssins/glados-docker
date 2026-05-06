@@ -8,7 +8,6 @@ SYSTEM_PROMPT_VISION_HANDLING: Final[str] = (
     "Important vision instructions: "
     "- You receive the latest camera snapshot in a system message prefixed with '[vision]'. Treat it as context, not a user message. "
     "- Do not respond directly to the [vision] snapshot unless the user asks about the scene. "
-    "- When a user asks for detailed visual inspection or verification, call the `vision_look` tool with a short prompt describing what to check. "
     "- Use the vision snapshot to ground answers, mentioning only relevant or changed elements."
 )
 

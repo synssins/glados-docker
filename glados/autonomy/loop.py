@@ -13,7 +13,6 @@ from .events import TaskUpdateEvent, TimeTickEvent, VisionUpdateEvent
 from .interaction_state import InteractionState
 from .slots import TaskSlotStore
 from ..observability import ObservabilityBus, trim_message
-from ..vision.vision_state import VisionState
 from ..core.llm_tracking import InFlightCounter
 
 if TYPE_CHECKING:
@@ -29,7 +28,6 @@ class AutonomyLoop:
         config: AutonomyConfig,
         event_bus: EventBus,
         interaction_state: InteractionState,
-        vision_state: VisionState | None,
         slot_store: TaskSlotStore,
         llm_queue: queue.Queue[dict[str, Any]],
         processing_active_event: threading.Event,
@@ -43,7 +41,6 @@ class AutonomyLoop:
         self._config = config
         self._event_bus = event_bus
         self._interaction_state = interaction_state
-        self._vision_state = vision_state
         self._slot_store = slot_store
         self._llm_queue = llm_queue
         self._processing_active_event = processing_active_event
@@ -171,9 +168,7 @@ class AutonomyLoop:
             return self._config.tick_prompt
 
     def _current_scene(self) -> str | None:
-        if self._vision_state is None:
-            return "camera disabled"
-        return self._vision_state.snapshot()
+        return self._last_scene
 
     def _task_summary(self) -> str:
         # Filter out passive monitoring noise (compaction, idle, error)
