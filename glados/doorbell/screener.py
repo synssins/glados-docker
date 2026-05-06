@@ -102,6 +102,11 @@ class DoorbellScreener:
         self._lock = threading.Lock()
         self._last_session_time: float = 0.0
         self._active_session: str | None = None
+        # Per-session scene state, populated by the background snapshot+VLM
+        # task started in start_session(). Read by _evaluate() round 1 to
+        # prepend visual context to the LLM transcript. None = no scene
+        # available (config disabled, in flight, or failed).
+        self._scene_description: str | None = None
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
         SERVE_DIR.mkdir(parents=True, exist_ok=True)
         logger.success("DoorbellScreener initialized")
@@ -149,6 +154,18 @@ class DoorbellScreener:
 
         self._active_session = session_id
         self._last_session_time = time.time()
+        # Reset scene state for this session; the background capture
+        # fills it before round-1 _evaluate runs (typical: VLM ~3-6s
+        # vs greeting + listen ~5-15s).
+        self._scene_description = None
+        camera_entity = (cfg.get("camera_entity_id") or "").strip()
+        if camera_entity:
+            threading.Thread(
+                target=self._capture_scene_async,
+                args=(session_id, camera_entity),
+                name=f"doorbell-vision-{session_id}",
+                daemon=True,
+            ).start()
 
         thread = threading.Thread(
             target=self._run_session,
@@ -159,6 +176,48 @@ class DoorbellScreener:
         thread.start()
 
         return {"status": "screening_started", "session_id": session_id}
+
+    def _capture_scene_async(self, session_id: str, camera_entity: str) -> None:
+        """Fetch a snapshot + run the VLM in parallel with the audio
+        capture / greeting. Result lands on ``self._scene_description``
+        for _evaluate to prepend to the round-1 LLM transcript.
+
+        Runs in its own daemon thread; failures are logged and leave
+        ``self._scene_description`` as None so the screener degrades to
+        today's transcript-only behavior.
+        """
+        from glados.core.config_store import cfg as store_cfg
+        from glados.cameras.snapshot import fetch_snapshot, CameraSnapshotError
+        from glados.vision.client import describe_images, VisionClientError
+        t0 = time.time()
+        try:
+            img = fetch_snapshot(
+                camera_entity,
+                ha_url=store_cfg.ha_url,
+                ha_token=store_cfg.ha_token,
+            )
+        except CameraSnapshotError as exc:
+            logger.warning("[{}] doorbell scene snapshot failed: {}", session_id, exc)
+            return
+        try:
+            description = describe_images(
+                [img],
+                "Describe the visitor at the door concisely: clothing, "
+                "uniform, anything they are carrying, approximate count "
+                "of people. 1-2 sentences. Do not speculate about intent.",
+            )
+        except VisionClientError as exc:
+            logger.warning("[{}] doorbell scene VLM failed: {}", session_id, exc)
+            return
+        # Only stash if THIS session is still the active one (a new
+        # session may have started while VLM was running).
+        if self._active_session == session_id:
+            self._scene_description = (description or "").strip() or None
+            logger.success(
+                "[{}] doorbell scene captured in {:.1f}s: {}",
+                session_id, time.time() - t0,
+                (self._scene_description or "")[:100],
+            )
 
     # ------------------------------------------------------------------
     # Session runner (background thread)
@@ -588,6 +647,21 @@ class DoorbellScreener:
             user_msg = _NO_RESPONSE_USER.format(
                 round=round_num,
                 timeout=self._config.get("listen_timeout", 12),
+            )
+
+        # Slice 1 enhancement: prepend scene description on round 1 if the
+        # background snapshot+VLM task captured one. Only round 1 — the
+        # snapshot is from session start, so it's stale by round 2+ and
+        # injecting it again would just bloat the prompt.
+        if round_num == 1 and self._scene_description:
+            user_msg = (
+                f"[scene] {self._scene_description}\n\n"
+                + user_msg
+                + "\n\nUse the [scene] visual context together with the "
+                "transcript when classifying. A visible uniform / package / "
+                "vehicle alone is enough to classify a delivery without "
+                "asking; named clothing or recognizable behavior is enough "
+                "to classify a service or solicitor."
             )
 
         messages = [
