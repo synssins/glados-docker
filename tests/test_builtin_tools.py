@@ -28,7 +28,7 @@ class TestToolRegistry:
 
     def test_tool_definitions_openai_shape(self) -> None:
         defs = get_builtin_tool_definitions()
-        assert len(defs) == 2
+        assert len(defs) >= 2
         names = [d["function"]["name"] for d in defs]
         assert TOOL_SEARCH_ENTITIES in names
         assert TOOL_GET_ENTITY_DETAILS in names

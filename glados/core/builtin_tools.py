@@ -28,6 +28,7 @@ even when the LLM invokes the tool mid-reasoning.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -39,11 +40,14 @@ from loguru import logger
 
 TOOL_SEARCH_ENTITIES = "search_entities"
 TOOL_GET_ENTITY_DETAILS = "get_entity_details"
+TOOL_LOOK_AT_CAMERA = "look_at_camera"
 
 _BUILTIN_TOOL_NAMES: frozenset[str] = frozenset({
     TOOL_SEARCH_ENTITIES,
     TOOL_GET_ENTITY_DETAILS,
 })
+
+_IMAGE_YIELDING_TOOL_NAMES: frozenset[str] = frozenset({TOOL_LOOK_AT_CAMERA})
 
 
 def is_builtin_tool(tool_name: str) -> bool:
@@ -52,13 +56,19 @@ def is_builtin_tool(tool_name: str) -> bool:
     return tool_name in _BUILTIN_TOOL_NAMES
 
 
+def is_image_yielding_tool(tool_name: str) -> bool:
+    """Router predicate. Returns True if the tool emits image bytes
+    out-of-band (via SSE event:image) in addition to its text result."""
+    return tool_name in _IMAGE_YIELDING_TOOL_NAMES
+
+
 # ---------------------------------------------------------------------------
 # OpenAI-style tool definitions — injected into the `tools` array the
 # chat request sends to Ollama.
 # ---------------------------------------------------------------------------
 
 def get_builtin_tool_definitions() -> list[dict[str, Any]]:
-    """Return the two built-in tool definitions.
+    """Return built-in tool definitions.
 
     Kept as a function rather than a module-level constant so the
     description text can evolve without import-order gotchas — and
@@ -134,6 +144,35 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
                         },
                     },
                     "required": ["entity_id"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": TOOL_LOOK_AT_CAMERA,
+                "description": (
+                    "Look at a Home Assistant camera and describe what is "
+                    "visible. Use this when the user asks 'what do you see' "
+                    "or asks about a specific camera by name. The function "
+                    "fetches a snapshot, runs a vision model, and returns a "
+                    "short scene description. The snapshot itself is rendered "
+                    "in the UI separately — the chat reply should reference "
+                    "the description naturally."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "camera_name": {
+                            "type": "string",
+                            "description": (
+                                "Friendly name or partial entity_id of the "
+                                "camera (e.g. 'back yard', 'front door', "
+                                "'backyard_high'). Case-insensitive."
+                            ),
+                        },
+                    },
+                    "required": ["camera_name"],
                 },
             },
         },
@@ -296,6 +335,112 @@ def _hit_to_result_dict(hit: Any, *, cache: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Image-yielding tool support — look_at_camera.
+# ---------------------------------------------------------------------------
+
+# Module-level imports so test patches on these names work correctly.
+from glados.cameras.snapshot import fetch_snapshot, CameraSnapshotError  # noqa: E402
+from glados.vision.client import describe_images, VisionClientError  # noqa: E402
+
+
+@dataclass(frozen=True)
+class ImageEmission:
+    """Out-of-band image bytes emitted alongside a tool's text result.
+
+    The SSE handler picks this up and writes an ``event: image`` chunk
+    keyed by ``tool_call_id`` so the WebUI can render the snapshot in
+    the assistant bubble. The bytes never enter LLM context.
+    """
+
+    image_bytes: bytes
+    mime: str
+    tool_name: str
+
+
+# Cached per-process discovery instance. First call constructs from cfg;
+# subsequent calls reuse the same cache. Tests patch this hook.
+_camera_discovery: object = None
+
+
+def _get_camera_discovery() -> object:
+    global _camera_discovery
+    if _camera_discovery is None:
+        from glados.core.config_store import cfg
+        from glados.cameras.discovery import CameraDiscovery
+        _camera_discovery = CameraDiscovery(
+            ha_url=cfg.ha_url,
+            ha_token=cfg.ha_token,
+        )
+    return _camera_discovery
+
+
+def _look_at_camera(arguments: dict[str, Any]) -> tuple[str, "ImageEmission | None"]:
+    """Resolve camera -> snapshot -> VLM. Returns (json_text_result, optional_image_emission).
+
+    Errors are returned as JSON ``{"error": "..."}`` strings (visible to
+    the chat LLM, which relays them) — never raised. Emission is None on
+    any failure path so the SSE handler doesn't push a phantom image.
+    """
+    from glados.core.config_store import cfg
+
+    name = (arguments or {}).get("camera_name", "").strip()
+    if not name:
+        return json.dumps({"error": "camera_name is required"}), None
+
+    disco = _get_camera_discovery()
+    try:
+        entity_id = disco.resolve_camera_name(name)
+    except Exception as exc:
+        return json.dumps({"error": f"camera discovery failed: {exc}"}), None
+
+    if not entity_id:
+        try:
+            avail = ", ".join(f"{f} ({eid})" for eid, f in disco.list_cameras())
+        except Exception:
+            avail = "(camera list unavailable)"
+        return (
+            json.dumps({"error": f'no camera matched "{name}". Available: {avail}'}),
+            None,
+        )
+
+    try:
+        image_bytes = fetch_snapshot(
+            entity_id, ha_url=cfg.ha_url, ha_token=cfg.ha_token,
+        )
+    except CameraSnapshotError as exc:
+        return json.dumps({"error": f"HA snapshot failed: {exc}"}), None
+
+    try:
+        description = describe_images(
+            [image_bytes],
+            "Describe what you see in this image in 1-3 sentences.",
+        )
+    except VisionClientError as exc:
+        return json.dumps({"error": str(exc)}), None
+
+    return (
+        json.dumps({"description": description}),
+        ImageEmission(image_bytes=image_bytes, mime="image/jpeg", tool_name=TOOL_LOOK_AT_CAMERA),
+    )
+
+
+def invoke_image_yielding_tool(
+    tool_name: str, arguments: dict[str, Any],
+) -> tuple[str, "ImageEmission | None"]:
+    """Dispatch entry point for tools that emit out-of-band image bytes.
+
+    Returns ``(json_result_string, optional_emission)``. The
+    ``json_result_string`` is what gets appended to the LLM's
+    conversation as the ``{"role":"tool", ...}`` content. The emission
+    (if any) is what the SSE handler turns into an ``event: image``
+    chunk for the WebUI.
+    """
+    if tool_name == TOOL_LOOK_AT_CAMERA:
+        return _look_at_camera(arguments)
+    return json.dumps({"error": f"unknown image-yielding tool: {tool_name}"}), None
+
+
+# ---------------------------------------------------------------------------
 # Public invocation entry — called from the Tier 3 tool-call router.
 # ---------------------------------------------------------------------------
 
@@ -312,8 +457,12 @@ def invoke_builtin_tool(tool_name: str, arguments: dict[str, Any]) -> str:
 
 __all__ = [
     "TOOL_GET_ENTITY_DETAILS",
+    "TOOL_LOOK_AT_CAMERA",
     "TOOL_SEARCH_ENTITIES",
+    "ImageEmission",
     "get_builtin_tool_definitions",
     "invoke_builtin_tool",
+    "invoke_image_yielding_tool",
     "is_builtin_tool",
+    "is_image_yielding_tool",
 ]
