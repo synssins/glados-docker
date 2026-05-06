@@ -6257,6 +6257,22 @@ function renderChat() {
       audioEl.remove();
     }
 
+    // Inline camera snapshots: render each image from msg.inline_images.
+    // Keyed by data-tool-call-id to stay idempotent across re-renders.
+    if (msg.inline_images && msg.inline_images.length > 0) {
+      for (const img_entry of msg.inline_images) {
+        const existingImg = msgEl.querySelector('.chat-inline-image[data-tool-call-id="' + img_entry.tool_call_id + '"]');
+        if (!existingImg) {
+          const imgEl = document.createElement('img');
+          imgEl.className = 'chat-inline-image';
+          imgEl.src = img_entry.image_url;
+          imgEl.alt = 'Camera snapshot';
+          imgEl.dataset.toolCallId = img_entry.tool_call_id;
+          msgEl.appendChild(imgEl);
+        }
+      }
+    }
+
     // Metrics: rebuild contents of the metrics div only when timing changes
     const wantMetrics = !!msg.timing;
     let metricsEl = msgEl.querySelector('.chat-metrics');
@@ -6372,7 +6388,7 @@ async function chatSendStreaming(text, history) {
   if (!resp.body) throw new Error('ReadableStream not supported');
 
   const streamIdx = chatHistory.length;
-  chatHistory.push({role: 'assistant', content: '', audio_url: null, timing: null});
+  chatHistory.push({role: 'assistant', content: '', audio_url: null, timing: null, inline_images: []});
   chatWaiting = false;
   chatStreaming = true;
 
@@ -6410,6 +6426,18 @@ async function chatSendStreaming(text, history) {
           chatHistory[streamIdx].timing = chunk;
           renderChat();
           pendingEventType = null;
+          continue;
+        }
+        if (pendingEventType === 'image') {
+          pendingEventType = null;
+          if (chunk && typeof chunk.image_url === 'string') {
+            const tid = chunk.tool_call_id || ('inline-' + Date.now());
+            const imgs = chatHistory[streamIdx].inline_images;
+            if (!imgs.some(function(x) { return x.tool_call_id === tid; })) {
+              imgs.push({tool_call_id: tid, image_url: chunk.image_url});
+              renderChat();
+            }
+          }
           continue;
         }
         pendingEventType = null;
