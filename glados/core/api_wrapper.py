@@ -2242,19 +2242,25 @@ def _stream_chat_sse_impl(
     # Image-yielding tools (currently: look_at_camera) are chat-shape, not
     # HA-shape. "What do you see in the back yard?" doesn't trip
     # looks_like_home_command, so the HA-gated builtins block above won't
-    # add it. Inject unconditionally on the chat path; idempotent against
-    # the case where look_at_camera already came in via the home-command
-    # branch.
+    # add it. Inject unconditionally on the chat path. PREPEND (not append)
+    # so the _MAX_TOOLS_PER_TURN cap below cannot truncate the camera tool
+    # off the tail — on the home-command path the HA catalog contributes
+    # 30+ tools and the cap routinely fires.
     try:
         from glados.core.builtin_tools import (
             get_image_yielding_tool_definitions,
         )
-        _existing_names = {t.get("function", {}).get("name") for t in tools}
-        for _img_tool in get_image_yielding_tool_definitions():
-            _name = _img_tool.get("function", {}).get("name")
-            if _name and _name not in _existing_names:
-                tools.append(_img_tool)
-                _existing_names.add(_name)
+        _img_tools = get_image_yielding_tool_definitions()
+        _img_names = {
+            t.get("function", {}).get("name") for t in _img_tools
+        }
+        # Drop any pre-existing copy (came in via get_builtin_tool_definitions
+        # on the home-command branch) so we don't double-add when prepending.
+        tools = [
+            t for t in tools
+            if t.get("function", {}).get("name") not in _img_names
+        ]
+        tools = list(_img_tools) + tools
     except Exception as exc:  # noqa: BLE001
         logger.debug("image-yielding tool registration skipped: {}", exc)
 
