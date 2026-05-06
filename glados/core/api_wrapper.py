@@ -2261,6 +2261,27 @@ def _stream_chat_sse_impl(
             if t.get("function", {}).get("name") not in _img_names
         ]
         tools = list(_img_tools) + tools
+
+        # System-prompt hint forcing tool use on camera questions. Without
+        # this, qwen3-30b on chitchat-shape queries ("what do you see in
+        # the backyard?") often hallucinates "camera unavailable" instead
+        # of calling look_at_camera, especially when conversation history
+        # contains any prior failure. Mirrors the HA tool_hint pattern
+        # already in use for home-command branches above.
+        _vision_hint = {
+            "role": "system",
+            "content": (
+                "You have a look_at_camera function. When the user asks "
+                "what is visible on a camera, what's happening on a camera, "
+                "or to describe / show / look at / check a camera, you MUST "
+                "call look_at_camera with a relevant camera_name. Never "
+                "claim a camera is unavailable, offline, or unreachable "
+                "without calling the tool first; the tool itself reports "
+                "real failures with explicit causes. Prior conversation "
+                "history is unreliable as a guide to current camera state."
+            ),
+        }
+        messages.insert(len(messages) - 1, _vision_hint)
     except Exception as exc:  # noqa: BLE001
         logger.debug("image-yielding tool registration skipped: {}", exc)
 
