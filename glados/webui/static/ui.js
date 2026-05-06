@@ -8060,20 +8060,27 @@ function _buildInlineLightbox() {
   return {
     overlay, stage, img, state,
     open(src) {
-      img.src = src;
-      const onload = () => {
-        state.natW = img.naturalWidth || 1;
-        state.natH = img.naturalHeight || 1;
-        reset();
-      };
-      if (img.complete && img.naturalWidth) {
-        onload();
-      } else {
-        img.addEventListener('load', onload, { once: true });
-      }
+      // Display the overlay BEFORE measuring stage dims; otherwise
+      // stage.clientWidth/Height are 0 (the CSS hides it via display:none
+      // until .is-open) and computeFitScale collapses to 0 -- image
+      // renders at scale(0) and the percent label shows NaN%.
       overlay.classList.add('is-open');
       overlay.setAttribute('aria-hidden', 'false');
       document.addEventListener('keydown', onKey);
+      img.src = src;
+      const measureAndReset = () => {
+        state.natW = img.naturalWidth || 1;
+        state.natH = img.naturalHeight || 1;
+        // Defer one frame so the browser has laid out the stage at its
+        // new display:grid size. Without this, fitScale can still come
+        // out 0 even after .is-open has been applied.
+        requestAnimationFrame(() => requestAnimationFrame(reset));
+      };
+      if (img.complete && img.naturalWidth) {
+        measureAndReset();
+      } else {
+        img.addEventListener('load', measureAndReset, { once: true });
+      }
     },
   };
 }
