@@ -2797,6 +2797,17 @@ class Handler(BaseHTTPRequestHandler):
                     pending_event_type = None
                     continue
 
+                # Pass-through `event: image` SSE chunks emitted by the
+                # API wrapper for the look_at_camera tool. The chunk
+                # carries `{tool_call_id, image_url}` (a base64 data URL);
+                # the browser-side ui.js consumer pairs it to the
+                # in-progress assistant bubble and renders an inline
+                # thumbnail. Forward unchanged — never enters chat history.
+                if pending_event_type == "image":
+                    _sse_write(f"event: image\ndata: {line[6:]}\n\n".encode("utf-8"))
+                    pending_event_type = None
+                    continue
+
                 json_str = line[6:]
                 if json_str.strip() == "[DONE]":
                     break
