@@ -957,15 +957,65 @@ class LanguageModelProcessor:
                 # become small and fast; event-driven ticks (where a
                 # slot has actually flagged something) keep the full
                 # catalog so autonomy can act in real time.
-                if tools and llm_message.get("role") == "user":
+                # Tool-filter gate.
+                # Chat lane: role=="user" — content-based filter
+                #   (`_filter_tools_for_message`) strips MCP/HA tools on
+                #   chitchat turns.
+                # Autonomy lane: filter EVERY turn (user-role tick AND
+                #   tool-role round-2 result), gated on slot severity.
+                #   Round-2 carries the same conversational frame as
+                #   round-1 — the LLM doesn't need a different tool
+                #   surface mid-tool-call. Without this, round-2 leaks
+                #   the full ~95-tool catalog every turn even after
+                #   round-1 stripped to 5 builtins.
+                _is_user = llm_message.get("role") == "user"
+                if tools and (_is_user or autonomy_mode):
                     content = str(llm_message.get("content", ""))
+                    pre_count = len(tools)
                     if autonomy_mode and not _autonomy_has_actionable_slot(self.slot_store):
                         # Force strict-strip via empty content (the
                         # filter's `looks_like_home_command("")` is
                         # False → all MCP/HA dotted-name tools drop).
                         tools = self._filter_tools_for_message(tools, "")
-                    else:
+                        if autonomy_mode:
+                            try:
+                                imps = []
+                                if self.slot_store:
+                                    for s in self.slot_store.list_slots():
+                                        imps.append((s.title, s.status, s.importance))
+                                logger.success(
+                                    "[autonomy-probe-gate] strict-strip path: role={} tools {} -> {} | slots={}",
+                                    llm_message.get("role"), pre_count, len(tools), imps,
+                                )
+                            except Exception as _e:
+                                logger.debug("autonomy-probe-gate failed: {}", _e)
+                    elif _is_user:
                         tools = self._filter_tools_for_message(tools, content)
+                        if autonomy_mode:
+                            try:
+                                imps = []
+                                if self.slot_store:
+                                    for s in self.slot_store.list_slots():
+                                        imps.append((s.title, s.status, s.importance))
+                                logger.success(
+                                    "[autonomy-probe-gate] keyword-path: role={} tools {} -> {} | slots={}",
+                                    llm_message.get("role"), pre_count, len(tools), imps,
+                                )
+                            except Exception as _e:
+                                logger.debug("autonomy-probe-gate failed: {}", _e)
+                    else:
+                        # Autonomy round-2 with actionable slot — keep
+                        # the full toolset since round-1 just decided
+                        # to act and the result needs the same surface.
+                        # Fall through unchanged.
+                        if autonomy_mode:
+                            try:
+                                logger.success(
+                                    "[autonomy-probe-gate] passthrough: role={} tools {} (actionable slot present)",
+                                    llm_message.get("role"), pre_count,
+                                )
+                            except Exception as _e:
+                                logger.debug("autonomy-probe-gate failed: {}", _e)
                 tool_names = {
                     tool.get("function", {}).get("name", "")
                     for tool in tools
