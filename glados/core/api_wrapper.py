@@ -1730,6 +1730,17 @@ def _sanitize_message_history(
 # Streaming SSE support — direct Ollama passthrough
 # ---------------------------------------------------------------------------
 
+def _write_image_sse_event(handler, *, tool_call_id, image_bytes, mime):
+    """Write one event:image SSE frame keyed by tool_call_id. Always written
+    BEFORE the {role:tool} history entry is appended."""
+    import base64
+    payload = json.dumps({
+        "tool_call_id": tool_call_id,
+        "image_url": f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}",
+    })
+    handler.wfile.write(f"event: image\ndata: {payload}\n\n".encode())
+
+
 def _stream_chat_sse(
     handler: "APIHandler",
     glados: Glados,
@@ -2907,8 +2918,22 @@ def _stream_chat_sse_impl(
                     # index + entity cache.
                     from glados.core.builtin_tools import (
                         invoke_builtin_tool, is_builtin_tool,
+                        invoke_image_yielding_tool, is_image_yielding_tool,
                     )
-                    if is_builtin_tool(_tool_name):
+                    if is_image_yielding_tool(_tool_name):
+                        _log_chat_tool_call.debug("[{}] tool path: image-yielding builtin", request_id)
+                        _result, _emission = invoke_image_yielding_tool(_tool_name, _tool_args)
+                        if _emission is not None:
+                            try:
+                                _write_image_sse_event(
+                                    handler,
+                                    tool_call_id=_tc_id,
+                                    image_bytes=_emission.image_bytes,
+                                    mime=_emission.mime,
+                                )
+                            except Exception as _ee:
+                                logger.warning("[{}] event:image emission failed: {}", request_id, _ee)
+                    elif is_builtin_tool(_tool_name):
                         _log_chat_tool_call.debug(
                             "[{}] tool path: builtin", request_id,
                         )
