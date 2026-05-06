@@ -899,7 +899,17 @@ class LanguageModelProcessor:
 
                 allow_tools = bool(llm_input.get("_allow_tools", True))
                 tools = self._build_tools(autonomy_mode) if allow_tools else []
-                if tools and not autonomy_mode and llm_message.get("role") == "user":
+                # Apply the chat-shape tool filter on every user-role
+                # turn — chat AND autonomy. Autonomy was previously
+                # bypassed, but routine autonomy ticks (status-only
+                # slot summaries) carry no HA-noun keywords; passing
+                # the full ~95-tool MCP catalog through every ~30 s
+                # tick was the dominant cost driver (44K chars of
+                # tool defs per tick). The filter keeps tools when
+                # the slot summary mentions an HA noun (door, light,
+                # person, etc.), preserving real-time action capability
+                # for event-driven ticks.
+                if tools and llm_message.get("role") == "user":
                     content = str(llm_message.get("content", ""))
                     tools = self._filter_tools_for_message(tools, content)
                 tool_names = {
@@ -941,6 +951,38 @@ class LanguageModelProcessor:
 
                     for attempt, request_url in enumerate(request_urls):
                         data["messages"] = self._sanitize_messages_for_openai(base_messages)
+                        # Diagnostic — autonomy prompt-size breakdown.
+                        # Temporary observability for the 17K-prompt
+                        # investigation; safe to keep but currently
+                        # gated to autonomy_mode to avoid chat-path
+                        # log spam.
+                        if autonomy_mode:
+                            try:
+                                _msgs = data.get("messages", [])
+                                _by_role = {"system": 0, "user": 0, "assistant": 0, "tool": 0, "other": 0}
+                                _max_msg = (0, "", 0)
+                                for _i, _m in enumerate(_msgs):
+                                    _r = _m.get("role", "other")
+                                    _c = _m.get("content")
+                                    if isinstance(_c, list):
+                                        _c = json.dumps(_c)
+                                    _clen = len(str(_c or ""))
+                                    _by_role[_r if _r in _by_role else "other"] += _clen
+                                    if _clen > _max_msg[0]:
+                                        _max_msg = (_clen, _r, _i)
+                                _tools_arr_chars = sum(len(json.dumps(_t)) for _t in data.get("tools", []))
+                                _body_chars = len(json.dumps(data))
+                                logger.success(
+                                    "[autonomy-probe] lane={} body={} msgs={} tools={} "
+                                    "by_role(sys={} user={} asst={} tool={} other={}) "
+                                    "tools_arr_chars={} max_msg_chars={} (role={} idx={})",
+                                    self._lane, _body_chars, len(_msgs), len(data.get("tools", [])),
+                                    _by_role["system"], _by_role["user"], _by_role["assistant"],
+                                    _by_role["tool"], _by_role["other"],
+                                    _tools_arr_chars, _max_msg[0], _max_msg[1], _max_msg[2],
+                                )
+                            except Exception as _probe_exc:
+                                logger.debug("autonomy-probe failed: {}", _probe_exc)
                         try:
                             t_request_sent = time.time()
                             with requests.post(
