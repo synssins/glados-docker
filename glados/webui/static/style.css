@@ -527,30 +527,32 @@ a.dl-link:hover { background: var(--orange-dim); color: #fff; }
 .chat-image-lightbox-stage {
   position: relative;
   overflow: hidden;
-  cursor: grab;
-  /* Allow wheel-zoom + drag without browser page-zoom interfering */
+  /* Default cursor is the regular pointer; only swap to grab when
+     zoomed past the fit (the .is-zoomed modifier is set on the stage
+     by applyTransform). */
   touch-action: none;
   user-select: none;
 }
+.chat-image-lightbox-stage.is-zoomed { cursor: grab; }
 .chat-image-lightbox-stage.is-dragging { cursor: grabbing; }
 .chat-image-lightbox-img {
+  /* Fill the stage; object-fit handles the fit-to-viewport at scale 1.
+     transform applies zoom + pan on top of that. transform-origin must
+     be 0 0 — zoomBy()'s tx/ty math anchors the cursor point relative to
+     the top-left of the post-fit bounding box. */
   position: absolute;
-  top: 0; left: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   transform-origin: 0 0;
-  /* Smooth zoom transitions, but only when not dragging */
   transition: transform 0.08s ease-out;
   pointer-events: none;
-  max-width: none;
-  max-height: none;
   -webkit-user-drag: none;
   user-select: none;
 }
 .chat-image-lightbox-stage.is-dragging .chat-image-lightbox-img {
   transition: none;
-}
-.chat-image-lightbox-img.is-zoomed {
-  /* When zoomed past fit, the stage shows grab cursor; the image
-     itself doesn't intercept events so the stage handles the drag. */
 }
 .chat-image-lightbox-toolbar {
   display: flex;

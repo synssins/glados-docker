@@ -7936,15 +7936,15 @@ function _buildInlineLightbox() {
   const img = overlay.querySelector('[data-role="img"]');
   const zoomLabel = overlay.querySelector('[data-role="zoom-label"]');
 
+  // Simpler model: the image always fills the stage via CSS object-fit.
+  // Scale 1 == "fit". Zoom multiplies from there; tx/ty translate AFTER
+  // scale. No stage-dimension measurement, no NaN risk.
   const state = {
     scale: 1,
-    minScale: 0.1,
+    minScale: 0.5,
     maxScale: 8,
     tx: 0,
     ty: 0,
-    natW: 0,
-    natH: 0,
-    fitScale: 1,
     dragging: false,
     dragStartX: 0,
     dragStartY: 0,
@@ -7954,24 +7954,15 @@ function _buildInlineLightbox() {
 
   function applyTransform() {
     img.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
-    zoomLabel.textContent = Math.round((state.scale / state.fitScale) * 100) + '%';
-    img.classList.toggle('is-zoomed', state.scale > state.fitScale * 1.001);
-  }
-
-  function computeFitScale() {
-    if (!state.natW || !state.natH) return 1;
-    const stageW = stage.clientWidth;
-    const stageH = stage.clientHeight;
-    return Math.min(stageW / state.natW, stageH / state.natH, 1);
+    zoomLabel.textContent = Math.round(state.scale * 100) + '%';
+    img.classList.toggle('is-zoomed', state.scale > 1.001);
+    stage.classList.toggle('is-zoomed', state.scale > 1.001);
   }
 
   function reset() {
-    state.fitScale = computeFitScale();
-    state.scale = state.fitScale;
-    // Center the image within stage at fit scale.
-    state.tx = (stage.clientWidth - state.natW * state.scale) / 2;
-    state.ty = (stage.clientHeight - state.natH * state.scale) / 2;
-    state.minScale = state.fitScale * 0.5;
+    state.scale = 1;
+    state.tx = 0;
+    state.ty = 0;
     applyTransform();
   }
 
@@ -8060,27 +8051,11 @@ function _buildInlineLightbox() {
   return {
     overlay, stage, img, state,
     open(src) {
-      // Display the overlay BEFORE measuring stage dims; otherwise
-      // stage.clientWidth/Height are 0 (the CSS hides it via display:none
-      // until .is-open) and computeFitScale collapses to 0 -- image
-      // renders at scale(0) and the percent label shows NaN%.
+      img.src = src;
+      reset();  // scale=1, tx=ty=0 — CSS handles the fit
       overlay.classList.add('is-open');
       overlay.setAttribute('aria-hidden', 'false');
       document.addEventListener('keydown', onKey);
-      img.src = src;
-      const measureAndReset = () => {
-        state.natW = img.naturalWidth || 1;
-        state.natH = img.naturalHeight || 1;
-        // Defer one frame so the browser has laid out the stage at its
-        // new display:grid size. Without this, fitScale can still come
-        // out 0 even after .is-open has been applied.
-        requestAnimationFrame(() => requestAnimationFrame(reset));
-      };
-      if (img.complete && img.naturalWidth) {
-        measureAndReset();
-      } else {
-        img.addEventListener('load', measureAndReset, { once: true });
-      }
     },
   };
 }
