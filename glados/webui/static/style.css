@@ -82,6 +82,58 @@
   --sidebar-w-collapsed: 64px;
   --topbar-h: 54px;
   --content-max: 1440px;
+
+  /* ── Token architecture v3 (2026-05-07, Approach 1) ──────────────
+     Adds the scales that v2 left implicit: font-size, transition
+     timing, letter-spacing, z-index. Plus legacy aliases for tokens
+     referenced in inline styles and JS but never declared, which
+     were producing silent rendering fallthrough. See
+     docs/design-system-reconciliation.md for the full rationale. */
+
+  /* Font-size scale — 8 semantic slots, ratio ~1.125.
+     Random font-sizes (0.84rem, 0.86rem, 0.88rem) are the clearest
+     sign of no system. Pick a slot. */
+  --fs-2xs:     0.65rem;   /* telemetry cells, tag pills */
+  --fs-xs:      0.72rem;   /* field descriptions, metadata */
+  --fs-sm:      0.78rem;   /* default form text, table cells */
+  --fs-base:    0.85rem;   /* body, labels, primary UI */
+  --fs-md:      0.92rem;   /* section titles, card headers */
+  --fs-lg:      1.05rem;   /* page titles */
+  --fs-xl:      1.3rem;    /* page H1 (rare) */
+  --fs-display: 2.0rem;    /* setup/login brand mark only */
+
+  /* Transition-timing scale. Three durations cover ~90% of cases. */
+  --t-instant:  0.08s;     /* drag/zoom feedback, near-imperceptible */
+  --t-fast:     0.15s;     /* hover, focus, button press */
+  --t-medium:   0.25s;     /* toast, accordion, panel switch */
+  --t-slow:     0.5s;      /* loading state changes */
+
+  /* Letter-spacing scale. */
+  --ls-tight:   0.02em;    /* default mono for labels */
+  --ls-mid:     0.06em;    /* brand text, page-tab labels */
+  --ls-wide:    0.12em;    /* UPPERCASE eyebrow labels */
+
+  /* Z-index scale. */
+  --z-base:      1;
+  --z-dropdown:  10;       /* account menu, popovers */
+  --z-overlay:   50;       /* auth overlay */
+  --z-sidebar:   100;      /* sidebar, topbar */
+  --z-modal:     1000;     /* modal backdrops */
+  --z-lightbox:  2000;     /* image lightbox */
+  --z-toast:     9999;     /* toast notifications */
+
+  /* Legacy aliases — system.md mentions these as "kept for legacy
+     call sites" but the alias declarations were never actually added
+     to :root, so 50+ inline styles referencing them were resolving
+     to inherited/initial values (silent rendering fallthrough). The
+     aliases below restore correctness. The v2 names below are the
+     end state; these aliases will be swept in a later round. */
+  --text:       var(--fg-primary);
+  --text-dim:   var(--fg-secondary);
+  --text-muted: var(--fg-muted);
+  --border:     var(--border-default);
+  --accent:     var(--orange);
+  --error:      var(--red);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -1307,13 +1359,12 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   white-space: pre-wrap;
   word-break: break-all;
 }
-.btn-danger {
-  background: #dc2626 !important;
-  border-color: #dc2626 !important;
-}
-.btn-danger:hover {
-  background: #b91c1c !important;
-}
+/* The Training tab declared a global .btn-danger override here using
+   off-palette #dc2626 + !important. Removed 2026-05-07 — Training
+   feature is disabled in container, override had no live effect, and
+   the original .btn-danger at line 356 (transparent + red border)
+   matches the borders-only depth strategy. See R2 in
+   docs/design-system-reconciliation.md. */
 @keyframes pulse-snap {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }

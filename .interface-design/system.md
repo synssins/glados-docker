@@ -50,13 +50,13 @@ border layer and spacing, never the palette itself.
 |---|---|---|
 | `--bg-dark` | `#1a1a1e` | Page canvas |
 | `--bg-card` | `#242429` | Card / panel surface |
-| `--bg-input` | `#2e2e35` | Input well (darker than surroundings — content receives here) |
+| `--bg-input` | `#16161a` | Input well — matches `--bg-sidebar` so inputs read as wells (operator-directed 2026-04-25) |
 | `--bg-sidebar` | `#16161a` | Sidebar (same hue family, one tick deeper) |
 | `--orange` | `#f4a623` | Primary accent — warning-light semantics only, never decoration |
 | `--green` | `#4caf50` | Health OK |
 | `--red` | `#e05555` | Danger / critical |
 | `--blue` | `#4a9eff` | Portal blue, used for informational links |
-| `--text` | `#e0e0e0` | Alias for `--fg-primary` (legacy) |
+| `--text` | (alias) | Alias for `--fg-primary`. Declared in `:root` as part of v3 (2026-05-07) so legacy call sites resolve correctly. End state: callers should reach for `--fg-primary` directly. |
 
 **Rule on orange:** single accent. It means "warning light" or
 "attention needed" in this product's world — never "button" or
@@ -83,8 +83,10 @@ flattens hierarchy and makes the interface feel uniform-gray.
 - `--border-focus`    `rgba(244,166,35,0.45)` — focus ring
 - `--border-danger`   `rgba(224,85,85,0.40)` — destructive button edge
 
-The existing `--border: #3a3a42` is kept for legacy call sites but
-new code should reach for the rgba tokens.
+`--border` is aliased to `--border-default` for legacy call sites
+(declared in `:root` 2026-05-07; previously referenced but undeclared,
+producing silent fallthrough). New code should reach for the rgba
+tokens directly.
 
 ### Spacing — base unit 4px, multiples only
 
@@ -99,6 +101,82 @@ Random values (13px, 21px, 7px) are the clearest sign of no system.
 
 This product is an instrument panel. Bias toward the sharper end.
 Never round buttons, never round data tables.
+
+## Token architecture v3 (added 2026-05-07)
+
+v2 left several scales implicit. v3 declares them. See
+`docs/design-system-reconciliation.md` for the full audit and rationale.
+
+### Font-size scale — 8 semantic slots
+
+- `--fs-2xs`     `0.65rem` — telemetry cells, tag pills
+- `--fs-xs`      `0.72rem` — field descriptions, metadata
+- `--fs-sm`      `0.78rem` — default form text, table cells
+- `--fs-base`    `0.85rem` — body, labels, primary UI
+- `--fs-md`      `0.92rem` — section titles, card headers
+- `--fs-lg`      `1.05rem` — page titles
+- `--fs-xl`      `1.3rem`  — page H1 (rare)
+- `--fs-display` `2.0rem`  — setup/login brand mark only
+
+Pre-v3 the codebase used 27 distinct font-sizes. New code picks a slot.
+Random sizes (`0.84rem`, `0.86rem`, `0.88rem`) are the clearest sign
+of no system.
+
+### Transition timing — three durations cover ~90% of cases
+
+- `--t-instant` `0.08s` — drag/zoom feedback, near-imperceptible
+- `--t-fast`    `0.15s` — hover, focus, button press
+- `--t-medium`  `0.25s` — toast, accordion, panel switch
+- `--t-slow`    `0.5s`  — loading state changes
+
+Animation loops (spinner, pulse) are intentionally not on the scale —
+those are loop durations, not transitions.
+
+### Letter-spacing — three semantic slots
+
+- `--ls-tight` `0.02em` — default mono for labels
+- `--ls-mid`   `0.06em` — brand text, page-tab labels
+- `--ls-wide`  `0.12em` — UPPERCASE eyebrow labels (zone-heading,
+                          mqtt-subgroup, etc.)
+
+### Z-index — semantic stack
+
+- `--z-base`     `1`     — default flow
+- `--z-dropdown` `10`    — account menu, popovers
+- `--z-overlay`  `50`    — auth overlay
+- `--z-sidebar`  `100`   — sidebar, topbar
+- `--z-modal`    `1000`  — modal backdrops
+- `--z-lightbox` `2000`  — image lightbox
+- `--z-toast`    `9999`  — toast notifications
+
+### Legacy aliases — declared, scheduled for sweep
+
+The following tokens are aliases declared in `:root` so legacy call
+sites resolve correctly. They are **not** the end state — new code
+should reach for the v2 names. A future sweep will replace call
+sites and remove the aliases.
+
+- `--text`        → `--fg-primary`
+- `--text-dim`    → `--fg-secondary`
+- `--text-muted`  → `--fg-muted`
+- `--border`      → `--border-default`
+- `--accent`      → `--orange`
+- `--error`       → `--red`
+
+## Inline-style policy
+
+Inline `style="..."` attributes proliferated across the page renderers
+and `ui.js` (503 + 351 occurrences as of the v3 audit). The policy:
+
+> Inline `style="..."` is permitted only for: (1) values computed at
+> render time (e.g. `width: ${pct}%` for progress bars); (2) initial
+> hide-state when the `hidden` attribute can't be used; (3) a single
+> ad-hoc override that doesn't merit a class. Any inline style with
+> three or more declarations, or that duplicates an existing class's
+> styling, must be a class.
+
+Enforcement is by code review for now. A CI grep check (count
+regression) belongs to a later sweep.
 
 ## Typography
 

@@ -866,6 +866,14 @@ of scope for this repo.)
   rows. Intentional for tracing the full path but noisy for
   operator view — decide whether to dedupe at the viewer layer or
   suppress one of the two call sites.
+- **`tests/smoke/conftest.py` declares `pytest_plugins`** — pytest
+  emits a deprecation error during collection: "Defining
+  'pytest_plugins' in a non-top-level conftest file is deprecated."
+  Causes `pytest -q` to fail collection unless `--ignore=tests/smoke`
+  is passed. Move the `pytest_plugins` declaration to a top-level
+  `conftest.py` at the repo root. Surfaced during the design-system v3
+  audit (2026-05-07), unrelated to the work but blocks default
+  invocations of pytest.
 
 ### Standards-compliance scanning
 
