@@ -1,0 +1,101 @@
+# GLaDOS SIP client config — copy to configs/sip.yaml and edit.
+# Bind-mounted; secrets stay out of the image.
+#
+# This file is loaded only when the GLADOS_SIP_ENABLED environment
+# variable is "true" AND the `enabled` field below is true. Both must
+# be set — env-var enables the module to load, YAML enables it to
+# register and accept calls.
+#
+# See docs/superpowers/specs/2026-05-08-sip-client-design.md for
+# architecture, and docs/superpowers/plans/2026-05-08-sip-slice-1-inbound.md
+# for what's actually shipped today (Slice 1: inbound only).
+
+enabled: false              # Master switch. False ⇒ no SIP code paths active.
+
+server:
+  host: 192.168.1.1         # PBX address (operator's PBX/SIP server)
+  port: 5060
+  username: glados          # Operator-provisioned extension
+  password: ""              # Operator-provisioned secret
+  transport: UDP            # UDP (default) | TCP | TLS — UDP for v1
+  realm: ""                 # Optional, PBX-dependent
+  register_expires: 600     # Re-register interval, seconds
+
+inbound:
+  pin: ""                   # 4-digit numeric. Plaintext; configs/ is bind-mounted, single-user host.
+  pin_failures_max: 3       # Hangup after this many wrong attempts
+  greeting_template: "default"  # "default" | "potato" | <freeform string>
+  recording_enabled: true
+  allow_caller_ids: []      # If non-empty, only these From: AORs are accepted; empty = any inbound (PIN-gated)
+
+  ivr_menu:
+    enabled: true                   # If false, post-PIN drops straight to free-form conversation
+    drop_to_freeform_dtmf: "0"      # Single key that exits the menu and starts free conversation
+    items:
+      - key: "1"
+        label: "House status"
+        handler: "house_status"
+      - key: "2"
+        label: "Security state"
+        handler: "security_state"
+      - key: "3"
+        label: "Door locks"
+        handler: "door_locks"
+      - key: "4"
+        label: "Recent doorbell events"
+        handler: "doorbell_recent"
+    # Menu prompt is pre-rendered at startup; handler responses are pre-rendered
+    # speculatively while the menu prompt plays.
+
+# Slice 1 ships inbound only. The blocks below are reserved schema for
+# Slices 2/3 — leaving them populated does nothing yet.
+
+outbound:
+  enabled: false            # Master gate for ALL outbound (manual + autonomous). Slice 2.
+  contacts:
+    - name: "Mom"
+      number: "+15551234567"
+    - name: "Operator Mobile"
+      number: "+15559998888"
+
+autonomous:                 # Per-alert-source opt-in. Slice 3.
+  doorbell:
+    enabled: false
+    target_contact: "Operator Mobile"
+    cooldown_seconds: 300
+  fire_alarm:
+    enabled: false
+    target_contact: "Operator Mobile"
+    cooldown_seconds: 60
+  scheduled:
+    enabled: false
+    target_contact: "Operator Mobile"
+    schedule_cron: ""
+
+recordings:
+  enabled: true
+  retention_count: 5        # FIFO: oldest deleted past this
+  store_path: "media/sip-recordings"
+  format: "mp3"             # mp3 | wav
+
+audio:
+  rtp_port_low: 16384
+  rtp_port_high: 16484
+  codec_preference: ["PCMU", "PCMA", "G722"]
+  vad_silence_ms: 800
+
+latency:
+  filler_phrases:
+    - "Let me check on that..."
+    - "One moment..."
+    - "Processing..."
+  filler_threshold_ms: 1500
+  use_autonomy_model: false # Operator-flippable if chat-model latency feels broken
+
+  speculative:
+    enabled: true
+    max_concurrent: 4
+    branches:
+      pin_entry: ["pin_success", "pin_fail_1", "pin_fail_2", "pin_fail_final"]
+      menu_idle: ["menu_item_1", "menu_item_2", "menu_item_3", "menu_item_4"]
+      conversation_wait: ["filler_1", "filler_2", "filler_3"]
