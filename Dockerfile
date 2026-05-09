@@ -17,11 +17,16 @@ LABEL org.opencontainers.image.source="https://github.com/synssins/glados-docker
 WORKDIR /app
 
 # System deps
+# baresip (BSD-3) is the SIP user agent for the optional SIP feature
+# (Slice 1 / 2026-05-08). Pulled with --no-install-recommends to avoid
+# the GPL/LGPL module recommendations (baresip-x11/gtk/ffmpeg/gstreamer);
+# only the BSD-3 core is needed for our subprocess-controlled use.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         curl \
         ca-certificates \
         gnupg \
+        baresip \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \

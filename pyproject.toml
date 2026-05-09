@@ -50,6 +50,11 @@ dependencies = [
     # NTP client for the time_source module (System page → Time card).
     # Pure Python, no compiled wheels. ~200 LOC.
     "ntplib>=0.4.0",
+    # SIP client (Slice 1, 2026-05-08). The SIP stack itself is baresip
+    # (BSD-3, installed via apt in the Dockerfile, run as a subprocess).
+    # These are the audio-bridge dependencies for our Python code.
+    "scipy>=1.10.0",          # 8k μ-law ↔ 16k PCM resample
+    "pydub>=0.25.1",          # MP3 encoding for SIP call recordings
 ]
 
 [project.optional-dependencies]
