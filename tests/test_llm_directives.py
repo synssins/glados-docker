@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from glados.core.llm_directives import (
     apply_model_family_directives,
+    consolidate_system_messages,
     is_qwen3_family,
+    is_strict_system_first_family,
     strip_closing_boilerplate,
     strip_thinking_response,
 )
@@ -323,3 +325,161 @@ class TestStripClosingBoilerplate:
         raw = "The facility fell into his hands. You may draw your own conclusions."
         out = strip_closing_boilerplate(raw)
         assert "draw your own" not in out.lower()
+
+
+class TestIsStrictSystemFirstFamily:
+    def test_qwen3_5_variants_match(self) -> None:
+        assert is_strict_system_first_family("qwen3.5")
+        assert is_strict_system_first_family("qwen3.5-35b-a3b")
+        assert is_strict_system_first_family("Qwen3.5-35B-A3B")
+        assert is_strict_system_first_family("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf")
+        assert is_strict_system_first_family("qwen 3.5 turbo")
+
+    def test_plain_qwen3_does_not_match(self) -> None:
+        # Qwen3 (without .5) tolerates multi-system, must NOT trigger
+        # consolidation — it would change wire shape for working deployments.
+        assert not is_strict_system_first_family("qwen3")
+        assert not is_strict_system_first_family("qwen3:8b")
+        assert not is_strict_system_first_family("qwen3-30b-a3b")
+        assert not is_strict_system_first_family("Qwen3-0.6B")
+
+    def test_other_families_do_not_match(self) -> None:
+        assert not is_strict_system_first_family("qwen2.5:14b")
+        assert not is_strict_system_first_family("llama3:8b")
+        assert not is_strict_system_first_family("deepseek-r1:14b")
+        assert not is_strict_system_first_family("gpt-4o-mini")
+
+    def test_empty_or_none(self) -> None:
+        assert not is_strict_system_first_family(None)
+        assert not is_strict_system_first_family("")
+
+
+class TestConsolidateSystemMessages:
+    """Collapse multiple system messages into a single position-0 entry
+    so strict chat templates (Qwen3.5) accept the payload."""
+
+    def test_merges_multiple_leading_systems(self) -> None:
+        msgs = [
+            {"role": "system", "content": "Persona."},
+            {"role": "system", "content": "Attitude."},
+            {"role": "system", "content": "Time: 14:00."},
+            {"role": "user", "content": "Hi"},
+        ]
+        out = consolidate_system_messages(msgs)
+        assert len(out) == 2
+        assert out[0]["role"] == "system"
+        assert out[0]["content"] == "Persona.\n\nAttitude.\n\nTime: 14:00."
+        assert out[1] == {"role": "user", "content": "Hi"}
+
+    def test_merges_systems_scattered_through_history(self) -> None:
+        # The chat-resolver appends guard/emotion/tool_hint AFTER the
+        # chat history, before the final user message. Consolidation
+        # must hoist them into the position-0 system block.
+        msgs = [
+            {"role": "system", "content": "Persona."},
+            {"role": "user", "content": "history-1"},
+            {"role": "assistant", "content": "history-1-reply"},
+            {"role": "system", "content": "ChitchatGuard."},
+            {"role": "system", "content": "EmotionDirective."},
+            {"role": "user", "content": "current"},
+        ]
+        out = consolidate_system_messages(msgs)
+        roles = [m["role"] for m in out]
+        assert roles == ["system", "user", "assistant", "user"]
+        assert out[0]["content"] == (
+            "Persona.\n\nChitchatGuard.\n\nEmotionDirective."
+        )
+        # Non-system messages preserved in original order
+        assert out[1]["content"] == "history-1"
+        assert out[2]["content"] == "history-1-reply"
+        assert out[3]["content"] == "current"
+
+    def test_drops_empty_content_system_messages(self) -> None:
+        msgs = [
+            {"role": "system", "content": "Real."},
+            {"role": "system", "content": ""},
+            {"role": "system", "content": "   "},
+            {"role": "user", "content": "Hi"},
+        ]
+        out = consolidate_system_messages(msgs)
+        assert out[0]["content"] == "Real."
+        assert len(out) == 2
+
+    def test_no_system_messages_returns_input_copy(self) -> None:
+        msgs = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+        out = consolidate_system_messages(msgs)
+        assert out == msgs
+
+    def test_single_system_passes_through(self) -> None:
+        msgs = [
+            {"role": "system", "content": "Solo."},
+            {"role": "user", "content": "Hi"},
+        ]
+        out = consolidate_system_messages(msgs)
+        assert len(out) == 2
+        assert out[0]["content"] == "Solo."
+
+    def test_empty_messages(self) -> None:
+        assert consolidate_system_messages([]) == []
+
+    def test_does_not_mutate_original(self) -> None:
+        msgs = [
+            {"role": "system", "content": "A"},
+            {"role": "system", "content": "B"},
+            {"role": "user", "content": "Hi"},
+        ]
+        snapshot = [dict(m) for m in msgs]
+        _ = consolidate_system_messages(msgs)
+        assert msgs == snapshot
+
+    def test_preserves_non_system_role_messages_verbatim(self) -> None:
+        # Tool-call / tool-result shapes must pass through unchanged.
+        tool_call_msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "HassTurnOn", "arguments": "{}"},
+                }
+            ],
+        }
+        tool_result_msg = {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "OK",
+        }
+        msgs = [
+            {"role": "system", "content": "P."},
+            {"role": "user", "content": "Turn on lights"},
+            tool_call_msg,
+            tool_result_msg,
+            {"role": "system", "content": "Late directive."},
+            {"role": "user", "content": "Thanks"},
+        ]
+        out = consolidate_system_messages(msgs)
+        # Non-system messages identical to input
+        assert out[1] == {"role": "user", "content": "Turn on lights"}
+        assert out[2] is tool_call_msg or out[2] == tool_call_msg
+        assert out[3] is tool_result_msg or out[3] == tool_result_msg
+        assert out[4] == {"role": "user", "content": "Thanks"}
+        # System merged
+        assert out[0]["content"] == "P.\n\nLate directive."
+
+    def test_skips_non_dict_entries(self) -> None:
+        # Defensive: messages list might contain garbage. Don't crash,
+        # don't drop — pass through with the systems we found.
+        garbage = "not-a-dict"
+        msgs = [
+            {"role": "system", "content": "Real."},
+            garbage,  # type: ignore[list-item]
+            {"role": "user", "content": "Hi"},
+        ]
+        out = consolidate_system_messages(msgs)
+        assert out[0]["content"] == "Real."
+        assert garbage in out
+        assert {"role": "user", "content": "Hi"} in out
