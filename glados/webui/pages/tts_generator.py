@@ -47,11 +47,11 @@ HTML = r"""<div id="tab-tts" class="tab-content">
       <textarea id="improvInstruction" placeholder="e.g. &#x2018;call everyone to dinner, snidely&#x2019; or &#x2018;announce a thunderstorm, bored voice&#x2019;"></textarea>
       <button class="btn btn-primary" id="improvDraftBtn" onclick="_ttsImprovDraft()">Draft &#x2192;</button>
     </div>
-    <div id="improvDraftSection" style="display:none; margin-top:var(--sp-3);">
+    <div id="improvDraftSection" class="mt-3" style="display:none;">
       <div class="section-title">Draft</div>
       <div class="tts-generate-row">
         <textarea id="improvDraftedText" placeholder="[draft appears here; edit if needed]"></textarea>
-        <div style="display:flex;flex-direction:column;gap:var(--sp-2);">
+        <div class="col gap-2">
           <button class="btn" onclick="_ttsImprovDraft()">Redraft</button>
           <button class="btn btn-primary" id="improvGenerateBtn" onclick="_ttsImprovGenerate()">Speak &#x2192;</button>
         </div>
