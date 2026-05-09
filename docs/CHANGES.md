@@ -5293,3 +5293,157 @@ a non-technical user replicating the camera-event-to-TV-notification
 HA setup that needed rescuing this same session (unrelated to
 Slice 1's substrate but surfaced during deploy testing and got
 fixed in passing).
+
+---
+
+## Change 44 — Design-system v3 Approach 2: utility classes + page sweep (2026-05-09)
+
+**Slice B / Approach 2** of the design-system v3 work. Approach 1
+(2026-05-07) declared the missing scales and legacy aliases in
+``:root``; Approach 2 sweeps the page renderers and ``ui.js`` to
+consume those tokens through a dedicated utility-class layer instead
+of inline ``style="..."`` attributes everywhere.
+
+**Why this matters.** The audit at
+``docs/design-system-reconciliation.md`` found ~503 inline-style
+attributes across 12 page renderers plus ~33 phantom-variable
+references in ``ui.js`` HTML-string templates. Many of those
+referenced ``var(--text)``, ``var(--text-dim)``, ``var(--border)``,
+``var(--accent)``, ``var(--error)``, or hardcoded hex colors that
+diverged from the canonical palette. v3 Approach 1 fixed the
+correctness issue (legacy aliases now declared in ``:root``);
+Approach 2 fixes the consistency issue (callers now use semantic
+utility classes that map to canonical tokens) and surfaces the
+remaining inline-style sites as legitimate one-offs (computed
+values, initial-hide states, single ad-hoc overrides).
+
+**What shipped.**
+
+*Task 1 — utility-class layer* (``style.css``):
+
+Single ``=== Utility classes ===`` section appended to ``style.css``
+with single-purpose utilities mapped to v3 tokens:
+
+- Layout: ``.row``, ``.col``, ``.row-between``, ``.row-center``,
+  ``.col-tight``, ``.between``, ``.center``, ``.end``, ``.baseline``,
+  ``.start``, ``.wrap``
+- Spacing: ``.gap-1..6`` (gap → ``--sp-N``), ``.mt-0..5`` /
+  ``.mb-0..5`` (margin), ``.pt/.pb/.px/.py-1..3`` (padding helpers)
+- Type: ``.fs-2xs..lg`` (font-size → ``--fs-N`` v3 scale)
+- Color: ``.txt-primary``, ``.txt-dim``, ``.txt-muted``,
+  ``.txt-tertiary``, ``.txt-accent``, ``.txt-danger``, ``.txt-ok``,
+  ``.txt-info``
+- Visibility: ``.is-hidden``
+- Sizing: ``.w-full``, ``.w-auto``
+- Replacements for repeated inline patterns: ``.cfg-inline-input``
+  (the reinvented input chrome seen 6+ times), ``.banner-error`` (the
+  hardcoded ``#5c1a1a/#f8d7da`` error background), ``.btn-cancel``
+  (the inline ``background:#555`` Cancel button)
+
+Pure addition. No existing class touched.
+
+*Tasks 2-6 — per-page sweeps:*
+
+| Page | Before | After | Δ |
+|---|---|---|---|
+| ``system.py`` | 53 | 16 | -70% |
+| ``users_page.py`` | 45 | 13 | -71% |
+| ``memory.py`` | 24 | 5 | -79% |
+| ``training.py`` | 7 | 2 | -71% |
+| ``integrations.py`` | 4 | 4 | 0 (color phantom swept) |
+| ``logs.py`` | 3 | 2 | -33% |
+| ``logging_page.py`` | 6 | 4 | -33% |
+| ``tts_generator.py`` | 3 | 1 | -67% |
+| ``chat.py`` | 1 | 1 | 0 (single legitimate one-off) |
+| **Total** | **146** | **48** | **-67%** |
+
+(Earlier audit count of 503 was the raw ``style=`` attribute count
+including duplicates inside table-cell templates; the per-file count
+above is the unique-attribute count after surfacing the table
+patterns into per-page CSS.)
+
+Each per-page sweep replaced inline-style margin/padding/flex/color
+patterns with utility classes from Task 1 + page-specific CSS for
+table layouts that didn't compress to utilities. Phantom-variable
+references (``var(--text)``, ``var(--text-dim)``, ``var(--border)``)
+in inline styles eliminated entirely from page renderers.
+
+*Task 3 — modal CSS:*
+
+Closes prior-audit finding F6. ``.modal-backdrop``, ``.form-label``,
+``.form-label.row-inline``, ``.users-table`` were referenced in
+``users_page.py`` but never defined; modals rendered with browser
+defaults. CSS for all four classes added to ``style.css``,
+re-using v3 tokens. Modals now dim the page background, center the
+box, and stack form labels over their inputs as designed.
+
+*Task 7 — ``ui.js`` HTML-string inline styles:*
+
+~33 phantom-var color sites swept to utility classes:
+- ``style="color:var(--red)"`` patterns → ``.txt-danger``
+- ``style="color:var(--orange)"`` patterns → ``.txt-accent``
+- ``style="color:var(--fg-secondary)"`` patterns → ``.txt-dim``
+- ``style="color:var(--fg-muted)"`` patterns → ``.txt-muted``
+- ``style="color:var(--fg-tertiary);font-size:0.72rem"`` →
+  ``.txt-tertiary fs-xs``
+- ``style="color:var(--text)"`` (phantom) → ``.txt-primary``
+- ``style="color:var(--text-dim)"`` (phantom) → ``.txt-dim``
+- ``style="color:var(--error)"`` (phantom) → ``.txt-danger``
+- ``style="color:var(--success, #2ecc71)"`` (phantom + fallback) →
+  ``.txt-ok``
+- ``style="color:var(--warn, #f1c40f)"`` (phantom + fallback) →
+  ``.txt-accent``
+
+After this task, zero ``style="color:var(...)"`` attributes remain
+inside HTML-string templates in ``ui.js``.
+
+*Task 8 — ``ui.js`` runtime ``style.*`` assignments:*
+
+Hardcoded hex colors in runtime ``el.style.color = ...`` swept to
+canonical CSS variables (``#9cdcfe → var(--blue)``,
+``#f66 → var(--red)``, etc.). Five ``row.style.cssText = 'display:flex;
+gap:6px;align-items:center'`` sites converted to ``row.classList.add(
+'row', 'gap-1')`` — replaces imperative inline-style assignment with
+class-driven layout from the v3 utility layer.
+
+Out of scope (deferred):
+- ``el.style.display = 'none'/'flex'/'block'`` toggles (~34 sites).
+  Coordinated change requires updating initial markup AND CSS.
+  Current behaviour works; not a bug.
+- Computed positional styles (slider thumb left%, progress-bar
+  width%). These are exactly the (1) carve-out in the inline-style
+  policy.
+- Chart.js color config (line ~7475). Chart.js does not read CSS
+  variables; hex values are visualization choices.
+
+**Acceptance.** ``pytest -q --ignore=tests/smoke`` → 1887/5 (baseline
+preserved across every commit; no test regression). Visual parity
+under live-probe pending Task 9 deploy. Phantom-variable references
+in inline styles entirely eliminated from page renderers + ``ui.js``
+HTML strings.
+
+**Side effects to watch.**
+
+- ``ui.js`` total inline ``style="..."`` count is now 319 (was 322
+  pre-sweep, 33 of which were color-only and have moved to classes).
+  Most remaining sites are computed values (width%, padding tied to
+  per-component layout) or multi-property combinations that
+  legitimately stay inline.
+- Approach 3 (setup wizard / login page / standalone ``/tts`` page
+  rebrand to v3 vocabulary) remains deferred. Those three surfaces
+  still use the parallel design system documented in the audit
+  (``#0a0a0a`` background, ``#ff6600`` orange, ``Segoe UI``).
+
+**Deploy artifacts.** Branch ``design-system-v3-approach-2`` at
+commit ``f11658e`` pushed to origin. Durable image build via
+``scripts/_local_deploy.py`` (GHCR build still LFS-blocked per
+existing tech debt).
+
+**Companion documentation.**
+
+- ``docs/design-system-reconciliation.md`` — full audit + the three
+  approach options the operator picked from
+- ``docs/superpowers/plans/2026-05-08-design-system-v3-approach-2.md``
+  — task plan
+- ``.interface-design/system.md`` — authoritative design system spec
+  (now v3-current with the tokens + inline-style policy)
