@@ -13,6 +13,13 @@ Page-save button at top-right dispatches to the relevant per-tab
 save handler (Mode → _cfgSaveSystemAuthAudit, Services →
 _cfgSaveSystemServices). Status, Hardware, and Maintenance tabs
 have no direct save — their actions (restart, reload, clear) fire inline.
+
+Phase 6 / Approach 2 sweep (2026-05-09): inline-style attributes
+replaced with v3 utility classes. `style="display:none;"` on
+JS-toggled elements kept (initial-hide state per inline-style policy).
+Phantom-var references (--text-dim, --text, --border) eliminated by
+swapping to utility classes that resolve via the canonical v2
+tokens.
 """
 
 HTML = r"""
@@ -113,7 +120,7 @@ HTML = r"""
           </label>
         </div>
         <div class="speaker-select-row" id="speakerRow" style="display:none;">
-          <label style="font-size:0.85rem;color:var(--text-dim);">Speaker:</label>
+          <label class="fs-base txt-dim">Speaker:</label>
           <select id="speakerSelect">
             <option value="">Loading speakers...</option>
           </select>
@@ -130,9 +137,9 @@ HTML = r"""
         </div>
       </div>
 
-      <div class="card" style="margin-top:var(--sp-3);">
+      <div class="card mt-3">
         <div class="section-title">Authentication &amp; Audit</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
+        <div class="mode-desc mb-2">
           WebUI sign-in enforcement, session timeout, and the utterance/tool
           audit trail. The password itself is set via
           <code>docker exec glados python -m glados.tools.set_password</code> —
@@ -167,20 +174,20 @@ HTML = r"""
         </div>
       </div>
 
-      <div class="card" id="robotNodesCard" style="display:none;margin-top:var(--sp-3);">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <div class="section-title" style="margin-bottom:0;">Robot Nodes</div>
+      <div class="card mt-3" id="robotNodesCard" style="display:none;">
+        <div class="row between wrap gap-2">
+          <div class="section-title mb-0">Robot Nodes</div>
           <button class="btn btn-danger" onclick="robotEmergencyStop()" style="font-size:0.8rem;padding:5px 14px;font-weight:600;letter-spacing:0.5px;" title="Emergency stop all nodes">&#9724; E-STOP</button>
         </div>
-        <div id="robotNodesList" style="margin-top:10px;font-size:0.85rem;color:var(--text-dim);">Loading...</div>
-        <div style="margin-top:12px;display:flex;gap:6px;align-items:center;">
-          <input type="text" id="robotNodeUrl" placeholder="http://robot.local" style="flex:1;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:0.82rem;">
-          <input type="text" id="robotNodeName" placeholder="Name (optional)" style="width:140px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:0.82rem;">
-          <button class="btn-small" onclick="robotAddNode()" style="font-size:0.78rem;padding:5px 12px;">Add Node</button>
+        <div id="robotNodesList" class="mt-2 fs-base txt-dim">Loading...</div>
+        <div class="row gap-1 mt-3">
+          <input type="text" id="robotNodeUrl" placeholder="http://robot.local" class="cfg-inline-input fs-sm" style="flex:1;">
+          <input type="text" id="robotNodeName" placeholder="Name (optional)" class="cfg-inline-input fs-sm" style="width:140px;">
+          <button class="btn-small fs-sm" onclick="robotAddNode()" style="padding:5px 12px;">Add Node</button>
         </div>
-        <div id="robotBotsSection" style="margin-top:12px;display:none;">
-          <div style="font-weight:500;font-size:0.82rem;margin-bottom:6px;color:var(--text);">Bots</div>
-          <div id="robotBotsList" style="font-size:0.82rem;color:var(--text-dim);"></div>
+        <div id="robotBotsSection" class="mt-3" style="display:none;">
+          <div class="fs-sm mb-1 txt-primary" style="font-weight:500;">Bots</div>
+          <div id="robotBotsList" class="fs-sm txt-dim"></div>
         </div>
       </div>
 
@@ -190,25 +197,25 @@ HTML = r"""
     <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="maintenance">
       <div class="card">
         <div class="section-title">Reload configuration from disk</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
+        <div class="mode-desc mb-2">
           Re-reads every YAML under <code>configs/</code> without restarting the container.
           Use this after editing a YAML file directly on the host, or after changes
           from another session that haven&rsquo;t been picked up yet.
         </div>
-        <div style="display:flex;gap:12px;align-items:center;">
+        <div class="row gap-3">
           <button class="btn btn-primary" onclick="cfgReload()">Reload from Disk</button>
-          <span id="cfg-status" style="color:var(--text-dim);font-size:0.85em;"></span>
+          <span id="cfg-status" class="txt-dim fs-base"></span>
         </div>
       </div>
 
-      <div class="card" style="margin-top:var(--sp-3);">
+      <div class="card mt-3">
         <div class="section-title">Audio storage</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
+        <div class="mode-desc mb-2">
           Files generated by TTS, chat, and autonomous announcements.
           Each directory can be cleared independently &mdash; empty rarely-used
           ones to keep the bind mount manageable.
         </div>
-        <div id="audioStatsPanel" style="font-size:0.85rem;color:var(--text-dim);">Loading...</div>
+        <div id="audioStatsPanel" class="fs-base txt-dim">Loading...</div>
       </div>
     </div>
 
@@ -216,22 +223,22 @@ HTML = r"""
     <div class="page-tab-panel" data-page-tab-panel-group="system" data-tab="time">
       <div class="card">
         <div class="section-title">Sync Status</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
+        <div class="mode-desc mb-2">
           GLaDOS syncs an offset against an NTP server at startup and on the
           configured refresh interval, so the wall-clock time injected into
           chat is independent of the container's system clock. Timezone is
           read from the IANA zone resolved by the operator-configured
           weather coordinates (or the manual override below).
         </div>
-        <div id="timeStatusGrid" style="font-size:0.85rem;color:var(--text-dim);">Loading&hellip;</div>
-        <div style="margin-top:10px;">
-          <button class="btn-small" onclick="_loadTimeStatus()" style="font-size:0.78rem;padding:5px 12px;">Refresh</button>
+        <div id="timeStatusGrid" class="fs-base txt-dim">Loading&hellip;</div>
+        <div class="mt-2">
+          <button class="btn-small fs-sm" onclick="_loadTimeStatus()" style="padding:5px 12px;">Refresh</button>
         </div>
       </div>
 
-      <div class="card" style="margin-top:var(--sp-3);">
+      <div class="card mt-3">
         <div class="section-title">Configuration</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
+        <div class="mode-desc mb-2">
           Changes save to <code>configs/global.yaml</code> and apply on the
           next container restart.
         </div>
@@ -248,20 +255,16 @@ HTML = r"""
 
       <div class="card">
         <div class="section-title">Change Password</div>
-        <div class="mode-desc" style="margin-bottom:10px;">
+        <div class="mode-desc mb-2">
           Update your own password. You must supply your current password to confirm.
         </div>
-        <div style="display:flex;flex-direction:column;gap:8px;max-width:360px;">
-          <input type="password" id="cpwCurrent" placeholder="Current password"
-                 style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-size:0.85rem;">
-          <input type="password" id="cpwNew" placeholder="New password (8+ characters)"
-                 style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-size:0.85rem;">
-          <input type="password" id="cpwConfirm" placeholder="Confirm new password"
-                 style="background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:7px 10px;font-size:0.85rem;">
-          <div style="display:flex;align-items:center;gap:12px;">
-            <button class="btn btn-primary" onclick="_submitChangePassword()"
-                    style="padding:6px 16px;font-size:0.85rem;">Change Password</button>
-            <span id="cpwResult" style="font-size:0.82rem;"></span>
+        <div class="col gap-2" style="max-width:360px;">
+          <input type="password" id="cpwCurrent" placeholder="Current password" class="cfg-inline-input">
+          <input type="password" id="cpwNew" placeholder="New password (8+ characters)" class="cfg-inline-input">
+          <input type="password" id="cpwConfirm" placeholder="Confirm new password" class="cfg-inline-input">
+          <div class="row gap-3">
+            <button class="btn btn-primary" onclick="_submitChangePassword()" style="padding:6px 16px;font-size:0.85rem;">Change Password</button>
+            <span id="cpwResult" class="fs-sm"></span>
           </div>
         </div>
       </div>
@@ -295,7 +298,8 @@ HTML = r"""
     var el = document.getElementById('cpwResult');
     if (!el) return;
     el.textContent = msg;
-    el.style.color = ok ? 'var(--success, #2ecc71)' : 'var(--danger, #e74c3c)';
+    // Phase 6 sweep: --success/--danger don't exist; --green/--red do.
+    el.style.color = ok ? 'var(--green)' : 'var(--red)';
   }
 
   window._submitChangePassword = function () {
@@ -323,27 +327,21 @@ HTML = r"""
   window._loadSessions = function () {
     var el = document.getElementById('sessionsTable');
     if (!el) return;
-    el.textContent = 'Loading\u2026';
+    el.textContent = 'Loading…';
     fetch('/api/sessions').then(function (r) { return r.json(); }).then(function (d) {
       var rows = d.sessions || [];
       if (!rows.length) { el.textContent = 'No active sessions.'; return; }
-      var html = '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">'
-        + '<thead><tr style="color:var(--text-dim);text-align:left;">'
-        + '<th style="padding:4px 8px;">User</th>'
-        + '<th style="padding:4px 8px;">Created</th>'
-        + '<th style="padding:4px 8px;">Last used</th>'
-        + '<th style="padding:4px 8px;">IP</th>'
-        + '<th style="padding:4px 8px;"></th>'
-        + '</tr></thead><tbody>';
+      var html = '<table class="system-session-table">'
+        + '<thead><tr><th>User</th><th>Created</th><th>Last used</th><th>IP</th><th></th></tr></thead><tbody>';
       rows.forEach(function (s) {
         var created  = s.created_at  ? new Date(s.created_at  * 1000).toLocaleString() : '—';
         var lastUsed = s.last_used_at ? new Date(s.last_used_at * 1000).toLocaleString() : '—';
-        html += '<tr style="border-top:1px solid var(--border);">'
-          + '<td style="padding:5px 8px;">' + _escSession(s.username) + '</td>'
-          + '<td style="padding:5px 8px;">' + created + '</td>'
-          + '<td style="padding:5px 8px;">' + lastUsed + '</td>'
-          + '<td style="padding:5px 8px;">' + _escSession(s.remote_addr || '—') + '</td>'
-          + '<td style="padding:5px 8px;">'
+        html += '<tr>'
+          + '<td>' + _escSession(s.username) + '</td>'
+          + '<td>' + created + '</td>'
+          + '<td>' + lastUsed + '</td>'
+          + '<td>' + _escSession(s.remote_addr || '—') + '</td>'
+          + '<td>'
           + '<button class="btn btn-danger" style="font-size:0.75rem;padding:3px 10px;" '
           + 'data-revoke-sid="' + _escSession(s.session_id) + '">Revoke</button>'
           + '</td></tr>';

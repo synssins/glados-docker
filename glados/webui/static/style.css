@@ -2872,3 +2872,28 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   font-family: inherit;
 }
 .btn-cancel:hover { color: var(--fg-primary); border-color: var(--border-strong); }
+
+/* ── Per-page chrome (Phase 6) ──────────────────────────────────
+   Page-specific table styles for renderers that don't compress to
+   the generic utility-class layer. These read the v3 token
+   vocabulary and replace previous inline-style table generation
+   in the corresponding pages. */
+
+/* Used by system.py's session table (rendered by ui.js _loadSessions) */
+.system-session-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.system-session-table th {
+  text-align: left;
+  color: var(--fg-secondary);
+  padding: var(--sp-1) var(--sp-2);
+}
+.system-session-table tr {
+  border-top: 1px solid var(--border-default);
+}
+.system-session-table tr:first-child { border-top: none; }
+.system-session-table td {
+  padding: var(--sp-1) var(--sp-2);
+}
