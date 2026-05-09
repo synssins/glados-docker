@@ -816,6 +816,94 @@ of this repo's scope.
 
 ---
 
+## Page-chrome normalization sweep (operator-flagged 2026-05-09)
+
+**Context:** Approach 2 of design-system v3 (shipped Change 44) swept
+inline styles to v3 utility classes. Operator review surfaced a
+**structural** inconsistency the audit missed: page renderers diverge
+on chrome patterns. Examples:
+
+- ``System``: ``page-shell → container → page-header → page-tabs →
+  tab-panels (with .card content)``. Tabs sit naked between header and
+  panels. Clean.
+- ``Integrations`` (pre-fix): ``page-shell → container → outer .card →
+  page-tabs (rendered by JS inside the outer card)``. Outer card
+  produced a visible "background block" the System page doesn't have.
+- ``Memory``: no ``page-header`` at all; opens straight into stacked
+  ``.card`` blocks.
+- ``Logs`` / ``Logging``: same as Memory.
+- ``Users``: has ``page-header`` but no ``page-tabs`` (it's a CRUD
+  table, no tabs needed).
+- ``Training``: no ``page-header``; uses ``.train-status-row`` directly.
+
+**Fix shipped this session (2026-05-09):** ``integrations.py`` outer
+``.card`` removed and ``page-header`` block added — System pattern.
+Now matches.
+
+**Follow-up TODO:** unify the rest. Decisions still open:
+
+1. **Should every page have a ``page-header``?** Currently Memory,
+   Logs, Logging, Training don't. Adding one normalises chrome but
+   shifts content down ~50px. Operator preference required.
+2. **What exactly is the "single canonical page-shell pattern"?** Two
+   sub-patterns most likely:
+   - ``page-header → page-tabs → tab-panels`` for multi-section pages
+     (System, Integrations, Plugins, future SIP)
+   - ``page-header → stacked .card`` for single-section pages (Memory,
+     Logs, Logging, Users, Training)
+
+**Estimated effort:** ~3–5 h once the canonical pattern is decided.
+Mostly mechanical sweep; visual parity ≠ visual stasis (Memory et al.
+will gain a header).
+
+**Audit checklist for review** (belongs in a v2 of
+``docs/design-system-reconciliation.md`` or a new structural-audit
+doc):
+
+- Page chrome consistency (page-header presence, page-tabs presence,
+  outer-card or no)
+- Section-title styling (font-size / color / weight uniform across pages)
+- Card padding (consistent across cards everywhere)
+- Form input chrome (``.cfg-inline-input`` / ``.cfg-field input`` look
+  identical in every place)
+- Button consistency (``.btn``, ``.btn-small``, ``.btn-cancel``,
+  ``.btn-danger`` render identically across pages)
+- Spacing rhythm (gaps/margins feel scaled to ``--sp-*``, not random)
+
+---
+
+## Setup wizard — first-run admin password only (operator-flagged 2026-05-09)
+
+**Context:** Setup wizard exists at ``glados/webui/setup/`` and uses
+its own visual vocabulary divorced from the main SPA — see prior-audit
+finding S6 plus design-system reconciliation R4 (parallel design
+system: ``#0a0a0a`` bg, ``#ff6600`` orange, Segoe UI font).
+Approach 3 of design-system v3 will rebrand it to v3 vocabulary.
+
+**Operator scope clarification (2026-05-09):** the wizard should be
+**a quick "First run" wizard**, no more. Single deliverable: set the
+admin password. **Cannot be skipped** — the wizard requires a password
+to be set before proceeding to the main SPA. Anything the current
+wizard does beyond that (multi-step config, integration toggles,
+service URL prompts) can be cut.
+
+In line with Approach 3's stated goal of cutting the wizard from
+"elaborate first-run config" down to a single password-prompt gate
+that consumes ``/static/style.css`` and looks like the rest of the
+app.
+
+**Sequencing — part of Approach 3 of design-system v3:**
+1. Audit ``glados/webui/setup/`` — list everything beyond the
+   admin-password step
+2. Cut everything except the password step
+3. Rebrand the remaining single step to v3 chrome (consume
+   ``style.css``, drop the ``Segoe UI`` / ``#0a0a0a`` / ``#ff6600``
+   inline styles)
+4. Verify can't-be-skipped: no admin password set ⇒ wizard renders;
+   admin password set ⇒ wizard skipped on subsequent boots
+
+---
+
 ## Audio Destination Router (operator-flagged 2026-05-09)
 
 **Context:** Today every TTS source has a hard-coded destination —
