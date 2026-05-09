@@ -48,11 +48,12 @@ class Origin:
     AUTONOMY = "autonomy"           # Self-triggered autonomy loop
     DISCORD = "discord"             # Discord bridge module
     MQTT_CMD = "mqtt_cmd"           # MQTT peer bus (Phase 2, not yet wired)
+    SIP = "sip"                     # SIP call (Slice 1, 2026-05-09)
     UNKNOWN = "unknown"             # Caller didn't set an origin — audit-visible tell
 
     ALL = frozenset({
         WEBUI_CHAT, API_CHAT, VOICE_MIC, TEXT_STDIN,
-        AUTONOMY, DISCORD, MQTT_CMD, UNKNOWN,
+        AUTONOMY, DISCORD, MQTT_CMD, SIP, UNKNOWN,
     })
 
 
