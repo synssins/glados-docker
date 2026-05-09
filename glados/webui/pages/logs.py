@@ -21,7 +21,7 @@ HTML = r"""
 
   <div class="card">
     <div class="section-title">Logs</div>
-    <div class="cfg-section-desc" style="margin-bottom:12px;">
+    <div class="cfg-section-desc mb-3">
       Read-only tail of recent log content. Choose a source and how many lines back. Toggle Auto to poll the view every 10 seconds while this tab is open.
     </div>
     <div class="logs-controls">

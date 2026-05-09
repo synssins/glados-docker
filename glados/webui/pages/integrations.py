@@ -33,7 +33,7 @@ HTML = r"""
 
     <!-- Form sections (generated dynamically) -->
     <div id="cfg-form-area" style="min-height:200px;">
-      <div style="color:var(--text-dim);padding:20px;text-align:center;">Select a section or loading...</div>
+      <div class="txt-dim" style="padding:20px;text-align:center;">Select a section or loading...</div>
     </div>
   </div>
 

@@ -25,7 +25,7 @@ HTML = r"""
 
   <div class="card">
     <div class="section-title">Logging</div>
-    <div class="cfg-section-desc" style="margin-bottom:12px;">
+    <div class="cfg-section-desc mb-3">
       Per-subsystem log filter. Each group below routes a specific kind of
       diagnostic log; toggle the group off or raise its level threshold to
       reduce noise, lower it (DEBUG / INFO) when investigating. Changes
@@ -33,7 +33,7 @@ HTML = r"""
       records bypass this filter entirely; the <code>auth.audit</code>
       group is locked-on by policy.
       <br>
-      <span style="color:var(--fg-tertiary);">
+      <span class="txt-tertiary">
         Direct file path: <code>configs/logging.yaml</code> on the host.
         Global override: set <code>GLADOS_LOG_LEVEL=DEBUG</code> (or
         <code>INFO</code>, <code>SUCCESS</code>, <code>WARNING</code>) in

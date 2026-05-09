@@ -39,16 +39,16 @@ HTML = r"""
   </div>
 
   <!-- Action Buttons -->
-  <div class="card" style="margin-top:12px;">
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+  <div class="card mt-3">
+    <div class="row gap-3 wrap">
       <button class="btn" onclick="trainingSnapshot()" id="btnSnapshot">Snapshot &amp; Deploy</button>
       <button class="btn btn-danger" onclick="trainingStop()" id="btnTrainStop">Stop Training</button>
-      <span id="snapshotStatus" style="font-size:0.85rem;color:var(--text-dim);"></span>
+      <span id="snapshotStatus" class="fs-base txt-dim"></span>
     </div>
   </div>
 
   <!-- Loss Chart -->
-  <div class="card" style="margin-top:12px;">
+  <div class="card mt-3">
     <div class="section-title">Loss Curves</div>
     <div class="train-chart-wrap">
       <canvas id="trainingChart"></canvas>
@@ -56,7 +56,7 @@ HTML = r"""
   </div>
 
   <!-- Training Log -->
-  <div class="card" style="margin-top:12px;">
+  <div class="card mt-3">
     <div class="section-title">Training Log</div>
     <pre id="trainingLog" class="train-log">Loading...</pre>
   </div>
