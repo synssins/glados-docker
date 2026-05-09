@@ -628,7 +628,7 @@ async function _cfgLoadWeather() {
     _cfgRenderWeather();
     _cfgRenderWeatherPreview();
   } catch (e) {
-    body.innerHTML = '<div style="color:var(--red);">Failed to load weather: '
+    body.innerHTML = '<div class="txt-danger">Failed to load weather: '
       + escHtml(String(e)) + '</div>';
   }
 }
@@ -728,7 +728,7 @@ async function _cfgWeatherGeocode() {
   if (!qEl || !candEl) return;
   const q = qEl.value.trim();
   if (!q) {
-    candEl.innerHTML = '<span style="color:var(--orange)">Enter a postal code, city, or address first.</span>';
+    candEl.innerHTML = '<span class="txt-accent">Enter a postal code, city, or address first.</span>';
     return;
   }
   candEl.innerHTML = '<span class="spinner"></span> Looking up…';
@@ -738,17 +738,17 @@ async function _cfgWeatherGeocode() {
     const data = await r.json();
     const hits = data.candidates || [];
     if (!hits.length) {
-      candEl.innerHTML = '<span style="color:var(--red)">No matches. Try a different query.</span>';
+      candEl.innerHTML = '<span class="txt-danger">No matches. Try a different query.</span>';
       return;
     }
-    let html = '<div style="color:var(--fg-secondary);margin-bottom:var(--sp-1);">Pick a match:</div>';
+    let html = '<div class="txt-dim mb-1">Pick a match:</div>';
     for (let i = 0; i < hits.length; i++) {
       const h = hits[i];
       const fullName = [h.name, h.admin1, h.country].filter(Boolean).join(', ');
       html += '<div style="padding:var(--sp-1) 0;">'
         + '<button class="btn" style="background:var(--bg-input);text-align:left;width:100%;padding:var(--sp-2) var(--sp-3);" '
         +   'onclick="_cfgWeatherPickCandidate(' + i + ')">'
-        +   escHtml(fullName) + ' <span style="color:var(--fg-tertiary);font-size:0.72rem;">&mdash; '
+        +   escHtml(fullName) + ' <span class="txt-tertiary fs-xs">&mdash; '
         +   Number(h.latitude).toFixed(4) + ', ' + Number(h.longitude).toFixed(4) + ' &middot; ' + escHtml(h.timezone || 'auto') + '</span>'
         + '</button>'
         + '</div>';
@@ -757,7 +757,7 @@ async function _cfgWeatherGeocode() {
     if (!_weatherState) _weatherState = { config: {}, candidates: [] };
     _weatherState.candidates = hits;
   } catch (e) {
-    candEl.innerHTML = '<span style="color:var(--red)">Lookup failed: ' + escHtml(String(e)) + '</span>';
+    candEl.innerHTML = '<span class="txt-danger">Lookup failed: ' + escHtml(String(e)) + '</span>';
   }
 }
 
@@ -805,7 +805,7 @@ async function _cfgRenderWeatherPreview() {
       + ' / low ' + (t.low ?? '?') + (units.temperature || '°')
       + ', ' + escHtml(String(t.condition || '?')) + '</div>';
   } catch (e) {
-    el.innerHTML = '<span style="color:var(--red)">Preview failed: ' + escHtml(String(e)) + '</span>';
+    el.innerHTML = '<span class="txt-danger">Preview failed: ' + escHtml(String(e)) + '</span>';
   }
 }
 
@@ -847,7 +847,7 @@ async function _cfgLoadMqtt() {
     };
     _cfgRenderMqtt();
   } catch (e) {
-    body.innerHTML = '<div style="color:var(--red);">Failed to load MQTT settings: '
+    body.innerHTML = '<div class="txt-danger">Failed to load MQTT settings: '
       + escHtml(String(e)) + '</div>';
     console.error('mqtt config load failed:', e);
   }
@@ -1610,7 +1610,7 @@ function _loadTimeStatus() {
     function _row(label, value) {
       return '<div style="display:flex;justify-content:space-between;padding:3px 0;">'
         + '<span>' + label + '</span>'
-        + '<span style="color:var(--text);">' + value + '</span></div>';
+        + '<span class="txt-primary">' + value + '</span></div>';
     }
     let lastSync = '—';
     if (s.last_sync_at) {
@@ -1620,10 +1620,10 @@ function _loadTimeStatus() {
     const offsetMs = (s.offset_seconds || 0) * 1000;
     const offsetStr = (offsetMs >= 0 ? '+' : '') + offsetMs.toFixed(1) + ' ms';
     const statusBadge = s.synced
-      ? '<span style="color:var(--success, #2ecc71);">synced</span>'
+      ? '<span class="txt-ok">synced</span>'
       : (s.enabled
-          ? '<span style="color:var(--warn, #f1c40f);">unsynced (system clock)</span>'
-          : '<span style="color:var(--text-dim);">disabled</span>');
+          ? '<span class="txt-accent">unsynced (system clock)</span>'
+          : '<span class="txt-dim">disabled</span>');
     grid.innerHTML =
         _row('Status:',          statusBadge)
       + _row('Last sync:',       lastSync)
@@ -1986,11 +1986,11 @@ function _pronunciationPopulate(data) {
     + 'border-radius:4px;padding:8px;width:100%;font-family:monospace;font-size:0.82rem;';
   let html = '';
   html += '<div class="cfg-field">'
-    + '<label class="cfg-label">Word expansions <span style="color:var(--fg-secondary);font-weight:normal;">(whole-word, case-insensitive)</span></label>'
+    + '<label class="cfg-label">Word expansions <span class="txt-dim" style="font-weight:normal;">(whole-word, case-insensitive)</span></label>'
     + '<textarea id="cfg-pr-words" rows="6" style="' + ta + '">' + escHtml(wordText) + '</textarea>'
     + '</div>';
   html += '<div class="cfg-field" style="margin-top:10px;">'
-    + '<label class="cfg-label">Symbol expansions <span style="color:var(--fg-secondary);font-weight:normal;">(literal replace, e.g. <code>%</code>, <code>&amp;</code>)</span></label>'
+    + '<label class="cfg-label">Symbol expansions <span class="txt-dim" style="font-weight:normal;">(literal replace, e.g. <code>%</code>, <code>&amp;</code>)</span></label>'
     + '<textarea id="cfg-pr-symbols" rows="3" style="' + ta + '">' + escHtml(symText) + '</textarea>'
     + '</div>';
   html += '<div class="cfg-save-row" style="margin-top:14px;">'
@@ -2636,7 +2636,7 @@ async function loadPluginsPage() {
     const r = await fetch('/api/plugins', { credentials: 'same-origin' });
     if (!r.ok) {
       panel.querySelector('.mode-desc').innerHTML =
-        '<span style="color:var(--fg-muted);">Failed to load plugins (' + r.status + ')</span>';
+        '<span class="txt-muted">Failed to load plugins (' + r.status + ')</span>';
       return;
     }
     data = await r.json();
@@ -2783,7 +2783,7 @@ async function _loadPluginPane(slug, pane) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     detail = await r.json();
   } catch (e) {
-    pane.innerHTML = '<div class="mode-desc" style="color:var(--red);">'
+    pane.innerHTML = '<div class="mode-desc txt-danger">'
       + 'Failed to load plugin: ' + escAttr(e.message) + '</div>';
     return;
   }
@@ -2810,12 +2810,12 @@ function renderPluginPane(slug, detail) {
   h +=     '<div style="min-width:0;flex:1 1 320px;">';
   h +=       '<div class="section-title" style="margin-bottom:4px;">'
     +          escAttr(title)
-    +          ' <span style="color:var(--fg-secondary);font-weight:400;">v' + escAttr(m.version || '') + '</span>'
+    +          ' <span class="txt-dim" style="font-weight:400;">v' + escAttr(m.version || '') + '</span>'
     +        '</div>';
   h +=       '<div style="display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;font-size:0.82rem;color:var(--fg-secondary);">';
   h +=         '<span class="plugin-cat-badge">' + escAttr(pluginCategoryLabel(cat)) + '</span>';
   if (homepage) {
-    h +=         ' <a href="' + escAttr(homepage) + '" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none;word-break:break-all;">'
+    h +=         ' <a href="' + escAttr(homepage) + '" target="_blank" rel="noopener" class="txt-accent" style="text-decoration:none;word-break:break-all;">'
       +            escAttr(homepage) + '</a>';
   }
   h +=       '</div>';
@@ -3141,7 +3141,7 @@ function renderConfigForm(detail) {
   // synthesized identically for v1-on-disk and v2-native installs.
   const settings = (detail.manifest && detail.manifest.settings) || [];
   if (!settings.length) {
-    return '<div class="mode-desc" style="color:var(--fg-muted);">'
+    return '<div class="mode-desc txt-muted">'
          + 'This plugin has no operator-configurable settings.'
          + '</div>';
   }
@@ -3403,7 +3403,7 @@ function renderBrowseGallery(host, data) {
   if (!data.entries || !data.entries.length) {
     let h = '';
     if (data.errors && data.errors.length) {
-      h += '<div class="mode-desc" style="color:var(--red);margin-bottom:var(--sp-2);">' +
+      h += '<div class="mode-desc txt-danger mb-2">' +
            'Some indexes failed: ' +
            escAttr(data.errors.map(e => e.url + ' — ' + e.error).join('; ')) +
            '</div>';
@@ -3414,7 +3414,7 @@ function renderBrowseGallery(host, data) {
   }
   let h = '';
   if (data.errors && data.errors.length) {
-    h += '<div class="mode-desc" style="color:var(--red);margin-bottom:var(--sp-2);">' +
+    h += '<div class="mode-desc txt-danger mb-2">' +
          'Some indexes failed: ' +
          escAttr(data.errors.map(e => e.url + ' — ' + e.error).join('; ')) +
          '</div>';
@@ -5364,7 +5364,7 @@ async function memLoadFacts() {
 function _memRenderFacts(rows) {
   const el = document.getElementById('memFactsList');
   if (rows.length === 0) {
-    el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">No facts yet. Click + Add to record one.</div>';
+    el.innerHTML = '<div class="txt-dim" style="padding:8px;">No facts yet. Click + Add to record one.</div>';
     return;
   }
   let html = '';
@@ -5456,7 +5456,7 @@ function memEdit(id) {
   const html = '<div class="mem-edit-panel" data-edit-for="' + idAttr + '" style="margin-top:4px;padding:10px;background:var(--bg-input);border:1px solid var(--border-default);border-radius:var(--r-input);">'
     + '<textarea class="mem-edit-text" style="width:100%;min-height:60px;">' + escHtml(currentText) + '</textarea>'
     + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
-    +   '<span style="font-size:0.82rem;color:var(--text-dim);">Importance:</span>'
+    +   '<span class="fs-sm txt-dim">Importance:</span>'
     +   '<div class="tts-seg" id="' + segId + '">' + cells + '</div>'
     +   '<button class="btn-small" onclick="memEditSave(\'' + idAttr + '\')">Save</button>'
     +   '<button class="btn-small" onclick="memEditCancel(\'' + idAttr + '\')" style="background:#555;">Cancel</button>'
@@ -5557,7 +5557,7 @@ async function memLoadRecent() {
 function _memRenderRecent(rows) {
   const el = document.getElementById('memRecentList');
   if (rows.length === 0) {
-    el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">No auto-learned facts yet.</div>';
+    el.innerHTML = '<div class="txt-dim" style="padding:8px;">No auto-learned facts yet.</div>';
     return;
   }
   let html = '';
@@ -5580,7 +5580,7 @@ function _memRecentItem(r) {
   let statusLabel = isReinforcement
     ? '<span class="mem-bump">reinforced</span> ' + origLabel + ' &rarr; ' + impLabel + ', mentions=' + mentions
     : 'new  importance=' + impLabel;
-  const status = (m.review_status === 'pending') ? '  <span style="color:var(--orange);">pending</span>' : '';
+  const status = (m.review_status === 'pending') ? '  <span class="txt-accent">pending</span>' : '';
   let html = '<div class="mem-recent" data-id="' + id + '" data-importance="' + imp + '" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
     + '<div style="min-width:0;flex:1;">'
     +   '<div class="mem-fact-text">' + doc + '</div>'
@@ -5630,7 +5630,7 @@ async function memLoadPending() {
     const el = document.getElementById('memPendingList');
     const rows = data.rows || [];
     if (rows.length === 0) {
-      el.innerHTML = '<div style="color:var(--fg-secondary);padding:8px;">Nothing pending.</div>';
+      el.innerHTML = '<div class="txt-dim" style="padding:8px;">Nothing pending.</div>';
       return;
     }
     let html = '';
@@ -5999,13 +5999,13 @@ async function _ttsRowSaveToggle(saveBtn, filename) {
       if (!category) return;
       category = category.trim().toLowerCase();
       if (!/^[a-z][a-z0-9_]*$/.test(category)) {
-        statusEl.innerHTML = '<span style="color:var(--red)">Invalid name.</span>';
+        statusEl.innerHTML = '<span class="txt-danger">Invalid name.</span>';
         return;
       }
       newDesc = prompt('Short description of this category:') || '';
       createNew = true;
     }
-    if (!category) { statusEl.innerHTML = '<span style="color:var(--orange)">Pick a category.</span>'; return; }
+    if (!category) { statusEl.innerHTML = '<span class="txt-accent">Pick a category.</span>'; return; }
     const save_as = fnInput.value.trim() || filename;
     btn.disabled = true;
     statusEl.innerHTML = '<span class="spinner"></span>';
@@ -6021,7 +6021,7 @@ async function _ttsRowSaveToggle(saveBtn, filename) {
       saveBtn.disabled = true;
       form.remove();
     } catch(e) {
-      statusEl.innerHTML = '<span style="color:var(--red)">' + escHtml(String(e.message||e)) + '</span>';
+      statusEl.innerHTML = '<span class="txt-danger">' + escHtml(String(e.message||e)) + '</span>';
       btn.disabled = false;
     }
   };
@@ -6646,10 +6646,10 @@ async function loadVerbositySliders() {
         + '<span style="font-size:0.85rem;min-width:36px;text-align:right;">' + pct + '%</span>'
         + '</div></div>';
     }
-    container.innerHTML = html || '<div style="color:var(--fg-secondary);">No announcement scenarios found.</div>';
+    container.innerHTML = html || '<div class="txt-dim">No announcement scenarios found.</div>';
     container.style.opacity = '1';
   } catch (e) {
-    container.innerHTML = '<div style="color:var(--error);">Failed to load announcement settings.</div>';
+    container.innerHTML = '<div class="txt-danger">Failed to load announcement settings.</div>';
     container.style.opacity = '1';
     console.error('Failed to load verbosity:', e);
   }
@@ -6687,7 +6687,7 @@ async function _cfgLoadSpeakersPicker() {
     };
     _cfgRenderSpeakersPicker();
   } catch (e) {
-    body.innerHTML = '<div style="color:var(--red);">Failed to load speakers: '
+    body.innerHTML = '<div class="txt-danger">Failed to load speakers: '
       + escHtml(String(e)) + '</div>';
     console.error('speakers picker load failed:', e);
   }
@@ -6793,7 +6793,7 @@ async function loadStartupSpeakers() {
     const data = await resp.json();
     const speakers = data.speakers || [];
     if (!speakers.length) {
-      container.innerHTML = '<div style="color:var(--fg-secondary);">No speakers found in speakers.yaml.</div>';
+      container.innerHTML = '<div class="txt-dim">No speakers found in speakers.yaml.</div>';
       container.style.opacity = '1';
       return;
     }
@@ -6814,7 +6814,7 @@ async function loadStartupSpeakers() {
     container.innerHTML = html;
     container.style.opacity = '1';
   } catch (e) {
-    container.innerHTML = '<div style="color:var(--error);">Failed to load speakers.</div>';
+    container.innerHTML = '<div class="txt-danger">Failed to load speakers.</div>';
     container.style.opacity = '1';
     console.error('Failed to load startup speakers:', e);
   }
@@ -6993,7 +6993,7 @@ async function loadWeather() {
     const resp = await fetch('/api/weather');
     const data = await resp.json();
     if (data.error) {
-      panel.innerHTML = '<div style="color:var(--fg-secondary)">' + escHtml(data.error) + '</div>';
+      panel.innerHTML = '<div class="txt-dim">' + escHtml(data.error) + '</div>';
       return;
     }
     const c = data.current || {};
@@ -7030,12 +7030,12 @@ async function loadGPU() {
     const resp = await fetch('/api/gpu');
     const data = await resp.json();
     if (data.error) {
-      panel.innerHTML = '<div style="color:var(--fg-secondary)">' + escHtml(data.error) + '</div>';
+      panel.innerHTML = '<div class="txt-dim">' + escHtml(data.error) + '</div>';
       return;
     }
     const gpus = data.gpus || [];
     if (!gpus.length) {
-      panel.innerHTML = '<div style="color:var(--fg-secondary)">No GPUs detected</div>';
+      panel.innerHTML = '<div class="txt-dim">No GPUs detected</div>';
       return;
     }
     let html = '';
@@ -7220,7 +7220,7 @@ async function loadRobots() {
     const nodes = data.nodes || {};
     const nodeIds = Object.keys(nodes);
     if (nodeIds.length === 0) {
-      list.innerHTML = '<div style="color:var(--fg-secondary);">No nodes configured. Add one below.</div>';
+      list.innerHTML = '<div class="txt-dim">No nodes configured. Add one below.</div>';
     } else {
       let html = '<div class="health-grid">';
       for (const [nid, n] of Object.entries(nodes)) {
@@ -7249,7 +7249,7 @@ async function loadRobots() {
       for (const [bid, b] of Object.entries(bots)) {
         const bLabel = b.name || bid;
         bhtml += '<div style="background:var(--bg-input);padding:8px 10px;border-radius:4px;margin-bottom:4px;">'
-          + '<strong>' + escHtml(bLabel) + '</strong> <span style="color:var(--fg-secondary);">(' + escHtml(b.profile) + ')</span>';
+          + '<strong>' + escHtml(bLabel) + '</strong> <span class="txt-dim">(' + escHtml(b.profile) + ')</span>';
         for (const [role, rn] of Object.entries(b.nodes || {})) {
           const rdot = rn.reachable ? '&#9679;' : '&#9675;';
           bhtml += ' <span style="margin-left:8px;">' + rdot + ' ' + escHtml(role) + ': ' + escHtml(rn.node_id) + '</span>';
