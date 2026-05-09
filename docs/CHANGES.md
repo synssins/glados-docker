@@ -5293,3 +5293,104 @@ a non-technical user replicating the camera-event-to-TV-notification
 HA setup that needed rescuing this same session (unrelated to
 Slice 1's substrate but surfaced during deploy testing and got
 fixed in passing).
+
+---
+
+## Change 45 — SIP Slice 1: foundation modules + tests (transport TBD) (2026-05-09)
+
+Inbound-call SIP slice — audio bridge, PIN gate, IVR menu,
+speculative TTS, call recording, persona injection, audit logging,
+and the call_session state machine that ties them all together.
+**Foundation only — not yet live-shippable** because the audio
+transport between baresip and our Python audio bridge has one
+remaining decision (see "Open before live ship" below).
+
+**Why this shape.** The plan at
+``docs/superpowers/plans/2026-05-08-sip-slice-1-inbound.md`` assumed
+baresip's stock ``aufile`` module could pipe real-time PCM over
+named pipes. During Task 5 implementation review that assumption
+broke — ``aufile`` is WAV-only. The slice was rebuilt with the
+audio bridge transport-agnostic (consumes any
+``asyncio.StreamReader/Writer``) and the actual transport
+implementation deferred to call_session integration.
+
+**What shipped in ``glados/sip/`` (Tasks 1–12 — 12 modules + 4 handler files):**
+
+| Module | Purpose | Tests |
+|---|---|---|
+| ``__init__.py`` + ``config.py`` | ``SipConfig`` Pydantic models + YAML loader; two-gate activation (env + YAML) | 24 |
+| ``_baresip_config.py`` | Render baresip ``config`` + ``accounts`` from ``SipConfig`` | 13 |
+| ``baresip_supervisor.py`` | Spawn baresip subprocess, ready-detection, restart on crash, graceful shutdown | 5 |
+| ``ctrl_client.py`` | Async TCP client for baresip ``ctrl_tcp``; netstring-framed JSON; auto-reconnect | 10 |
+| ``audio_bridge.py`` | PCM resample (8 ↔ 16 kHz via ``scipy.signal.resample_poly``) + self-listen mute. Transport-agnostic | 15 |
+| ``pin_gate.py`` | 4-digit PIN gate (DTMF + STT digit parsing); 3-failure cutoff | 34 |
+| ``speculative_tts.py`` | Per-call cache for likely-next TTS responses; cancellable branches; concurrency cap | 14 |
+| ``ivr.py`` + ``handlers/`` × 4 | DTMF menu state machine + 4 deterministic handlers (``house_status``, ``security_state``, ``door_locks``, ``doorbell_recent``) | 10 + 16 |
+| ``recording.py`` | Per-call audio (WAV / MP3) + JSON metadata + transcript ``.txt``; FIFO 5 retention | 12 |
+| ``persona.py`` | ``PHONE_CALL_PROMPT_FRAGMENT`` (potato-form) + ``CANNED_TEXT`` registry + ``bake_canned_responses`` | 14 |
+| ``call_session.py`` | Top-level state machine (RINGING → GREETING → PIN → MENU/CONVO → BYE) tying every other module together | 6 |
+| ``audit.py`` (+ ``Origin.SIP`` in ``observability/audit.py``) | SIP-call audit emitters routed through the existing AuditLogger | 7 |
+
+180 new unit tests. Full suite: 2067 passed / 5 skipped (was 1887/5
+on ``main`` before the slice branch).
+
+**Configuration.** Operator-facing YAML at ``configs/sip.example.yaml``
+(copy to ``configs/sip.yaml`` to enable). Two gates:
+
+1. ``GLADOS_SIP_ENABLED`` env var — ``true`` lets the SIP module load
+2. ``configs/sip.yaml`` ``enabled: true`` — module registers + accepts calls
+
+Both must be set; either being false short-circuits the SIP code
+paths entirely.
+
+**Image change.** ``Dockerfile`` adds ``baresip`` (BSD-3 core only,
+no GPL/LGPL module recommendations) via apt. ``pyproject.toml``
+adds ``scipy`` (resample) and ``pydub`` (MP3 encoding).
+``.env.example`` documents ``GLADOS_SIP_ENABLED``.
+
+**Open before live ship — two remaining items, Operator-decided:**
+
+1. **Audio transport** (the gnarly one). baresip's stock ``aufile``
+   module is WAV-only, so the original FIFO+aufile sketch in the
+   plan won't carry real-time PCM. Two viable paths:
+   - Custom baresip C audio module (~150 LOC) implementing
+     ``auplay``/``ausrc``, exposing PCM over a Unix domain socket.
+     Compiled in the Dockerfile against ``baresip-dev``. Cleanest
+     architecture; slight extra build complexity. Estimate ~3–4 h.
+   - Skip baresip's audio side: use baresip ONLY for SIP signalling
+     (REGISTER/INVITE/SDP/BYE), do RTP send/receive in Python on
+     the SDP-negotiated UDP port. PCMU is just μ-law over int16;
+     RTP is a 12-byte header + payload. Estimate ~2–3 h, no native
+     build. Risk: may need to coax baresip to release the RTP
+     port for Python to bind.
+   ``audio_bridge.py`` consumes ``asyncio.StreamReader/Writer``
+   regardless of which path is picked, so the rest of the slice
+   stays stable.
+
+2. **Engine.process wiring.** ``CallSessionDeps.engine_process`` is
+   an injected ``Callable[[str], Awaitable[str]]``. Wiring it to
+   the existing ``Glados`` engine (in ``glados/core/engine.py``,
+   ~1600 lines) needs a small wrapper that prepends
+   ``persona.PHONE_CALL_PROMPT_FRAGMENT`` to the system prompt and
+   calls the existing chat path. Held until the transport decision
+   crystallises so the wiring lands once, on a runnable substrate.
+   Estimate ~30 min.
+
+After both: durable image build + operator validation = Slice 1
+shippable. Total remaining ETA: ~3–5 h.
+
+**Branch state.** ``sip-slice-1-inbound`` at commit ``bf495e7``,
+pushed to origin. 13 commits beyond ``main``. Awaiting operator
+review + transport-path decision before merge.
+
+**Side effects to watch.** None on currently-deployed code paths —
+the SIP module never loads when ``GLADOS_SIP_ENABLED`` is unset
+(the default in ``.env.example``), and the existing audit log,
+config store, observability bus are unchanged except for adding
+``Origin.SIP`` (additive — won't break older readers that don't
+recognise it).
+
+**Companion documentation.**
+- ``docs/superpowers/specs/2026-05-08-sip-client-design.md`` — full
+  spec (rev 2026-05-09 with the transport-agnostic audio-bridge note)
+- ``docs/superpowers/plans/2026-05-08-sip-slice-1-inbound.md`` — task plan
