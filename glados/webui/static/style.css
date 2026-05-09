@@ -2729,3 +2729,146 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   letter-spacing: 0.02em;
 }
 .btn-tiny:hover { background: var(--bg-card); }
+
+/* ════════════════════════════════════════════════════════════════
+   === Utility classes (Phase 6, 2026-05-09, Approach 2) ===
+   ════════════════════════════════════════════════════════════════
+   Single-purpose utilities mapped to v3 tokens. Replaces the most
+   repeated inline-style patterns observed in the v3 audit. Pick a
+   utility before reaching for inline `style="..."`.
+
+   Naming convention:
+     .row, .col           — flex row / column shells
+     .between, .center,   — alignment modifiers (combine with .row)
+     .end, .baseline, .start
+     .wrap                — flex-wrap
+     .gap-N               — gap (N = 1..6 mapping to --sp-N)
+     .mt-N, .mb-N         — margin-top / margin-bottom
+     .pt-N, .pb-N, .px-N, .py-N — padding helpers
+     .fs-XX               — font-size (matches token name)
+     .txt-dim, etc        — text color (matches semantic alias)
+     .is-hidden           — display:none (works on any element)
+     .w-full              — width:100%
+   ============================================================ */
+
+/* Layout shells */
+.row { display: flex; align-items: center; }
+.col { display: flex; flex-direction: column; }
+.row.between { justify-content: space-between; }
+.row.center { justify-content: center; }
+.row.end { justify-content: flex-end; }
+.row.baseline { align-items: baseline; }
+.row.start { align-items: flex-start; }
+.row.wrap, .col.wrap { flex-wrap: wrap; }
+
+/* Common combinations seen 3+ times in the audit */
+.row-between { display: flex; justify-content: space-between; align-items: center; }
+.row-center  { display: flex; justify-content: center; align-items: center; }
+.col-tight   { display: flex; flex-direction: column; gap: var(--sp-1); }
+
+/* Gap utilities — mapped to spacing scale */
+.gap-1 { gap: var(--sp-1); }
+.gap-2 { gap: var(--sp-2); }
+.gap-3 { gap: var(--sp-3); }
+.gap-4 { gap: var(--sp-4); }
+.gap-5 { gap: var(--sp-5); }
+.gap-6 { gap: var(--sp-6); }
+
+/* Margin utilities */
+.mt-0 { margin-top: 0; }
+.mt-1 { margin-top: var(--sp-1); }
+.mt-2 { margin-top: var(--sp-2); }
+.mt-3 { margin-top: var(--sp-3); }
+.mt-4 { margin-top: var(--sp-4); }
+.mt-5 { margin-top: var(--sp-5); }
+.mb-0 { margin-bottom: 0; }
+.mb-1 { margin-bottom: var(--sp-1); }
+.mb-2 { margin-bottom: var(--sp-2); }
+.mb-3 { margin-bottom: var(--sp-3); }
+.mb-4 { margin-bottom: var(--sp-4); }
+.mb-5 { margin-bottom: var(--sp-5); }
+
+/* Padding utilities */
+.pt-1 { padding-top: var(--sp-1); }
+.pt-2 { padding-top: var(--sp-2); }
+.pt-3 { padding-top: var(--sp-3); }
+.pb-1 { padding-bottom: var(--sp-1); }
+.pb-2 { padding-bottom: var(--sp-2); }
+.pb-3 { padding-bottom: var(--sp-3); }
+.px-1 { padding-left: var(--sp-1); padding-right: var(--sp-1); }
+.px-2 { padding-left: var(--sp-2); padding-right: var(--sp-2); }
+.px-3 { padding-left: var(--sp-3); padding-right: var(--sp-3); }
+.py-1 { padding-top: var(--sp-1); padding-bottom: var(--sp-1); }
+.py-2 { padding-top: var(--sp-2); padding-bottom: var(--sp-2); }
+.py-3 { padding-top: var(--sp-3); padding-bottom: var(--sp-3); }
+
+/* Font-size utilities — match the v3 scale token names */
+.fs-2xs    { font-size: var(--fs-2xs); }
+.fs-xs     { font-size: var(--fs-xs); }
+.fs-sm     { font-size: var(--fs-sm); }
+.fs-base   { font-size: var(--fs-base); }
+.fs-md     { font-size: var(--fs-md); }
+.fs-lg     { font-size: var(--fs-lg); }
+
+/* Text-color utilities — semantic */
+.txt-primary  { color: var(--fg-primary); }
+.txt-dim      { color: var(--fg-secondary); }
+.txt-muted    { color: var(--fg-muted); }
+.txt-tertiary { color: var(--fg-tertiary); }
+.txt-accent   { color: var(--orange); }
+.txt-danger   { color: var(--red); }
+.txt-ok       { color: var(--green); }
+.txt-info     { color: var(--blue); }
+
+/* Visibility */
+.is-hidden { display: none !important; }
+
+/* Width helpers */
+.w-full { width: 100%; }
+.w-auto { width: auto; }
+
+/* Inline-input — replaces the reinvented input chrome pattern that
+   shows up in 6+ places (system.py robot-node form, etc.). Same
+   visual as .cfg-field input but applicable to one-off inputs that
+   aren't inside a .cfg-field wrapper. */
+.cfg-inline-input {
+  background: var(--bg-input);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-input);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-base);
+  font-family: var(--font-mono);
+}
+.cfg-inline-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+/* Banner — error tone for inline messages (form errors, load failures).
+   Replaces the hardcoded #5c1a1a/#f8d7da combos seen in users_page.py. */
+.banner-error {
+  padding: var(--sp-2) var(--sp-3);
+  background: rgba(224, 85, 85, 0.15);
+  border: 1px solid var(--border-danger);
+  border-radius: var(--r-input);
+  color: var(--fg-primary);
+  font-size: var(--fs-base);
+  margin-bottom: var(--sp-2);
+}
+
+/* Cancel/secondary button — replaces inline "background:#555" used on
+   modal Cancel buttons. .btn-secondary already exists with similar
+   intent; this is the v3-token version for places that want the
+   token-flavored variant. */
+.btn-cancel {
+  background: transparent;
+  color: var(--fg-secondary);
+  border: 1px solid var(--border-default);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-input);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-cancel:hover { color: var(--fg-primary); border-color: var(--border-strong); }
