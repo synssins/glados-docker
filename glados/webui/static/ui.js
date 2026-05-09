@@ -1122,7 +1122,7 @@ function _disambPopulate(data) {
 function _disambRenderAliasRow(host, kind, keyword, target) {
   const row = document.createElement('div');
   row.className = 'cfg-disamb-alias-row cfg-disamb-alias-' + kind;
-  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.classList.add('row', 'gap-1');
   row.innerHTML = ''
     + '<input type="text" class="cfg-disamb-alias-keyword" value="' + escAttr(keyword) + '" placeholder="e.g. living floor" style="flex:1;">'
     + '<span style="opacity:0.6;">&rarr;</span>'
@@ -1146,7 +1146,7 @@ function _disambAddAreaAlias() {
 function _disambRenderTokenRow(host, t) {
   const row = document.createElement('div');
   row.className = 'cfg-disamb-token-row';
-  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.classList.add('row', 'gap-1');
   row.innerHTML = ''
     + '<input type="text" class="cfg-disamb-token" value="' + escAttr(t) + '" placeholder="e.g. pixel" style="flex:1;">'
     + '<button type="button" class="btn btn-danger" title="Remove token">&times;</button>';
@@ -1163,7 +1163,7 @@ function _disambAddToken() {
 function _disambRenderPairRow(host, a, b) {
   const row = document.createElement('div');
   row.className = 'cfg-disamb-pair-row';
-  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.classList.add('row', 'gap-1');
   row.innerHTML = ''
     + '<input type="text" class="cfg-disamb-pair-a" value="' + escAttr(a) + '" placeholder="e.g. upstairs" style="flex:1;">'
     + '<span style="opacity:0.6;">&harr;</span>'
@@ -4404,17 +4404,17 @@ async function _quipDryRun() {
     if (resEl) {
       if (data.line) {
         resEl.textContent = '→ ' + data.line;
-        resEl.style.color = '#9cdcfe';
+        resEl.style.color = 'var(--blue)';
       } else if (data.library_empty) {
         resEl.textContent = 'Library is empty — composer would fall back to LLM speech.';
-        resEl.style.color = '#f66';
+        resEl.style.color = 'var(--red)';
       } else {
         resEl.textContent = 'No line matched — composer would fall back to LLM speech for this request.';
-        resEl.style.color = '#fa5';
+        resEl.style.color = 'var(--orange)';
       }
     }
   } catch (e) {
-    if (resEl) { resEl.textContent = 'Error: ' + e.message; resEl.style.color = '#f66'; }
+    if (resEl) { resEl.textContent = 'Error: ' + e.message; resEl.style.color = 'var(--red)'; }
   }
 }
 
@@ -4645,7 +4645,7 @@ function _cmdrecPopulate(data) {
 function _cmdrecRenderVerbRow(host, v) {
   const row = document.createElement('div');
   row.className = 'cfg-cmdrec-verb-row';
-  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.classList.add('row', 'gap-1');
   row.innerHTML = ''
     + '<input type="text" class="cfg-cmdrec-verb" value="' + escAttr(v) + '" placeholder="e.g. nudge" style="flex:1;">'
     + '<button type="button" class="btn btn-danger" title="Remove verb">&times;</button>';
@@ -4657,7 +4657,7 @@ function _cmdrecRenderVerbRow(host, v) {
 function _cmdrecRenderPatternRow(host, p) {
   const row = document.createElement('div');
   row.className = 'cfg-cmdrec-pattern-row';
-  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  row.classList.add('row', 'gap-1');
   row.innerHTML = ''
     + '<input type="text" class="cfg-cmdrec-pattern" value="' + escAttr(p) + '" placeholder="e.g. \\\\bthe cats? (?:need|want)\\\\b" style="flex:1;font-family:monospace;">'
     + '<button type="button" class="btn btn-danger" title="Remove pattern">&times;</button>';
@@ -4865,9 +4865,9 @@ async function cfgSaveSsl() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(data),
   }).then(r => r.json()).then(d => {
-    if (d.ok) { result.textContent = 'Saved. Restart container for changes to take effect.'; result.style.color = '#6f6'; }
-    else { result.textContent = 'Error: ' + (d.error || 'unknown'); result.style.color = '#f66'; }
-  }).catch(e => { result.textContent = 'Error: ' + e; result.style.color = '#f66'; });
+    if (d.ok) { result.textContent = 'Saved. Restart container for changes to take effect.'; result.style.color = 'var(--green)'; }
+    else { result.textContent = 'Error: ' + (d.error || 'unknown'); result.style.color = 'var(--red)'; }
+  }).catch(e => { result.textContent = 'Error: ' + e; result.style.color = 'var(--red)'; });
 }
 
 async function sslRefreshStatus() {
@@ -4901,7 +4901,7 @@ async function sslRefreshStatus() {
 async function sslRequestLetsEncrypt() {
   const resultEl = document.getElementById('ssl-request-result');
   resultEl.textContent = 'Requesting certificate from Lets Encrypt (30-60s)...';
-  resultEl.style.color = '#ccc';
+  resultEl.style.color = 'var(--fg-secondary)';
   try {
     const r = await fetch('/api/ssl/request', {method: 'POST'});
     const d = await r.json();
