@@ -4,10 +4,12 @@ Extracted from glados/webui/tts_ui.py during Phase 3 of the WebUI
 refactor (2026-04-21). This module exports only its tab-content
 block; the page shell (head, sidebar, main open/close) lives in
 pages/_shell.py and composition happens in glados.webui.tts_ui.
+
+Phase 6 / Approach 2 sweep (2026-05-09): inline-style attributes
+replaced with v3 utility classes. Phantom-var references swept.
 """
 
 HTML = r"""
-<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 <!-- ================================================================ -->
 <!-- CONFIGURATION > MEMORY (Phase 5)                                   -->
 <!-- ================================================================ -->
@@ -36,32 +38,32 @@ HTML = r"""
   <div class="card">
     <div class="section-title">Memory configuration</div>
     <div class="mem-radio-row">
-      <div class="mode-label" style="margin-bottom:4px;">Default status for new passive facts</div>
+      <div class="mode-label mb-1">Default status for new passive facts</div>
       <label><input type="radio" name="memDefaultStatus" value="approved" onchange="memSaveDefaultStatus('approved')"> Approved (enters RAG immediately)</label>
       <label><input type="radio" name="memDefaultStatus" value="pending" onchange="memSaveDefaultStatus('pending')"> Pending (manual review)</label>
-      <div class="mode-desc" style="margin-top:4px;">
+      <div class="mode-desc mt-1">
         Stored as <code>memory.passive_default_status</code>. Approved = reinforcement-on-repetition via ChromaDB similarity dedup.
         Pending = facts queue below for operator approval before entering RAG.
       </div>
     </div>
-    <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+    <div class="row gap-3 wrap mt-4">
       <button class="btn-small" onclick="memSweepRetention()">Sweep retention now</button>
-      <span id="memRetentionStatus" style="font-size:0.78rem;color:var(--text-dim);"></span>
+      <span id="memRetentionStatus" class="fs-xs txt-dim"></span>
     </div>
   </div>
 
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
-      <div class="section-title" style="margin-bottom:0;">Long-term facts</div>
-      <div style="display:flex;gap:6px;align-items:center;">
+    <div class="row between wrap gap-2">
+      <div class="section-title mb-0">Long-term facts</div>
+      <div class="row gap-1">
         <input id="memSearchInput" type="text" placeholder="Search..." oninput="memSearchDebounced()">
         <button class="btn-small" onclick="memShowAddForm()">+ Add</button>
       </div>
     </div>
-    <div id="memAddForm" style="display:none;margin-top:12px;">
+    <div id="memAddForm" class="mt-3" style="display:none;">
       <textarea id="memAddText" placeholder="The operator prefers the living room lights at 40% in the evening"></textarea>
-      <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <span style="font-size:0.82rem;color:var(--text-dim);">Importance:</span>
+      <div class="row gap-2 wrap mt-1">
+        <span class="fs-sm txt-dim">Importance:</span>
         <div class="tts-seg" id="memAddImportanceSeg">
           <div class="tts-seg-cell" data-value="0.20" onclick="memSegSelect(this,'memAddImportanceSeg')">Background</div>
           <div class="tts-seg-cell" data-value="0.40" onclick="memSegSelect(this,'memAddImportanceSeg')">Useful</div>
@@ -70,28 +72,28 @@ HTML = r"""
           <div class="tts-seg-cell" data-value="1.00" onclick="memSegSelect(this,'memAddImportanceSeg')">Extreme</div>
         </div>
         <button class="btn-small" onclick="memAddFact()">Save</button>
-        <button class="btn-small" onclick="memHideAddForm()" style="background:#555;">Cancel</button>
+        <button class="btn-cancel" onclick="memHideAddForm()">Cancel</button>
       </div>
     </div>
-    <div id="memFactsList" style="margin-top:12px;">Loading...</div>
+    <div id="memFactsList" class="mt-3">Loading...</div>
   </div>
 
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <div class="section-title" style="margin-bottom:0;">Recently learned</div>
+    <div class="row between">
+      <div class="section-title mb-0">Recently learned</div>
       <button class="btn-small" onclick="memLoadRecent()">Refresh</button>
     </div>
-    <div class="mode-desc" style="margin-top:4px;">Facts she&rsquo;s added on her own from conversation. Review and promote/reject if needed.</div>
-    <div id="memRecentList" style="margin-top:10px;">Loading...</div>
+    <div class="mode-desc mt-1">Facts she&rsquo;s added on her own from conversation. Review and promote/reject if needed.</div>
+    <div id="memRecentList" class="mt-2">Loading...</div>
   </div>
 
   <div class="card" id="memPendingCard" style="display:none;">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <div class="section-title" style="margin-bottom:0;">Pending review</div>
+    <div class="row between">
+      <div class="section-title mb-0">Pending review</div>
       <button class="btn-small" onclick="memLoadPending()">Refresh</button>
     </div>
-    <div class="mode-desc" style="margin-top:4px;">Facts auto-extracted but not yet approved for RAG.</div>
-    <div id="memPendingList" style="margin-top:10px;">Loading...</div>
+    <div class="mode-desc mt-1">Facts auto-extracted but not yet approved for RAG.</div>
+    <div id="memPendingList" class="mt-2">Loading...</div>
   </div>
 </div>
 </div>
