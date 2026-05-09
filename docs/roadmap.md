@@ -874,6 +874,19 @@ of scope for this repo.)
   `conftest.py` at the repo root. Surfaced during the design-system v3
   audit (2026-05-07), unrelated to the work but blocks default
   invocations of pytest.
+- **GHCR build LFS budget exhausted** — `.github/workflows/build.yml`
+  fails at `actions/checkout@v4` with `lfs: true` ("This repository
+  exceeded its LFS budget. The account responsible for the budget
+  should increase it to restore access."). Three consecutive `main`
+  pushes failed at this step (2026-05-05 ×2, 2026-05-08). Workaround
+  in place: `scripts/_local_deploy.py` builds on the docker host
+  directly, skipping LFS. Permanent fix needs one of: (a) raise the
+  GitHub LFS budget on the account, (b) move the model files
+  (`models/TTS/glados.onnx`, `models/TTS/phomenizer_en.onnx`) out of
+  LFS and into a bind-mounted volume populated separately at deploy
+  time, (c) workflow change to skip the LFS pull and download models
+  in a later step from a non-LFS source. Surfaced after the
+  design-system v3 deploy (2026-05-08).
 
 ### Standards-compliance scanning
 
