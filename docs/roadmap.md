@@ -816,6 +816,66 @@ of this repo's scope.
 
 ---
 
+## Audio Destination Router (operator-flagged 2026-05-09)
+
+**Context:** Today every TTS source has a hard-coded destination —
+WebUI Chat streams to the browser tab, HA Conversation Bridge plays
+on the configured default Sonos, doorbell screener routes through
+its own HA service call, etc. The operator wants per-session
+operator-selectable routing so audio can land on the local browser
+device, any HA `media_player.*` speaker, or (post-SIP) the active
+phone call.
+
+**Possibly bundled with SIP audio work** — the SIP slice introduces
+a new "destination" type (the active-call audio bridge), and it's
+cleanest if SIP slots into a unified router rather than carrying
+its own bespoke audio dispatch. Operator's instinct, captured here
+to revisit when planning lands.
+
+**Operator-decided scope (2026-05-09):**
+
+- **UI scope: narrow.** Picker on WebUI Chat + TTS Generator only.
+  Wide unified-router scope (folding HA bridge, doorbell,
+  autonomous agents, SIP announcements behind one router) deferred
+  — likely revisits when SIP Slice 1 lands and the "active phone
+  call" destination type surfaces naturally.
+- **Picker granularity: per-session.** Pick once at the top of the
+  chat tab, all responses go there. Cookie/localStorage persisted.
+  Per-message override is a possible later polish round.
+- **Default destination: the device interacting with chat** (i.e.
+  the local browser tab the operator is using). Speakers are
+  opt-in.
+- **Estimated effort: ~6–10 h.**
+
+**Architectural anchors:**
+- Speaker list = HA `media_player.*` auto-discovered, optionally
+  filtered through a curated allowlist in `configs/speakers.yaml`
+  (Sonos noise entities like crossfade controls hidden by default)
+- Standalone unauthenticated `/tts` page stays browser-only —
+  anonymous traffic must never drive household speakers
+- Multi-target ("play on browser AND speaker") deferred to a polish
+  round; v1 is exclusive
+- HA-routed audio adds ~500 ms–1 s vs the local-streaming path;
+  expectation-set in the picker tooltip
+
+**Existing infrastructure to build on:**
+- `glados/audio_io/homeassistant_io.py` already routes TTS to HA
+  media_players for engine-driven speech (default speaker config
+  per Memory page)
+- WebUI Chat path streams TTS through `tts_ui.py:/api/chat/stream`
+  proxy to the browser via SSE — already the "browser destination"
+  case
+- Standalone `/tts` page already exists for fire-and-forget
+  synthesis
+
+**Status:** TODO. No spec, no plan, no branch. Likely sequencing: do
+SIP Slice 1 first (different code paths), then revisit this — by
+that point SIP's audio bridge gives concrete shape to what "active
+call as a destination" looks like, and the wide-scope router
+becomes more natural.
+
+---
+
 ## Later-stage integrations
 
 - **Open WebUI integration** — proxy and auth shape so Open WebUI
