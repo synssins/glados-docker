@@ -1,6 +1,6 @@
 # SIP Client Design — GLaDOS Phone Endpoint
 
-**Date:** 2026-05-08 (rev 2026-05-08 — switched SIP stack from pyVoIP to baresip-subprocess after license + maintenance review)
+**Date:** 2026-05-08 (rev 2026-05-08 — switched SIP stack from pyVoIP to baresip-subprocess after license + maintenance review; rev 2026-05-09 — audio bridge transport now agnostic of FIFOs after baresip aufile module confirmed WAV-only)
 **Status:** Spec — operator-approved architecture, plan generation in progress for Slice 1.
 
 ---
@@ -484,7 +484,28 @@ SDP offer/answer at INVITE time. Preference order: PCMU (μ-law 8 kHz) > PCMA (A
 
 ### Resampling
 
-PSTN audio is 8 kHz. Existing STT pipeline expects 16 kHz mono PCM. Resample 8k → 16k on inbound, 16k → 8k on outbound. Use scipy.signal.resample or sox if already in image.
+PSTN audio is 8 kHz. Existing STT pipeline expects 16 kHz mono PCM. Resample 8k → 16k on inbound, 16k → 8k on outbound. ``scipy.signal.resample_poly`` (anti-aliased) shipped in ``glados/sip/audio_bridge.py``.
+
+### Transport between baresip ↔ Python (revised 2026-05-09)
+
+``audio_bridge.py`` is **transport-agnostic** — it consumes asyncio
+stream readers/writers, not FIFOs. baresip's stock ``aufile`` module
+is WAV-only (verified during Task 5 implementation review), so the
+FIFO+aufile path the original spec sketched won't work for real-time
+PCM streaming. Final transport choice deferred to Task 11
+(``call_session.py``). Two viable options:
+
+1. **Custom baresip C audio module (~150 LOC)** that implements
+   ``auplay``/``ausrc`` and exposes PCM over a Unix domain socket.
+   Compiled in the Dockerfile against ``baresip-dev``. Cleanest
+   architecture; slight extra build complexity.
+2. **Skip baresip's audio side entirely.** Use baresip ONLY for SIP
+   signalling; do RTP send/receive in Python directly on the
+   SDP-negotiated UDP port. baresip publishes the relevant info via
+   ``ctrl_tcp``. More Python work but no native code to compile.
+
+Either way, ``audio_bridge.py`` stays the same — it sees clean async
+PCM streams regardless of how the bytes arrive.
 
 ### TTS streaming
 
