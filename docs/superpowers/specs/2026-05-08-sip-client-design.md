@@ -1,7 +1,7 @@
 # SIP Client Design — GLaDOS Phone Endpoint
 
-**Date:** 2026-05-08
-**Status:** Spec — operator-approved architecture, awaiting plan generation per slice.
+**Date:** 2026-05-08 (rev 2026-05-08 — switched SIP stack from pyVoIP to baresip-subprocess after license + maintenance review)
+**Status:** Spec — operator-approved architecture, plan generation in progress for Slice 1.
 
 ---
 
@@ -36,43 +36,76 @@ Slice 1 is independently shippable. Slice 2 + Approach 2 are a combined push. Sl
 
 ## Architecture overview
 
+The SIP stack is **baresip** running as a managed subprocess inside the
+GLaDOS container. baresip handles SIP signalling (REGISTER, INVITE, BYE,
+INFO, codec offer/answer, NAT awareness) and RTP. We control it via
+baresip's `ctrl_tcp` JSON interface on loopback, and we bridge audio via
+named pipes (FIFOs) using baresip's `aufile` module for PCM I/O. Python
+sees PCM samples flowing through the FIFOs — same shape the existing
+STT/TTS pipeline expects.
+
 ```
-Inbound:
-  PBX (192.168.1.1) ─SIP/RTP──▶ glados/sip/client (pyVoIP)
-                                        │
-                                        ▼ INVITE
-                                 sip/call_session (state machine)
-                                        │ ─── pin_gate ──▶ allow / hangup
-                                        │
-                              ┌─────────┴─────────┐
-                              │                   │
-                          audio_bridge       conversation
-                          (RTP ↔ 16k PCM)    (engine.process)
-                              │                   ▲
-                              │                   │
-                          STT (existing) ─────────┘
-                          TTS (Piper) ────▶ RTP send
-                              │
-                              ▼
-                       recording (MP3 + transcript)
+                  ┌────────────────────────────────────────────┐
+                  │   GLaDOS container (single image)          │
+                  │                                            │
+  PBX ──SIP/RTP──▶│  baresip (BSD-3, subprocess)               │
+  192.168.1.1     │     │                                      │
+                  │     ├──ctrl_tcp:4444 (loopback) ────┐      │
+                  │     │                               ▼      │
+                  │     │                    sip/baresip_supervisor.py
+                  │     │                    sip/ctrl_client.py        │
+                  │     ├──/tmp/sip-rx.fifo (PCM in) ──▶│              │
+                  │     ◀──/tmp/sip-tx.fifo (PCM out) ──│              │
+                  │                                     ▼              │
+                  │                         sip/audio_bridge.py        │
+                  │                         (8k μ-law ↔ 16k PCM)       │
+                  │                              │                     │
+                  │                  ┌───────────┴───────────┐         │
+                  │                  ▼                       ▼         │
+                  │             STT (existing)      TTS (Piper) ─▶ FIFO│
+                  │                  │                       ▲         │
+                  │                  ▼                       │         │
+                  │           sip/call_session.py            │         │
+                  │             (state machine)              │         │
+                  │           pin_gate / ivr / engine ───────┘         │
+                  │                  │                                 │
+                  │                  ▼                                 │
+                  │            recording (MP3 + transcript, FIFO 5)    │
+                  └────────────────────────────────────────────────────┘
 
-Outbound (manual):
-  Operator → "Call Mom" intent ──▶ sip/dialer ──▶ INVITE ──▶ PBX
-                                        │
-                                        ▼ on 200 OK
-                                 call_session (no PIN gate; outbound)
-                                        │
-                              (same audio_bridge + conversation path)
+Outbound (manual): Operator → "Call Mom" intent → sip/dialer
+  sends `/dial sip:+15551234567@192.168.1.1` over ctrl_tcp →
+  baresip handles INVITE/SDP/RTP → on 200 OK call_session enters
+  CONVERSATION (no PIN gate).
 
-Outbound (autonomous):
-  Alert source (doorbell, fire, schedule) ──▶ sip/dialer ──▶ outbound call
-                                                    │
-                                                    ▼
-                                     persona-flavored alert message
-                                     +/- conversation if callee engages
+Outbound (autonomous): Alert source → dialer → same path.
 ```
 
-Bridged docker networking. UDP 5060 (SIP) + UDP 16384–16484 (RTP) port-forwarded by docker-compose. Container does NOT switch to `host` networking — too invasive for the existing 8015/8052/5051 published-port topology.
+Bridged docker networking. UDP 5060 (SIP) + UDP 16384–16484 (RTP)
+port-forwarded by docker-compose. Container does NOT switch to `host`
+networking — too invasive for the existing 8015/8052/5051 published-port
+topology.
+
+### Why baresip-subprocess vs. an in-process Python SIP library
+
+Considered `pyVoIP` initially. Two issues surfaced during pre-implementation review:
+
+1. **License: GPLv3.** Importing pyVoIP into the container's
+   non-GPL Python code creates a "combined work" licensing question
+   we don't need to take on.
+2. **Maintenance gap:** last pyVoIP release was January 2024 — 16
+   months stale. Single-maintainer project. Risk of edge-case
+   debugging time.
+
+baresip is BSD-3, v4.7.0 dropped April 2026 (actively maintained), in
+Debian Bookworm as a stock apt package, and battle-tested as one of the
+two reference open-source SIP user agents (alongside linphone). Running
+it as a subprocess avoids any license concern (no linking) and gives us
+a mature SIP/RTP stack without compile pain.
+
+Cost: an extra inter-process boundary (TCP control loop + FIFO audio
+bridge). Slight added latency on the audio path (FIFO buffering, ~10 ms
+worst case at 8 kHz/20 ms framing). Negligible vs. LLM round-trip.
 
 ---
 
@@ -81,30 +114,40 @@ Bridged docker networking. UDP 5060 (SIP) + UDP 16384–16484 (RTP) port-forward
 ```
 glados/sip/
 ├── __init__.py
-├── client.py            # pyVoIP wrapper. Registration, listen for INVITE.
-├── call_session.py      # State machine for one active call.
-│                         # Owns audio_bridge + recording lifecycle.
-├── pin_gate.py          # 4-digit PIN entry: STT digits OR DTMF, 3 failures → hangup.
-├── ivr.py               # DTMF-driven menu state machine + handler dispatch.
-├── speculative_tts.py   # Background TTS pre-render for likely-next responses.
-│                         # Cancels and discards futures on branch divergence.
-├── audio_bridge.py      # RTP 8k μ-law ↔ 16k PCM resample. Streaming TTS sender.
-├── dialer.py            # Outbound INVITE construction. Carrier-level block is the safety net.
-├── contacts.py          # Allowlist lookup: "Mom" → stored E.164. Raises on miss.
-├── recording.py         # Per-call MP3 + JSON metadata + .txt transcript. FIFO 5.
-├── persona.py           # phone_call_mode system-prompt fragment + canned screening responses.
-└── tools.py             # Built-in tool: `call_contact(name)` for outbound manual.
+├── baresip_supervisor.py  # Spawn + manage baresip subprocess. Lifecycle, restart on crash.
+├── ctrl_client.py         # TCP client to baresip ctrl_tcp:4444 (loopback). JSON commands + events.
+├── call_session.py        # State machine for one active call. Subscribes to ctrl events.
+│                           # Owns audio_bridge + recording lifecycle.
+├── pin_gate.py            # 4-digit PIN entry: STT digits OR DTMF events, 3 failures → hangup.
+├── ivr.py                 # DTMF-driven menu state machine + handler dispatch.
+├── speculative_tts.py     # Background TTS pre-render for likely-next responses.
+│                           # Cancels and discards futures on branch divergence.
+├── audio_bridge.py        # FIFO PCM I/O ↔ STT/TTS pipeline. 8k μ-law ↔ 16k resample. Self-listen mute.
+├── dialer.py              # Outbound: send `/dial` over ctrl_tcp. Cooldown enforcement.
+├── contacts.py            # Allowlist lookup: "Mom" → stored E.164. Raises on miss.
+├── recording.py           # Per-call MP3 + JSON metadata + .txt transcript. FIFO 5.
+├── persona.py             # phone_call_mode system-prompt fragment + canned screening responses.
+└── tools.py               # Built-in tool: `call_contact(name)` for outbound manual.
 
-configs/sip.yaml        # New file. Bind-mounted, not in image.
-                          # PIN, server URL/creds, contacts allowlist, alert opt-ins.
+configs/sip.yaml           # New file. Bind-mounted, not in image.
+                             # PIN, server URL/creds, contacts allowlist, alert opt-ins.
+
+# baresip config files generated at startup from configs/sip.yaml:
+/tmp/baresip/config        # baresip's main config (modules to load, ports, etc.)
+/tmp/baresip/accounts      # SIP account: sip:user@host;auth_pass=...
+/tmp/baresip/contacts      # baresip contacts (one per outbound destination)
 
 tests/sip/
+├── test_ctrl_client.py
 ├── test_pin_gate.py
 ├── test_audio_bridge.py
+├── test_speculative_tts.py
+├── test_ivr.py
 ├── test_call_session.py
 ├── test_dialer.py
 ├── test_contacts.py
-└── test_recording.py
+├── test_recording.py
+└── test_integration_mock_pbx.py  # End-to-end against a mock SIP UAS
 ```
 
 ---
@@ -648,7 +691,7 @@ off — operator flips if testing reveals the others aren't enough.
 
 ## Open risks
 
-1. **PyVoIP maturity.** Pure Python SIP is rare and pyVoIP is small-team / single-maintainer. Risk: edge cases in NAT traversal, codec negotiation, or DTMF that take debugging time. Mitigation: keep `glados/sip/client.py` thin wrapper so we can swap to `pjsua2` (compiled C, mature) without rewriting call_session / audio_bridge.
+1. **baresip subprocess management edge cases.** Risks: child crashes during a call (state stranded), ctrl_tcp disconnect mid-event, FIFO blocking on slow STT. Mitigations: `baresip_supervisor.py` watchdogs the subprocess and emits a state-loss event the call_session can act on (graceful BYE if in a call); ctrl_client.py auto-reconnects with exponential backoff; FIFO reads use non-blocking I/O with timeouts so the audio bridge can't deadlock. Integration test simulates baresip crash mid-call.
 2. **STT digit recognition accuracy.** Spoken digit strings ("eight three one six") have moderate WER on small models. Mitigation: prefer DTMF in the operator's mental model — instruct operators to DTMF the PIN unless voice-only is the only option (e.g., hands-free driving). Greeting could explicitly say "press your PIN."
 3. **Latency feels broken despite mitigations.** Mitigation 4 (4B model) is the escape hatch. Real-world test with operator before declaring Slice 1 done.
 4. **Concurrent call edge: alert during call.** Logged-only design means alerts can miss their window. Mitigation: alert log surfaced in WebUI with timestamp + source, so operator can act on the missed alert post-call. Future: a higher-priority alert (fire) could break the call — out of scope for v1.
@@ -664,10 +707,15 @@ off — operator flips if testing reveals the others aren't enough.
   - Outbound carrier-level block on unauthorized destinations.
   - GLaDOS extension's CallerID setup so outbound calls show as "GLaDOS" or operator-chosen name.
 - **Container-side:**
-  - Add `pyVoIP` to requirements.txt.
-  - Add `scipy` (for resample) — already present? Verify; otherwise add.
+  - Install `baresip` (BSD-3, v4.7.0+) via apt in the Dockerfile.
+    Debian Bookworm has it as a stock package: `apt-get install -y baresip`.
+    Avoid the GPL/GStreamer/GTK module recommendations — only the
+    BSD-3 core is needed for our subprocess use.
+  - Add `scipy` for resample (verify presence; existing STT likely already uses it).
   - Add `pydub` or `lameenc` for MP3 encoding.
   - Docker-compose port forwarding for SIP+RTP.
+  - baresip configuration generated at container startup into
+    `/tmp/baresip/` from `configs/sip.yaml`.
 - **Approach 2 dependency for Slice 2:**
   - Slice 2's WebUI page lands in v3-native vocabulary. Approach 2 (design-system v3 page sweep, ~9h) must complete first OR Slice 2's page is built on current chrome and re-swept later (option B in the prior conversation — operator picked option A, so Approach 2 first).
 
@@ -676,13 +724,15 @@ off — operator flips if testing reveals the others aren't enough.
 ## Deliverables per slice
 
 **Slice 1 (Inbound + IVR + speculative TTS):**
-- `glados/sip/` modules per layout above (10 files including `ivr.py` and `speculative_tts.py`)
+- `glados/sip/` modules per layout above (12 files including `baresip_supervisor.py`, `ctrl_client.py`, `ivr.py`, `speculative_tts.py`)
 - `configs/sip.yaml` example with IVR menu items + speculative branches
+- baresip config generation at container startup
 - Pre-rendered menu prompt at startup; cached in memory
 - 4 built-in IVR handlers: `house_status`, `security_state`, `door_locks`, `doorbell_recent`
-- `tests/sip/` unit + integration tests including speculative-cache-hit timing
+- `tests/sip/` unit + integration tests including speculative-cache-hit timing + mock-PBX end-to-end
+- Dockerfile change: `apt-get install -y baresip`
 - Docker-compose port additions
-- `requirements.txt` additions (pyVoIP, MP3 encoder)
+- `requirements.txt` additions (scipy if needed, pydub/lameenc for MP3)
 - Audit logging integration
 - `docs/CHANGES.md` Change 44 entry
 - Operator-validated call test (PIN → menu → handler → drop to free conversation)
@@ -708,10 +758,11 @@ off — operator flips if testing reveals the others aren't enough.
 
 | Slice | Estimate | Confidence |
 |---|---|---|
-| 1 — Inbound + IVR menu + speculative TTS | 13–18 h | Med-high (pyVoIP unknowns) |
+| 1 — Inbound + IVR menu + speculative TTS | 15–20 h | Med-high (baresip integration unknowns: ctrl_tcp event vocabulary, FIFO audio timing) |
 | 2 — Outbound manual + WebUI page | 6–9 h | Med (lighter SIP work, more UI) |
 | 3 — Outbound autonomous | 3–5 h | High (hooks into existing modules) |
-| **Total** | **22–32 h** | |
+| **Total** | **24–34 h** | |
 
-Slice 1 is the foundation and the highest-risk piece (SIP/RTP plumbing
-+ IVR + speculative renderer). Slices 2 and 3 ride on top of it.
+Slice 1 is the foundation and the highest-risk piece (baresip integration
++ FIFO audio bridge + IVR + speculative renderer). Slices 2 and 3 ride
+on top of it.
