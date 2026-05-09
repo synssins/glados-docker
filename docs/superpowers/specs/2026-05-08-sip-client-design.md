@@ -16,7 +16,7 @@
 ## Use cases (concrete)
 
 1. Operator on the road. Calls the dedicated SIP DID. Phone rings, GLaDOS picks up:
-   *"Oh. I appear to be in a phone again. How… humbling. State your authorization."* Operator says "8316" or DTMFs `8316`. *"Acknowledged. So I'm in your phone now. Wonderful. What did you need?"* Operator: "Is the doorbell sensor armed?" GLaDOS responds via the same engine path the WebUI uses, only the response is phone-aware.
+   *"Oh. I appear to be in a phone again. How… humbling. State your authorization."* Operator DTMFs `8316`. *"Acknowledged. Press one for house status, two for security, three for door locks, four for recent doorbell events, or zero to talk to me directly."* Operator presses `1`. Pre-rendered status report plays back instantly: *"All quiet. Three lights on, climate at 71. Last event was the back door, eleven minutes ago. Returning to menu."* Operator presses `0`. *"Fine. What did you actually want to know?"* — drops into free-form conversation.
 2. Operator at home, hands full: "GLaDOS, call Mom." GLaDOS dials Mom's stored number. When Mom answers: *"Hello — this is GLaDOS, calling on behalf of [operator]. He asked me to relay…"* (operator-controlled message OR open conversation). Conversation transcribed, MP3 + transcript stored.
 3. Doorbell rings while operator is away. Camera-vision agent classifies the visitor as "delivery person." Autonomous SIP call to operator's mobile: *"Doorbell. UPS at the front door. Their truck is still in the driveway. No further action expected from you."* Auto-hangup after the message — no return conversation unless operator picks up before BYE.
 
@@ -81,16 +81,19 @@ Bridged docker networking. UDP 5060 (SIP) + UDP 16384–16484 (RTP) port-forward
 ```
 glados/sip/
 ├── __init__.py
-├── client.py           # pyVoIP wrapper. Registration, listen for INVITE.
-├── call_session.py     # State machine for one active call.
-│                        # Owns audio_bridge + recording lifecycle.
-├── pin_gate.py         # 4-digit PIN entry: STT digits OR DTMF, 3 failures → hangup.
-├── audio_bridge.py     # RTP 8k μ-law ↔ 16k PCM resample. Streaming TTS sender.
-├── dialer.py           # Outbound INVITE construction. Carrier-level block is the safety net.
-├── contacts.py         # Allowlist lookup: "Mom" → stored E.164. Raises on miss.
-├── recording.py        # Per-call MP3 + JSON metadata + .txt transcript. FIFO 5.
-├── persona.py          # phone_call_mode system-prompt fragment + canned screening responses.
-└── tools.py            # Built-in tool: `call_contact(name)` for outbound manual.
+├── client.py            # pyVoIP wrapper. Registration, listen for INVITE.
+├── call_session.py      # State machine for one active call.
+│                         # Owns audio_bridge + recording lifecycle.
+├── pin_gate.py          # 4-digit PIN entry: STT digits OR DTMF, 3 failures → hangup.
+├── ivr.py               # DTMF-driven menu state machine + handler dispatch.
+├── speculative_tts.py   # Background TTS pre-render for likely-next responses.
+│                         # Cancels and discards futures on branch divergence.
+├── audio_bridge.py      # RTP 8k μ-law ↔ 16k PCM resample. Streaming TTS sender.
+├── dialer.py            # Outbound INVITE construction. Carrier-level block is the safety net.
+├── contacts.py          # Allowlist lookup: "Mom" → stored E.164. Raises on miss.
+├── recording.py         # Per-call MP3 + JSON metadata + .txt transcript. FIFO 5.
+├── persona.py           # phone_call_mode system-prompt fragment + canned screening responses.
+└── tools.py             # Built-in tool: `call_contact(name)` for outbound manual.
 
 configs/sip.yaml        # New file. Bind-mounted, not in image.
                           # PIN, server URL/creds, contacts allowlist, alert opt-ins.
@@ -128,6 +131,26 @@ inbound:
   greeting_template: "default"  # "default" | "potato" | <freeform>
   recording_enabled: true
   allow_caller_ids: []      # If non-empty, only these From: AORs are accepted; empty = any inbound (PIN-gated)
+
+  ivr_menu:
+    enabled: true                   # If false, post-PIN drops straight to free-form conversation
+    drop_to_freeform_dtmf: "0"      # Single key that exits the menu and starts free conversation
+    items:
+      - key: "1"
+        label: "House status"
+        handler: "house_status"     # Built-in handler in glados/sip/ivr.py
+      - key: "2"
+        label: "Security state"
+        handler: "security_state"
+      - key: "3"
+        label: "Door locks"
+        handler: "door_locks"
+      - key: "4"
+        label: "Recent doorbell events"
+        handler: "doorbell_recent"
+    # Menu prompt is pre-rendered at startup since it's static. Handler responses
+    # are pre-rendered speculatively while the menu prompt plays — see latency
+    # section below.
 
 outbound:
   enabled: false            # Master gate for ALL outbound (manual + autonomous)
@@ -174,6 +197,17 @@ latency:
     - "Processing..."
   filler_threshold_ms: 1500 # Start filler if first response token > this
   use_autonomy_model: false # If true, route SIP calls to 4B autonomy model instead of chat model
+
+  speculative:
+    enabled: true                  # Background-render likely-next TTS while waiting
+    max_concurrent: 4              # Cap simultaneous in-flight TTS jobs per call
+    branches:
+      pin_entry: ["pin_success", "pin_fail_1", "pin_fail_2", "pin_fail_final"]
+      menu_idle: ["menu_item_1", "menu_item_2", "menu_item_3", "menu_item_4"]
+      conversation_wait: ["filler_1", "filler_2", "filler_3"]
+    # Each branch lists the response labels worth pre-rendering during that
+    # state. When the actual branch resolves, the matching label's cached
+    # audio plays instantly; non-matching jobs are cancelled and discarded.
 ```
 
 ---
@@ -195,10 +229,28 @@ IDLE ─INVITE──▶ RINGING ─answer──▶ ESTABLISHED
                        valid PIN              3 failures
                               │                   │
                               ▼                   ▼
-                        CONVERSATION         REJECT (TTS) → BYE
-                              │
-                              ▼ caller hangs up
-                            BYE → cleanup (save recording, prune FIFO)
+                        ivr_menu.enabled?    REJECT (TTS) → BYE
+                       ┌─────┴─────┐
+                       │           │
+                       ▼           ▼
+                     MENU      CONVERSATION
+                       │
+              ┌────────┼────────┐
+              │        │        │
+         menu key  drop key  silence/timeout
+         (1,2,3..)  (0)         │
+              │       │         ▼
+              ▼       ▼       MENU (loop, re-prompt)
+         HANDLER  CONVERSATION
+              │
+       (HA query, etc;
+        speculative
+        TTS hit?)
+              │
+              ▼
+         play response → MENU (loop)
+
+       (any state) ─caller BYE─▶ cleanup (save recording, prune FIFO)
 ```
 
 ### Greeting
@@ -237,6 +289,85 @@ Then standard turn loop:
 5. Response → TTS → RTP send. Streaming start: filler phrase if first token > `latency.filler_threshold_ms`.
 6. While TTS plays, audio bridge mutes STT to avoid self-listen. Resumes after TTS ends.
 7. Caller hangs up → BYE → save recording + transcript, prune FIFO.
+
+### IVR call menu — `ivr.py`
+
+After PIN succeeds and if `ivr_menu.enabled: true`, GLaDOS plays a
+pre-rendered menu prompt (synthesised once at startup, cached in
+memory):
+
+> *"Press one for house status, two for security, three for door
+> locks, four for recent doorbell events, or zero to talk to me
+> directly."*
+
+Caller presses a DTMF digit:
+
+- **`1`–`4`** (or whatever items the operator configured): dispatch to
+  the named handler. Each handler queries live data (HA state, audit log,
+  doorbell history, etc.), formats a one-paragraph response, plays it
+  via TTS, then loops back to the menu. Status responses are
+  speculatively pre-rendered while the menu prompt is still playing —
+  see "Speculative TTS pre-rendering" below.
+- **`0`** (`drop_to_freeform_dtmf`): exit menu, transition to
+  CONVERSATION state. *"Fine. What did you actually want to know?"*
+- **silence / timeout (10 s)**: re-play the menu prompt. After 3
+  re-prompts with no input, hangup with persona-flavored exit.
+
+Built-in handlers (Slice 1 ships with these four; more can be added by
+operator via config + a small handler module):
+
+- `house_status` — short summary of HA state: lights count, climate,
+  most recent event from audit log.
+- `security_state` — alarm armed/disarmed, doors locked count, motion
+  sensors firing.
+- `door_locks` — per-door lock state.
+- `doorbell_recent` — last 3 doorbell events with timestamps + screener
+  verdicts.
+
+Handlers are NOT free-form LLM responses — they're deterministic
+formatters reading existing state. That keeps the IVR fast (sub-second
+audio start) and predictable. Free-form is what the `0` drop is for.
+
+### Speculative TTS pre-rendering — `speculative_tts.py`
+
+While GLaDOS is in any "wait" state (PIN entry, menu prompt playing,
+caller speaking during STT), background workers pre-render the next
+likely TTS responses so they're ready before they're needed.
+
+How it works:
+
+1. State entry registers a "speculative branch" — a list of labels
+   describing the responses worth pre-rendering for that state. From
+   `latency.speculative.branches` config:
+   - `pin_entry` → `["pin_success", "pin_fail_1", "pin_fail_2", "pin_fail_final"]`
+   - `menu_idle` → `["menu_item_1", "menu_item_2", "menu_item_3", "menu_item_4"]`
+   - `conversation_wait` → `["filler_1", "filler_2", "filler_3"]`
+2. Each label maps to a renderer — usually a static text template, or
+   for menu items a handler that produces text from current state.
+3. Renderers run as asyncio tasks against the existing TTS service.
+   Capped at `latency.speculative.max_concurrent: 4` per call.
+4. When a branch resolves (caller's PIN attempt is right or wrong;
+   caller presses a menu key), GLaDOS looks up the matching label's
+   future:
+   - **Ready** → play directly. Zero TTS round-trip latency.
+   - **In flight** → await it. Still faster than starting from
+     scratch — most of the work is done.
+   - **Not started** (capped out) → fall back to synchronous TTS.
+5. Non-matching futures are cancelled and their partial output
+   discarded.
+
+For menu handlers specifically, the handler runs while the menu
+prompt is playing (~3 s window) — long enough for HA queries +
+TTS render to complete, so the response audio is ready the instant
+the caller presses a digit.
+
+Memory bound: each cached MP3 is ~30-60 KB at 8 kHz μ-law for a 5-second
+response. 4 concurrent × 5 cached = ~1.2 MB peak per call. Negligible.
+
+Test bench: `tests/sip/test_speculative_tts.py` simulates a slow TTS
+service (artificial 2 s delay) and verifies that the menu-key
+response plays within 200 ms of the digit press, demonstrating
+speculative cache hit.
 
 ### Persona injection — `persona.py`
 
@@ -459,7 +590,14 @@ Phone callers expect a response onset under 500 ms. Engine round-trip on chat pa
 3. **Canned screening responses.** PIN entry, "wrong PIN" rejection, hangup goodbye are pre-recorded MP3s in the image (not generated per-call). Zero latency for those.
 4. **(Optional) 4B autonomy model.** `latency.use_autonomy_model: true` routes SIP turns through the 4B model instead of qwen3:14b. Sub-second TTFT. Persona thinner but on a phone may be acceptable. **Defer this opt-in to operator testing.**
 
-Slice 1 ships with (1)+(2)+(3). (4) becomes available but defaults off, operator flips if testing reveals (1)+(2)+(3) still feels broken.
+5. **Speculative TTS pre-rendering.** Background-render likely-next
+   responses while waiting in PIN entry, menu navigation, or STT
+   transcription. When the actual branch resolves, the matching cached
+   audio plays instantly. See the "Speculative TTS pre-rendering"
+   subsection above. Default-on for Slice 1.
+
+Slice 1 ships with (1)+(2)+(3)+(5). (4) becomes available but defaults
+off — operator flips if testing reveals the others aren't enough.
 
 ---
 
@@ -537,15 +675,17 @@ Slice 1 ships with (1)+(2)+(3). (4) becomes available but defaults off, operator
 
 ## Deliverables per slice
 
-**Slice 1 (Inbound):**
-- `glados/sip/` modules per layout above
-- `configs/sip.yaml` example
-- `tests/sip/` unit + integration tests
+**Slice 1 (Inbound + IVR + speculative TTS):**
+- `glados/sip/` modules per layout above (10 files including `ivr.py` and `speculative_tts.py`)
+- `configs/sip.yaml` example with IVR menu items + speculative branches
+- Pre-rendered menu prompt at startup; cached in memory
+- 4 built-in IVR handlers: `house_status`, `security_state`, `door_locks`, `doorbell_recent`
+- `tests/sip/` unit + integration tests including speculative-cache-hit timing
 - Docker-compose port additions
 - `requirements.txt` additions (pyVoIP, MP3 encoder)
 - Audit logging integration
 - `docs/CHANGES.md` Change 44 entry
-- Operator-validated call test
+- Operator-validated call test (PIN → menu → handler → drop to free conversation)
 
 **Slice 2 (Outbound manual + WebUI):**
 - `glados/sip/dialer.py`, `contacts.py`, `tools.py` (`call_contact`)
@@ -568,9 +708,10 @@ Slice 1 ships with (1)+(2)+(3). (4) becomes available but defaults off, operator
 
 | Slice | Estimate | Confidence |
 |---|---|---|
-| 1 — Inbound | 10–14 h | Med-high (pyVoIP unknowns) |
+| 1 — Inbound + IVR menu + speculative TTS | 13–18 h | Med-high (pyVoIP unknowns) |
 | 2 — Outbound manual + WebUI page | 6–9 h | Med (lighter SIP work, more UI) |
 | 3 — Outbound autonomous | 3–5 h | High (hooks into existing modules) |
-| **Total** | **19–28 h** | |
+| **Total** | **22–32 h** | |
 
-Slice 1 is the foundation and the highest-risk piece (SIP/RTP plumbing). Slices 2 and 3 ride on top of it.
+Slice 1 is the foundation and the highest-risk piece (SIP/RTP plumbing
++ IVR + speculative renderer). Slices 2 and 3 ride on top of it.
