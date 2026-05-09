@@ -2,6 +2,13 @@
 
 Admin-only page that exposes the /api/users CRUD endpoints as a
 table UI with Add, Edit, Reset Password, Disable, and Delete actions.
+
+Phase 6 / Approach 2 sweep (2026-05-09): inline-style attributes
+replaced with v3 utility classes; the missing modal-chrome classes
+(.modal-backdrop, .form-label, .users-table) added to style.css so
+the modals render with proper backdrop dimming, centered box, and
+form-label column layout instead of falling through to browser
+defaults. This closes prior-audit finding F6.
 """
 
 HTML = r"""
@@ -26,21 +33,21 @@ HTML = r"""
   </div>
 
   <div class="card">
-    <div id="usersErrorBanner" style="display:none;margin-bottom:12px;padding:10px 14px;background:#5c1a1a;color:#f8d7da;border-radius:4px;font-size:0.88rem;"></div>
+    <div id="usersErrorBanner" class="banner-error mb-3" style="display:none;"></div>
     <div id="usersTableWrap">
-      <table class="users-table" style="width:100%;border-collapse:collapse;font-size:0.88rem;">
+      <table class="users-table">
         <thead>
-          <tr style="border-bottom:1px solid var(--border);color:var(--text-dim);text-align:left;">
-            <th style="padding:8px 10px;">Username</th>
-            <th style="padding:8px 10px;">Display Name</th>
-            <th style="padding:8px 10px;">Role</th>
-            <th style="padding:8px 10px;">Status</th>
-            <th style="padding:8px 10px;">Last Login</th>
-            <th style="padding:8px 10px;text-align:right;">Actions</th>
+          <tr>
+            <th>Username</th>
+            <th>Display Name</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Last Login</th>
+            <th class="actions-col">Actions</th>
           </tr>
         </thead>
         <tbody id="usersTableBody">
-          <tr><td colspan="6" style="padding:16px 10px;color:var(--text-dim);">Loading&hellip;</td></tr>
+          <tr><td colspan="6" class="txt-dim">Loading&hellip;</td></tr>
         </tbody>
       </table>
     </div>
@@ -56,9 +63,9 @@ HTML = r"""
       <span class="modal-title">Add User</span>
       <button class="modal-close" onclick="usersCloseAddModal()">&#10005;</button>
     </div>
-    <div id="usersAddError" style="display:none;margin-bottom:10px;padding:8px 12px;background:#5c1a1a;color:#f8d7da;border-radius:4px;font-size:0.85rem;"></div>
-    <div style="display:flex;flex-direction:column;gap:12px;">
-      <label class="form-label">Username <span style="color:#e74c3c;">*</span>
+    <div id="usersAddError" class="banner-error mb-2" style="display:none;"></div>
+    <div class="col gap-3">
+      <label class="form-label">Username <span class="txt-danger">*</span>
         <input id="addUsername" type="text" autocomplete="off" placeholder="alice">
       </label>
       <label class="form-label">Display Name
@@ -70,12 +77,12 @@ HTML = r"""
           <option value="admin">admin</option>
         </select>
       </label>
-      <label class="form-label">Password <span style="color:#e74c3c;">*</span>
+      <label class="form-label">Password <span class="txt-danger">*</span>
         <input id="addPassword" type="password" autocomplete="new-password" placeholder="New password">
       </label>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
-      <button class="btn-small" onclick="usersCloseAddModal()" style="background:#555;">Cancel</button>
+    <div class="row end gap-2 mt-4">
+      <button class="btn-cancel" onclick="usersCloseAddModal()">Cancel</button>
       <button class="btn-small" onclick="usersSubmitAdd()">Create</button>
     </div>
   </div>
@@ -88,8 +95,8 @@ HTML = r"""
       <span class="modal-title">Edit User: <span id="editModalUsername"></span></span>
       <button class="modal-close" onclick="usersCloseEditModal()">&#10005;</button>
     </div>
-    <div id="usersEditError" style="display:none;margin-bottom:10px;padding:8px 12px;background:#5c1a1a;color:#f8d7da;border-radius:4px;font-size:0.85rem;"></div>
-    <div style="display:flex;flex-direction:column;gap:12px;">
+    <div id="usersEditError" class="banner-error mb-2" style="display:none;"></div>
+    <div class="col gap-3">
       <label class="form-label">Display Name
         <input id="editDisplayName" type="text" autocomplete="off">
       </label>
@@ -99,13 +106,13 @@ HTML = r"""
           <option value="admin">admin</option>
         </select>
       </label>
-      <label class="form-label" style="flex-direction:row;align-items:center;gap:10px;cursor:pointer;">
-        <input id="editDisabled" type="checkbox" style="width:auto;margin:0;">
+      <label class="form-label row-inline">
+        <input id="editDisabled" type="checkbox">
         Disabled (blocks login)
       </label>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
-      <button class="btn-small" onclick="usersCloseEditModal()" style="background:#555;">Cancel</button>
+    <div class="row end gap-2 mt-4">
+      <button class="btn-cancel" onclick="usersCloseEditModal()">Cancel</button>
       <button class="btn-small" onclick="usersSubmitEdit()">Save</button>
     </div>
   </div>
@@ -118,14 +125,14 @@ HTML = r"""
       <span class="modal-title">Reset Password: <span id="resetModalUsername"></span></span>
       <button class="modal-close" onclick="usersCloseResetModal()">&#10005;</button>
     </div>
-    <div id="usersResetError" style="display:none;margin-bottom:10px;padding:8px 12px;background:#5c1a1a;color:#f8d7da;border-radius:4px;font-size:0.85rem;"></div>
-    <div style="display:flex;flex-direction:column;gap:12px;">
-      <label class="form-label">New Password <span style="color:#e74c3c;">*</span>
+    <div id="usersResetError" class="banner-error mb-2" style="display:none;"></div>
+    <div class="col gap-3">
+      <label class="form-label">New Password <span class="txt-danger">*</span>
         <input id="resetPassword" type="password" autocomplete="new-password" placeholder="New password">
       </label>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
-      <button class="btn-small" onclick="usersCloseResetModal()" style="background:#555;">Cancel</button>
+    <div class="row end gap-2 mt-4">
+      <button class="btn-cancel" onclick="usersCloseResetModal()">Cancel</button>
       <button class="btn-small" onclick="usersSubmitReset()">Reset</button>
     </div>
   </div>
@@ -176,21 +183,21 @@ function _usersRenderTable() {
   const body = document.getElementById('usersTableBody');
   if (!body) return;
   if (!_usersData.length) {
-    body.innerHTML = '<tr><td colspan="6" style="padding:16px 10px;color:var(--text-dim);">No users found.</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="txt-dim">No users found.</td></tr>';
     return;
   }
   body.innerHTML = _usersData.map(u => {
-    const status = u.disabled ? '<span style="color:#e74c3c;">disabled</span>' : '<span style="color:#2ecc71;">active</span>';
+    const status = u.disabled ? '<span class="txt-danger">disabled</span>' : '<span class="txt-ok">active</span>';
     const lastLogin = u.last_login_at ? new Date(u.last_login_at * 1000).toLocaleString() : '—';
     const dn = escHtml(u.display_name || u.username);
     const un = escHtml(u.username);
-    return `<tr style="border-bottom:1px solid var(--border);">
-      <td style="padding:8px 10px;font-weight:500;">${un}</td>
-      <td style="padding:8px 10px;color:var(--text-dim);">${dn}</td>
-      <td style="padding:8px 10px;">${escHtml(u.role)}</td>
-      <td style="padding:8px 10px;">${status}</td>
-      <td style="padding:8px 10px;color:var(--text-dim);">${escHtml(lastLogin)}</td>
-      <td style="padding:8px 10px;text-align:right;">
+    return `<tr>
+      <td class="username-cell">${un}</td>
+      <td class="display-name-cell">${dn}</td>
+      <td>${escHtml(u.role)}</td>
+      <td>${status}</td>
+      <td class="last-login-cell">${escHtml(lastLogin)}</td>
+      <td class="actions-col">
         <button class="ico-btn" title="Edit" onclick="usersShowEditModal(${escAttr(JSON.stringify(u.username))})">${_PENCIL_SVG}</button>
         <button class="ico-btn ${u.disabled?'danger':''}" title="${u.disabled?'Enable':'Disable'}" onclick="usersConfirmDisable(${escAttr(JSON.stringify(u.username))},${u.disabled?'false':'true'})">${_DISABLE_SVG}</button>
         <button class="ico-btn danger" title="Delete" onclick="usersConfirmDelete(${escAttr(JSON.stringify(u.username))})">${_TRASH_SVG}</button>

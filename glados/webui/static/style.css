@@ -2897,3 +2897,90 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
 .system-session-table td {
   padding: var(--sp-1) var(--sp-2);
 }
+
+/* Used by users_page.py's user list table (rendered both server-side
+   in markup and client-side via _usersRenderTable in the page's JS). */
+.users-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-base);
+}
+.users-table thead tr {
+  border-bottom: 1px solid var(--border-default);
+  color: var(--fg-secondary);
+  text-align: left;
+}
+.users-table tbody tr {
+  border-bottom: 1px solid var(--border-default);
+}
+.users-table th,
+.users-table td {
+  padding: var(--sp-2) var(--sp-3);
+}
+.users-table th.actions-col,
+.users-table td.actions-col {
+  text-align: right;
+}
+.users-table .username-cell { font-weight: 500; }
+.users-table .display-name-cell,
+.users-table .last-login-cell { color: var(--fg-secondary); }
+
+/* ── Modal chrome — completes the partial set added 2026-04-29 ──────
+   `.modal-box`, `.modal-header`, `.modal-title`, `.modal-close`,
+   `.modal-body` already exist for the plugins page. The pieces missing
+   for users_page.py modals (and any future modal use) are added here
+   so the modal flow renders with proper backdrop + scrim + form-label
+   chrome instead of falling through to browser defaults. */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+}
+
+/* Wrapping label that stacks label-text over an input/select/checkbox.
+   The label-text is the parent's ::first-child text node; the input
+   is the second child. column flex with a small gap. */
+.form-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--fg-secondary);
+  cursor: default;
+}
+.form-label input,
+.form-label select,
+.form-label textarea {
+  background: var(--bg-input);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-input);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-base);
+  font-family: var(--font-mono);
+}
+.form-label input:focus,
+.form-label select:focus,
+.form-label textarea:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+/* Variant: row-aligned form-label (e.g. the disabled checkbox in
+   users_page.py edit modal) — overrides the default column. */
+.form-label.row-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+}
+.form-label.row-inline input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
