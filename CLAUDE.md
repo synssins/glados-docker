@@ -9,20 +9,26 @@ maintains this file; re-read at the start of every session.
 
 Before making changes to this repo, read these files in order:
 
-1. **`C:\src\SESSION_STATE.md`** — current project status, deployed
-   commit, credentials, next steps. Authoritative source for "what
-   is live right now." Re-read every session.
-2. **`docs/CHANGES.md`** — chronological change log. Every structural
+1. **`docs/INFRASTRUCTURE.md`** — **live topology reference.** Hosts,
+   NSSM services on AIBox (`llamacpp-chat`, `llama-rewriter`,
+   `llamacpp-vision` + their ports/models/GPU assignments + the
+   Battlemage/Xe2 SYCL workarounds), docker host + container layout,
+   audio path, scope-discipline rules. **Source of truth for what is
+   running where.** Re-read every session. Updated 2026-05-13.
+2. **`C:\src\SESSION_STATE.md`** — historical "what was live when"
+   log. Large (~162 KB); search specific terms rather than reading
+   end-to-end. Defer to `docs/INFRASTRUCTURE.md` when they disagree.
+3. **`docs/CHANGES.md`** — chronological change log. Every structural
    change documented with rationale and side effects. Most recent
-   entry at the bottom (currently Change 24, 2026-04-25).
-3. **`docs/battery-findings-and-remediation-plan.md`** — Phase 8.x
+   entry at the bottom.
+4. **`docs/battery-findings-and-remediation-plan.md`** — Phase 8.x
    battery analysis and remediation plan (complete as of 2026-04-21).
    Useful for understanding the voice-agent quality bar the operator
    expects.
-4. **`docs/roadmap.md`** — prioritized list of remaining work items.
-5. **`docs/Stage 1.md`** — original Stage 1 plan (pure middleware
+5. **`docs/roadmap.md`** — prioritized list of remaining work items.
+6. **`docs/Stage 1.md`** — original Stage 1 plan (pure middleware
    refactor).
-6. **`docs/Stage 3.md`** — HA Conversation Bridge + MQTT Peer Bus
+7. **`docs/Stage 3.md`** — HA Conversation Bridge + MQTT Peer Bus
    architecture (Phase 1 done; Phase 2 MQTT pending).
 
 **Portability rule.** This repo is the single source of truth for

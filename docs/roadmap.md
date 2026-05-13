@@ -1035,6 +1035,35 @@ of scope for this repo.)
   time, (c) workflow change to skip the LFS pull and download models
   in a later step from a non-LFS source. Surfaced after the
   design-system v3 deploy (2026-05-08).
+- **State-query "Are the office lights on?" returns tool-call only,
+  no follow-through answer** (operator-flagged 2026-05-13). Symptom
+  observed in the WebUI chat: operator asked "Are the office lights
+  on?"; GLaDOS's reply consisted ONLY of the rendered
+  `search_entities with query "office lights"` tool-call header +
+  metrics (501→13 tokens, 27.3 tok/s, total 4.2 s). No prose answer
+  after the tool result. (The lights were actually off.) Possible
+  causes to investigate:
+  - The chat-path took the tool-using branch but the round-2 turn
+    (post-tool-result) produced empty content. This is the same
+    class as the "round-2 missing think-filter tail flush" bug
+    fixed in Change 39 — but on the new `llamacpp-chat` lane with
+    `--reasoning-budget 0`, the response shape may differ enough to
+    re-trigger something similar.
+  - The 13-completion-token count is suspiciously low — the model
+    may have emitted ONLY the tool call + a stop, never returning a
+    natural-language summary.
+  - HA may have returned an unhelpful state-query result for "office
+    lights" (overlapping with prior-audit "HA misclassifies state
+    queries as action_done") and the model couldn't synthesise a
+    response from it.
+  Investigation path for the next session: grep container logs for
+  the request's trace-id (likely 4-byte hex prefix in the SSE event
+  stream), find the round-2 LLM body, see what came back. If the
+  model returned empty content after the tool result, the chat-path
+  rewriter / response-shaper may need to nudge it. If HA returned
+  ambiguous state, the Tier 2 disambiguator / state-query prompt
+  research at `docs/state-query-prompt-research.md` is the right
+  starting point.
 
 ### Standards-compliance scanning
 
