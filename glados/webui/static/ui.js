@@ -74,6 +74,14 @@ function updateAuthUI() {
     if (accountBlock) accountBlock.style.display = 'none';
     if (signInBlock) signInBlock.style.display = '';
   }
+
+  // Mobile topbar auth links (paired with topbarSignIn / topbarSignOut in _shell.py).
+  // Sidebar is display:none below 640px so its sign-in link is unreachable on mobile —
+  // these duplicate the affordance into the always-visible topbar.
+  const topbarSignIn = document.getElementById('topbarSignIn');
+  const topbarSignOut = document.getElementById('topbarSignOut');
+  if (topbarSignIn) topbarSignIn.style.display = _isAuthenticated ? 'none' : '';
+  if (topbarSignOut) topbarSignOut.style.display = _isAuthenticated ? '' : 'none';
 }
 
 // Account dropdown helpers

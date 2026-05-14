@@ -87,6 +87,11 @@ SHELL_TOP = r"""<!DOCTYPE html>
     <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')" data-requires-auth="true">System</a>
     <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')" data-requires-auth="true">Config</a>
     <!-- Training removed: not available in container -->
+    <!-- Auth state: sign-in shown when signed out, sign-out shown when signed in.
+         Default visibility = signed-out state so anonymous mobile visitors see
+         Sign-in immediately without waiting for JS. updateAuthUI() toggles. -->
+    <a id="topbarSignIn" class="nav-item" href="/login">Sign in</a>
+    <a id="topbarSignOut" class="nav-item" href="/logout" style="display:none;">Sign out</a>
   </div>
 </div>
 
