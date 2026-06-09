@@ -76,6 +76,13 @@ glados = "glados.server:main"
 where = ["."]
 include = ["glados*"]
 
+[tool.pytest.ini_options]
+# The smoke suite (tests/smoke) targets a LIVE container and registers its
+# own reporter via pytest_plugins, which aborts collection when picked up
+# from the repo root (non-top-level pytest_plugins is an error in pytest 8).
+# Exclude it from default collection; run it explicitly: pytest tests/smoke
+norecursedirs = ["tests/smoke"]
+
 [tool.ruff]
 line-length = 120
 indent-width = 4
