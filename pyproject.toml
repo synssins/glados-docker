@@ -81,7 +81,13 @@ include = ["glados*"]
 # own reporter via pytest_plugins, which aborts collection when picked up
 # from the repo root (non-top-level pytest_plugins is an error in pytest 8).
 # Exclude it from default collection; run it explicitly: pytest tests/smoke
-norecursedirs = ["tests/smoke"]
+# NB: setting norecursedirs REPLACES pytest's defaults, so restate them —
+# losing `.*` makes pytest descend into .worktrees/, where a linked
+# worktree's tests/ package shadows the real one (119 collection errors).
+norecursedirs = [
+    ".*", "build", "dist", "CVS", "_darcs", "{arch}", "*.egg",
+    "venv", "node_modules", "tests/smoke",
+]
 
 [tool.ruff]
 line-length = 120
