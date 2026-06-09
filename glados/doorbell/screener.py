@@ -300,11 +300,13 @@ class DoorbellScreener:
                     break
 
                 # --- Transcribe ---
-                if speech_detected:
-                    transcript = self._transcribe(wav_path, greeting_dur if round_num == 1 else 0)
-                    logger.success("[{}] Transcript: '{}'", session_id, transcript)
-                else:
-                    transcript = ""
+                # ALWAYS transcribe the capture: Whisper is the speech
+                # detector of record. The HA speaking sensor above only
+                # shapes the listen window (early stop on silence-after-
+                # speech); when it is missing or laggy, the visitor's
+                # words are still on disk and must not be discarded.
+                transcript = self._transcribe(wav_path, greeting_dur if round_num == 1 else 0)
+                logger.success("[{}] Transcript: '{}'", session_id, transcript)
 
                 # --- Evaluate via LLM ---
                 evaluation = self._evaluate(transcript, round_num, history)
@@ -451,8 +453,10 @@ class DoorbellScreener:
     # HA speaking sensor monitoring
     # ------------------------------------------------------------------
 
-    def _get_ha_state(self, entity_id: str) -> str:
-        """Get current state of an HA entity."""
+    def _get_ha_state(self, entity_id: str) -> str | None:
+        """Get current state of an HA entity. Returns None when the read
+        fails (missing entity, HTTP error, timeout) so callers can tell
+        "sensor unreadable" apart from a real `unknown` state."""
         from glados.core.config_store import cfg
         ha_url = cfg.ha_url.rstrip("/")
         ha_token = cfg.ha_token
@@ -467,19 +471,36 @@ class DoorbellScreener:
                 data = json.loads(resp.read().decode())
                 return data.get("state", "unknown")
         except Exception:
-            return "unknown"
+            return None
 
     def _wait_for_speech(self, timeout: float) -> bool:
-        """Wait for visitor to start speaking. Returns True if speech detected."""
+        """Wait for visitor to start speaking. Returns True if speech detected.
+
+        Advisory only: a False return shapes the listen window but never
+        suppresses transcription — the capture is transcribed regardless.
+        """
         cfg = self._config
         sensor = cfg.get("speaking_sensor", "binary_sensor.front_bell_speaking")
 
         deadline = time.time() + timeout
+        reads = 0
+        failed_reads = 0
         while time.time() < deadline:
             state = self._get_ha_state(sensor)
-            if state == "on":
+            reads += 1
+            if state is None:
+                failed_reads += 1
+            elif state == "on":
                 return True
             time.sleep(0.5)
+        if reads and failed_reads == reads:
+            logger.error(
+                "Speaking sensor {} was unreadable for the entire {}s listen "
+                "window ({} failed reads) — check `speaking_sensor` in "
+                "doorbell.yaml against the actual HA entity id. Continuing "
+                "with transcription-only speech detection.",
+                sensor, timeout, failed_reads,
+            )
         return False
 
     def _wait_for_silence(self, gap: float, max_wait: float) -> None:
@@ -673,20 +694,22 @@ class DoorbellScreener:
         from glados.core.llm_directives import apply_model_family_directives
         messages = apply_model_family_directives(messages, model)
 
-        # NOTE: no `format: "json"`. Ollama's grammar constraint
-        # collapses qwen3:14b into emitting `{}` (a 2-token null object)
-        # instead of the four-field schema. Without the constraint the
-        # same prompt produces the full schema in ~1.5 s; the prompt +
-        # one-shots are strong enough on their own. Response body is
-        # stripped of qwen3 `<think>` preambles before JSON parsing.
+        # NOTE: no `response_format`/grammar constraint. JSON-mode
+        # collapses qwen3-family models into emitting `{}` (a 2-token
+        # null object) instead of the four-field schema. Without the
+        # constraint the same prompt produces the full schema in ~1.5 s;
+        # the prompt + one-shots are strong enough on their own.
+        # Response body is stripped of `<think>` preambles before JSON
+        # parsing. Wire format is OpenAI chat-completions (the endpoint
+        # below) — Ollama-style `options` are silently ignored by
+        # OpenAI-compatible servers (llama.cpp), same bug class as the
+        # rewriter's 86c6bec.
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": 0.6,
-                "num_predict": 512,
-            },
+            "temperature": 0.6,
+            "max_tokens": 512,
         }
 
         # ``ollama_url`` is the bare ``scheme://host:port`` from the LLM &
@@ -719,16 +742,27 @@ class DoorbellScreener:
                         return json.loads(txt[start:i+1])
             raise json.JSONDecodeError("unbalanced JSON object", txt, start)
 
-        def _call_ollama(msgs: list[dict]) -> dict:
+        def _call_llm(msgs: list[dict]) -> dict:
             body = dict(payload)
             body["messages"] = msgs
             data = json.dumps(body).encode()
             req = Request(url, data=data, headers={"Content-Type": "application/json"})
             # 60 s accommodates cold-load + concurrent-queue cases on
-            # shared-Ollama deployments. Warm path finishes in < 2 s.
+            # shared-LLM deployments. Warm path finishes in < 2 s.
             with urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode())
-                content = result.get("message", {}).get("content", "")
+                # OpenAI chat-completions response shape. The Ollama-native
+                # `result["message"]["content"]` shape is NOT supported —
+                # parsing it here silently yielded "" against llama.cpp and
+                # broke every screening session (2026-06-09).
+                try:
+                    content = result["choices"][0]["message"]["content"] or ""
+                except (KeyError, IndexError, TypeError):
+                    logger.error(
+                        "LLM response missing choices[0].message.content "
+                        "(unexpected wire shape): {}", str(result)[:300],
+                    )
+                    content = ""
                 return _extract_json(content)
 
         def _is_usable(obj: dict) -> bool:
@@ -742,7 +776,7 @@ class DoorbellScreener:
             return bool(cls) and bool(announce)
 
         try:
-            parsed = _call_ollama(messages)
+            parsed = _call_llm(messages)
             if not _is_usable(parsed):
                 logger.warning(
                     "LLM returned empty/partial JSON ({!r}), retrying with schema reminder",
@@ -757,7 +791,7 @@ class DoorbellScreener:
                         "and classification must be non-empty."
                     )},
                 ]
-                parsed = _call_ollama(retry_msgs)
+                parsed = _call_llm(retry_msgs)
             if _is_usable(parsed):
                 return parsed
             logger.error("LLM still returned unusable JSON after retry: {!r}", parsed)
