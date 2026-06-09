@@ -2319,10 +2319,21 @@ def _stream_chat_sse_impl(
     # final text within the 1024 num_predict budget. Pure chitchat
     # (no tools) still skips thinking for fast 2-5 s replies.
     _has_tools = bool(tools)
-    from glados.core.llm_directives import apply_model_family_directives
+    from glados.core.llm_directives import (
+        apply_model_family_directives,
+        consolidate_system_messages,
+        is_strict_system_first_family,
+    )
     messages = apply_model_family_directives(
         messages, _upstream_model, enable_thinking=_has_tools,
     )
+    # Strict-template models (Qwen3.5 and similar) hard-reject any
+    # system message after position 0. Collapse the chat-resolver's
+    # 5–9 system injections into a single leading system message
+    # before dispatch. Gated by model-family detection so non-strict
+    # deployments keep their existing wire shape.
+    if is_strict_system_first_family(_upstream_model):
+        messages = consolidate_system_messages(messages)
     # num_predict budget. Two modes:
     #   - command lane: when ``llm_commands`` resolves to a small,
     #     non-thinking model like qwen2.5-coder-7b, 512 is sufficient

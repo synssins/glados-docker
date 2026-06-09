@@ -140,6 +140,16 @@ def strip_closing_boilerplate(text: str) -> str:
 # tags like "qwen3:8b-instruct-q4_k_m" and "qwen3-30b-a3b" both trigger.
 _QWEN3_FAMILY_RE = re.compile(r"qwen\s*3", re.IGNORECASE)
 
+# Families whose embedded chat template hard-rejects any system message
+# after position 0 with a Jinja `raise_exception('System message must be
+# at the beginning')`. The chat-resolver injects 5–9 system messages per
+# turn (persona / attitude / weather / memory / canon / time / chitchat
+# guard / emotion / tool_hint); strict-template models 500 on the second
+# system. Detected here so the consolidation step at dispatch time can
+# fire conditionally — Qwen3 (the wider family) tolerates multi-system
+# messages and keeps its existing wire shape unchanged.
+_STRICT_SYSTEM_FIRST_RE = re.compile(r"qwen\s*3\.5", re.IGNORECASE)
+
 # Marker we look for to avoid double-prepending the directive when a
 # caller's system prompt already includes it (hand-written or
 # already-processed messages).
@@ -151,6 +161,51 @@ def is_qwen3_family(model: str | None) -> bool:
     if not model:
         return False
     return bool(_QWEN3_FAMILY_RE.search(model))
+
+
+def is_strict_system_first_family(model: str | None) -> bool:
+    """True when the model's chat template rejects system messages after
+    position 0. Currently matches Qwen3.5 only (its embedded jinja
+    template fires `raise_exception('System message must be at the
+    beginning')` on any system message past the first). When more strict
+    families surface, extend `_STRICT_SYSTEM_FIRST_RE`."""
+    if not model:
+        return False
+    return bool(_STRICT_SYSTEM_FIRST_RE.search(model))
+
+
+def consolidate_system_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge every system message in `messages` into a single position-0
+    system message. Non-system messages keep their order. Empty-content
+    system messages are dropped. Original list is not mutated.
+
+    Use only when the upstream model's chat template requires a single
+    leading system block — gate on `is_strict_system_first_family`.
+    Multi-system messages are functionally equivalent to one merged
+    message under most templates, so this isn't a generic improvement;
+    apply only where strictness forces it.
+    """
+    system_contents: list[str] = []
+    other_messages: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            other_messages.append(msg)
+            continue
+        if msg.get("role") == "system":
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                system_contents.append(content)
+            continue
+        other_messages.append(msg)
+
+    if not system_contents:
+        # No system messages at all — return a copy with the same shape.
+        return list(messages)
+
+    merged = "\n\n".join(system_contents)
+    return [{"role": "system", "content": merged}, *other_messages]
 
 
 def apply_model_family_directives(
@@ -261,7 +316,9 @@ def _strip_no_think_directive(
 
 __all__ = [
     "apply_model_family_directives",
+    "consolidate_system_messages",
     "is_qwen3_family",
+    "is_strict_system_first_family",
     "strip_closing_boilerplate",
     "strip_thinking_response",
 ]
