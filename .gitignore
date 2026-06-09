@@ -115,3 +115,12 @@ tests/.playwright-trace/
 # Superpowers brainstorm session artifacts
 .superpowers/
 scripts/probe_data/
+
+# Smoke suite — per-run reports and baselines are local artifacts
+tests/smoke/reports/*
+!tests/smoke/reports/.gitkeep
+!tests/smoke/reports/_examples/
+tests/smoke/baselines/*
+!tests/smoke/baselines/.gitkeep
+# Operator overlay — real host / domain / etc. live here, never committed
+tests/smoke/config.local.yaml

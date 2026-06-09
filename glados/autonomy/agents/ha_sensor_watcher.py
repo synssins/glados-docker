@@ -535,19 +535,31 @@ class HomeAssistantSensorSubagent(Subagent):
         # DoorbellScreener's own cooldown window.
         if (entity_id in self._vision_entities
                 and self._detection_types.get(entity_id) == "doorbell_ring"):
-            # Any state_changed on an event.*_doorbell entity means "ring"
-            # (HA updates the state to the trigger timestamp on every press).
-            # We don't require old_state != new_state because a fresh press
-            # always produces a distinct timestamp — and if old_state is
-            # "unknown" that's simply a first-press-after-restart, which
-            # absolutely should fire.
-            if new_state not in ("", "unavailable"):
+            # An `event.*_doorbell` entity carries the trigger timestamp as
+            # its state, so a genuine press lands here with new_state ≈ now.
+            # BUT a UniFi Protect reconnect transitions the entity
+            # `unavailable`/`unknown` -> its RESTORED last-press timestamp
+            # (often hours/days old); HA delivers that restore as a
+            # state_changed too. Treating it as a ring fired a phantom
+            # screening session ~once per morning (integration reconnect)
+            # with no visitor present. Discriminate on timestamp freshness
+            # rather than old_state — the restore makes old_state unreliable
+            # (it's `unavailable`), and freshness also covers the genuine
+            # first-press case (which still carries a near-now timestamp).
+            if self._is_fresh_doorbell_ring(new_state):
                 logger.success(
                     "HA Sensor: doorbell ring detected ({} -> {}); triggering screening",
                     entity_id, new_state,
                 )
                 self._trigger_doorbell_screening(entity_id)
-                return
+            else:
+                logger.info(
+                    "HA Sensor: ignoring doorbell event for {} — state '{}' is not a "
+                    "fresh ring (stale/restored timestamp, unavailable, or unparseable); "
+                    "no screening",
+                    entity_id, new_state,
+                )
+            return
 
         # Skip if state didn't actually change
         if old_state == new_state:
@@ -1395,6 +1407,35 @@ class HomeAssistantSensorSubagent(Subagent):
         threading.Thread(target=_do_play, name="Pet-Alert-TTS", daemon=True).start()
 
     # ── Helpers ───────────────────────────────────────────────────────
+
+    # Max age (seconds) between a doorbell event's timestamp and now for it
+    # to count as a live ring. A real press arrives over the WebSocket within
+    # ~1-2 s; a reconnect-restore replays the last-press timestamp, which is
+    # minutes-to-days old. 60 s is far wider than delivery jitter / clock
+    # skew, far narrower than any restore gap.
+    _DOORBELL_FRESH_WINDOW_S: float = 60.0
+
+    def _is_fresh_doorbell_ring(self, new_state: str) -> bool:
+        """Return True only if ``new_state`` is an ISO timestamp within the
+        freshness window — i.e. a live press, not a restored/stale value.
+
+        UniFi Protect ``event.*_doorbell`` entities store the event time as
+        their state. A genuine ring's timestamp is ≈ now; a restore-on-
+        reconnect replays a stale timestamp. Empty / ``unavailable`` /
+        ``unknown`` / unparseable states are never fresh.
+        """
+        if new_state in ("", "unavailable", "unknown"):
+            return False
+        from datetime import datetime, timezone
+        try:
+            ts = datetime.fromisoformat(new_state.replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age_s = datetime.now(timezone.utc).timestamp() - ts.timestamp()
+        # Allow a small negative skew (event clock slightly ahead of ours).
+        return -5.0 <= age_s <= self._DOORBELL_FRESH_WINDOW_S
 
     def _trigger_doorbell_screening(self, entity_id: str) -> None:
         """Trigger the doorbell screening system via the API wrapper endpoint.
