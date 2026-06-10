@@ -6571,6 +6571,7 @@ class Handler(BaseHTTPRequestHandler):
 from glados.webui.pages import (
     _shell,
     chat,
+    events as events_page,
     integrations,
     logging_page,
     logs,
@@ -6587,6 +6588,7 @@ HTML_PAGE = (
     + chat.HTML
     + system.HTML
     + integrations.HTML
+    + events_page.HTML
     + memory.HTML
     + training.HTML
     + logs.HTML
