@@ -964,6 +964,49 @@ becomes more natural.
 
 ---
 
+## Event→Action engine (HA executes / GLaDOS decides)
+
+Autonomous acting layer: when a whitelisted HA state change fires,
+GLaDOS decides and Home Assistant executes. Rules live in
+``configs/events.yaml`` (WebUI editor); the ``EventRouter`` subscribes
+to the existing ``HAClient`` singleton, so there is no second WebSocket.
+
+### Acting side ✅ Shipped in Change 45 (2026-06-10)
+
+New ``glados/events/`` package: pydantic-validated config, triage-lane
+LLM decision module (fail-safe = no-act), ``ha_action`` executor with
+retry, best-effort announce, ``EventRouter`` with atomic gate chain
+(master / quiet-mode / enabled / cooldown / min_clear), 8 admin REST
+routes under ``/api/integrations/events``, and the Integrations →
+Events WebUI page. ``Origin.EVENT_RULE`` added to the audit origin
+set. 56 new tests; full suite 1969/5.
+
+See ``docs/CHANGES.md`` Change 45 for full details.
+
+Non-goals explicit in this slice: announce-side cascade (camera-vision
+Slice 3 retargets later), MQTT triggers (Stage 3 Phase 2), and
+``ha_sensor_watcher`` consolidation.
+
+### Announce-side cascade / ``ha_sensor_watcher`` migration (next slice)
+
+- **Announce-side cascade** — camera-vision Slice 3 will retarget the
+  ``EventRouter``'s ``announce_fn`` to the vision pipeline, enabling
+  event-triggered VLM descriptions spoken to a speaker. The current
+  announce module already follows the agreed interface; Slice 3 drops
+  in without touching the router.
+- **Watcher consolidation** — migrate ``ha_sensor_watcher`` off its
+  own HAClient connection onto the router (camera-vision spec Note A
+  Phase 2). A separate refactor; does not need to land with the acting
+  side.
+
+### MQTT triggers (Stage 3 Phase 2 dependency)
+
+``source: mqtt`` rule type will be a new ``EventTrigger`` variant when
+Stage 3 Phase 2 (MQTT peer bus) lands. No router changes needed until
+then.
+
+---
+
 ## Later-stage integrations
 
 - **Open WebUI integration** — proxy and auth shape so Open WebUI

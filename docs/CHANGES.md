@@ -5447,3 +5447,234 @@ existing tech debt).
   — task plan
 - ``.interface-design/system.md`` — authoritative design system spec
   (now v3-current with the tokens + inline-style policy)
+
+---
+
+## Change 45 — Event→Action engine: acting side (2026-06-10)
+
+**What this is.** A new autonomous-action layer: when a whitelisted
+HA state change fires, GLaDOS decides — deterministically or via the
+triage-lane LLM — and Home Assistant executes the result. The operator
+controls what can act; GLaDOS controls whether it acts right now.
+
+**Motivation.** The existing HA Conversation Bridge (Stage 3) handles
+user-initiated speech commands. This change covers the orthogonal case:
+*the environment changes unprompted* — a person walks into a dark
+hallway, a sensor trips, a door opens — and something should happen
+without a user saying a word. The decision path through the existing
+``llm_triage`` slot is short and cheap; the whitelisted action target
+means GLaDOS can never reach outside the rules the operator configured.
+
+**What landed.**
+
+### New package ``glados/events/``
+
+Seven new modules, one modified existing file:
+
+- **``glados/events/__init__.py``** — package marker; ``get_router()``
+  / ``set_router()`` singleton accessor so any module can reach the
+  live router without an import cycle.
+
+- **``glados/events/config.py``** — pydantic v2 schema for
+  ``configs/events.yaml`` (single source of truth). Four action kinds
+  (`ha_automation`, `ha_script`, `ha_scene`, `ha_service`); per-rule
+  cooldown (`cooldown_s`), minimum clear time (`min_clear_s`),
+  announcement config (`announce` / `announce_speaker` /
+  `announce_text`); and a top-level ``enabled`` master switch. Unknown
+  keys rejected at schema parse time. Cross-field validators enforce:
+  `mode: llm` requires `decision_prompt`; `announce: true` requires
+  `announce_speaker`; `announce: true` + `mode: always` requires
+  `announce_text`. Atomic write via ``os.replace`` on a ``.tmp``
+  sibling. Missing file returns a valid default (engine on, no rules)
+  so first boot needs no pre-seeded YAML.
+
+- **``glados/events/decision.py``** — triage-lane LLM verdict for
+  ``mode: llm`` rules. Builds a context block from rule's
+  ``context_entities`` (live states via ``EntityCache``), calls
+  ``llm_call(LLMConfig.for_slot("llm_triage"), ...)`` and expects a
+  JSON ``{"act": bool, "reason": str, "quip": str}`` reply.
+  **Fail-safe direction is fixed: any timeout, error, invalid JSON,
+  or missing ``act`` field resolves to a NO-ACT.** Acting is never
+  the failure default. ``<think>`` blocks stripped before JSON parse
+  (Qwen3-family reasoning models). The ``llm_triage`` slot is the
+  same model slot the persona rewriter and Tier 2 disambiguator use.
+
+- **``glados/events/actions/__init__.py``** — package marker.
+
+- **``glados/events/actions/ha_action.py``** — ``EventActionSpec``
+  to ``HAClient.call_service()`` mapping, one retry with 1 s backoff,
+  then a typed ``HAActionError`` on double failure (never silent).
+  Maps: ``ha_automation`` → ``automation.trigger``; ``ha_script`` /
+  ``ha_scene`` → ``*.turn_on``; ``ha_service`` → ``domain.service``
+  with optional ``entity_id`` + ``data`` pass-through.
+
+- **``glados/events/announce.py``** — optional spoken line after an
+  action fires. Best-effort by design: synthesises a WAV via the
+  internal TTS endpoint (``/v1/audio/speech``, ``voice=glados``),
+  serves it from the existing HA audio serve dir, and plays it
+  through ``media_player.play_media`` using the same pattern as the
+  doorbell screener (``screener.py:858``). TTS failure → WARNING,
+  never blocks the action result. Serve URL is TLS-aware
+  (``glados/core/tls.py:is_tls_active()``).
+
+- **``glados/events/router.py``** — core dispatch: ``EventRouter``
+  subscribed to the existing ``HAClient.on_state_changed()`` fan-out
+  (no new WebSocket connection; ``ha_sensor_watcher`` is untouched).
+
+  Atomic gate chain (``handle_state_changed`` / ``_gate_and_run``):
+
+  1. Master switch off → stop.
+  2. Quiet/maintenance mode (``quiet_check()`` callable, wired to
+     ``engine._events_quiet``) → suppress + log.
+  3. Rule ``enabled: false`` → skip.
+  4. ``cooldown_s`` elapsed since last *attempt* (fired OR declined)
+     → block. Declines consume the cooldown — the LLM is not
+     re-polled on every repeated event.
+  5. ``min_clear_s`` elapsed since the entity last *left* the trigger
+     state → guard against flapping sensors; fail-closed on cold
+     start (first fire is always allowed unless a clear was recorded).
+
+  Concurrent state changes are protected by a module-level
+  ``threading.Lock``.
+
+  ``run_rule(rule_id, dry_run)`` exposes a WebUI surface:
+  - dry-run → run the decision pass only, return the verdict; nothing
+    fires.
+  - fire → bypass all gates (operator-initiated manual trigger) and
+    execute the action; audited.
+
+  ``status()`` returns the per-rule runtime state (``last_result``,
+  ``last_reason``, ``last_ts``, ``fire_count``) plus the master switch
+  and any config load error.
+
+  Every fire / decline / error emits an ``AuditEvent`` with
+  ``origin=Origin.EVENT_RULE``.
+
+- **``glados/observability/audit.py``** (modified) — ``Origin.EVENT_RULE
+  = "event_rule"`` added to the ``Origin`` class and the ``ALL``
+  frozenset.
+
+### Engine wiring
+
+``glados/core/engine.py`` gains ``init_event_router(quiet_check)``
+called at startup immediately after ``_init_ha_client``. If
+``get_client()`` is ``None`` (HA not configured or HA unreachable) the
+function logs an error and returns without raising; the rest of the
+container is unaffected. A config-parse error disables the event
+engine but not the container (fail-open for the user-facing features,
+fail-closed for acting on the environment). The mode-change handler
+updates ``self._events_quiet = silent_mode`` so maintenance/silent mode
+suppresses autonomous action as intended.
+
+### Config example
+
+``configs/events.example.yaml`` — committed with placeholder entity ids
+(``binary_sensor.hallway_person_detected``, ``sensor.hallway_lux``,
+``automation.hallway_light_on``). Copy to ``events.yaml`` on the config
+volume and replace with real entities. All example rules ship
+``enabled: false``; the operator must explicitly enable each rule
+before it can fire.
+
+### REST API — 8 admin-only routes under ``/api/integrations/events``
+
+| Method + Path | Behaviour |
+|---|---|
+| ``GET /api/integrations/events`` | ``router.status()`` — master switch, load error, per-rule runtime state. 503 JSON if router is ``None``. |
+| ``POST /api/integrations/events`` | Create rule from JSON body. **``enabled`` forced to ``false`` on create** so new rules require deliberate activation. 400 with pydantic message on schema failure. Saves + hot-reloads. |
+| ``PUT /api/integrations/events/<id>`` | Replace rule (may set ``enabled: true``). 404 on unknown id. Saves + hot-reloads. |
+| ``DELETE /api/integrations/events/<id>`` | Remove rule. 404 on unknown id. Saves + hot-reloads. |
+| ``POST /api/integrations/events/master`` | Flip master switch (``{"enabled": bool}``). Saves + hot-reloads. |
+| ``GET /api/integrations/events/targets`` | Entity groups from ``EntityCache.snapshot()``: ``automations``, ``scripts``, ``scenes``, ``media_players``, and ``entities`` (binary_sensor + sensor + sun + person — for trigger and context pickers). 503 if cache unavailable. |
+| ``POST /api/integrations/events/<id>/dry_run`` | ``router.run_rule(id, dry_run=True)`` — decision only, nothing fires. |
+| ``POST /api/integrations/events/<id>/fire`` | ``router.run_rule(id, dry_run=False)`` — bypasses gates (operator-initiated), fires real HA action, audited. |
+
+All routes gate on ``require_perm(self, "admin")``. CRUD mutations
+go through ``load_events_config`` / ``save_events_config`` /
+``router.load()`` so ``events.yaml`` is always the single source of
+truth — the live router reloads from file on every mutation.
+
+### WebUI — Integrations → Events page
+
+``glados/webui/pages/events.py`` + nav entry in
+``glados/webui/pages/_shell.py`` + ``static/ui.js`` + ``static/style.css``
+(design-system v3 utility-class conventions).
+
+Features delivered:
+
+- **Engine card** — master enable/disable toggle; red ``load_error``
+  banner when ``events.yaml`` fails schema validation.
+- **Rule list** — per-rule row: enable/disable toggle (PUT with
+  flipped ``enabled``), id, trigger summary (entity → state), action
+  target, mode badge, live status line (last_result / last_reason /
+  relative timestamp / fire_count). Buttons: Edit, Delete, Dry-run,
+  Fire.
+- **Rule editor** — form fields: id (locked after create), trigger
+  entity select (from live ``entities`` targets + free-text
+  fallback), to_state, optional from_state, mode select
+  (``always`` / ``llm``), decision_prompt textarea (shown only for
+  ``llm`` mode), context entities multi-select, action kind select,
+  target select (options switch to automations/scripts/scenes lists
+  by kind; ha_service exposes domain.service + entity_id + JSON data
+  fields). Cooldown, min_clear_s, announce checkbox, announce_speaker
+  select (from ``media_players``), announce_text (shown when
+  announce && mode=always). Save → POST (create) or PUT (edit) with
+  inline 400 error rendering.
+- **Dry-run button** — calls ``/dry_run``, displays verdict in the
+  rule's status line without firing anything.
+- **Fire button** — confirm dialog then ``/fire``; refreshes the
+  rule list.
+- Targets fetched once per page-open from ``/targets``.
+
+### Tests
+
+56 new test cases across 6 new test files under ``tests/events/``:
+
+| File | Cases | Covers |
+|---|---|---|
+| ``tests/events/test_audit_origin.py`` | 2 | ``Origin.EVENT_RULE`` value + ``ALL`` membership |
+| ``tests/events/test_events_config.py`` | 12 | Schema validation, cross-field rules, load/save round-trip, missing-file default, malformed YAML, schema violation |
+| ``tests/events/test_events_decision.py`` | 7 | ``act``/``decline`` parse, ``<think>`` strip, LLM None → no-act, garbage → no-act, exception → no-act, context prompt content |
+| ``tests/events/test_ha_action.py`` | 5 | Kind-to-service mapping, retry-then-success, double-failure raises ``HAActionError`` |
+| ``tests/events/test_events_announce.py`` | 3 | Happy path, TTS failure → false, play_media failure → false |
+| ``tests/events/test_events_router.py`` | 16 | Match / no-match (entity, state, from_state), master switch, disabled rule, quiet mode, cooldown, decline-consumes-cooldown, min_clear + flap, llm+announce, always+announce, action error status, dry-run, manual fire bypass |
+| ``tests/events/test_events_api.py`` | 9 | Create forces disabled, create invalid → 400, update enables, update unknown → 404, delete round-trip, master toggle, targets grouped, RBAC deny |
+| ``tests/events/test_events_wiring.py`` | 2 | Router subscribes to HAClient; no HA client → engine stays off |
+
+Full suite: **1969 passed / 5 skipped** (unchanged from pre-branch
+baseline of 1969/5 on this branch, including all 56 events tests).
+
+**Explicit non-goals (this change).**
+
+- **Announce-side cascade** — camera-vision spec Slice 3 re-targets
+  ``EventRouter`` as the announce substrate; that wires the
+  ``announce_fn`` to the vision pipeline rather than the current
+  TTS/serve-dir path. Not built here; the current announce module
+  already follows the agreed interface so Slice 3 can drop in
+  cleanly.
+- **MQTT triggers** — ``source: mqtt`` rule type belongs with Stage 3
+  Phase 2 (MQTT peer bus). When that lands, adding a new
+  ``EventTrigger`` variant is the only change needed here.
+- **``ha_sensor_watcher`` consolidation** — the existing watcher still
+  has its own HAClient connection and its own logic. Migrating it to
+  the router (camera-vision spec Note A Phase 2) is a separate
+  refactor that doesn't need to land with the acting side.
+
+**Side effects to watch.**
+
+- First boot with no ``events.yaml`` on the config volume: the engine
+  starts with ``enabled: true`` and zero rules — completely inert.
+  No action is taken until the operator creates a rule and enables it.
+- Rules are born ``enabled: false`` (enforced on REST create). The
+  operator must explicitly enable each rule; this mirrors the
+  plugin-system install convention.
+- ``min_clear_s`` cold-start: if a sensor is already in the trigger
+  state when the container starts, the first firing is allowed (no
+  prior clear timestamp). After the entity clears and re-triggers,
+  the guard is active.
+- Announce failures do not roll back the fired action. The fire is
+  already in HA. The WARNING is loud; the action stands.
+
+**Companion documentation.**
+
+- Spec: ``docs/superpowers/specs/2026-06-09-event-action-engine-design.md``
+- Plan: ``docs/superpowers/plans/2026-06-10-event-action-engine.md``
