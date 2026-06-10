@@ -59,6 +59,59 @@ from ..observability import install_loguru_sink as _install_loguru_sink  # noqa:
 _install_loguru_sink(sys.stderr)
 
 
+# ---------------------------------------------------------------------------
+# Event→action engine — module-level indirections so tests can patch them
+# ---------------------------------------------------------------------------
+
+def _ha_get_client():
+    from glados.ha import get_client
+    return get_client()
+
+
+def _ha_get_cache():
+    from glados.ha import get_cache
+    return get_cache()
+
+
+def _events_config_path():
+    from glados.events.config import default_events_path
+    return default_events_path()
+
+
+def init_event_router(quiet_check) -> None:
+    """Stand up the event→action engine on the existing HAClient.
+
+    No HA client (HA_TOKEN unset) → engine stays off, loudly. A config
+    error disables the engine but never the container (spec §7).
+    """
+    from glados.events import set_router
+    from glados.events.router import EventRouter
+
+    client = _ha_get_client()
+    if client is None:
+        logger.error(
+            "events: HA client not initialized — event→action engine OFF "
+            "(set HA_TOKEN / check HA connectivity)"
+        )
+        return
+    cache = _ha_get_cache()
+
+    def get_state(entity_id: str) -> str | None:
+        ent = cache.get(entity_id) if cache else None
+        return ent.state if ent else None
+
+    router = EventRouter(
+        config_path=_events_config_path(),
+        call_service=client.call_service,
+        get_state=get_state,
+        quiet_check=quiet_check,
+    )
+    router.load()
+    client.on_state_changed(router.handle_state_changed)
+    set_router(router)
+    logger.success("events: router subscribed to HA state stream")
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     name: str
@@ -1148,6 +1201,10 @@ class Glados:
             )
             self.subagent_manager.register(ha_sensor_subagent)
 
+        # Event→action engine (spec 2026-06-09). Quiet check follows the
+        # silent-mode flag maintained by the mode-change handler below.
+        init_event_router(quiet_check=lambda: getattr(self, "_events_quiet", False))
+
         # Emotion agent - always registered, core to GLaDOS personality
         emotion_cfg = self.autonomy_config.emotion
         emotion_subagent_config = SubagentConfig(
@@ -1240,6 +1297,7 @@ class Glados:
         to :class:`HomeAssistantAudioIO` so that *all* engine-routed audio
         (conversation TTS, startup announcements, etc.) respects the mode.
         """
+        self._events_quiet = silent_mode
         if isinstance(self.audio_io, HomeAssistantAudioIO):
             self.audio_io.silent_mode = silent_mode
             if not silent_mode and maintenance_mode and maintenance_speaker:

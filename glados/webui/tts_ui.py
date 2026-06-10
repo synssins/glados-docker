@@ -1480,6 +1480,153 @@ def discover_health(url: str, path: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# Event→Action admin REST helpers (Task 8)
+# ---------------------------------------------------------------------------
+
+def _events_path():
+    from glados.events.config import default_events_path
+    return default_events_path()
+
+
+def _events_get_cache():
+    from glados.ha import get_cache
+    return get_cache()
+
+
+def _events_reload():
+    from glados.events import get_router
+    router = get_router()
+    if router:
+        router.load()
+
+
+_RUNTIME_KEYS = frozenset({"last_result", "last_reason", "last_ts", "fire_count"})
+
+
+def _events_api_create(handler, body: dict):
+    if not require_perm(handler, "admin"):
+        return None
+    from glados.events.config import EventRule, load_events_config, save_events_config
+    try:
+        body = {k: v for k, v in body.items() if k not in _RUNTIME_KEYS}
+        body["enabled"] = False                     # rules are born disabled
+        rule = EventRule.model_validate(body)
+    except Exception as exc:
+        return 400, {"error": str(exc)}
+    path = _events_path()
+    cfg = load_events_config(path)
+    if any(r.id == rule.id for r in cfg.rules):
+        return 400, {"error": f"rule id {rule.id!r} already exists"}
+    cfg.rules.append(rule)
+    save_events_config(path, cfg)
+    _events_reload()
+    return 200, {"ok": True, "id": rule.id}
+
+
+def _events_api_update(handler, rule_id: str, body: dict):
+    if not require_perm(handler, "admin"):
+        return None
+    from glados.events.config import EventRule, load_events_config, save_events_config
+    path = _events_path()
+    cfg = load_events_config(path)
+    idx = next((i for i, r in enumerate(cfg.rules) if r.id == rule_id), None)
+    if idx is None:
+        return 404, {"error": f"rule {rule_id!r} not found"}
+    try:
+        body = {k: v for k, v in body.items() if k not in _RUNTIME_KEYS}
+        body["id"] = rule_id                        # id is immutable via PUT
+        rule = EventRule.model_validate(body)
+    except Exception as exc:
+        return 400, {"error": str(exc)}
+    cfg.rules[idx] = rule
+    save_events_config(path, cfg)
+    _events_reload()
+    return 200, {"ok": True, "id": rule_id}
+
+
+def _events_api_delete(handler, rule_id: str):
+    if not require_perm(handler, "admin"):
+        return None
+    from glados.events.config import load_events_config, save_events_config
+    path = _events_path()
+    cfg = load_events_config(path)
+    before = len(cfg.rules)
+    cfg.rules = [r for r in cfg.rules if r.id != rule_id]
+    if len(cfg.rules) == before:
+        return 404, {"error": f"rule {rule_id!r} not found"}
+    save_events_config(path, cfg)
+    _events_reload()
+    return 200, {"ok": True}
+
+
+def _events_api_master(handler, body: dict):
+    if not require_perm(handler, "admin"):
+        return None
+    from glados.events.config import load_events_config, save_events_config
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return 400, {"error": "'enabled' must be a boolean"}
+    path = _events_path()
+    cfg = load_events_config(path)
+    cfg = cfg.model_copy(update={"enabled": enabled})
+    save_events_config(path, cfg)
+    _events_reload()
+    return 200, {"ok": True, "enabled": enabled}
+
+
+def _events_api_targets(handler):
+    if not require_perm(handler, "admin"):
+        return None
+    cache = _events_get_cache()
+    if cache is None:
+        return 503, {"error": "HA entity cache not available"}
+    _ENTITY_DOMAINS = {"binary_sensor", "sensor", "sun", "person"}
+    automations, scripts, scenes, media_players, entities = [], [], [], [], []
+    for e in cache.snapshot():
+        item = {"entity_id": e.entity_id, "friendly_name": e.friendly_name}
+        if e.domain == "automation":
+            automations.append(item)
+        elif e.domain == "script":
+            scripts.append(item)
+        elif e.domain == "scene":
+            scenes.append(item)
+        elif e.domain == "media_player":
+            media_players.append(item)
+        elif e.domain in _ENTITY_DOMAINS:
+            entities.append(item)
+    return 200, {
+        "automations": automations,
+        "scripts": scripts,
+        "scenes": scenes,
+        "media_players": media_players,
+        "entities": entities,
+    }
+
+
+def _events_api_status(handler):
+    if not require_perm(handler, "admin"):
+        return None
+    from glados.events import get_router
+    router = get_router()
+    if router is None:
+        return 503, {"error": "Event router not initialized"}
+    return 200, router.status()
+
+
+def _events_api_run(handler, rule_id: str, dry_run: bool):
+    if not require_perm(handler, "admin"):
+        return None
+    from glados.events import get_router
+    router = get_router()
+    if router is None:
+        return 503, {"error": "Event router not initialized"}
+    result = router.run_rule(rule_id, dry_run=dry_run)
+    if "error" in result:
+        return 404, result
+    return 200, result
+
+
+# ---------------------------------------------------------------------------
 # HTTP Handler
 # ---------------------------------------------------------------------------
 
@@ -1887,6 +2034,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._get_training_log()
             else:
                 self._send_error(404, "Not found")
+        # GET /api/integrations/events — status; GET /api/integrations/events/targets
+        elif p == "/api/integrations/events":
+            code, payload = _events_api_status(self) or (None, None)
+            if code is not None:
+                self._send_json(code, payload)
+        elif p == "/api/integrations/events/targets":
+            result = _events_api_targets(self)
+            if result is not None:
+                self._send_json(result[0], result[1])
         elif p == "/api/users":
             if not require_perm(self, "admin"): return
             from glados.webui.pages import users as _users_page
@@ -2118,6 +2274,39 @@ class Handler(BaseHTTPRequestHandler):
             self._training_snapshot()
         elif p == "/api/training/stop":
             self._training_stop()
+        # POST /api/integrations/events — create rule
+        elif p == "/api/integrations/events":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+            result = _events_api_create(self, body)
+            if result is not None:
+                self._send_json(result[0], result[1])
+        # POST /api/integrations/events/master — flip master switch
+        elif p == "/api/integrations/events/master":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+            result = _events_api_master(self, body)
+            if result is not None:
+                self._send_json(result[0], result[1])
+        # POST /api/integrations/events/<id>/dry_run or /fire
+        elif p.startswith("/api/integrations/events/") and (
+                p.endswith("/dry_run") or p.endswith("/fire")):
+            if p.endswith("/dry_run"):
+                rule_id = p[len("/api/integrations/events/"):-len("/dry_run")]
+                result = _events_api_run(self, rule_id, dry_run=True)
+            else:
+                rule_id = p[len("/api/integrations/events/"):-len("/fire")]
+                result = _events_api_run(self, rule_id, dry_run=False)
+            if result is not None:
+                self._send_json(result[0], result[1])
         # POST /api/users — create
         elif p == "/api/users":
             if not require_perm(self, "admin"): return
@@ -2182,6 +2371,18 @@ class Handler(BaseHTTPRequestHandler):
             self._put_chime()
         elif self.path == "/api/canon":
             self._put_canon()
+        # PUT /api/integrations/events/<id> — replace rule
+        elif self.path.startswith("/api/integrations/events/"):
+            rule_id = self.path[len("/api/integrations/events/"):]
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON"})
+                return
+            result = _events_api_update(self, rule_id, body)
+            if result is not None:
+                self._send_json(result[0], result[1])
         # PUT /api/users/<u> — update role / display_name / disabled
         elif self.path.startswith("/api/users/") and not self.path.endswith("/password"):
             from glados.webui.pages import users as _users_page
@@ -2243,6 +2444,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             slug = self.path[len("/api/plugins/"):].rstrip("/")
             self._delete_plugin(slug)
+            return
+
+        # DELETE /api/integrations/events/<id> — remove rule (admin gate inside helper)
+        if self.path.startswith("/api/integrations/events/"):
+            rule_id = self.path[len("/api/integrations/events/"):]
+            result = _events_api_delete(self, rule_id)
+            if result is not None:
+                self._send_json(result[0], result[1])
             return
 
         if not require_perm(self, "admin"):
@@ -6365,6 +6574,7 @@ class Handler(BaseHTTPRequestHandler):
 from glados.webui.pages import (
     _shell,
     chat,
+    events as events_page,
     integrations,
     logging_page,
     logs,
@@ -6381,6 +6591,7 @@ HTML_PAGE = (
     + chat.HTML
     + system.HTML
     + integrations.HTML
+    + events_page.HTML
     + memory.HTML
     + training.HTML
     + logs.HTML

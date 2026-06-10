@@ -1,0 +1,23 @@
+# Event->Action engine rules -- copy to events.yaml on the config volume.
+# Spec: docs/superpowers/specs/2026-06-09-event-action-engine-design.md
+# HA executes (automations/scripts/scenes); GLaDOS decides whether/when.
+# Placeholder entity ids -- replace with your own. Rules ship DISABLED.
+enabled: true
+rules:
+  - id: hallway_dark_person
+    enabled: false
+    trigger:
+      entity_id: binary_sensor.hallway_person_detected
+      to_state: "on"
+    mode: llm
+    context_entities:
+      - sensor.hallway_lux
+      - sun.sun
+    decision_prompt: >
+      Turn on the hallway light only if the hallway is dark.
+    action:
+      kind: ha_automation
+      target: automation.hallway_light_on
+    cooldown_s: 120
+    min_clear_s: 30
+    announce: false

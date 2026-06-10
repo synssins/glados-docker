@@ -2984,3 +2984,26 @@ body.show-advanced .service-card[data-advanced="true"] { display: block; }
   margin: 0;
   padding: 0;
 }
+
+/* ── Integrations > Events page ─────────────────────────────────────── */
+#ev-rule-list .ev-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+#ev-rule-list .ev-row:last-child { border-bottom: none; }
+.ev-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border-default);
+  color: var(--fg-secondary);
+  background: var(--bg-input);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ev-badge-llm { border-color: var(--orange); color: var(--orange); }

@@ -5702,6 +5702,7 @@ function _panelIdFor(key) {
   if (key === 'config.logs')    return 'tab-config-logs';
   if (key === 'config.logging') return 'tab-config-logging';
   if (key === 'config.plugins') return 'tab-config-plugins';
+  if (key === 'config.events')  return 'tab-config-events';
   if (key && key.indexOf('config.') === 0) return 'tab-config';
   return 'tab-' + key;
 }
@@ -5801,6 +5802,8 @@ function navigateTo(key) {
     if (typeof loggingOnTabActivate === 'function') loggingOnTabActivate();
   } else if (key === 'config.plugins') {
     if (typeof loadPluginsPage === 'function') loadPluginsPage();
+  } else if (key === 'config.events') {
+    evLoad();
   } else if (key.indexOf('config.') === 0) {
     const section = key.substring('config.'.length);
     _cfgCurrentSection = section;
@@ -8067,6 +8070,503 @@ function _buildInlineLightbox() {
     },
   };
 }
+
+// ── Integrations → Events page ────────────────────────────────────────────
+// All names are ev-prefixed. State is scoped to _evState to avoid any
+// collision with top-level const/let declarations elsewhere in this file.
+var _evState = { targets: null };
+
+function evLoad() {
+  fetch('/api/integrations/events', { credentials: 'same-origin' })
+    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+    .then(function(res) {
+      if (!res.ok) {
+        document.getElementById('ev-rule-list').innerHTML =
+          '<span class="txt-danger">' + escHtml(res.d.error || 'Failed to load') + '</span>';
+        return;
+      }
+      var data = res.d;
+      // Master toggle
+      var tog = document.getElementById('ev-master-toggle');
+      if (tog) {
+        tog.checked = !!data.enabled;
+        tog.onchange = function() { evSetMaster(tog.checked); };
+      }
+      // Load error banner
+      var errEl = document.getElementById('ev-load-error');
+      if (errEl) {
+        if (data.load_error) {
+          errEl.textContent = 'Config error: ' + data.load_error;
+          errEl.hidden = false;
+        } else {
+          errEl.hidden = true;
+        }
+      }
+      // Rule list
+      var list = document.getElementById('ev-rule-list');
+      if (!list) return;
+      if (!data.rules || data.rules.length === 0) {
+        list.innerHTML = '<span class="txt-dim fs-sm">No rules configured.</span>';
+        return;
+      }
+      var html = '';
+      (data.rules || []).forEach(function(rule) {
+        var res = rule.last_result || 'never';
+        var resClass = res === 'fired' ? 'txt-success' : res === 'error' ? 'txt-danger' : 'txt-dim';
+        var ts = rule.last_ts ? evRelTime(rule.last_ts) : '';
+        var statusLine = '<span class="' + resClass + ' fs-xs">' + escHtml(res) + '</span>';
+        if (rule.last_reason) statusLine += ' <span class="txt-dim fs-xs">' + escHtml(rule.last_reason) + '</span>';
+        if (ts) statusLine += ' <span class="txt-dim fs-xs">(' + escHtml(ts) + ')</span>';
+        if (rule.fire_count) statusLine += ' <span class="txt-dim fs-xs">fired ' + rule.fire_count + 'x</span>';
+        html += '<div class="ev-row" data-rule-id="' + escAttr(rule.id) + '">' +
+          '<div class="row gap-2 wrap">' +
+          '<label class="toggle" title="Enable/disable rule">' +
+          '<input type="checkbox"' + (rule.enabled ? ' checked' : '') + ' onchange="evToggleEnabled(\'' + escAttr(rule.id) + '\',this.checked)">' +
+          '<span class="toggle-slider"></span></label>' +
+          '<span class="fs-sm"><strong>' + escHtml(rule.id) + '</strong></span>' +
+          '<span class="txt-dim fs-xs">' + escHtml(rule.trigger.entity_id) + ' &rarr; ' + escHtml(rule.trigger.to_state) + '</span>' +
+          '<span class="txt-dim fs-xs">' + escHtml(rule.action.target) + '</span>' +
+          '<span class="ev-badge ev-badge-' + escAttr(rule.mode) + '">' + escHtml(rule.mode) + '</span>' +
+          '</div>' +
+          '<div class="row gap-1 wrap mt-1">' + statusLine + '</div>' +
+          '<div class="row gap-1 wrap mt-1">' +
+          '<button class="btn-small" onclick="evEdit(\'' + escAttr(rule.id) + '\')">Edit</button>' +
+          '<button class="btn-small btn-danger" onclick="evDelete(\'' + escAttr(rule.id) + '\')">Delete</button>' +
+          '<button class="btn-small" onclick="evDryRun(\'' + escAttr(rule.id) + '\')">Dry-run</button>' +
+          '<button class="btn-small" onclick="evFire(\'' + escAttr(rule.id) + '\')">Fire</button>' +
+          '</div>' +
+          '</div>';
+      });
+      list.innerHTML = html;
+    })
+    .catch(function(e) {
+      var list = document.getElementById('ev-rule-list');
+      if (list) list.innerHTML = '<span class="txt-danger">Load error: ' + escHtml(e.message) + '</span>';
+    });
+
+  // Re-attach add-rule button
+  var addBtn = document.getElementById('ev-add-rule');
+  if (addBtn) addBtn.onclick = function() { evRenderEditor(null); };
+
+  // Pre-fetch targets for pickers (once per page-open; store in _evState)
+  _evState.targets = null;
+  fetch('/api/integrations/events/targets', { credentials: 'same-origin' })
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) { _evState.targets = d; });
+}
+
+function evRelTime(ts) {
+  if (!ts) return '';
+  var diff = Math.floor(Date.now() / 1000 - ts);
+  if (diff < 5)   return 'just now';
+  if (diff < 60)  return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function evSetMaster(enabled) {
+  fetch('/api/integrations/events/master', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: enabled }),
+  })
+  .then(function(r) {
+    if (!r.ok) showToast('Master toggle failed', 'error');
+    else evLoad();
+  })
+  .catch(function(e) { showToast('Master toggle error: ' + e.message, 'error'); });
+}
+
+function evToggleEnabled(ruleId, enabled) {
+  // Fetch current rule data, flip enabled, PUT back
+  fetch('/api/integrations/events', { credentials: 'same-origin' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var rule = (data.rules || []).find(function(r) { return r.id === ruleId; });
+      if (!rule) return;
+      var updated = Object.assign({}, rule, { enabled: enabled });
+      return fetch('/api/integrations/events/' + encodeURIComponent(ruleId), {
+        method: 'PUT', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      });
+    })
+    .then(function(r) {
+      if (r && !r.ok) r.json().then(function(d) { showToast('Update failed: ' + (d.error || r.status), 'error'); });
+    })
+    .catch(function(e) { showToast('Toggle error: ' + e.message, 'error'); });
+}
+
+function evDelete(ruleId) {
+  if (!confirm('Delete rule "' + ruleId + '"?')) return;
+  fetch('/api/integrations/events/' + encodeURIComponent(ruleId), {
+    method: 'DELETE', credentials: 'same-origin',
+  })
+  .then(function(r) {
+    if (!r.ok) return r.json().then(function(d) { showToast('Delete failed: ' + (d.error || r.status), 'error'); });
+    evLoad();
+  })
+  .catch(function(e) { showToast('Delete error: ' + e.message, 'error'); });
+}
+
+function evEdit(ruleId) {
+  fetch('/api/integrations/events', { credentials: 'same-origin' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var rule = (data.rules || []).find(function(r) { return r.id === ruleId; });
+      if (rule) evRenderEditor(rule);
+    });
+}
+
+function evDryRun(ruleId) {
+  fetch('/api/integrations/events/' + encodeURIComponent(ruleId) + '/dry_run', {
+    method: 'POST', credentials: 'same-origin',
+  })
+  .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+  .then(function(res) {
+    var row = document.querySelector('.ev-row[data-rule-id="' + ruleId + '"]');
+    if (!row) { evLoad(); return; }
+    var v = res.d.verdict || res.d;
+    var msg = res.ok
+      ? 'Dry-run: ' + (v.act ? 'WOULD FIRE' : 'WOULD DECLINE') + ' — ' + (v.reason || '') + (v.quip ? ' / ' + v.quip : '')
+      : 'Dry-run error: ' + (res.d.error || 'unknown');
+    var statusEl = row.querySelector('.row.wrap.mt-1');
+    if (statusEl) {
+      var cls = (res.ok && v.act) ? 'txt-success' : res.ok ? 'txt-dim' : 'txt-danger';
+      statusEl.innerHTML = '<span class="' + cls + ' fs-xs">' + escHtml(msg) + '</span>';
+    }
+  })
+  .catch(function(e) { showToast('Dry-run error: ' + e.message, 'error'); });
+}
+
+function evFire(ruleId) {
+  if (!confirm('Really fire rule "' + ruleId + '" now? This will execute the action immediately.')) return;
+  fetch('/api/integrations/events/' + encodeURIComponent(ruleId) + '/fire', {
+    method: 'POST', credentials: 'same-origin',
+  })
+  .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+  .then(function(res) {
+    if (!res.ok) { showToast('Fire failed: ' + (res.d.error || res.d.reason || 'unknown'), 'error'); return; }
+    showToast('Rule fired: ' + (res.d.reason || res.d.result || 'ok'), 'success');
+    evLoad();
+  })
+  .catch(function(e) { showToast('Fire error: ' + e.message, 'error'); });
+}
+
+function evRenderEditor(rule) {
+  var isEdit = !!rule;
+  var card = document.getElementById('ev-editor-card');
+  var title = document.getElementById('ev-editor-title');
+  var form = document.getElementById('ev-editor-form');
+  if (!card || !form) return;
+  card.hidden = false;
+  title.textContent = isEdit ? 'Edit rule: ' + rule.id : 'New rule';
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  var tgt = _evState.targets || { entities: [], automations: [], scripts: [], scenes: [], media_players: [] };
+
+  function opts(arr, sel) {
+    return (arr || []).map(function(e) {
+      var v = e.entity_id || e;
+      var l = e.friendly_name || v;
+      return '<option value="' + escAttr(v) + '"' + (v === sel ? ' selected' : '') + '>' + escHtml(l) + '</option>';
+    }).join('');
+  }
+
+  var r = rule || {};
+  var action = r.action || {};
+  var trigger = r.trigger || {};
+  var mode = r.mode || 'always';
+  var kind = action.kind || 'ha_automation';
+  var announce = r.announce || false;
+  var announceText = r.announce_text || '';
+  var announceSpeaker = r.announce_speaker || '';
+
+  // Determine which target list to show based on kind
+  var targetListForKind = {
+    ha_automation: tgt.automations || [],
+    ha_script: tgt.scripts || [],
+    ha_scene: tgt.scenes || [],
+    ha_service: [],
+  };
+
+  var html = '<div class="col gap-3">';
+
+  // ID (locked when editing)
+  html += '<div class="form-label"><span>Rule ID</span>' +
+    '<input type="text" id="ev-f-id" value="' + escAttr(r.id || '') + '"' + (isEdit ? ' disabled' : '') + ' placeholder="hallway_dark_person"></div>';
+
+  // Trigger entity
+  html += '<div class="form-label"><span>Trigger entity</span>' +
+    '<select id="ev-f-trigger-entity">' +
+    '<option value="">-- free text below --</option>' +
+    opts(tgt.entities, trigger.entity_id) +
+    '</select>' +
+    '<input type="text" id="ev-f-trigger-entity-text" placeholder="binary_sensor.hallway_person" value="' + escAttr(trigger.entity_id || '') + '"></div>';
+
+  html += '<div class="form-label"><span>To state</span>' +
+    '<input type="text" id="ev-f-to-state" value="' + escAttr(trigger.to_state || '') + '" placeholder="on"></div>';
+
+  html += '<div class="form-label"><span>From state (optional)</span>' +
+    '<input type="text" id="ev-f-from-state" value="' + escAttr(trigger.from_state || '') + '" placeholder=""></div>';
+
+  // Mode
+  html += '<div class="form-label"><span>Mode</span>' +
+    '<select id="ev-f-mode" onchange="evEditorModeChange()">' +
+    '<option value="always"' + (mode === 'always' ? ' selected' : '') + '>always</option>' +
+    '<option value="llm"' + (mode === 'llm' ? ' selected' : '') + '>llm (GLaDOS decides)</option>' +
+    '</select></div>';
+
+  // Decision prompt (llm only)
+  html += '<div class="form-label" id="ev-f-prompt-row"' + (mode !== 'llm' ? ' hidden' : '') + '>' +
+    '<span>Decision prompt</span>' +
+    '<textarea id="ev-f-decision-prompt" rows="3" placeholder="Turn on the light only if it is dark.">' +
+    escHtml(r.decision_prompt || '') + '</textarea></div>';
+
+  // Context entities (multi-select)
+  var contextSel = (r.context_entities || []);
+  html += '<div class="form-label" id="ev-f-ctx-row"' + (mode !== 'llm' ? ' hidden' : '') + '>' +
+    '<span>Context entities (multi-select)</span>' +
+    '<select id="ev-f-context-entities" multiple size="4">';
+  (tgt.entities || []).forEach(function(e) {
+    var v = e.entity_id || e;
+    var l = e.friendly_name || v;
+    html += '<option value="' + escAttr(v) + '"' + (contextSel.indexOf(v) >= 0 ? ' selected' : '') + '>' + escHtml(l) + '</option>';
+  });
+  html += '</select></div>';
+
+  // Action kind
+  html += '<div class="form-label"><span>Action kind</span>' +
+    '<select id="ev-f-kind" onchange="evEditorKindChange()">' +
+    ['ha_automation', 'ha_script', 'ha_scene', 'ha_service'].map(function(k) {
+      return '<option value="' + k + '"' + (k === kind ? ' selected' : '') + '>' + k + '</option>';
+    }).join('') +
+    '</select></div>';
+
+  // Target (switches by kind)
+  var kindTargets = targetListForKind[kind] || [];
+  html += '<div class="form-label" id="ev-f-target-row">' +
+    '<span>Target</span>';
+  if (kind === 'ha_service') {
+    html += '<input type="text" id="ev-f-target" value="' + escAttr(action.target || '') + '" placeholder="light.turn_on">' +
+      '<input type="text" id="ev-f-svc-entity" value="' + escAttr(action.entity_id || '') + '" placeholder="entity_id (optional)">' +
+      '<textarea id="ev-f-svc-data" rows="2" placeholder=\'{"brightness_pct": 40}\'>' + escHtml(action.data ? JSON.stringify(action.data) : '') + '</textarea>';
+  } else {
+    html += '<select id="ev-f-target">' +
+      '<option value="">-- free text below --</option>' +
+      opts(kindTargets, action.target) +
+      '</select>' +
+      '<input type="text" id="ev-f-target-text" value="' + escAttr(action.target || '') + '" placeholder="automation.my_rule">';
+  }
+  html += '</div>';
+
+  // Cooldown + min_clear
+  html += '<div class="row gap-3 wrap">' +
+    '<div class="form-label"><span>Cooldown (s)</span>' +
+    '<input type="number" id="ev-f-cooldown" value="' + escAttr(String(r.cooldown_s != null ? r.cooldown_s : 60)) + '" min="0" step="1"></div>' +
+    '<div class="form-label"><span>Min clear (s)</span>' +
+    '<input type="number" id="ev-f-min-clear" value="' + escAttr(String(r.min_clear_s != null ? r.min_clear_s : 0)) + '" min="0" step="1"></div>' +
+    '</div>';
+
+  // Announce
+  html += '<div class="form-label row-inline">' +
+    '<input type="checkbox" id="ev-f-announce"' + (announce ? ' checked' : '') + ' onchange="evEditorAnnounceChange()"> ' +
+    '<span>Announce after action</span></div>';
+
+  html += '<div id="ev-f-announce-rows"' + (!announce ? ' hidden' : '') + '>' +
+    '<div class="form-label"><span>Announce speaker</span>' +
+    '<select id="ev-f-speaker">' + opts(tgt.media_players, announceSpeaker) + '</select></div>' +
+    '<div class="form-label" id="ev-f-announce-text-row"' + (mode !== 'always' ? ' hidden' : '') + '>' +
+    '<span>Announce text (mode=always)</span>' +
+    '<input type="text" id="ev-f-announce-text" value="' + escAttr(announceText) + '" placeholder="Hallway light turned on."></div>' +
+    '</div>';
+
+  // Error + buttons
+  html += '<div id="ev-f-error" class="txt-danger fs-sm" hidden></div>';
+  html += '<div class="row gap-2 mt-2">' +
+    '<button class="btn" onclick="evSave(' + (isEdit ? '\'edit\'' : '\'create\'') + ')">Save</button>' +
+    '<button class="btn-cancel" onclick="evCloseEditor()">Cancel</button>' +
+    '</div>';
+
+  html += '</div>';
+  form.innerHTML = html;
+
+  // Sync the free-text inputs from the select on change
+  var trigSel = document.getElementById('ev-f-trigger-entity');
+  var trigTxt = document.getElementById('ev-f-trigger-entity-text');
+  if (trigSel && trigTxt) {
+    trigSel.onchange = function() { if (trigSel.value) trigTxt.value = trigSel.value; };
+  }
+  var tgtSel = document.getElementById('ev-f-target');
+  var tgtTxt = document.getElementById('ev-f-target-text');
+  if (tgtSel && tgtTxt && kind !== 'ha_service') {
+    tgtSel.onchange = function() { if (tgtSel.value) tgtTxt.value = tgtSel.value; };
+  }
+}
+
+function evEditorModeChange() {
+  var mode = (document.getElementById('ev-f-mode') || {}).value || 'always';
+  var promptRow = document.getElementById('ev-f-prompt-row');
+  var ctxRow = document.getElementById('ev-f-ctx-row');
+  var annTxtRow = document.getElementById('ev-f-announce-text-row');
+  if (promptRow) promptRow.hidden = (mode !== 'llm');
+  if (ctxRow)    ctxRow.hidden    = (mode !== 'llm');
+  if (annTxtRow) annTxtRow.hidden = (mode !== 'always');
+}
+
+function evEditorKindChange() {
+  // Re-render the target row for the new kind
+  var kindEl = document.getElementById('ev-f-kind');
+  if (!kindEl) return;
+  var kind = kindEl.value;
+  var tgt = _evState.targets || {};
+  var targetListForKind = {
+    ha_automation: tgt.automations || [],
+    ha_script: tgt.scripts || [],
+    ha_scene: tgt.scenes || [],
+    ha_service: [],
+  };
+  var row = document.getElementById('ev-f-target-row');
+  if (!row) return;
+  var kindTargets = targetListForKind[kind] || [];
+
+  function opts(arr, sel) {
+    return (arr || []).map(function(e) {
+      var v = e.entity_id || e;
+      var l = e.friendly_name || v;
+      return '<option value="' + escAttr(v) + '"' + (v === sel ? ' selected' : '') + '>' + escHtml(l) + '</option>';
+    }).join('');
+  }
+
+  var html = '<span>Target</span>';
+  if (kind === 'ha_service') {
+    html += '<input type="text" id="ev-f-target" value="" placeholder="light.turn_on">' +
+      '<input type="text" id="ev-f-svc-entity" value="" placeholder="entity_id (optional)">' +
+      '<textarea id="ev-f-svc-data" rows="2" placeholder=\'{"brightness_pct": 40}\'></textarea>';
+  } else {
+    html += '<select id="ev-f-target">' +
+      '<option value="">-- free text below --</option>' +
+      opts(kindTargets, '') +
+      '</select>' +
+      '<input type="text" id="ev-f-target-text" value="" placeholder="automation.my_rule">';
+    // Re-attach sync
+    row.innerHTML = html;
+    var tgtSel = document.getElementById('ev-f-target');
+    var tgtTxt = document.getElementById('ev-f-target-text');
+    if (tgtSel && tgtTxt) tgtSel.onchange = function() { if (tgtSel.value) tgtTxt.value = tgtSel.value; };
+    return;
+  }
+  row.innerHTML = html;
+}
+
+function evEditorAnnounceChange() {
+  var cb = document.getElementById('ev-f-announce');
+  var rows = document.getElementById('ev-f-announce-rows');
+  if (rows) rows.hidden = !(cb && cb.checked);
+}
+
+function evCloseEditor() {
+  var card = document.getElementById('ev-editor-card');
+  if (card) card.hidden = true;
+}
+
+function evSave(mode) {
+  // Collect form values
+  var id = (document.getElementById('ev-f-id') || {}).value || '';
+  var trigEntityEl = document.getElementById('ev-f-trigger-entity');
+  var trigEntityTxt = document.getElementById('ev-f-trigger-entity-text');
+  var trigEntity = (trigEntityEl && trigEntityEl.value) ? trigEntityEl.value
+    : (trigEntityTxt ? trigEntityTxt.value : '');
+  var toState = (document.getElementById('ev-f-to-state') || {}).value || '';
+  var fromState = (document.getElementById('ev-f-from-state') || {}).value || undefined;
+  var ruleMode = (document.getElementById('ev-f-mode') || {}).value || 'always';
+  var decisionPrompt = (document.getElementById('ev-f-decision-prompt') || {}).value || undefined;
+  var kind = (document.getElementById('ev-f-kind') || {}).value || 'ha_automation';
+
+  var targetEl = document.getElementById('ev-f-target');
+  var targetTxtEl = document.getElementById('ev-f-target-text');
+  var target = '';
+  if (kind === 'ha_service') {
+    target = targetEl ? targetEl.value : '';
+  } else {
+    target = (targetEl && targetEl.value) ? targetEl.value
+      : (targetTxtEl ? targetTxtEl.value : '');
+  }
+
+  var svcEntityEl = document.getElementById('ev-f-svc-entity');
+  var svcDataEl = document.getElementById('ev-f-svc-data');
+  var svcEntity = svcEntityEl ? (svcEntityEl.value || undefined) : undefined;
+  var svcDataRaw = svcDataEl ? svcDataEl.value.trim() : '';
+  var svcData = {};
+  if (svcDataRaw) {
+    try { svcData = JSON.parse(svcDataRaw); } catch(e) {
+      evShowFormError('Service data JSON is invalid: ' + e.message); return;
+    }
+  }
+
+  var cooldownEl = document.getElementById('ev-f-cooldown');
+  var minClearEl = document.getElementById('ev-f-min-clear');
+  var cooldown = cooldownEl ? parseFloat(cooldownEl.value) : 60;
+  var minClear = minClearEl ? parseFloat(minClearEl.value) : 0;
+
+  var announce = !!(document.getElementById('ev-f-announce') || {}).checked;
+  var speaker = (document.getElementById('ev-f-speaker') || {}).value || undefined;
+  var announceText = (document.getElementById('ev-f-announce-text') || {}).value || undefined;
+
+  // Gather context entities from multi-select
+  var ctxSel = document.getElementById('ev-f-context-entities');
+  var contextEntities = [];
+  if (ctxSel) {
+    for (var i = 0; i < ctxSel.options.length; i++) {
+      if (ctxSel.options[i].selected) contextEntities.push(ctxSel.options[i].value);
+    }
+  }
+
+  var body = {
+    id: id,
+    trigger: { entity_id: trigEntity, to_state: toState },
+    mode: ruleMode,
+    action: { kind: kind, target: target },
+    cooldown_s: isNaN(cooldown) ? 60 : cooldown,
+    min_clear_s: isNaN(minClear) ? 0 : minClear,
+    announce: announce,
+  };
+  if (fromState) body.trigger.from_state = fromState;
+  if (contextEntities.length) body.context_entities = contextEntities;
+  if (decisionPrompt) body.decision_prompt = decisionPrompt;
+  if (announce && speaker) body.announce_speaker = speaker;
+  if (announce && ruleMode === 'always' && announceText) body.announce_text = announceText;
+  if (kind === 'ha_service') {
+    if (svcEntity) body.action.entity_id = svcEntity;
+    if (Object.keys(svcData).length) body.action.data = svcData;
+  }
+
+  var url = mode === 'edit'
+    ? '/api/integrations/events/' + encodeURIComponent(id)
+    : '/api/integrations/events';
+  var method = mode === 'edit' ? 'PUT' : 'POST';
+
+  fetch(url, {
+    method: method, credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+  .then(function(res) {
+    if (!res.ok) { evShowFormError(res.d.error || 'Save failed'); return; }
+    evCloseEditor();
+    evLoad();
+  })
+  .catch(function(e) { evShowFormError('Save error: ' + e.message); });
+}
+
+function evShowFormError(msg) {
+  var el = document.getElementById('ev-f-error');
+  if (el) { el.textContent = msg; el.hidden = false; }
+}
+
+// ── end Events page ───────────────────────────────────────────────────────
 
 function openInlineImageLightbox(imageUrl) {
   if (!_inlineLightbox) _inlineLightbox = _buildInlineLightbox();

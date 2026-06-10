@@ -44,6 +44,7 @@ SHELL_TOP = r"""<!DOCTYPE html>
     <div class="nav-children" data-requires-admin="true" style="display:none;">
       <a class="nav-item" data-nav-key="config.system" onclick="navigateTo('config.system')">System</a>
       <a class="nav-item" data-nav-key="config.integrations" onclick="navigateTo('config.integrations')">Integrations</a>
+      <a class="nav-item" data-nav-key="config.events" onclick="navigateTo('config.events')">Events</a>
       <a class="nav-item" data-nav-key="config.audio-speakers" onclick="navigateTo('config.audio-speakers')">Audio &amp; Speakers</a>
       <a class="nav-item" data-nav-key="config.personality" onclick="navigateTo('config.personality')">Personality</a>
       <a class="nav-item" data-nav-key="config.memory" onclick="navigateTo('config.memory')">Memory</a>

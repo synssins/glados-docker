@@ -294,6 +294,24 @@ call needed). DST is handled automatically by Python's stdlib
 clock with a warning log; the operator-facing System → Time card in
 the WebUI surfaces the unsync state. See `docs/CHANGES.md` Change 39.
 
+### Event→Action engine
+
+A rule-based autonomous-action layer: operator-configured rules in
+``configs/events.yaml`` (editable via Integrations → Events in the
+WebUI) describe a trigger entity and state (e.g.
+``binary_sensor.hallway_person_detected`` → ``"on"``), a whitelisted
+HA target (automation, script, scene, or service call), and a decision
+mode — either ``always`` (fire immediately on each valid event) or
+``llm`` (ask the triage-lane LLM with a brief prompt and live context
+entities, e.g. ``sensor.hallway_lux``). The LLM path is fail-closed:
+any timeout, error, or unparseable response resolves to no-act. Rules
+ship ``enabled: false`` and must be deliberately activated; a per-rule
+cooldown and min-clear guard prevent flapping. The ``EventRouter``
+subscribes to the existing ``HAClient`` WebSocket — no second
+connection is opened. A dry-run button in the WebUI calls the decision
+pass without executing, so operators can sanity-check LLM verdicts
+before enabling a rule.
+
 ### Audit logging
 
 Every utterance and every tier decision writes a JSON-lines row to
