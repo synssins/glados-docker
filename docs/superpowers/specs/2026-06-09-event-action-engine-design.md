@@ -27,10 +27,11 @@ turns on).
 
 ### In scope (this slice)
 
-1. **Shared event substrate** — `HAWebSocketHub` (one HA WebSocket
-   connection, fan-out to consumers) + `EventRouter` (rule matching,
-   gating, dispatch). Lifted from the camera-vision slice-3 plan;
-   built here first.
+1. **Event substrate** — `EventRouter` (rule matching, gating,
+   dispatch) consuming the EXISTING `HAClient` singleton
+   (`glados/ha/ws_client.py`, stood up by `server.py:_init_ha_client`)
+   via its public `on_state_changed()` fan-out API. No new WebSocket
+   connection; no hub extraction needed — the hub already exists.
 2. **`ha_action` action kind** — trigger an HA automation / script /
    scene / plain service call, gated by a per-rule decision mode
    (`always` or `llm`).
@@ -69,10 +70,11 @@ turns on).
 ## 2. Architecture and data flow
 
 ```
-HA state_changed (one WebSocket, owned by HAWebSocketHub)
-        │ fan-out
-        ├─→ ha_sensor_watcher (existing behavior, now a hub consumer)
-        └─→ EventRouter
+HA state_changed (existing HAClient WebSocket, glados.ha.get_client())
+        │ on_state_changed() fan-out
+        └─→ EventRouter   (ha_sensor_watcher keeps its own connection,
+                           untouched this slice — consolidation is a
+                           Phase 2 hook)
                 │ match: entity_id + to_state (+ optional from_state)
                 │ gate:  master switch → maintenance mode → rule.enabled
                 │        → cooldown_s → min_clear_s
@@ -116,7 +118,6 @@ triage-lane LLM ≤ 1 s warm, HA call ~0.2 s). `mode: always` ≤ 0.5 s.
 
 | Path | Purpose |
 |---|---|
-| `glados/ha_ws/hub.py` | `HAWebSocketHub` singleton: owns the HA WS connection + auth + reconnect/backoff; consumers register callbacks for `state_changed`. Extracted from `ha_sensor_watcher`'s connection logic. |
 | `glados/events/config.py` | Pydantic schema for `events.yaml` (see §4) + load/save helpers following the existing config-store atomic-write pattern. |
 | `glados/events/router.py` | Rule matching, gate chain, dispatch, per-rule runtime state (last_fired, last_decision, last_error). |
 | `glados/events/decision.py` | `mode: llm` verdict call — context gathering + OpenAI-format request on the `llm_triage` slot + strict JSON parse + fail-safe defaults. |
@@ -126,8 +127,7 @@ triage-lane LLM ≤ 1 s warm, HA call ~0.2 s). `mode: always` ≤ 0.5 s.
 
 | Path | Change |
 |---|---|
-| `glados/autonomy/agents/ha_sensor_watcher.py` | Consume the hub instead of owning the WS connection. Behavior-preserving refactor; its rule logic does NOT move (camera-vision spec Note A, Phase 2). |
-| `glados/core/engine.py` | Construct hub + router at startup; pass hub to ha_sensor_watcher; master-switch wiring. |
+| `glados/server.py` | `_init_event_router()` after `_init_ha_client()`: stand up the router on the existing HAClient singleton; if HA is unconfigured (`get_client()` is None) the engine logs loudly and stays off. |
 | `glados/observability/audit.py` | Add `Origin.EVENT_RULE`. |
 | `glados/webui/*` | New Integrations → Events page + REST endpoints (§6). |
 | `configs/events.example.yaml` | Committed example with placeholder entity ids; runtime `events.yaml` lives on the config volume. |
@@ -248,7 +248,7 @@ plus master-switch toggle.
 
 | Failure | Behavior |
 |---|---|
-| HA WS drops | Hub reconnects with backoff (inherits watcher's proven loop); consumers see a gap, no crash. Reconnect logged. |
+| HA WS drops | The existing HAClient reconnect supervisor (exponential backoff, `ws_client.py`) recovers; the router just sees an event gap. Reconnect logged. |
 | Context entity unreadable | Noted as `unavailable` in the decision prompt; not fatal — the LLM decides with what it has. |
 | Decision LLM timeout / bad JSON | No act. WARNING log, `last_decision: error` in UI. |
 | HA service call fails | One retry with short backoff, then ERROR log + rule status `error`. Never silent. |
@@ -274,11 +274,8 @@ TDD throughout (failing test first, per repo standard):
   injection including unavailable entities.
 - ha_action: each kind maps to the right HA service call (mocked HA),
   retry-then-error path.
-- Hub: fan-out to two consumers, reconnect behavior (mocked socket).
 - WebUI REST: CRUD round-trip onto a temp events.yaml, RBAC (401/403),
   targets endpoint filtering, dry-run vs fire semantics.
-- ha_sensor_watcher refactor: existing watcher test suite stays green
-  (behavior-preserving consumer migration).
 
 Success criteria: full suite green; live verification = operator creates
 the hallway rule via the WebUI, dry-run shows a sane verdict both in
@@ -291,8 +288,11 @@ dark and bright conditions, then a real walk-through fires the light.
 - **Announce-side actions** — `audio_random` + `vision_cascade` from
   camera-vision slice 3 register as additional action kinds on this
   router; the stall-clip + VLM cascade design carries over unchanged.
-- **Watcher consolidation** — fold `ha_sensor_watcher` rule logic into
-  the router (camera-vision spec Note A Phase 2).
+- **Watcher consolidation** — migrate `ha_sensor_watcher` off its
+  private WebSocket onto the shared `HAClient`, then fold its rule
+  logic into the router (camera-vision spec Note A Phase 2). Until
+  then the container runs two HA WS connections, as it already does
+  today (HAClient + watcher).
 - **MQTT triggers** — `source: mqtt` rule type when Stage 3 Phase 2 lands.
 - **Schedule refinement** — GLaDOS observing patterns and *proposing*
   timing changes to HA automations (operator approves in WebUI before
