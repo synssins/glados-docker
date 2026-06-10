@@ -127,9 +127,13 @@ def test_decline_consumes_cooldown(tmp_path):
 
 
 def test_min_clear_blocks_flapping(tmp_path):
+    # get_state returns "4" (not "on"), so load() seeds _clear_since at t=1000.
+    # The first fire is now blocked until min_clear_s elapses from load time.
     router, fired, _, clock = make_router(
         tmp_path, {"min_clear_s": 30, "cooldown_s": 0})
-    router.handle_state_changed(_event())          # first fire: no prior clear info -> allowed
+    # Advance past min_clear so the seeded clear is old enough to allow the first fire.
+    clock.t += 31
+    router.handle_state_changed(_event())          # seeded clear is 31s old -> allowed
     assert len(fired) == 1
     router.handle_state_changed(_event(old="on", new="off"))   # entity clears at t
     clock.t += 10
@@ -139,6 +143,38 @@ def test_min_clear_blocks_flapping(tmp_path):
     clock.t += 31
     router.handle_state_changed(_event())
     assert len(fired) == 2
+
+
+def test_min_clear_cold_start_blocks_when_entity_in_trigger_state(tmp_path):
+    # get_state returns "on" (the trigger state) at load time -> no seeding.
+    # First event must be blocked (min_clear not yet satisfied).
+    # After a clear transition + min_clear_s elapses -> fires.
+    rule = {**RULE, "min_clear_s": 30, "cooldown_s": 0}
+    path = tmp_path / "events.yaml"
+    path.write_text(
+        yaml.safe_dump({"enabled": True, "rules": [rule]}), encoding="utf-8"
+    )
+    fired = []
+    clock = FakeClock()
+    router = EventRouter(
+        config_path=path,
+        call_service=lambda *a, **kw: {},
+        get_state=lambda eid: "on",   # entity IS in trigger state at load
+        decision_fn=lambda r, gs: Verdict(act=True, reason="ok", quip="zap"),
+        action_fn=lambda spec, cs, **kw: fired.append(spec.target),
+        announce_fn=lambda text, speaker, cs: None,
+        quiet_check=lambda: False,
+        clock=clock,
+    )
+    router.load()
+    # Immediate trigger event: no _clear_since seeded -> blocked
+    router.handle_state_changed(_event())
+    assert len(fired) == 0
+    # Entity clears, then min_clear_s elapses
+    router.handle_state_changed(_event(old="on", new="off"))
+    clock.t += 31
+    router.handle_state_changed(_event())
+    assert len(fired) == 1
 
 
 def test_llm_act_fires_and_announces_quip(tmp_path):
@@ -187,3 +223,64 @@ def test_manual_fire_bypasses_gates(tmp_path):
     result = router.run_rule("hallway", dry_run=False)
     assert result["result"] == "fired"
     assert fired == ["automation.hall_light"]
+
+
+def test_concurrent_events_do_not_double_fire(tmp_path):
+    """FIX 1: Two threads racing through the gate on the same rule at the
+    same clock time.  The atomic check-and-stamp under _lock ensures the
+    second thread sees the stamp the first thread wrote and is blocked by
+    the cooldown, even though both arrived before any LLM work started.
+
+    Choreography:
+      - cooldown_s=60 so any non-zero elapsed time blocks the second fire.
+      - Both threads hit _gate_and_run at FakeClock t=1000 (same instant).
+      - decision_fn blocks until we explicitly release it, so the LLM work
+        is entirely outside the lock (as required) and t2 sees the stamp.
+    """
+    import threading
+
+    # t1 will block here until we let it proceed past the gate into action.
+    t1_in_decision = threading.Event()
+    proceed = threading.Event()
+
+    def slow_decision(rule, gs):
+        t1_in_decision.set()
+        proceed.wait(timeout=2)
+        return Verdict(act=True, reason="ok", quip="zap")
+
+    rule = {**RULE, "mode": "llm", "decision_prompt": "go?", "cooldown_s": 60}
+    path = tmp_path / "events.yaml"
+    path.write_text(
+        yaml.safe_dump({"enabled": True, "rules": [rule]}), encoding="utf-8"
+    )
+    fired = []
+    clock = FakeClock()   # frozen at t=1000
+    router = EventRouter(
+        config_path=path,
+        call_service=lambda *a, **kw: {},
+        get_state=lambda eid: "4",
+        decision_fn=slow_decision,
+        action_fn=lambda spec, cs, **kw: fired.append(spec.target),
+        announce_fn=lambda text, speaker, cs: None,
+        quiet_check=lambda: False,
+        clock=clock,
+    )
+    router.load()
+
+    def fire_event():
+        router.handle_state_changed(_event())
+
+    t1 = threading.Thread(target=fire_event)
+    t1.start()
+    t1_in_decision.wait(timeout=2)   # t1 past the gate stamp, blocked in LLM call
+
+    # t2 races in at the same clock time; cooldown stamp was written by t1
+    # so t2 sees now (1000) - last (1000) = 0 < 60 -> blocked.
+    t2 = threading.Thread(target=fire_event)
+    t2.start()
+    t2.join(timeout=2)               # t2 should return quickly (blocked by gate)
+
+    proceed.set()                    # release t1's LLM call
+    t1.join(timeout=5)
+
+    assert len(fired) == 1, f"expected 1 fire, got {len(fired)}: {fired}"

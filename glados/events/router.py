@@ -59,9 +59,26 @@ class EventRouter:
     def load(self) -> bool:
         """(Re)read events.yaml. On schema error: engine off, loud log."""
         try:
+            cfg = load_events_config(self._config_path)
+            # FIX 2: Seed _clear_since for rules with min_clear_s > 0.
+            # If the entity is NOT currently in the trigger state, treat now as
+            # the clear time so the gate is immediately satisfiable after
+            # min_clear_s elapses.  If it IS in the trigger state (or
+            # get_state fails), leave the entry absent so the gate blocks.
+            now = self._clock()
+            seeds: dict[str, float] = {}
+            for rule in cfg.rules:
+                if rule.min_clear_s > 0:
+                    try:
+                        current = self._get_state(rule.trigger.entity_id)
+                    except Exception:
+                        current = None
+                    if current != rule.trigger.to_state and current is not None:
+                        seeds[rule.id] = now
             with self._lock:
-                self._config = load_events_config(self._config_path)
+                self._config = cfg
                 self._load_error = None
+                self._clear_since.update(seeds)
             logger.success(
                 "events: loaded {} rule(s), engine {}",
                 len(self._config.rules),
@@ -88,7 +105,8 @@ class EventRouter:
                 continue
             # Track when the entity LEFT the trigger state (for min_clear).
             if old == rule.trigger.to_state and new != rule.trigger.to_state:
-                self._clear_since[rule.id] = self._clock()
+                with self._lock:
+                    self._clear_since[rule.id] = self._clock()
                 continue
             if new != rule.trigger.to_state:
                 continue
@@ -97,7 +115,6 @@ class EventRouter:
             self._gate_and_run(rule, cfg)
 
     def _gate_and_run(self, rule: EventRule, cfg: EventsConfig) -> None:
-        now = self._clock()
         if not cfg.enabled:
             return
         if self._quiet_check():
@@ -105,14 +122,23 @@ class EventRouter:
             return
         if not rule.enabled:
             return
-        last = self._last_attempt.get(rule.id, 0.0)
-        if last and now - last < rule.cooldown_s:
-            return
-        if rule.min_clear_s > 0:
-            cleared = self._clear_since.get(rule.id)
-            if cleared is not None and now - cleared < rule.min_clear_s:
+        # FIX 1: atomic check-and-stamp under the lock so a concurrent event
+        # cannot pass the cooldown check in the window before the stamp lands.
+        # The LLM/action calls happen OUTSIDE the lock.
+        with self._lock:
+            now = self._clock()
+            last = self._last_attempt.get(rule.id, 0.0)
+            if last and now - last < rule.cooldown_s:
                 return
-        self._last_attempt[rule.id] = now
+            if rule.min_clear_s > 0:
+                cleared = self._clear_since.get(rule.id)
+                # FIX 2: absent entry means we have never observed a clear ->
+                # treat as NOT satisfied (fail-closed).
+                if cleared is None:
+                    return
+                if now - cleared < rule.min_clear_s:
+                    return
+            self._last_attempt[rule.id] = now
         self._execute(rule, manual=False)
 
     # -- execution (shared by live events and the Fire button) -----------
@@ -129,7 +155,8 @@ class EventRouter:
         except HAActionError as exc:
             self._record(rule, "error", str(exc))
             return {"result": "error", "reason": str(exc)}
-        self._fire_count[rule.id] = self._fire_count.get(rule.id, 0) + 1
+        with self._lock:
+            self._fire_count[rule.id] = self._fire_count.get(rule.id, 0) + 1
         self._record(rule, "fired", verdict.reason, manual=manual)
         if rule.announce and rule.announce_speaker:
             text = verdict.quip if rule.mode == "llm" else (rule.announce_text or "")
@@ -138,17 +165,19 @@ class EventRouter:
         return {"result": "fired", "reason": verdict.reason}
 
     def _record(self, rule: EventRule, result: str, reason: str, *, manual: bool = False) -> None:
-        self._status[rule.id] = {
-            "last_result": result,
-            "last_reason": reason,
-            "last_ts": self._clock(),
-        }
+        now = self._clock()   # FIX 3: single clock read for both status and audit
+        with self._lock:
+            self._status[rule.id] = {
+                "last_result": result,
+                "last_reason": reason,
+                "last_ts": now,
+            }
         level = logger.error if result == "error" else logger.success
         level("events: rule {} -> {} ({}){}", rule.id, result, reason,
               " [manual]" if manual else "")
         try:
             audit(AuditEvent(
-                ts=self._clock(),
+                ts=now,
                 origin=Origin.EVENT_RULE,
                 kind=f"event_{result}",
                 extra={"detail": f"{rule.id}: {reason}"},
