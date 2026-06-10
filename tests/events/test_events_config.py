@@ -105,3 +105,14 @@ def test_load_schema_violation_raises(tmp_path):
     path.write_text(yaml.safe_dump(_config(mode="nonsense")), encoding="utf-8")
     with pytest.raises(EventsConfigError):
         load_events_config(path)
+
+
+def test_rule_id_charset_rejected():
+    """Rule ids must be [A-Za-z0-9_.-]+ — special chars are rejected."""
+    from glados.events.config import EventRule
+    import pytest
+    with pytest.raises(ValueError):
+        EventRule.model_validate({
+            **VALID_RULE,
+            "id": "x') //",
+        })

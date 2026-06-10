@@ -126,3 +126,17 @@ def test_rbac_denied_short_circuits(events_env):
         result = tts_ui._events_api_create(_handler(), RULE_BODY)
     assert result is None                # handler already wrote 401/403
     rp.assert_called_once()
+
+
+def test_update_accepts_status_shaped_rule(events_env):
+    """WebUI round-trips status()-augmented dicts into PUT; must not 400."""
+    path, router = events_env
+    with patch.object(tts_ui, "require_perm", return_value=True):
+        tts_ui._events_api_create(_handler(), RULE_BODY)
+        # Fetch the augmented dict exactly as the WebUI would after GET /api/integrations/events
+        augmented = router.status()["rules"][0]
+        # Flip enabled to True (simulating the enable-toggle)
+        augmented = {**augmented, "enabled": True}
+        status, payload = tts_ui._events_api_update(_handler(), "hallway", augmented)
+    assert status == 200, f"Expected 200 but got {status}: {payload}"
+    assert load_events_config(path).rules[0].enabled is True

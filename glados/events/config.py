@@ -48,7 +48,7 @@ class EventActionSpec(BaseModel):
 
 class EventRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    id: str
+    id: str = Field(pattern=r"^[A-Za-z0-9_.-]+$")
     enabled: bool = False
     trigger: EventTrigger
     mode: Literal["always", "llm"] = "always"

@@ -180,7 +180,7 @@ class EventRouter:
                 ts=now,
                 origin=Origin.EVENT_RULE,
                 kind=f"event_{result}",
-                extra={"detail": f"{rule.id}: {reason}"},
+                extra={"detail": f"{rule.id}: {reason[:200]}"},
             ))
         except Exception:           # audit must never break dispatch
             logger.warning("events: audit emit failed for rule {}", rule.id)

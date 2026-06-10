@@ -1500,12 +1500,15 @@ def _events_reload():
         router.load()
 
 
+_RUNTIME_KEYS = frozenset({"last_result", "last_reason", "last_ts", "fire_count"})
+
+
 def _events_api_create(handler, body: dict):
     if not require_perm(handler, "admin"):
         return None
     from glados.events.config import EventRule, load_events_config, save_events_config
     try:
-        body = dict(body)
+        body = {k: v for k, v in body.items() if k not in _RUNTIME_KEYS}
         body["enabled"] = False                     # rules are born disabled
         rule = EventRule.model_validate(body)
     except Exception as exc:
@@ -1530,7 +1533,7 @@ def _events_api_update(handler, rule_id: str, body: dict):
     if idx is None:
         return 404, {"error": f"rule {rule_id!r} not found"}
     try:
-        body = dict(body)
+        body = {k: v for k, v in body.items() if k not in _RUNTIME_KEYS}
         body["id"] = rule_id                        # id is immutable via PUT
         rule = EventRule.model_validate(body)
     except Exception as exc:
