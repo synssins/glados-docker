@@ -25,6 +25,9 @@ from urllib.request import Request, urlopen
 import yaml
 from loguru import logger
 
+from glados.cameras.snapshot import CameraSnapshotError, fetch_snapshot
+from glados.vision.client import VisionClientError, describe_images
+
 
 class SessionAborted(Exception):
     """Raised when the session is aborted (e.g. door opened mid-session)."""
@@ -64,6 +67,10 @@ Classification guidance:
 
 Reply style: professional with a hint of artificial-intelligence dryness.
 You are an AI, not a person; do not claim to personally know the residents.
+
+When [scene] visual context is present, the announcement must include a
+short visual identifier of the visitor (e.g. "A UPS driver is at the door."
+/ "A man in a white t-shirt is at the door."), keeping it a single sentence.
 
 Set continue_conversation=true only if a clarifying question is required
 (cap at 2 total rounds). Otherwise false.
@@ -191,8 +198,6 @@ class DoorbellScreener:
         today's transcript-only behavior.
         """
         from glados.core.config_store import cfg as store_cfg
-        from glados.cameras.snapshot import fetch_snapshot, CameraSnapshotError
-        from glados.vision.client import describe_images, VisionClientError
         t0 = time.time()
         try:
             img = fetch_snapshot(
@@ -206,9 +211,11 @@ class DoorbellScreener:
         try:
             description = describe_images(
                 [img],
-                "Describe the visitor at the door concisely: clothing, "
-                "uniform, anything they are carrying, approximate count "
-                "of people. 1-2 sentences. Do not speculate about intent.",
+                "Describe the visitor at the door in ONE short sentence: "
+                "clothing, uniform, anything they are carrying. "
+                "If carrier branding is visible (UPS, FedEx, USPS, Amazon — "
+                "uniform, vehicle, or package logos), identify the carrier. "
+                "Do not speculate about intent.",
             )
         except VisionClientError as exc:
             logger.warning("[{}] doorbell scene VLM failed: {}", session_id, exc)
