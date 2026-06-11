@@ -25,6 +25,13 @@ from urllib.request import Request, urlopen
 import yaml
 from loguru import logger
 
+from glados.cameras.snapshot import CameraSnapshotError, fetch_snapshot
+from glados.vision.client import VisionClientError, describe_images
+
+
+class SessionAborted(Exception):
+    """Raised when the session is aborted (e.g. door opened mid-session)."""
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -60,6 +67,10 @@ Classification guidance:
 
 Reply style: professional with a hint of artificial-intelligence dryness.
 You are an AI, not a person; do not claim to personally know the residents.
+
+When [scene] visual context is present, the announcement must include a
+short visual identifier of the visitor (e.g. "A UPS driver is at the door."
+/ "A man in a white t-shirt is at the door."), keeping it a single sentence.
 
 Set continue_conversation=true only if a clarifying question is required
 (cap at 2 total rounds). Otherwise false.
@@ -187,8 +198,6 @@ class DoorbellScreener:
         today's transcript-only behavior.
         """
         from glados.core.config_store import cfg as store_cfg
-        from glados.cameras.snapshot import fetch_snapshot, CameraSnapshotError
-        from glados.vision.client import describe_images, VisionClientError
         t0 = time.time()
         try:
             img = fetch_snapshot(
@@ -202,9 +211,11 @@ class DoorbellScreener:
         try:
             description = describe_images(
                 [img],
-                "Describe the visitor at the door concisely: clothing, "
-                "uniform, anything they are carrying, approximate count "
-                "of people. 1-2 sentences. Do not speculate about intent.",
+                "Describe the visitor at the door in ONE short sentence: "
+                "clothing, uniform, anything they are carrying. "
+                "If carrier branding is visible (UPS, FedEx, USPS, Amazon — "
+                "uniform, vehicle, or package logos), identify the carrier. "
+                "Do not speculate about intent.",
             )
         except VisionClientError as exc:
             logger.warning("[{}] doorbell scene VLM failed: {}", session_id, exc)
@@ -273,11 +284,25 @@ class DoorbellScreener:
                 listen_timeout = cfg.get("listen_timeout", 12)
                 silence_gap = cfg.get("silence_gap", 2.0)
 
-                speech_detected = self._wait_for_speech(listen_timeout)
+                try:
+                    speech_detected = self._wait_for_speech(listen_timeout)
+                except SessionAborted:
+                    logger.success(
+                        "[{}] Session aborted — door opened, resident answered", session_id
+                    )
+                    self._stop_capture(ffmpeg_proc)
+                    break
 
                 if speech_detected:
                     logger.success("[{}] Speech detected, waiting for silence", session_id)
-                    self._wait_for_silence(silence_gap, max_listen)
+                    try:
+                        self._wait_for_silence(silence_gap, max_listen)
+                    except SessionAborted:
+                        logger.success(
+                            "[{}] Session aborted — door opened, resident answered", session_id
+                        )
+                        self._stop_capture(ffmpeg_proc)
+                        break
                     logger.success("[{}] Silence detected, stopping capture", session_id)
                 else:
                     logger.success("[{}] No speech detected after {}s", session_id, listen_timeout)
@@ -287,6 +312,13 @@ class DoorbellScreener:
 
                 # Small delay to let ffmpeg flush
                 time.sleep(0.3)
+
+                # Door check before transcription
+                if self._door_opened():
+                    logger.success(
+                        "[{}] Session aborted — door opened, resident answered", session_id
+                    )
+                    break
 
                 # Convert raw PCM to WAV if needed, or validate WAV
                 wav_path = self._ensure_valid_wav(capture_path)
@@ -324,6 +356,13 @@ class DoorbellScreener:
                     "reply": reply,
                 })
 
+                # Door check before reply/announce
+                if self._door_opened():
+                    logger.success(
+                        "[{}] Session aborted — door opened, resident answered", session_id
+                    )
+                    break
+
                 # --- Reply to visitor through doorbell speaker ---
                 if reply:
                     reply_wav = self._generate_tts(reply, f"reply_{session_id}_r{round_num}")
@@ -334,8 +373,22 @@ class DoorbellScreener:
                         time.sleep(reply_dur + 1.0)
 
                 # --- Announce inside ---
+                # Suppress duplicate no_response announcements on round 2+:
+                # the resident already heard the round-1 announcement; a
+                # second silent-round announce adds nothing.
                 if announcement:
-                    self._announce_inside(announcement, indoor_speakers)
+                    if round_num > 1 and classification == "no_response":
+                        logger.success(
+                            "[{}] Suppressing duplicate no_response announcement "
+                            "(round {})", session_id, round_num
+                        )
+                    elif self._door_opened():
+                        logger.success(
+                            "[{}] Session aborted — door opened, resident answered", session_id
+                        )
+                        break
+                    else:
+                        self._announce_inside(announcement, indoor_speakers)
 
                 # Check if conversation should continue
                 if not continue_conv or round_num >= max_rounds:
@@ -450,6 +503,22 @@ class DoorbellScreener:
             return None
 
     # ------------------------------------------------------------------
+    # Door-open abort helper
+    # ------------------------------------------------------------------
+
+    def _door_opened(self) -> bool:
+        """Return True iff door_contact_sensor is configured AND its state is 'on'.
+
+        None (read failure) is treated as closed so a transient HA error does
+        not abort a legitimate screening session.
+        """
+        sensor = (self._config.get("door_contact_sensor") or "").strip()
+        if not sensor:
+            return False
+        state = self._get_ha_state(sensor)
+        return state == "on"
+
+    # ------------------------------------------------------------------
     # HA speaking sensor monitoring
     # ------------------------------------------------------------------
 
@@ -486,6 +555,8 @@ class DoorbellScreener:
         reads = 0
         failed_reads = 0
         while time.time() < deadline:
+            if self._door_opened():
+                raise SessionAborted()
             state = self._get_ha_state(sensor)
             reads += 1
             if state is None:
@@ -512,6 +583,8 @@ class DoorbellScreener:
         deadline = time.time() + max_wait
 
         while time.time() < deadline:
+            if self._door_opened():
+                raise SessionAborted()
             state = self._get_ha_state(sensor)
             if state == "on":
                 last_speech = time.time()
@@ -887,9 +960,10 @@ class DoorbellScreener:
             "Content-Type": "application/json",
         }, method="POST")
 
+        play_timeout = self._config.get("play_timeout", 30)
         try:
-            with urlopen(req, timeout=10) as resp:
-                logger.debug("Played {} on {} (HTTP {})", wav_path.name, speaker, resp.status)
+            with urlopen(req, timeout=play_timeout) as resp:
+                logger.success("Played {} on {} (HTTP {})", wav_path.name, speaker, resp.status)
         except (HTTPError, URLError, OSError) as exc:
             logger.error("Failed to play audio on {}: {}", speaker, exc)
 
