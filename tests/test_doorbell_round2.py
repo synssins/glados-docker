@@ -222,122 +222,68 @@ class TestDoorAbortFeatureOff:
 # ===========================================================================
 
 
+def _run_play_on_speaker(screener, extra_config=None):
+    """Helper: run _play_on_speaker with all HA/TLS deps mocked.
+    Returns the timeout kwarg that was passed to urlopen."""
+    from glados.doorbell import screener as scr_mod
+    from glados.doorbell.screener import SERVE_DIR
+    from glados.core import tls as tls_mod
+    from glados.core import config_store as cs_mod
+
+    if extra_config:
+        screener._config.update(extra_config)
+
+    captured = {}
+    fake_resp = MagicMock()
+    fake_resp.__enter__ = MagicMock(return_value=fake_resp)
+    fake_resp.__exit__ = MagicMock(return_value=False)
+    fake_resp.status = 200
+
+    def fake_urlopen(req, timeout=None, **kwargs):
+        captured["timeout"] = timeout
+        return fake_resp
+
+    wav = MagicMock(spec=Path)
+    wav.name = "test.wav"
+    wav.parent = SERVE_DIR  # parent == SERVE_DIR → no file copy needed
+
+    fake_store = MagicMock()
+    fake_store.ha_url = "http://ha.local:8123"
+    fake_store.ha_token = "test-token"
+    fake_store.serve_host = "localhost"
+    fake_store.serve_port = "8015"
+
+    with (
+        patch.object(scr_mod, "urlopen", side_effect=fake_urlopen),
+        patch.object(tls_mod, "is_tls_active", return_value=False),
+        patch(f"{scr_mod.__name__}.config_store_cfg", fake_store, create=True),
+    ):
+        # Patch inside the method's import namespace
+        import glados.doorbell.screener as _scr
+        orig_import = _scr.DoorbellScreener._play_on_speaker.__globals__.get(
+            "__builtins__"
+        )
+        # Use a simpler approach: patch the config_store used inside _play_on_speaker
+        with patch("glados.core.config_store.cfg", fake_store):
+            screener._play_on_speaker(wav, "media_player.test")
+
+    return captured.get("timeout")
+
+
 class TestPlayTimeout:
     """_play_on_speaker uses configured play_timeout."""
 
-    def _capture_urlopen_timeout(self, screener):
-        """Run _play_on_speaker and capture the timeout kwarg passed to urlopen."""
-        from glados.doorbell import screener as scr_mod
-        from glados.core.config_store import cfg as store_cfg
-
-        captured = {}
-        fake_resp = MagicMock()
-        fake_resp.__enter__ = MagicMock(return_value=fake_resp)
-        fake_resp.__exit__ = MagicMock(return_value=False)
-        fake_resp.status = 200
-
-        def fake_urlopen(req, timeout=None, **kwargs):
-            captured["timeout"] = timeout
-            return fake_resp
-
-        wav_path = MagicMock(spec=Path)
-        wav_path.name = "test.wav"
-        wav_path.parent = SERVE_DIR_SENTINEL  # not SERVE_DIR, so it hits the copy branch
-
-        # Patch both the SERVE_DIR and the path copy so it doesn't need real files
-        from glados.doorbell import screener as scr_mod2
-        with (
-            patch.object(scr_mod2, "urlopen", side_effect=fake_urlopen),
-            patch.object(store_cfg, "ha_url", "http://ha.local:8123", create=True),
-            patch.object(store_cfg, "ha_token", "test-token", create=True),
-            patch.object(store_cfg, "serve_host", "localhost", create=True),
-            patch.object(store_cfg, "serve_port", "8015", create=True),
-        ):
-            # Use a wav_path whose parent IS SERVE_DIR so no file copy needed
-            real_wav = MagicMock(spec=Path)
-            real_wav.name = "test.wav"
-            from glados.doorbell.screener import SERVE_DIR
-            real_wav.parent = SERVE_DIR
-
-            screener._play_on_speaker(real_wav, "media_player.test")
-
-        return captured.get("timeout")
-
     def test_play_timeout_uses_configured_value(self):
         """play_timeout: 17 in config → urlopen called with timeout=17."""
-        from glados.core import tls as tls_mod
-        from glados.core.config_store import cfg as store_cfg
-
         s = _make_screener({"play_timeout": 17})
-
-        captured = {}
-        fake_resp = MagicMock()
-        fake_resp.__enter__ = MagicMock(return_value=fake_resp)
-        fake_resp.__exit__ = MagicMock(return_value=False)
-        fake_resp.status = 200
-
-        def fake_urlopen(req, timeout=None, **kwargs):
-            captured["timeout"] = timeout
-            return fake_resp
-
-        from glados.doorbell.screener import SERVE_DIR
-        from glados.doorbell import screener as scr_mod
-
-        wav = MagicMock(spec=Path)
-        wav.name = "test.wav"
-        wav.parent = SERVE_DIR
-
-        with (
-            patch.object(scr_mod, "urlopen", side_effect=fake_urlopen),
-            patch.object(store_cfg, "ha_url", "http://ha.local:8123", create=True),
-            patch.object(store_cfg, "ha_token", "test-token", create=True),
-            patch.object(store_cfg, "serve_host", "localhost", create=True),
-            patch.object(store_cfg, "serve_port", "8015", create=True),
-            patch.object(tls_mod, "is_tls_active", return_value=False),
-        ):
-            s._play_on_speaker(wav, "media_player.test")
-
-        assert captured.get("timeout") == 17
+        timeout = _run_play_on_speaker(s)
+        assert timeout == 17
 
     def test_play_timeout_defaults_to_30(self):
         """No play_timeout in config → urlopen called with timeout=30."""
-        from glados.core import tls as tls_mod
-        from glados.core.config_store import cfg as store_cfg
-
         s = _make_screener()  # no play_timeout key
-
-        captured = {}
-        fake_resp = MagicMock()
-        fake_resp.__enter__ = MagicMock(return_value=fake_resp)
-        fake_resp.__exit__ = MagicMock(return_value=False)
-        fake_resp.status = 200
-
-        def fake_urlopen(req, timeout=None, **kwargs):
-            captured["timeout"] = timeout
-            return fake_resp
-
-        from glados.doorbell.screener import SERVE_DIR
-        from glados.doorbell import screener as scr_mod
-
-        wav = MagicMock(spec=Path)
-        wav.name = "test.wav"
-        wav.parent = SERVE_DIR
-
-        with (
-            patch.object(scr_mod, "urlopen", side_effect=fake_urlopen),
-            patch.object(store_cfg, "ha_url", "http://ha.local:8123", create=True),
-            patch.object(store_cfg, "ha_token", "test-token", create=True),
-            patch.object(store_cfg, "serve_host", "localhost", create=True),
-            patch.object(store_cfg, "serve_port", "8015", create=True),
-            patch.object(tls_mod, "is_tls_active", return_value=False),
-        ):
-            s._play_on_speaker(wav, "media_player.test")
-
-        assert captured.get("timeout") == 30
-
-
-# Sentinel so mypy/linters don't complain about use before import
-SERVE_DIR_SENTINEL = object()
+        timeout = _run_play_on_speaker(s)
+        assert timeout == 30
 
 
 # ===========================================================================

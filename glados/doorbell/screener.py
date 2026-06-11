@@ -953,9 +953,10 @@ class DoorbellScreener:
             "Content-Type": "application/json",
         }, method="POST")
 
+        play_timeout = self._config.get("play_timeout", 30)
         try:
-            with urlopen(req, timeout=10) as resp:
-                logger.debug("Played {} on {} (HTTP {})", wav_path.name, speaker, resp.status)
+            with urlopen(req, timeout=play_timeout) as resp:
+                logger.success("Played {} on {} (HTTP {})", wav_path.name, speaker, resp.status)
         except (HTTPError, URLError, OSError) as exc:
             logger.error("Failed to play audio on {}: {}", speaker, exc)
 
