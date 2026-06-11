@@ -330,7 +330,7 @@ class TestOneAnnouncementPerVisitor:
             patch.object(s, "_ensure_valid_wav", return_value=Path("capture.wav")),
             patch.object(s, "_transcribe", return_value=""),
             patch.object(s, "_evaluate", side_effect=fake_evaluate),
-            patch.object(s, "_announce_inside", side_effect=announce_calls.append),
+            patch.object(s, "_announce_inside", side_effect=lambda t, spks: announce_calls.append(t)),
             patch.object(s, "_generate_tts", return_value=None),
         ):
             s._run_session("db_test", ["media_player.kitchen"], max_rounds=2)
@@ -372,7 +372,7 @@ class TestOneAnnouncementPerVisitor:
             patch.object(s, "_ensure_valid_wav", return_value=Path("capture.wav")),
             patch.object(s, "_transcribe", return_value="delivery"),
             patch.object(s, "_evaluate", side_effect=fake_evaluate),
-            patch.object(s, "_announce_inside", side_effect=announce_calls.append),
+            patch.object(s, "_announce_inside", side_effect=lambda t, spks: announce_calls.append(t)),
             patch.object(s, "_generate_tts", return_value=None),
         ):
             s._run_session("db_test", ["media_player.kitchen"], max_rounds=2)
