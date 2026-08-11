@@ -74,6 +74,42 @@ class TestStripTrailingVocative:
         assert _clean_output("Plain reply.") == "Plain reply."
 
 
+class TestStripLeadingFiller:
+    """The rewriter model habitually opens confirmations with a filler
+    interjection ("Ah, yes. ..."). The operator finds it grating. The
+    prompt asks the LLM not to; this is the safety net for when it
+    ignores — mirrors the trailing-vocative strip."""
+
+    def test_strips_ah_yes_with_period(self) -> None:
+        assert _clean_output("Ah, yes. The office lights are off.") == \
+               "The office lights are off."
+
+    def test_strips_ah_yes_with_comma_recapitalizes(self) -> None:
+        assert _clean_output("Ah yes, kitchen darkened.") == "Kitchen darkened."
+
+    def test_strips_bare_ah(self) -> None:
+        assert _clean_output("Ah, the lights are on.") == "The lights are on."
+
+    def test_strips_oh(self) -> None:
+        assert _clean_output("Oh, done.") == "Done."
+
+    def test_strips_well(self) -> None:
+        assert _clean_output("Well, the office is dark now.") == \
+               "The office is dark now."
+
+    def test_does_not_strip_well_without_pause(self) -> None:
+        # No comma/period after "Well" -> it's a real word, leave it.
+        assert _clean_output("Well lights stay on.") == "Well lights stay on."
+
+    def test_does_not_strip_internal_ah(self) -> None:
+        assert _clean_output("The office lights are off.") == \
+               "The office lights are off."
+
+    def test_strips_filler_then_trailing_vocative_together(self) -> None:
+        assert _clean_output("Ah, yes. Kitchen darkened, test subject.") == \
+               "Kitchen darkened."
+
+
 class TestPersonaRewriter:
     def _make(self, response_text: str | None = None, raise_on_call: bool = False):
         rw = PersonaRewriter(ollama_url="http://fake", model="dummy")

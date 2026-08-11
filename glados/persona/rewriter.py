@@ -183,6 +183,8 @@ Hard rules:
 - Do not invent context that wasn't in the input.
 - Do not address the user with a noun-of-address (labels, titles).
   Speak ABOUT the action.
+- Do not open with a filler interjection ("Ah", "Ah yes", "Oh",
+  "Well"). Begin with the substance of the confirmation.
 - Do NOT copy any phrase from this instruction verbatim — always
   compose fresh text for THIS input. No example phrases are shown
   on purpose; pick your own wording each time.
@@ -233,8 +235,9 @@ def _build_user_prompt(plain_text: str, context_hint: str) -> str:
 
 def _clean_output(raw: str) -> str:
     """Strip code fences, leading "Here is..." chatter, outer quotes
-    that small models sometimes wrap their output in, and trailing
-    vocative labels like "test subject" that the operator dislikes."""
+    that small models sometimes wrap their output in, a leading filler
+    interjection like "Ah, yes." that the operator dislikes, and
+    trailing vocative labels like "test subject"."""
     s = raw.strip()
     # Strip code fences.
     if s.startswith("```"):
@@ -251,8 +254,35 @@ def _clean_output(raw: str) -> str:
     # Strip surrounding quotes.
     if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
         s = s[1:-1]
+    s = _strip_leading_filler(s.strip())
     s = strip_trailing_vocative(s.strip())
     return s.strip()
+
+
+def _strip_leading_filler(text: str) -> str:
+    """Remove a leading filler interjection like "Ah, yes." / "Oh," /
+    "Well," that the rewriter model habitually prepends to confirmations.
+
+    Single-word openers ("ah" / "oh" / "well" / "hmm") are stripped only
+    when followed by a pause (comma / period / bang) so real words
+    survive ("Well pump primed."). The distinctive multi-word "ah yes" is
+    stripped even when followed only by a space. Recapitalizes the first
+    surviving letter when a strip occurred. Safety net for when the LLM
+    ignores the prompt rule — mirrors ``strip_trailing_vocative``."""
+    if not text:
+        return text
+    import re
+    s = re.sub(
+        r"^\s*ah\s*,?\s*yes\b[\s,.!]*", "", text, flags=re.IGNORECASE
+    )
+    s = re.sub(
+        r"^\s*(?:ah|oh|well|hmm)\b\s*[,.!]+\s*", "", s, flags=re.IGNORECASE
+    )
+    if s != text:
+        s = s.lstrip()
+        if s and s[0].isalpha() and s[0].islower():
+            s = s[0].upper() + s[1:]
+    return s
 
 
 # Vocative labels the user has banned. Matched as a trailing form-of-
